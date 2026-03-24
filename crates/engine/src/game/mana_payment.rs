@@ -121,6 +121,7 @@ pub fn produce_mana(
         player_id,
         mana_type,
         source_id,
+        from_mana_ability: true,
     });
 }
 
@@ -580,6 +581,7 @@ mod tests {
                 player_id: PlayerId(1),
                 mana_type: ManaType::Blue,
                 source_id: ObjectId(5),
+                from_mana_ability: true,
             }
         ));
     }

@@ -1292,9 +1292,18 @@ pub(super) fn match_taps_for_mana(
     if let GameEvent::ManaAdded {
         player_id,
         source_id: mana_source,
+        from_mana_ability,
         ..
     } = event
     {
+        // Only fire for actual mana ability activations (tap costs), not for mana
+        // produced by triggered abilities, effects, convoke, or doublers.
+        // This prevents infinite loops (e.g., Badgermole Cub's trigger producing
+        // mana that re-triggers itself).
+        if !from_mana_ability {
+            return false;
+        }
+
         if trigger.valid_card.is_some() {
             if !valid_card_matches(trigger, state, *mana_source, source_id) {
                 return false;
@@ -2133,6 +2142,7 @@ mod tests {
             player_id: PlayerId(0),
             mana_type: crate::types::mana::ManaType::Green,
             source_id: source,
+            from_mana_ability: true,
         };
         let trigger = make_trigger(TriggerMode::TapsForMana);
         assert!(match_taps_for_mana(&event, &trigger, source, &state));
@@ -2161,6 +2171,7 @@ mod tests {
             player_id: PlayerId(0),
             mana_type: crate::types::mana::ManaType::Green,
             source_id: enchanted_land,
+            from_mana_ability: true,
         };
 
         let mut trigger = make_trigger(TriggerMode::TapsForMana);
@@ -2197,11 +2208,27 @@ mod tests {
             player_id: PlayerId(1),
             mana_type: crate::types::mana::ManaType::Green,
             source_id: tapped_land,
+            from_mana_ability: true,
         };
 
         let mut trigger = make_trigger(TriggerMode::TapsForMana);
         trigger.valid_target = Some(TargetFilter::Controller);
         trigger.valid_card = Some(TargetFilter::Typed(TypedFilter::new(TypeFilter::Land)));
+        assert!(!match_taps_for_mana(&event, &trigger, source, &state));
+    }
+
+    #[test]
+    fn taps_for_mana_ignores_non_mana_ability_production() {
+        let state = setup();
+        let source = ObjectId(5);
+        // Mana produced by a triggered ability effect, not a mana ability activation
+        let event = GameEvent::ManaAdded {
+            player_id: PlayerId(0),
+            mana_type: crate::types::mana::ManaType::Green,
+            source_id: source,
+            from_mana_ability: false,
+        };
+        let trigger = make_trigger(TriggerMode::TapsForMana);
         assert!(!match_taps_for_mana(&event, &trigger, source, &state));
     }
 

@@ -1268,6 +1268,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 player_id: *player,
                 mana_type: resolved_mana_type,
                 source_id: object_id,
+                from_mana_ability: false,
             });
             // Only emit waterbend event for Waterbend mode
             if mode == ConvokeMode::Waterbend {

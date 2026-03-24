@@ -53,6 +53,12 @@ pub enum GameEvent {
         player_id: PlayerId,
         mana_type: ManaType,
         source_id: ObjectId,
+        /// True when mana was produced by activating a mana ability (CR 605.1a),
+        /// false when produced by effects, triggers, convoke, or doublers.
+        /// Used by `TapsForMana` triggers to distinguish mana ability activations
+        /// from other mana production, preventing infinite re-triggering (CR 605.1b).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        from_mana_ability: bool,
     },
     PermanentTapped {
         object_id: ObjectId,
