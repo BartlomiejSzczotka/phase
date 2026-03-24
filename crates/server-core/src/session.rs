@@ -47,6 +47,9 @@ pub struct GameSession {
     pub ai_seats: HashSet<PlayerId>,
     /// Per-AI-player configuration (difficulty, search params, etc.).
     pub ai_configs: HashMap<PlayerId, AiConfig>,
+    /// Lobby metadata for games waiting for players. Set at creation, cleared when game fills.
+    /// Stored here so it's available during shutdown flush without querying the LobbyManager.
+    pub lobby_meta: Option<PersistedLobbyMeta>,
 }
 
 impl GameSession {
@@ -132,7 +135,7 @@ impl GameSession {
     }
 
     /// Create a serializable snapshot of this session for disk persistence.
-    pub fn to_persisted(&self, lobby_meta: Option<PersistedLobbyMeta>) -> PersistedSession {
+    pub fn to_persisted(&self) -> PersistedSession {
         let ai_difficulties = self
             .ai_configs
             .iter()
@@ -149,7 +152,7 @@ impl GameSession {
             ai_seats: self.ai_seats.iter().map(|pid| pid.0).collect(),
             ai_difficulties,
             game_started: self.is_full(),
-            lobby_meta,
+            lobby_meta: self.lobby_meta.clone(),
         }
     }
 
@@ -201,6 +204,7 @@ impl GameSession {
             player_count: ps.player_count,
             ai_seats,
             ai_configs,
+            lobby_meta: ps.lobby_meta,
         }
     }
 }
@@ -286,6 +290,7 @@ impl SessionManager {
             player_count,
             ai_seats: HashSet::new(),
             ai_configs: HashMap::new(),
+            lobby_meta: None,
         };
 
         self.token_to_game
@@ -333,6 +338,9 @@ impl SessionManager {
 
         // Start the game when the last human seat is filled
         if session.is_full() {
+            // Game is no longer in lobby
+            session.lobby_meta = None;
+
             // Load deck data into game state before starting
             let player_deck = session.decks[0].clone().unwrap_or(PlayerDeckPayload {
                 main_deck: Vec::new(),

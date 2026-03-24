@@ -285,7 +285,9 @@ export class WebSocketAdapter implements EngineAdapter {
       this.handleMessage(msg);
     };
     this.ws.onclose = () => {
-      if (this.gameState !== null) {
+      // Retry if we have an active game OR are mid-reconnect (playerToken set but
+      // no gameState yet because the server hasn't responded with GameStarted)
+      if (this.gameState !== null || this.playerToken !== null) {
         this.attemptReconnect();
       }
     };
@@ -330,10 +332,19 @@ export class WebSocketAdapter implements EngineAdapter {
       }
 
       case "GameStarted": {
-        const data = msg.data as { state: GameState; your_player: PlayerId; opponent_name?: string; legal_actions?: GameAction[] };
+        const data = msg.data as { state: GameState; your_player: PlayerId; opponent_name?: string; legal_actions?: GameAction[]; player_token?: string };
         this.gameState = data.state;
         this._playerId = data.your_player;
         this._legalActions = data.legal_actions ?? [];
+        // Joiners receive their player_token here (hosts get it via GameCreated).
+        // Set _gameCode from joinGameCode if not already set (host sets it via GameCreated).
+        if (data.player_token) {
+          if (!this._gameCode && this.joinGameCode) {
+            this._gameCode = this.joinGameCode;
+          }
+          this.playerToken = data.player_token;
+          this.persistSession();
+        }
         useMultiplayerStore.getState().setActivePlayerId(data.your_player);
         useMultiplayerStore.getState().setOpponentDisplayName(data.opponent_name ?? null);
         if (this.initResolve) {

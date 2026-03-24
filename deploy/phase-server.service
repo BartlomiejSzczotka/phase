@@ -10,6 +10,7 @@ WorkingDirectory=/opt/phase-server
 ExecStart=/opt/phase-server/phase-server --port 9374 --data-dir /opt/phase-server/data --cors-origin *
 Restart=on-failure
 RestartSec=5
+TimeoutStopSec=30
 Environment=RUST_LOG=info
 
 # Hardening

@@ -301,7 +301,7 @@ async fn main() {
     let mgr = shutdown_state.lock().await;
     let mut persisted = 0u32;
     for (game_code, session) in &mgr.sessions {
-        let snapshot = session.to_persisted(None);
+        let snapshot = session.to_persisted();
         match serde_json::to_string(&snapshot) {
             Ok(json) => {
                 if let Err(e) = shutdown_game_db.save_session(game_code, &json) {
@@ -542,16 +542,14 @@ async fn broadcast_to_lobby_subscribers(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Fire-and-forget persistence of a game session to SQLite.
 fn persist_session_async(
     game_db: &SharedGameDb,
     game_code: &str,
     session: &server_core::session::GameSession,
-    lobby_meta: Option<server_core::PersistedLobbyMeta>,
 ) {
     let db = game_db.clone();
-    let persisted = session.to_persisted(lobby_meta);
+    let persisted = session.to_persisted();
     let code = game_code.to_string();
     tokio::task::spawn_blocking(move || match serde_json::to_string(&persisted) {
         Ok(json) => {
@@ -690,6 +688,7 @@ async fn handle_client_message(
                             opponent_name: None,
                             player_names: player_names.clone(),
                             legal_actions: joiner_legals,
+                            player_token: Some(player_token.clone()),
                         };
                         if let Ok(json) = serde_json::to_string(&msg) {
                             let _ = socket.send(Message::text(json)).await;
@@ -711,6 +710,7 @@ async fn handle_client_message(
                                     opponent_name: None,
                                     player_names: player_names.clone(),
                                     legal_actions: p_legals,
+                                    player_token: None,
                                 });
                             }
                         }
@@ -777,7 +777,7 @@ async fn handle_client_message(
                         if is_game_over {
                             delete_session_async(game_db, &game_code);
                         } else {
-                            persist_session_async(game_db, &game_code, session, None);
+                            persist_session_async(game_db, &game_code, session);
                         }
 
                         Ok((human_result, ai_results, actor, eliminated))
@@ -940,6 +940,7 @@ async fn handle_client_message(
                                 opponent_name,
                                 player_names,
                                 legal_actions: player_legals,
+                                player_token: None,
                             };
 
                             let ai_results = session.run_ai_and_filter();
@@ -1182,12 +1183,13 @@ async fn handle_client_message(
                         opponent_name: Some(session.display_names[1].clone()),
                         player_names,
                         legal_actions: host_legals,
+                        player_token: None,
                     };
 
                     let ai_results = session.run_ai_and_filter();
 
                     // Persist the AI game session
-                    persist_session_async(game_db, &game_code, session, None);
+                    persist_session_async(game_db, &game_code, session);
 
                     (game_code, player_token, game_started_msg, ai_results)
                 }; // lock dropped
@@ -1276,15 +1278,15 @@ async fn handle_client_message(
                     timer_seconds,
                 );
 
-                // Persist to SQLite
-                if let Some(session) = mgr.sessions.get(&game_code) {
-                    let lobby_meta = Some(server_core::PersistedLobbyMeta {
+                // Store lobby metadata on the session and persist to SQLite
+                if let Some(session) = mgr.sessions.get_mut(&game_code) {
+                    session.lobby_meta = Some(server_core::PersistedLobbyMeta {
                         host_name: display_name,
                         public,
                         password,
                         timer_seconds,
                     });
-                    persist_session_async(game_db, &game_code, session, lobby_meta);
+                    persist_session_async(game_db, &game_code, session);
                 }
 
                 let msg = ServerMessage::GameCreated {
@@ -1367,7 +1369,7 @@ async fn handle_client_message(
                     info!(game = %game_code, player = ?joiner, "player joined via lobby");
 
                     // Persist updated session (now has the new player)
-                    persist_session_async(game_db, &game_code, session, None);
+                    persist_session_async(game_db, &game_code, session);
                     identity.game_code = Some(game_code.clone());
                     identity.player_id = Some(joiner);
                     identity.player_token = Some(player_token.clone());
@@ -1421,6 +1423,7 @@ async fn handle_client_message(
                             opponent_name: joiner_opp_name,
                             player_names: player_names.clone(),
                             legal_actions: joiner_legals,
+                            player_token: Some(player_token.clone()),
                         };
                         if let Ok(json) = serde_json::to_string(&msg) {
                             let _ = socket.send(Message::text(json)).await;
@@ -1453,6 +1456,7 @@ async fn handle_client_message(
                                     opponent_name: opp_name,
                                     player_names: player_names.clone(),
                                     legal_actions: p_legals,
+                                    player_token: None,
                                 });
                             }
                         }

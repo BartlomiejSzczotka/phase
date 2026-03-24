@@ -108,6 +108,10 @@ pub enum ServerMessage {
         player_names: Vec<String>,
         #[serde(default)]
         legal_actions: Vec<GameAction>,
+        /// Included for joiners so they can persist the token for reconnection.
+        /// Omitted (None) for hosts (who get it via GameCreated) and reconnects.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        player_token: Option<String>,
     },
     StateUpdate {
         state: GameState,
@@ -403,6 +407,7 @@ mod tests {
             opponent_name: Some("Opponent".to_string()),
             player_names: vec!["Me".to_string(), "Opponent".to_string()],
             legal_actions: vec![GameAction::PassPriority],
+            player_token: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: ServerMessage = serde_json::from_str(&json).unwrap();
@@ -432,6 +437,7 @@ mod tests {
             opponent_name: None,
             player_names: vec![],
             legal_actions: vec![],
+            player_token: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: ServerMessage = serde_json::from_str(&json).unwrap();
