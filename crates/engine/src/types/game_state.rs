@@ -34,6 +34,68 @@ fn default_game_number() -> u8 {
     1
 }
 
+/// Serde module for `HashMap<(ObjectId, usize), u32>` — JSON requires string keys,
+/// so we serialize the tuple as `"objectId_index"` (e.g. `"42_0"`).
+mod tuple_key_map {
+    use super::*;
+    use serde::de::{self, MapAccess, Visitor};
+    use serde::ser::SerializeMap;
+    use serde::{Deserializer, Serializer};
+    use std::fmt;
+
+    pub fn serialize<S>(
+        map: &HashMap<(ObjectId, usize), u32>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let mut ser_map = serializer.serialize_map(Some(map.len()))?;
+        for ((oid, idx), val) in map {
+            ser_map.serialize_entry(&format!("{}_{}", oid.0, idx), val)?;
+        }
+        ser_map.end()
+    }
+
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<HashMap<(ObjectId, usize), u32>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        struct TupleKeyVisitor;
+
+        impl<'de> Visitor<'de> for TupleKeyVisitor {
+            type Value = HashMap<(ObjectId, usize), u32>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+                formatter.write_str("a map with \"objectId_index\" string keys")
+            }
+
+            fn visit_map<M>(self, mut access: M) -> Result<Self::Value, M::Error>
+            where
+                M: MapAccess<'de>,
+            {
+                let mut map = HashMap::new();
+                while let Some((key, val)) = access.next_entry::<String, u32>()? {
+                    let (oid_str, idx_str) = key.split_once('_').ok_or_else(|| {
+                        de::Error::custom(format!("invalid tuple key: {key}"))
+                    })?;
+                    let oid = oid_str
+                        .parse::<u64>()
+                        .map(ObjectId)
+                        .map_err(de::Error::custom)?;
+                    let idx = idx_str.parse::<usize>().map_err(de::Error::custom)?;
+                    map.insert((oid, idx), val);
+                }
+                Ok(map)
+            }
+        }
+
+        deserializer.deserialize_map(TupleKeyVisitor)
+    }
+}
+
 /// Tracks whether the game is in day or night state (CR 730).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DayNight {
@@ -895,9 +957,17 @@ pub struct GameState {
     pub triggers_fired_this_turn: HashSet<(ObjectId, usize)>,
     #[serde(default)]
     pub triggers_fired_this_game: HashSet<(ObjectId, usize)>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        with = "tuple_key_map"
+    )]
     pub activated_abilities_this_turn: HashMap<(ObjectId, usize), u32>,
-    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    #[serde(
+        default,
+        skip_serializing_if = "HashMap::is_empty",
+        with = "tuple_key_map"
+    )]
     pub activated_abilities_this_game: HashMap<(ObjectId, usize), u32>,
     /// CR 601.2a: Tracks which graveyard-cast permission sources have been
     /// used this turn. Keyed by the granting permanent's ObjectId.
