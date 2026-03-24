@@ -89,6 +89,12 @@ export function GameSetupPage() {
   const [matchType, setMatchType] = useState<MatchType>("Bo1");
   const difficulty = usePreferencesStore((s) => s.aiDifficulty);
   const setDifficulty = usePreferencesStore((s) => s.setAiDifficulty);
+  const lastFormat = usePreferencesStore((s) => s.lastFormat);
+  const lastMatchType = usePreferencesStore((s) => s.lastMatchType);
+  const lastPlayerCount = usePreferencesStore((s) => s.lastPlayerCount);
+  const setLastFormat = usePreferencesStore((s) => s.setLastFormat);
+  const setLastMatchType = usePreferencesStore((s) => s.setLastMatchType);
+  const setLastPlayerCount = usePreferencesStore((s) => s.setLastPlayerCount);
 
   // Multiplayer state
   const [hostGameCode, setHostGameCode] = useState<string | null>(null);
@@ -99,12 +105,28 @@ export function GameSetupPage() {
   const setFormatConfigStore = useMultiplayerStore((s) => s.setFormatConfig);
 
   useEffect(() => {
-    setActiveDeckName(localStorage.getItem(ACTIVE_DECK_KEY));
+    const savedDeck = localStorage.getItem(ACTIVE_DECK_KEY);
+    setActiveDeckName(savedDeck);
 
     // Allow direct format entry via search param
     const fmt = searchParams.get("format") as GameFormat | null;
     if (fmt && FORMAT_DEFAULTS[fmt]) {
       handleFormatSelect(fmt);
+      return;
+    }
+
+    // Restore persisted setup — skip to mode step if we have format + deck
+    if (lastFormat && FORMAT_DEFAULTS[lastFormat]) {
+      const defaults = FORMAT_DEFAULTS[lastFormat];
+      setSelectedFormat(lastFormat);
+      setFormatConfig(defaults);
+      setPlayerCount(lastPlayerCount);
+      setMatchType(lastMatchType);
+      if (savedDeck) {
+        setStep("mode");
+      } else {
+        setStep("deck-select");
+      }
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -113,8 +135,11 @@ export function GameSetupPage() {
     setSelectedFormat(format);
     setFormatConfig(defaults);
     setPlayerCount(defaults.min_players);
+    setLastFormat(format);
+    setLastPlayerCount(defaults.min_players);
     if (defaults.min_players !== 2) {
       setMatchType("Bo1");
+      setLastMatchType("Bo1");
     }
     setStep("config");
   };
@@ -162,6 +187,8 @@ export function GameSetupPage() {
     setSelectedFormat(preset.format);
     setFormatConfig({ ...defaults, ...preset.formatConfig });
     setPlayerCount(preset.playerCount);
+    setLastFormat(preset.format);
+    setLastPlayerCount(preset.playerCount);
     if (preset.aiDifficulty) {
       setDifficulty(preset.aiDifficulty as AIDifficulty);
     }
@@ -408,8 +435,10 @@ export function GameSetupPage() {
                   onChange={(e) => {
                     const nextCount = Number(e.target.value);
                     setPlayerCount(nextCount);
+                    setLastPlayerCount(nextCount);
                     if (nextCount !== 2) {
                       setMatchType("Bo1");
+                      setLastMatchType("Bo1");
                     }
                   }}
                   className="w-full"
@@ -423,7 +452,7 @@ export function GameSetupPage() {
               <div className="flex overflow-hidden rounded-lg border border-gray-700">
                 <button
                   type="button"
-                  onClick={() => setMatchType("Bo1")}
+                  onClick={() => { setMatchType("Bo1"); setLastMatchType("Bo1"); }}
                   className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
                     matchType === "Bo1"
                       ? "bg-indigo-600 text-white"
@@ -434,7 +463,7 @@ export function GameSetupPage() {
                 </button>
                 <button
                   type="button"
-                  onClick={() => setMatchType("Bo3")}
+                  onClick={() => { setMatchType("Bo3"); setLastMatchType("Bo3"); }}
                   disabled={playerCount !== 2}
                   className={`flex-1 px-3 py-2 text-sm font-medium transition-colors ${
                     matchType === "Bo3"

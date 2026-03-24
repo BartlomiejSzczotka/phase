@@ -1,7 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
-import type { Phase } from "../adapter/types";
+import type { GameFormat, MatchType, Phase } from "../adapter/types";
 import type { AnimationSpeed, CombatPacing, VfxQuality } from "../animation/types";
 import type { AIDifficulty } from "../constants/ai";
 import { DEFAULT_AI_DIFFICULTY } from "../constants/ai";
@@ -38,6 +38,9 @@ interface PreferencesState {
   tapRotation: TapRotation;
   showKeywordStrip: boolean;
   aiDifficulty: AIDifficulty;
+  lastFormat: GameFormat | null;
+  lastMatchType: MatchType;
+  lastPlayerCount: number;
 }
 
 interface PreferencesActions {
@@ -63,6 +66,9 @@ interface PreferencesActions {
   setTapRotation: (rotation: TapRotation) => void;
   setShowKeywordStrip: (show: boolean) => void;
   setAiDifficulty: (difficulty: AIDifficulty) => void;
+  setLastFormat: (format: GameFormat) => void;
+  setLastMatchType: (matchType: MatchType) => void;
+  setLastPlayerCount: (count: number) => void;
 }
 
 export const usePreferencesStore = create<PreferencesState & PreferencesActions>()(
@@ -89,6 +95,9 @@ export const usePreferencesStore = create<PreferencesState & PreferencesActions>
       tapRotation: "mtga",
       showKeywordStrip: true,
       aiDifficulty: DEFAULT_AI_DIFFICULTY,
+      lastFormat: null,
+      lastMatchType: "Bo1",
+      lastPlayerCount: 2,
 
       setCardSize: (size) => set({ cardSize: size }),
       setHudLayout: (layout) => set({ hudLayout: layout }),
@@ -120,6 +129,9 @@ export const usePreferencesStore = create<PreferencesState & PreferencesActions>
       setTapRotation: (rotation) => set({ tapRotation: rotation }),
       setShowKeywordStrip: (show) => set({ showKeywordStrip: show }),
       setAiDifficulty: (difficulty) => set({ aiDifficulty: difficulty }),
+      setLastFormat: (format) => set({ lastFormat: format }),
+      setLastMatchType: (matchType) => set({ lastMatchType: matchType }),
+      setLastPlayerCount: (count) => set({ lastPlayerCount: count }),
     }),
     { name: "phase-preferences" },
   ),

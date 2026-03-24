@@ -8,7 +8,6 @@ import { useFeedInitialization } from "./hooks/useFeedInitialization";
 import { useHostingSession } from "./hooks/useHostingSession";
 import { ensurePreload, subscribePreload } from "./startup/preloadAssets";
 import { MenuPage } from "./pages/MenuPage";
-import { PlayPage } from "./pages/PlayPage";
 import { GamePage } from "./pages/GamePage";
 import { GameSetupPage } from "./pages/GameSetupPage";
 
@@ -61,7 +60,6 @@ function AppContent() {
         <Routes>
           <Route path="/" element={<MenuPage />} />
           <Route path="/setup" element={<GameSetupPage />} />
-          <Route path="/play" element={<PlayPage />} />
           <Route path="/multiplayer" element={<MultiplayerPage />} />
           <Route path="/my-decks" element={<MyDecksPage />} />
           <Route path="/deck-builder" element={<DeckBuilderPage />} />

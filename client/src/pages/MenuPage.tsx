@@ -107,18 +107,10 @@ export function MenuPage() {
       {
         key: "setup",
         title: hasSavedGame ? "Start New Match" : "Start Match",
-        description: "Choose format, rules, and deck before starting a new match.",
+        description: "Choose format, rules, and deck — or jump straight in with your last settings.",
         accent: "arcane" as const,
         onClick: () => navigate("/setup"),
         icon: <SigilIcon />,
-      },
-      {
-        key: "quick",
-        title: "Quick Duel vs AI",
-        description: "Start a one-on-one game with your selected deck.",
-        accent: "stone" as const,
-        onClick: () => navigate("/play"),
-        icon: <SparkIcon />,
       },
       {
         key: "online",
@@ -236,14 +228,6 @@ function SigilIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 24 24" className="h-7 w-7 fill-current">
       <path d="M12 2 4 6v6c0 5.2 3.4 9.8 8 11 4.6-1.2 8-5.8 8-11V6l-8-4Zm0 5.2 2 4.05 4.5.65-3.25 3.16.77 4.47L12 17.34 7.98 19.5l.77-4.47L5.5 11.9l4.5-.65L12 7.2Z" />
-    </svg>
-  );
-}
-
-function SparkIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-7 w-7 fill-current">
-      <path d="m13 2-1.9 7H6l5 4-1.9 9L18 11h-5l2-9Z" />
     </svg>
   );
 }
