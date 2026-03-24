@@ -4397,7 +4397,11 @@ mod tests {
                 rest_destination,
             } => {
                 assert_eq!(*count, 6, "dig count should be 6");
-                assert_eq!(*destination, Some(Zone::Battlefield), "kept cards go to battlefield");
+                assert_eq!(
+                    *destination,
+                    Some(Zone::Battlefield),
+                    "kept cards go to battlefield"
+                );
                 assert_eq!(*keep_count, Some(2), "keep up to 2");
                 assert!(*up_to, "should be up_to");
                 assert!(
@@ -4406,10 +4410,17 @@ mod tests {
                     "filter should require creatures, got {:?}",
                     filter,
                 );
-                assert_eq!(*rest_destination, Some(Zone::Library), "rest go to bottom of library");
+                assert_eq!(
+                    *rest_destination,
+                    Some(Zone::Library),
+                    "rest go to bottom of library"
+                );
             }
             other => {
-                panic!("Expected Dig effect, got {:?}", std::mem::discriminant(other));
+                panic!(
+                    "Expected Dig effect, got {:?}",
+                    std::mem::discriminant(other)
+                );
             }
         }
     }
@@ -4445,7 +4456,10 @@ mod tests {
                 assert_eq!(*rest_destination, Some(Zone::Library));
             }
             other => {
-                panic!("Expected Dig effect, got {:?}", std::mem::discriminant(other));
+                panic!(
+                    "Expected Dig effect, got {:?}",
+                    std::mem::discriminant(other)
+                );
             }
         }
     }
