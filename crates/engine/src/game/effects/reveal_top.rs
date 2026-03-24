@@ -36,9 +36,9 @@ pub fn resolve(
         return Ok(());
     }
 
-    // Take the top `count` cards (last elements = top of library)
-    let start = library.len().saturating_sub(count);
-    let revealed_ids = library[start..].to_vec();
+    // Take the top `count` cards (library[0] = top, per zones.rs convention)
+    let count = count.min(library.len());
+    let revealed_ids = library[..count].to_vec();
 
     // CR 701.20b: Revealing a card doesn't cause it to leave the zone it's in.
     for &card_id in &revealed_ids {
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn reveal_top_multiple_cards() {
         let mut state = GameState::new_two_player(42);
-        let _card1 = create_object(
+        let card1 = create_object(
             &mut state,
             CardId(1),
             PlayerId(1),
@@ -164,7 +164,7 @@ mod tests {
             "Island".to_string(),
             Zone::Library,
         );
-        let card3 = create_object(
+        let _card3 = create_object(
             &mut state,
             CardId(3),
             PlayerId(1),
@@ -172,13 +172,14 @@ mod tests {
             Zone::Library,
         );
 
+        // library = [card1(top), card2, card3(bottom)]
         let ability = make_reveal_top_ability(PlayerId(0), PlayerId(1), 2);
         let mut events = Vec::new();
         resolve(&mut state, &ability, &mut events).unwrap();
 
-        // Top 2 cards (last two in library) should be revealed
+        // Top 2 cards (library[0..2]) should be revealed
+        assert!(state.revealed_cards.contains(&card1));
         assert!(state.revealed_cards.contains(&card2));
-        assert!(state.revealed_cards.contains(&card3));
         assert_eq!(state.revealed_cards.len(), 2);
     }
 }

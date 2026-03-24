@@ -22,17 +22,23 @@ pub fn filter_state_for_player(state: &GameState, viewer: PlayerId) -> GameState
 
     // CR 701.62a: During ManifestDreadChoice, the manifesting player can see the revealed
     // library cards. Opponents cannot see any library card identities.
-    let manifest_dread_visible: std::collections::HashSet<ObjectId> =
-        if let WaitingFor::ManifestDreadChoice { player, ref cards } = filtered.waiting_for {
-            if player == viewer {
-                cards.iter().copied().collect()
-            } else {
-                // Opponent: hide the card IDs in the WaitingFor itself
-                std::collections::HashSet::new()
-            }
+    let (manifest_dread_visible, manifest_dread_cards): (
+        std::collections::HashSet<ObjectId>,
+        std::collections::HashSet<ObjectId>,
+    ) = if let WaitingFor::ManifestDreadChoice { player, ref cards } = filtered.waiting_for {
+        let all_cards: std::collections::HashSet<ObjectId> = cards.iter().copied().collect();
+        if player == viewer {
+            (all_cards.clone(), all_cards)
         } else {
-            std::collections::HashSet::new()
-        };
+            // Opponent: hide the card IDs in the WaitingFor itself
+            (std::collections::HashSet::new(), all_cards)
+        }
+    } else {
+        (
+            std::collections::HashSet::new(),
+            std::collections::HashSet::new(),
+        )
+    };
 
     // Hide library contents for ALL players (no one should see card details in libraries)
     let all_library_ids: Vec<ObjectId> = filtered
@@ -41,10 +47,13 @@ pub fn filter_state_for_player(state: &GameState, viewer: PlayerId) -> GameState
         .flat_map(|p| p.library.iter().copied())
         .collect();
     for obj_id in all_library_ids {
-        // CR 701.62a: Don't hide cards that are revealed to the manifesting player
-        // CR 701.20b: Don't hide cards currently revealed (e.g. Goblin Guide trigger)
-        if !manifest_dread_visible.contains(&obj_id) && !state.revealed_cards.contains(&obj_id)
-        {
+        // CR 701.62a: Don't hide cards visible to the manifesting player
+        // CR 701.20b: Don't hide cards currently revealed (e.g. Goblin Guide trigger),
+        // but ManifestDread cards use their own visibility path — not generic revealed_cards
+        let visible = manifest_dread_visible.contains(&obj_id)
+            || (state.revealed_cards.contains(&obj_id)
+                && !manifest_dread_cards.contains(&obj_id));
+        if !visible {
             hide_card(&mut filtered, obj_id);
         }
     }

@@ -168,16 +168,16 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
 }
 
 fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResult, EngineError> {
-    // Clear revealed_cards for cards that are still in a library.
-    // Library reveals (e.g. Goblin Guide) are momentary — the card is shown for one
-    // state update, then hidden again on the next action. Hand reveals persist through
-    // interactive WaitingFor states (e.g. RevealChoice) and are cleaned up there.
-    state.revealed_cards.retain(|&id| {
-        !state
-            .players
-            .iter()
-            .any(|p| p.library.contains(&id))
-    });
+    // Clear stale revealed_cards from the previous action.
+    // RevealTop reveals (e.g. Goblin Guide) are momentary — shown for one state update.
+    // RevealHand reveals (e.g. Thoughtseize) persist through the RevealChoice interaction.
+    // ManifestDread reveals persist through ManifestDreadChoice (cards come from WaitingFor).
+    if !matches!(
+        state.waiting_for,
+        WaitingFor::RevealChoice { .. } | WaitingFor::ManifestDreadChoice { .. }
+    ) {
+        state.revealed_cards.clear();
+    }
 
     let mut events = Vec::new();
     let mut triggers_processed_inline = false;
@@ -3144,29 +3144,42 @@ fn handle_play_land(
         ));
     }
 
-    // Validate that object_id exists in hand and matches card_id
-    let valid = state
+    // Validate that object_id exists in hand or graveyard (with permission) and matches card_id
+    let player = state.priority_player;
+    let player_data = state
         .players
         .iter()
-        .find(|p| p.id == state.priority_player)
-        .expect("priority player exists")
-        .hand
-        .contains(&object_id);
-    if !valid
-        || !state
-            .objects
-            .get(&object_id)
-            .is_some_and(|obj| obj.card_id == card_id)
-    {
+        .find(|p| p.id == player)
+        .expect("priority player exists");
+    let in_hand = player_data.hand.contains(&object_id);
+    // CR 305.1 + CR 604.2: Check graveyard for play-from-graveyard permission
+    let in_graveyard_with_permission = player_data.graveyard.contains(&object_id)
+        && super::casting::graveyard_lands_playable_by_permission(state, player)
+            .iter()
+            .any(|(obj_id, _)| *obj_id == object_id);
+
+    if !in_hand && !in_graveyard_with_permission {
         return Err(EngineError::InvalidAction(
-            "Card not found in hand".to_string(),
+            "Card not found in hand or graveyard with play permission".to_string(),
         ));
     }
+    if !state
+        .objects
+        .get(&object_id)
+        .is_some_and(|obj| obj.card_id == card_id)
+    {
+        return Err(EngineError::InvalidAction(
+            "Card not found or card_id mismatch".to_string(),
+        ));
+    }
+
+    // Determine origin zone for the zone change event
+    let origin_zone = if in_hand { Zone::Hand } else { Zone::Graveyard };
 
     // Route through the replacement pipeline (handles ETB replacements like shock lands)
     let proposed = crate::types::proposed_event::ProposedEvent::zone_change(
         object_id,
-        Zone::Hand,
+        origin_zone,
         Zone::Battlefield,
         None,
     );
