@@ -7,6 +7,7 @@ import { ScreenChrome } from "../components/chrome/ScreenChrome";
 import { HostSetup } from "../components/lobby/HostSetup";
 import { LobbyView } from "../components/lobby/LobbyView";
 import { WaitingScreen } from "../components/lobby/WaitingScreen";
+import { ConnectionToast } from "../components/multiplayer/ConnectionToast";
 import { MenuParticles } from "../components/menu/MenuParticles";
 import { MenuShell } from "../components/menu/MenuShell";
 import { MyDecks } from "../components/menu/MyDecks";
@@ -33,6 +34,7 @@ export function MultiplayerPage() {
   const startHosting = useMultiplayerStore((s) => s.startHosting);
   const cancelHosting = useMultiplayerStore((s) => s.cancelHosting);
   const playerSlots = useMultiplayerStore((s) => s.playerSlots);
+  const showToast = useMultiplayerStore((s) => s.showToast);
 
   // If returning to this page while hosting, show waiting view immediately
   const [view, setView] = useState<MultiplayerView>(
@@ -81,11 +83,17 @@ export function MultiplayerPage() {
 
   // Execute pending action after deck is selected
   const handleDeckConfirm = useCallback(() => {
-    if (!pendingAction || !activeDeckName) return;
+    if (!pendingAction || !activeDeckName) {
+      showToast("Select a deck before continuing.");
+      return;
+    }
 
     if (pendingAction.type === "host") {
       const deck = expandDeck();
-      if (!deck) return;
+      if (!deck) {
+        showToast("Could not load deck. Try re-importing it.");
+        return;
+      }
 
       if (pendingAction.connectionMode === "p2p") {
         const gameId = crypto.randomUUID();
@@ -124,7 +132,7 @@ export function MultiplayerPage() {
     }
 
     setPendingAction(null);
-  }, [pendingAction, activeDeckName, expandDeck, startHosting, navigate]);
+  }, [pendingAction, activeDeckName, expandDeck, startHosting, navigate, showToast]);
 
   // Host setup complete → save settings, go to deck-select
   const handleHostSetupComplete = useCallback(
@@ -243,6 +251,7 @@ export function MultiplayerPage() {
           />
         )}
       </MenuShell>
+      <ConnectionToast />
     </div>
   );
 }
