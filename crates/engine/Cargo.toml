@@ -9,10 +9,8 @@ cli = ["tracing-subscriber"]
 
 [dependencies]
 serde = { workspace = true }
-rpds = { workspace = true }
 tracing = { workspace = true }
 thiserror = "2"
-walkdir = "2"
 rand = "0.9"
 rand_chacha = "0.9"
 indexmap = { version = "2", features = ["serde"] }
