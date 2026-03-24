@@ -12,9 +12,10 @@ use engine::types::log::GameLogEntry;
 use engine::types::match_config::MatchConfig;
 use engine::types::player::PlayerId;
 use phase_ai::config::{AiConfig, AiDifficulty, Platform};
-use rand::Rng;
+use rand::{Rng, SeedableRng};
 
 use crate::filter::filter_state_for_player;
+use crate::persist::{PersistedLobbyMeta, PersistedSession};
 use crate::protocol::PlayerSlotInfo;
 use crate::reconnect::ReconnectManager;
 
@@ -128,6 +129,79 @@ impl GameSession {
                 (filtered, r.events, legal, r.log_entries)
             })
             .collect()
+    }
+
+    /// Create a serializable snapshot of this session for disk persistence.
+    pub fn to_persisted(&self, lobby_meta: Option<PersistedLobbyMeta>) -> PersistedSession {
+        let ai_difficulties = self
+            .ai_configs
+            .iter()
+            .map(|(pid, config)| (pid.0, config.difficulty))
+            .collect();
+
+        PersistedSession {
+            game_code: self.game_code.clone(),
+            state: self.state.clone(),
+            player_tokens: self.player_tokens.clone(),
+            display_names: self.display_names.clone(),
+            timer_seconds: self.timer_seconds,
+            player_count: self.player_count,
+            ai_seats: self.ai_seats.iter().map(|pid| pid.0).collect(),
+            ai_difficulties,
+            game_started: self.is_full(),
+            lobby_meta,
+        }
+    }
+
+    /// Reconstruct a GameSession from a persisted snapshot.
+    ///
+    /// Restores fields that are `#[serde(skip)]` in GameState:
+    /// - `all_card_names` from the provided card name list
+    /// - `log_player_names` from the persisted display names
+    /// - `rng` re-seeded with fresh randomness
+    pub fn from_persisted(ps: PersistedSession, card_names: &[String]) -> Self {
+        let mut state = ps.state;
+
+        // Restore #[serde(skip)] fields
+        state.all_card_names = card_names.to_vec();
+        state.log_player_names = ps.display_names.clone();
+
+        // Re-seed RNG with fresh randomness (stale rng_seed would produce
+        // deterministic sequences identical across all restored games)
+        let fresh_seed: u64 = rand::rng().random();
+        state.rng_seed = fresh_seed;
+        state.rng = rand_chacha::ChaCha20Rng::seed_from_u64(fresh_seed);
+
+        let ai_seats: HashSet<PlayerId> = ps.ai_seats.iter().map(|&s| PlayerId(s)).collect();
+
+        let ai_configs: HashMap<PlayerId, AiConfig> = ps
+            .ai_difficulties
+            .iter()
+            .map(|(&seat, &difficulty)| {
+                let pid = PlayerId(seat);
+                let config = phase_ai::config::create_config_for_players(
+                    difficulty,
+                    Platform::Native,
+                    ps.player_count,
+                );
+                (pid, config)
+            })
+            .collect();
+
+        let pc = ps.player_count as usize;
+
+        GameSession {
+            game_code: ps.game_code,
+            state,
+            player_tokens: ps.player_tokens,
+            connected: vec![false; pc],
+            decks: vec![None; pc],
+            display_names: ps.display_names,
+            timer_seconds: ps.timer_seconds,
+            player_count: ps.player_count,
+            ai_seats,
+            ai_configs,
+        }
     }
 }
 
@@ -491,6 +565,18 @@ impl SessionManager {
     /// Look up game_code by player_token.
     pub fn game_for_token(&self, token: &str) -> Option<&str> {
         self.token_to_game.get(token).map(|s| s.as_str())
+    }
+
+    /// Restore a pre-built session (e.g., from disk persistence).
+    /// Registers all player tokens in the token-to-game index.
+    pub fn restore_session(&mut self, session: GameSession) {
+        let game_code = session.game_code.clone();
+        for token in &session.player_tokens {
+            if !token.is_empty() {
+                self.token_to_game.insert(token.clone(), game_code.clone());
+            }
+        }
+        self.sessions.insert(game_code, session);
     }
 }
 

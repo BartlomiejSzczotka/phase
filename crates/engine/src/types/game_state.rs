@@ -891,9 +891,9 @@ pub struct GameState {
     pub triggers_fired_this_turn: HashSet<(ObjectId, usize)>,
     #[serde(default)]
     pub triggers_fired_this_game: HashSet<(ObjectId, usize)>,
-    #[serde(default, skip_serializing)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub activated_abilities_this_turn: HashMap<(ObjectId, usize), u32>,
-    #[serde(default, skip_serializing)]
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub activated_abilities_this_game: HashMap<(ObjectId, usize), u32>,
     /// CR 601.2a: Tracks which graveyard-cast permission sources have been
     /// used this turn. Keyed by the granting permanent's ObjectId.

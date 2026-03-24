@@ -1,3 +1,5 @@
+mod persistence;
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -28,6 +30,7 @@ type SharedDb = Arc<CardDatabase>;
 type SharedLobby = Arc<Mutex<LobbyManager>>;
 type SharedLobbySubscribers = Arc<Mutex<Vec<mpsc::UnboundedSender<ServerMessage>>>>;
 type SharedPlayerCount = Arc<AtomicU32>;
+type SharedGameDb = Arc<persistence::GameDb>;
 
 /// phase-server: multiplayer game server for phase.rs
 #[derive(Parser)]
@@ -79,17 +82,88 @@ async fn main() {
     info!(cards = card_db.card_count(), "card database loaded");
     let db: SharedDb = Arc::new(card_db);
 
+    // Initialize SQLite persistence
+    let game_db_path = data_path.join("games.db");
+    let game_db: SharedGameDb =
+        Arc::new(persistence::GameDb::open(&game_db_path).expect("Failed to open game database"));
+    // Clean up stale sessions (>24 hours old)
+    if let Ok(deleted) = game_db.delete_stale(86400) {
+        if deleted > 0 {
+            info!(count = deleted, "cleaned up stale persisted sessions");
+        }
+    }
+
     let state: SharedState = Arc::new(Mutex::new(SessionManager::new()));
     let connections: SharedConnections = Arc::new(Mutex::new(HashMap::new()));
     let lobby: SharedLobby = Arc::new(Mutex::new(LobbyManager::new()));
     let lobby_subscribers: SharedLobbySubscribers = Arc::new(Mutex::new(Vec::new()));
     let player_count: SharedPlayerCount = Arc::new(AtomicU32::new(0));
 
+    // Restore persisted game sessions from disk
+    {
+        let card_names = db.card_names();
+        match game_db.load_all() {
+            Ok(persisted_games) => {
+                let mut mgr = state.lock().await;
+                let mut lob = lobby.lock().await;
+                let mut restored = 0u32;
+
+                for (game_code, json) in &persisted_games {
+                    match serde_json::from_str::<server_core::PersistedSession>(json) {
+                        Ok(ps) => {
+                            let lobby_meta = ps.lobby_meta.clone();
+                            let is_started = ps.game_started;
+                            let session =
+                                server_core::session::GameSession::from_persisted(ps, &card_names);
+
+                            // Register all non-AI human players as disconnected
+                            // to start the 120s grace period from now
+                            for (i, token) in session.player_tokens.iter().enumerate() {
+                                let pid = PlayerId(i as u8);
+                                if !token.is_empty() && !session.ai_seats.contains(&pid) {
+                                    mgr.reconnect.record_disconnect(&session.game_code, pid);
+                                }
+                            }
+
+                            // Restore lobby entry if game hasn't started
+                            if let Some(meta) = lobby_meta {
+                                if !is_started {
+                                    lob.register_game(
+                                        game_code,
+                                        meta.host_name,
+                                        meta.public,
+                                        meta.password,
+                                        meta.timer_seconds,
+                                    );
+                                }
+                            }
+
+                            mgr.restore_session(session);
+                            restored += 1;
+                        }
+                        Err(e) => {
+                            warn!(game = %game_code, error = %e, "failed to restore session, deleting");
+                            let _ = game_db.delete_session(game_code);
+                        }
+                    }
+                }
+
+                if restored > 0 {
+                    info!(count = restored, "restored active games from disk");
+                }
+            }
+            Err(e) => {
+                error!(error = %e, "failed to load persisted sessions");
+            }
+        }
+    }
+
     // Spawn background task for grace period and lobby expiry
     let bg_state = state.clone();
     let bg_connections = connections.clone();
     let bg_lobby = lobby.clone();
     let bg_lobby_subs = lobby_subscribers.clone();
+    let bg_game_db = game_db.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(10));
         loop {
@@ -112,6 +186,10 @@ async fn main() {
                         let _ = sender.send(msg.clone());
                     }
                 }
+                // Clean up persisted session
+                if let Err(e) = bg_game_db.delete_session(game_code) {
+                    error!(game = %game_code, error = %e, "failed to delete persisted session");
+                }
             }
 
             // Check lobby game expiry (5 minute timeout for waiting games)
@@ -124,6 +202,9 @@ async fn main() {
                 let mut mgr = bg_state.lock().await;
                 for game_code in &expired_lobby {
                     mgr.sessions.remove(game_code);
+                    if let Err(e) = bg_game_db.delete_session(game_code) {
+                        error!(game = %game_code, error = %e, "failed to delete expired lobby session");
+                    }
                 }
                 drop(mgr);
 
@@ -157,6 +238,7 @@ async fn main() {
             lobby,
             lobby_subscribers,
             player_count,
+            game_db,
         ));
 
     let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{}", cli.port))
@@ -198,11 +280,14 @@ type AppState = (
     SharedLobby,
     SharedLobbySubscribers,
     SharedPlayerCount,
+    SharedGameDb,
 );
 
 async fn ws_handler(
     ws: WebSocketUpgrade,
-    State((state, connections, db, lobby, lobby_subscribers, player_count)): State<AppState>,
+    State((state, connections, db, lobby, lobby_subscribers, player_count, game_db)): State<
+        AppState,
+    >,
 ) -> impl IntoResponse {
     ws.on_upgrade(move |socket| {
         handle_socket(
@@ -213,10 +298,12 @@ async fn ws_handler(
             lobby,
             lobby_subscribers,
             player_count,
+            game_db,
         )
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn handle_socket(
     mut socket: WebSocket,
     state: SharedState,
@@ -225,6 +312,7 @@ async fn handle_socket(
     lobby: SharedLobby,
     lobby_subscribers: SharedLobbySubscribers,
     player_count: SharedPlayerCount,
+    game_db: SharedGameDb,
 ) {
     let (tx, mut rx) = mpsc::unbounded_channel::<ServerMessage>();
 
@@ -281,6 +369,7 @@ async fn handle_socket(
                             &lobby,
                             &lobby_subscribers,
                             &player_count,
+                            &game_db,
                             &tx,
                             &mut identity,
                         )
@@ -367,6 +456,40 @@ async fn broadcast_to_lobby_subscribers(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Fire-and-forget persistence of a game session to SQLite.
+fn persist_session_async(
+    game_db: &SharedGameDb,
+    game_code: &str,
+    session: &server_core::session::GameSession,
+    lobby_meta: Option<server_core::PersistedLobbyMeta>,
+) {
+    let db = game_db.clone();
+    let persisted = session.to_persisted(lobby_meta);
+    let code = game_code.to_string();
+    tokio::task::spawn_blocking(move || match serde_json::to_string(&persisted) {
+        Ok(json) => {
+            if let Err(e) = db.save_session(&code, &json) {
+                error!(game = %code, error = %e, "failed to persist game session");
+            }
+        }
+        Err(e) => {
+            error!(game = %code, error = %e, "failed to serialize game session");
+        }
+    });
+}
+
+/// Fire-and-forget deletion of a persisted game session.
+fn delete_session_async(game_db: &SharedGameDb, game_code: &str) {
+    let db = game_db.clone();
+    let code = game_code.to_string();
+    tokio::task::spawn_blocking(move || {
+        if let Err(e) = db.delete_session(&code) {
+            error!(game = %code, error = %e, "failed to delete persisted session");
+        }
+    });
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn handle_client_message(
     client_msg: ClientMessage,
     socket: &mut WebSocket,
@@ -376,6 +499,7 @@ async fn handle_client_message(
     lobby: &SharedLobby,
     lobby_subscribers: &SharedLobbySubscribers,
     player_count: &SharedPlayerCount,
+    game_db: &SharedGameDb,
     tx: &mpsc::UnboundedSender<ServerMessage>,
     identity: &mut SocketIdentity,
 ) {
@@ -544,6 +668,18 @@ async fn handle_client_message(
                         let session = mgr.sessions.get(&game_code).unwrap();
                         let actor = server_core::acting_player(&session.state.waiting_for);
                         let eliminated = session.state.eliminated_players.clone();
+                        let is_game_over = matches!(
+                            session.state.waiting_for,
+                            engine::types::game_state::WaitingFor::GameOver { .. }
+                        );
+
+                        // Persist or delete based on game-over state
+                        if is_game_over {
+                            delete_session_async(game_db, &game_code);
+                        } else {
+                            persist_session_async(game_db, &game_code, session, None);
+                        }
+
                         Ok((human_result, ai_results, actor, eliminated))
                     }
                     Err(e) => Err(e),
@@ -933,6 +1069,10 @@ async fn handle_client_message(
                     };
 
                     let ai_results = session.run_ai_and_filter();
+
+                    // Persist the AI game session
+                    persist_session_async(game_db, &game_code, session, None);
+
                     (game_code, player_token, game_started_msg, ai_results)
                 }; // lock dropped
 
@@ -1012,7 +1152,24 @@ async fn handle_client_message(
                     .insert(PlayerId(0), tx.clone());
 
                 let mut lob = lobby.lock().await;
-                lob.register_game(&game_code, display_name, public, password, timer_seconds);
+                lob.register_game(
+                    &game_code,
+                    display_name.clone(),
+                    public,
+                    password.clone(),
+                    timer_seconds,
+                );
+
+                // Persist to SQLite
+                if let Some(session) = mgr.sessions.get(&game_code) {
+                    let lobby_meta = Some(server_core::PersistedLobbyMeta {
+                        host_name: display_name,
+                        public,
+                        password,
+                        timer_seconds,
+                    });
+                    persist_session_async(game_db, &game_code, session, lobby_meta);
+                }
 
                 let msg = ServerMessage::GameCreated {
                     game_code: game_code.clone(),
@@ -1092,6 +1249,9 @@ async fn handle_client_message(
                     let session = mgr.sessions.get(&game_code).unwrap();
                     let joiner = session.player_for_token(&player_token).unwrap();
                     info!(game = %game_code, player = ?joiner, "player joined via lobby");
+
+                    // Persist updated session (now has the new player)
+                    persist_session_async(game_db, &game_code, session, None);
                     identity.game_code = Some(game_code.clone());
                     identity.player_id = Some(joiner);
                     identity.player_token = Some(player_token.clone());
@@ -1263,6 +1423,7 @@ async fn handle_client_message(
 
             let mut mgr = state.lock().await;
             mgr.sessions.remove(&game_code);
+            delete_session_async(game_db, &game_code);
         }
 
         ClientMessage::SpectatorJoin { game_code } => {

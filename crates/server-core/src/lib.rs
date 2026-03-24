@@ -1,6 +1,7 @@
 pub mod deck_resolve;
 pub mod filter;
 pub mod lobby;
+pub mod persist;
 pub mod protocol;
 pub mod reconnect;
 pub mod session;
@@ -9,6 +10,7 @@ pub mod starter_decks;
 pub use deck_resolve::resolve_deck;
 pub use filter::filter_state_for_player;
 pub use lobby::LobbyManager;
+pub use persist::{PersistedLobbyMeta, PersistedSession};
 pub use protocol::{
     AiSeatRequest, ClientMessage, DeckData, LobbyGame, PlayerSlotInfo, ServerMessage,
 };
