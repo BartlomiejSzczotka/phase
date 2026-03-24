@@ -287,6 +287,7 @@ mod tests {
             player_scope: None,
             optional_targeting: false,
             optional: false,
+            optional_for: None,
             description: None,
             repeat_for: None,
             forward_result: false,

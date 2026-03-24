@@ -37,6 +37,7 @@ pub fn build_resolved_from_def(
     }
     resolved.optional_targeting = def.optional_targeting;
     resolved.optional = def.optional;
+    resolved.optional_for = def.optional_for;
     resolved.repeat_for = def.repeat_for.clone();
     resolved.description = def.description.clone();
     resolved.forward_result = def.forward_result;

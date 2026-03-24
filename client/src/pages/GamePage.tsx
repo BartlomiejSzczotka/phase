@@ -805,8 +805,8 @@ function GamePageContent({
           <OptionalCostModal />
         )}
 
-      {/* Optional effect choice ("You may X") */}
-      {waitingFor?.type === "OptionalEffectChoice" &&
+      {/* Optional effect choice ("You may X") / Opponent may choice */}
+      {(waitingFor?.type === "OptionalEffectChoice" || waitingFor?.type === "OpponentMayChoice") &&
         waitingFor.data.player === playerId && (
           <OptionalEffectModal />
         )}
@@ -1585,7 +1585,7 @@ function OptionalEffectModal() {
   const waitingFor = useGameStore((s) => s.gameState?.waiting_for);
   const objects = useGameStore((s) => s.gameState?.objects);
 
-  if (waitingFor?.type !== "OptionalEffectChoice") return null;
+  if (waitingFor?.type !== "OptionalEffectChoice" && waitingFor?.type !== "OpponentMayChoice") return null;
 
   const sourceObj = objects?.[waitingFor.data.source_id];
   const sourceName = sourceObj?.name ?? "Effect";

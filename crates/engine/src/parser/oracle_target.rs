@@ -606,6 +606,17 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
         pos += remaining_offset + "of the chosen type".len();
     }
 
+    // CR 608.2d: "of their choice" / "of his or her choice" — informational qualifier
+    // on opponent-choice effects. The actual choice is handled by the WaitingFor state machine.
+    let remaining_choice = lower[pos..].trim_start();
+    let choice_offset = lower[pos..].len() - remaining_choice.len();
+    for suffix in &["of their choice", "of his or her choice"] {
+        if remaining_choice.starts_with(suffix) {
+            pos += choice_offset + suffix.len();
+            break;
+        }
+    }
+
     let filter = TargetFilter::Typed(TypedFilter {
         type_filters: [
             card_type.map(|ct| vec![ct]).unwrap_or_default(),
@@ -841,6 +852,10 @@ fn parse_controller_suffix(text: &str) -> Option<(ControllerRef, usize)> {
             ControllerRef::You,
             leading_ws + "that player controls".len(),
         ))
+    } else if trimmed.starts_with("they control") {
+        // CR 608.2d: "they control" → ControllerRef::You, resolved against
+        // accepting_player during "any opponent may" resolution.
+        Some((ControllerRef::You, leading_ws + "they control".len()))
     } else {
         None
     }

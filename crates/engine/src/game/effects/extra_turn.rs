@@ -64,6 +64,7 @@ mod tests {
             context: SpellContext::default(),
             optional_targeting: false,
             optional: false,
+            optional_for: None,
             description: None,
             player_scope: None,
             repeat_for: None,

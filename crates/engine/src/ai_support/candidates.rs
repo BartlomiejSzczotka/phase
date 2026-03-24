@@ -446,7 +446,7 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
                 Some(*player),
             ),
         ],
-        WaitingFor::OptionalEffectChoice { .. } => {
+        WaitingFor::OptionalEffectChoice { .. } | WaitingFor::OpponentMayChoice { .. } => {
             vec![
                 candidate(
                     GameAction::DecideOptionalEffect { accept: true },

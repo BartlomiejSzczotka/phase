@@ -1,5 +1,5 @@
 mod animation;
-mod counter;
+pub(crate) mod counter;
 pub(crate) mod imperative;
 pub(crate) mod mana;
 mod sequence;
@@ -9,6 +9,7 @@ mod types;
 
 use std::str::FromStr;
 
+use super::oracle_quantity::parse_for_each_clause;
 use super::oracle_target::{parse_event_context_ref, parse_mana_value_suffix, parse_target};
 use super::oracle_util::{
     contains_possessive, has_unconsumed_conditional, parse_mana_symbols, parse_number, TextPair,
@@ -228,6 +229,41 @@ fn try_parse_damage_prevention_disabled(tp: TextPair) -> Option<ParsedEffectClau
     })
 }
 
+/// CR 608.2d: Parse "have it [verb]" / "have you [verb]" causative constructions.
+/// Used by "any opponent may" effects where the opponent causes the source or controller
+/// to perform an action (e.g., "have it deal 4 damage to them").
+fn try_parse_have_causative(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
+    // Pattern A: "have it deal N damage to them" / "have ~ deal N damage to them"
+    let after_have = tp
+        .strip_prefix("have it ")
+        .or_else(|| tp.strip_prefix("have ~ "));
+    if let Some(rest) = after_have {
+        // "deal N damage to them" / "deal N damage to that player"
+        if let Some(after_deal) = rest.strip_prefix("deal ") {
+            if let Some((amount, _)) = super::oracle_util::parse_number(after_deal.lower) {
+                return Some(parsed_clause(Effect::DealDamage {
+                    amount: QuantityExpr::Fixed {
+                        value: amount as i32,
+                    },
+                    target: TargetFilter::Player,
+                    damage_source: None,
+                }));
+            }
+        }
+        // Fallback: parse remaining as a generic imperative effect
+        let clause = parse_effect_clause(rest.original);
+        return Some(clause);
+    }
+
+    // Pattern B: "have you [verb]" — controller performs an action directed by opponent
+    if let Some(rest) = tp.strip_prefix("have you ") {
+        let clause = parse_effect_clause(rest.original);
+        return Some(clause);
+    }
+
+    None
+}
+
 #[tracing::instrument(level = "debug")]
 fn parse_effect_clause(text: &str) -> ParsedEffectClause {
     let text = strip_leading_sequence_connector(text)
@@ -243,6 +279,12 @@ fn parse_effect_clause(text: &str) -> ParsedEffectClause {
     // Single lowercase pass for all case-insensitive matching within this clause.
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
+
+    // CR 608.2d: "have it [verb]" / "have you [verb]" — causative construction
+    // from "any opponent may" effects (e.g., "have it deal 4 damage to them").
+    if let Some(clause) = try_parse_have_causative(tp) {
+        return clause;
+    }
 
     // CR 122.1: "you get {E}{E}" — gain energy counters.
     if tp.contains("{e}") && (tp.starts_with("you get ") || tp.starts_with("get ")) {
@@ -554,7 +596,7 @@ fn try_parse_still_a_type(tp: TextPair) -> Option<ParsedEffectClause> {
 fn try_parse_equal_to_quantity_effect(tp: TextPair) -> Option<ParsedEffectClause> {
     if let Some(rest) = tp.strip_prefix("mill cards equal to ") {
         let rest = rest.lower.trim().trim_end_matches('.');
-        let qty = super::oracle_static::parse_quantity_ref(rest)?;
+        let qty = super::oracle_quantity::parse_quantity_ref(rest)?;
         return Some(parsed_clause(Effect::Mill {
             count: QuantityExpr::Ref { qty },
             target: TargetFilter::Any,
@@ -562,7 +604,7 @@ fn try_parse_equal_to_quantity_effect(tp: TextPair) -> Option<ParsedEffectClause
     }
     if let Some(rest) = tp.strip_prefix("draw cards equal to ") {
         let rest = rest.lower.trim().trim_end_matches('.');
-        let qty = super::oracle_static::parse_quantity_ref(rest)?;
+        let qty = super::oracle_quantity::parse_quantity_ref(rest)?;
         return Some(parsed_clause(Effect::Draw {
             count: QuantityExpr::Ref { qty },
         }));
@@ -666,13 +708,9 @@ fn try_parse_play_from_exile(tp: TextPair) -> Option<ParsedEffectClause> {
         }
     }
 
-    // Default duration is UntilEndOfTurn for impulse draw
-    let duration =
-        if tp.contains("until the end of your next turn") || tp.contains("until your next turn") {
-            Duration::UntilYourNextTurn
-        } else {
-            Duration::UntilEndOfTurn
-        };
+    // Duration: extract from trailing text, defaulting to UntilEndOfTurn for impulse draw
+    let (_, dur) = strip_trailing_duration(tp.original);
+    let duration = dur.unwrap_or(Duration::UntilEndOfTurn);
 
     Some(parsed_clause(Effect::GrantCastingPermission {
         permission: CastingPermission::PlayFromExile { duration },
@@ -719,55 +757,6 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
         && base_tp.contains("life")
     {
         return Some(parsed_clause(Effect::LoseLife { amount: quantity }));
-    }
-
-    None
-}
-
-/// Parse the clause after "for each" into a QuantityRef.
-pub(crate) fn parse_for_each_clause(clause: &str) -> Option<QuantityRef> {
-    let clause = clause.trim().trim_end_matches('.');
-
-    // "opponent who lost life this turn"
-    if clause.contains("opponent") && clause.contains("lost life") {
-        return Some(QuantityRef::PlayerCount {
-            filter: PlayerFilter::OpponentLostLife,
-        });
-    }
-
-    // "opponent who gained life this turn"
-    if clause.contains("opponent") && clause.contains("gained life") {
-        return Some(QuantityRef::PlayerCount {
-            filter: PlayerFilter::OpponentGainedLife,
-        });
-    }
-
-    // "opponent"
-    if clause == "opponent" || clause == "opponent you have" {
-        return Some(QuantityRef::PlayerCount {
-            filter: PlayerFilter::Opponent,
-        });
-    }
-
-    // "[counter type] counter on ~" / "[counter type] counter on it"
-    if clause.contains("counter on") {
-        let counter_type = clause
-            .split("counter")
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if !counter_type.is_empty() {
-            return Some(QuantityRef::CountersOnSelf {
-                counter_type: counter_type.replace('+', "plus").replace('-', "minus"),
-            });
-        }
-    }
-
-    // "creature you control", "artifact you control", etc.
-    let (filter, _) = parse_target(clause);
-    if !matches!(filter, TargetFilter::Any) {
-        return Some(QuantityRef::ObjectCount { filter });
     }
 
     None
@@ -1829,6 +1818,10 @@ pub fn parse_effect_chain(text: &str, kind: AbilityKind) -> AbilityDefinition {
             Some("otherwise ".len())
         } else if lower_check.starts_with("if not, ") {
             Some("if not, ".len())
+        } else if lower_check.starts_with("if no player does, ") {
+            Some("if no player does, ".len())
+        } else if lower_check.starts_with("if no one does, ") {
+            Some("if no one does, ".len())
         } else {
             None
         };
@@ -1922,7 +1915,7 @@ pub fn parse_effect_chain(text: &str, kind: AbilityKind) -> AbilityDefinition {
         } else {
             condition
         };
-        let (is_optional, text) = strip_optional_effect_prefix(&text);
+        let (is_optional, opponent_may_scope, text) = strip_optional_effect_prefix(&text);
         let (repeat_for, text) = strip_for_each_prefix(&text);
         // CR 609.3: "twice" / "N times" suffix — same mechanism as "for each" prefix.
         let (repeat_count, text) = if repeat_for.is_none() {
@@ -1957,6 +1950,7 @@ pub fn parse_effect_chain(text: &str, kind: AbilityKind) -> AbilityDefinition {
             let mut def = AbilityDefinition::new(kind, delayed_effect);
             if is_optional {
                 def.optional = true;
+                def.optional_for = opponent_may_scope;
             }
             if let Some(ref condition) = condition {
                 def = def.condition(condition.clone());
@@ -1982,6 +1976,7 @@ pub fn parse_effect_chain(text: &str, kind: AbilityKind) -> AbilityDefinition {
         let mut def = AbilityDefinition::new(kind, clause.effect);
         if is_optional {
             def.optional = true;
+            def.optional_for = opponent_may_scope;
         }
         if let Some(qty) = repeat_for {
             def.repeat_for = Some(qty);
@@ -2223,6 +2218,61 @@ fn parse_search_library_details(lower: &str) -> SearchLibraryDetails {
     }
 }
 
+// --- Seek parser (Alchemy digital-only) ---
+
+/// Parse "seek [count] [filter] card(s) [and put onto battlefield [tapped]]".
+/// Seek grammar is simpler than search: no "your library", no "for", no shuffle.
+fn parse_seek_details(lower: &str) -> types::SeekDetails {
+    let after_seek = lower.strip_prefix("seek ").unwrap_or(lower);
+
+    // Extract destination clause before filter parsing, so it doesn't pollute the filter.
+    let (filter_text, destination, enter_tapped) = {
+        let put_idx = after_seek
+            .find(" and put")
+            .or_else(|| after_seek.find(", put"));
+        if let Some(idx) = put_idx {
+            let dest_clause = &after_seek[idx..];
+            let dest = parse_search_destination(dest_clause);
+            let tapped = dest_clause.contains("battlefield tapped");
+            (&after_seek[..idx], dest, tapped)
+        } else {
+            (after_seek, Zone::Hand, false)
+        }
+    };
+
+    // Extract count: "two nonland cards" → (2, "nonland cards")
+    let (count, remaining) = if let Some((n, rest)) = parse_number(filter_text) {
+        (QuantityExpr::Fixed { value: n as i32 }, rest.trim_start())
+    } else if let Some(rest) = filter_text.strip_prefix("x ") {
+        (
+            QuantityExpr::Ref {
+                qty: QuantityRef::Variable {
+                    name: "X".to_string(),
+                },
+            },
+            rest.trim_start(),
+        )
+    } else {
+        (QuantityExpr::Fixed { value: 1 }, filter_text)
+    };
+
+    // Strip leading article "a "/"an "
+    let remaining = remaining
+        .strip_prefix("a ")
+        .or_else(|| remaining.strip_prefix("an "))
+        .unwrap_or(remaining);
+
+    // Reuse the existing search filter parser
+    let filter = parse_search_filter(remaining);
+
+    types::SeekDetails {
+        filter,
+        count,
+        destination,
+        enter_tapped,
+    }
+}
+
 /// Parse the card type filter from search text like "basic land card, ..."
 /// or "creature card with ..." into a TargetFilter.
 fn parse_search_filter(text: &str) -> TargetFilter {
@@ -2364,6 +2414,27 @@ fn parse_search_filter(text: &str) -> TargetFilter {
                 if !properties.is_empty() {
                     return TargetFilter::Typed(TypedFilter::default().properties(properties));
                 }
+            }
+            // Generic subtype fallback: treat unrecognized words as subtypes
+            // (e.g., "elf", "goblin", "zombie", "dragon", "angel", "vampire").
+            // Only if the word is alphabetic and not "card" or "permanent".
+            if !other.is_empty()
+                && other != "card"
+                && other != "permanent"
+                && other.chars().all(|c| c.is_alphabetic())
+            {
+                let mut properties = vec![];
+                if is_basic {
+                    properties.push(FilterProp::HasSupertype {
+                        value: "Basic".to_string(),
+                    });
+                }
+                parse_search_filter_suffixes(suffix_text, &mut properties);
+                return TargetFilter::Typed(
+                    TypedFilter::default()
+                        .subtype(capitalize(other))
+                        .properties(properties),
+                );
             }
             // Fallback: treat as Any
             return TargetFilter::Any;
@@ -2606,6 +2677,17 @@ fn strip_if_you_do_conditional(text: &str) -> (Option<AbilityCondition>, String)
         let offset = text.len() - rest.len();
         return (
             Some(AbilityCondition::WhenYouDo),
+            text[offset..].to_string(),
+        );
+    }
+    // CR 608.2d: "if a player does" / "if they do" — opponent accepted an optional effect.
+    if let Some(rest) = lower
+        .strip_prefix("if a player does, ")
+        .or_else(|| lower.strip_prefix("if they do, "))
+    {
+        let offset = text.len() - rest.len();
+        return (
+            Some(AbilityCondition::IfAPlayerDoes),
             text[offset..].to_string(),
         );
     }
@@ -2958,13 +3040,28 @@ fn parse_comparison_suffix(text: &str) -> Option<(Comparator, i32)> {
 }
 
 /// Strip "you may " prefix, returning whether the effect is optional.
-fn strip_optional_effect_prefix(text: &str) -> (bool, String) {
+fn strip_optional_effect_prefix(
+    text: &str,
+) -> (
+    bool,
+    Option<crate::types::ability::OpponentMayScope>,
+    String,
+) {
     let lower = text.to_lowercase();
+    // CR 608.2d: "any opponent may" — opponent-choice optional effect.
+    if let Some(rest) = lower.strip_prefix("any opponent may ") {
+        let offset = text.len() - rest.len();
+        return (
+            true,
+            Some(crate::types::ability::OpponentMayScope::AnyOpponent),
+            text[offset..].to_string(),
+        );
+    }
     if let Some(rest) = lower.strip_prefix("you may ") {
         let offset = text.len() - rest.len();
-        (true, text[offset..].to_string())
+        (true, None, text[offset..].to_string())
     } else {
-        (false, text.to_string())
+        (false, None, text.to_string())
     }
 }
 
@@ -3074,6 +3171,10 @@ fn strip_trailing_duration(text: &str) -> (&str, Option<Duration>) {
     for (suffix, duration) in [
         (" this turn", Duration::UntilEndOfTurn),
         (" until end of turn", Duration::UntilEndOfTurn),
+        (
+            " until the end of your next turn",
+            Duration::UntilYourNextTurn,
+        ),
         (" until your next turn", Duration::UntilYourNextTurn),
         (
             " until ~ leaves the battlefield",
@@ -3599,8 +3700,8 @@ fn try_parse_damage(lower: &str, _text: &str) -> Option<Effect> {
                 .trim_end_matches(',')
                 .trim();
             // Parse amount using existing helpers
-            let qty = crate::parser::oracle_util::parse_event_context_quantity(amount_phrase)
-                .or_else(|| crate::parser::oracle_static::parse_cda_quantity(amount_phrase));
+            let qty = crate::parser::oracle_quantity::parse_event_context_quantity(amount_phrase)
+                .or_else(|| crate::parser::oracle_quantity::parse_cda_quantity(amount_phrase));
             if let Some(qty) = qty {
                 let target_phrase = target_phrase.trim();
                 // Route based on target phrase
@@ -3660,7 +3761,7 @@ fn try_parse_damage(lower: &str, _text: &str) -> Option<Effect> {
         let amount_text = &after["damage equal to ".len()..];
         let to_pos = amount_text.to_lowercase().find(" to ")?;
         let qty_text = amount_text[..to_pos].trim();
-        let qty = crate::parser::oracle_util::parse_event_context_quantity(qty_text)
+        let qty = crate::parser::oracle_quantity::parse_event_context_quantity(qty_text)
             .unwrap_or_else(|| QuantityExpr::Ref {
                 qty: QuantityRef::Variable {
                     name: qty_text.to_string(),
@@ -3801,12 +3902,12 @@ fn strip_leading_sequence_connector(text: &str) -> &str {
 fn apply_where_x_expression(value: PtValue, where_x_expression: Option<&str>) -> PtValue {
     match (value, where_x_expression) {
         (PtValue::Variable(alias), Some(expression)) if alias.eq_ignore_ascii_case("X") => {
-            crate::parser::oracle_static::parse_cda_quantity(expression)
+            crate::parser::oracle_quantity::parse_cda_quantity(expression)
                 .map(PtValue::Quantity)
                 .unwrap_or_else(|| PtValue::Variable(expression.to_string()))
         }
         (PtValue::Variable(alias), Some(expression)) if alias.eq_ignore_ascii_case("-X") => {
-            crate::parser::oracle_static::parse_cda_quantity(expression)
+            crate::parser::oracle_quantity::parse_cda_quantity(expression)
                 .map(|inner| {
                     PtValue::Quantity(QuantityExpr::Multiply {
                         factor: -1,
@@ -6150,6 +6251,49 @@ mod tests {
         )));
     }
 
+    // --- Seek parser tests ---
+
+    #[test]
+    fn seek_an_elf_card() {
+        let details = parse_seek_details("seek an elf card");
+        assert_eq!(details.count, QuantityExpr::Fixed { value: 1 });
+        assert_eq!(details.destination, Zone::Hand);
+        assert!(!details.enter_tapped);
+        let TargetFilter::Typed(tf) = &details.filter else {
+            panic!("Expected Typed filter, got {:?}", details.filter);
+        };
+        assert!(tf
+            .type_filters
+            .iter()
+            .any(|t| matches!(t, TypeFilter::Subtype(s) if s == "Elf")));
+    }
+
+    #[test]
+    fn seek_two_nonland_cards() {
+        let details = parse_seek_details("seek two nonland cards");
+        assert_eq!(details.count, QuantityExpr::Fixed { value: 2 });
+        assert_eq!(details.destination, Zone::Hand);
+        let TargetFilter::Typed(tf) = &details.filter else {
+            panic!("Expected Typed filter, got {:?}", details.filter);
+        };
+        assert!(tf.type_filters.iter().any(|t| matches!(
+            t,
+            TypeFilter::Non(inner) if matches!(inner.as_ref(), TypeFilter::Land)
+        )));
+    }
+
+    #[test]
+    fn seek_land_onto_battlefield_tapped() {
+        let details = parse_seek_details("seek a land card and put it onto the battlefield tapped");
+        assert_eq!(details.count, QuantityExpr::Fixed { value: 1 });
+        assert_eq!(details.destination, Zone::Battlefield);
+        assert!(details.enter_tapped);
+        let TargetFilter::Typed(tf) = &details.filter else {
+            panic!("Expected Typed filter, got {:?}", details.filter);
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Land));
+    }
+
     // --- Shuffle-to-library and put-back tests ---
 
     #[test]
@@ -6545,6 +6689,125 @@ mod tests {
             matches!(*sub.effect, Effect::DealDamage { .. }),
             "sub_ability should be DealDamage, got {:?}",
             sub.effect
+        );
+    }
+
+    // ── "Any opponent may" + "if a player does" ──────────────
+
+    #[test]
+    fn any_opponent_may_sacrifice_parses_with_optional_for() {
+        let def = parse_effect_chain(
+            "any opponent may sacrifice a creature of their choice",
+            AbilityKind::Spell,
+        );
+        assert!(def.optional, "should be optional");
+        assert_eq!(
+            def.optional_for,
+            Some(crate::types::ability::OpponentMayScope::AnyOpponent),
+            "should have AnyOpponent scope"
+        );
+        assert!(
+            matches!(*def.effect, Effect::Sacrifice { .. }),
+            "effect should be Sacrifice, got {:?}",
+            def.effect
+        );
+        // Target should be Typed(Creature), not Any
+        if let Effect::Sacrifice { ref target } = *def.effect {
+            match target {
+                TargetFilter::Typed(tf) => {
+                    assert!(
+                        tf.type_filters
+                            .contains(&crate::types::ability::TypeFilter::Creature),
+                        "target should include Creature filter, got {:?}",
+                        tf.type_filters
+                    );
+                }
+                other => panic!("expected Typed filter, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn if_a_player_does_parses_as_condition() {
+        let def = parse_effect_chain(
+            "any opponent may sacrifice a creature of their choice. If a player does, tap ~",
+            AbilityKind::Spell,
+        );
+        assert!(def.optional);
+        let sub = def.sub_ability.as_ref().expect("should have sub_ability");
+        assert_eq!(
+            sub.condition,
+            Some(AbilityCondition::IfAPlayerDoes),
+            "sub condition should be IfAPlayerDoes"
+        );
+        assert!(
+            matches!(*sub.effect, Effect::Tap { .. }),
+            "sub effect should be Tap, got {:?}",
+            sub.effect
+        );
+    }
+
+    #[test]
+    fn if_they_do_parses_as_if_a_player_does() {
+        let def = parse_effect_chain(
+            "any opponent may tap an untapped creature they control. If they do, tap ~",
+            AbilityKind::Spell,
+        );
+        assert!(def.optional);
+        let sub = def.sub_ability.as_ref().expect("should have sub_ability");
+        assert_eq!(sub.condition, Some(AbilityCondition::IfAPlayerDoes));
+    }
+
+    #[test]
+    fn if_no_one_does_attaches_else_ability() {
+        let def = parse_effect_chain(
+            "any opponent may sacrifice a creature. If a player does, tap ~. If no one does, draw a card",
+            AbilityKind::Spell,
+        );
+        let sub = def.sub_ability.as_ref().expect("should have sub_ability");
+        assert_eq!(sub.condition, Some(AbilityCondition::IfAPlayerDoes));
+        let else_ab = sub.else_ability.as_ref().expect("should have else_ability");
+        assert!(
+            matches!(*else_ab.effect, Effect::Draw { .. }),
+            "else_ability should be Draw, got {:?}",
+            else_ab.effect
+        );
+    }
+
+    #[test]
+    fn have_it_deal_damage_parses() {
+        let def = parse_effect_chain(
+            "any opponent may have it deal 4 damage to them",
+            AbilityKind::Spell,
+        );
+        assert!(def.optional);
+        assert_eq!(
+            def.optional_for,
+            Some(crate::types::ability::OpponentMayScope::AnyOpponent)
+        );
+        assert!(
+            matches!(*def.effect, Effect::DealDamage { .. }),
+            "effect should be DealDamage, got {:?}",
+            def.effect
+        );
+    }
+
+    #[test]
+    fn have_you_put_parses_as_change_zone() {
+        let def = parse_effect_chain(
+            "any opponent may have you put that card into your graveyard",
+            AbilityKind::Spell,
+        );
+        assert!(def.optional);
+        assert_eq!(
+            def.optional_for,
+            Some(crate::types::ability::OpponentMayScope::AnyOpponent)
+        );
+        // The inner effect should parse (not be Unimplemented)
+        assert!(
+            !matches!(*def.effect, Effect::Unimplemented { .. }),
+            "effect should not be Unimplemented, got {:?}",
+            def.effect
         );
     }
 }

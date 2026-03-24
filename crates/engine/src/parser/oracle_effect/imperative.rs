@@ -68,7 +68,7 @@ pub(super) fn parse_numeric_imperative_ast(
         // CR 119.1: Handle "life equal to {quantity}" — dynamic amount from game state.
         if let Some(eq_pos) = lower.find("life equal to ") {
             let qty_text = lower[eq_pos + "life equal to ".len()..].trim_end_matches('.');
-            if let Some(qty) = super::super::oracle_util::parse_event_context_quantity(qty_text) {
+            if let Some(qty) = crate::parser::oracle_quantity::parse_event_context_quantity(qty_text) {
                 return Some(NumericImperativeAst::GainLife { amount: qty });
             }
         }
@@ -94,7 +94,7 @@ pub(super) fn parse_numeric_imperative_ast(
         // CR 119.3: Handle "life equal to {quantity}" — dynamic amount from game state.
         if let Some(eq_pos) = lower.find("life equal to ") {
             let qty_text = lower[eq_pos + "life equal to ".len()..].trim_end_matches('.');
-            if let Some(qty) = super::super::oracle_util::parse_event_context_quantity(qty_text) {
+            if let Some(qty) = crate::parser::oracle_quantity::parse_event_context_quantity(qty_text) {
                 return Some(NumericImperativeAst::LoseLife { amount: qty });
             }
         }
@@ -199,17 +199,30 @@ pub(super) fn lower_numeric_imperative_ast(ast: NumericImperativeAst) -> Effect 
     }
 }
 
+/// Strip leading "a " / "an " article from target text before passing to `parse_target`.
+/// Follows the same pattern used by `oracle_cost.rs` for sacrifice cost parsing.
+fn strip_article(text: &str) -> &str {
+    let lower = text.to_lowercase();
+    if lower.starts_with("a ") {
+        &text[2..]
+    } else if lower.starts_with("an ") {
+        &text[3..]
+    } else {
+        text
+    }
+}
+
 pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<TargetedImperativeAst> {
     if lower.starts_with("tap ") {
-        let (target, _) = parse_target(&text[4..]);
+        let (target, _) = parse_target(strip_article(&text[4..]));
         return Some(TargetedImperativeAst::Tap { target });
     }
     if lower.starts_with("untap ") {
-        let (target, _) = parse_target(&text[6..]);
+        let (target, _) = parse_target(strip_article(&text[6..]));
         return Some(TargetedImperativeAst::Untap { target });
     }
     if lower.starts_with("sacrifice ") {
-        let (target, _) = parse_target(&text[10..]);
+        let (target, _) = parse_target(strip_article(&text[10..]));
         return Some(TargetedImperativeAst::Sacrifice { target });
     }
     if lower.starts_with("discard ") {
@@ -319,6 +332,15 @@ pub(super) fn parse_search_and_creation_ast(
     text: &str,
     lower: &str,
 ) -> Option<SearchCreationImperativeAst> {
+    if lower.starts_with("seek ") {
+        let details = super::parse_seek_details(lower);
+        return Some(SearchCreationImperativeAst::Seek {
+            filter: details.filter,
+            count: details.count,
+            destination: details.destination,
+            enter_tapped: details.enter_tapped,
+        });
+    }
     if starts_with_possessive(lower, "search", "library") {
         let details = super::parse_search_library_details(lower);
         return Some(SearchCreationImperativeAst::SearchLibrary {
@@ -398,6 +420,17 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             attach_to: token.attach_to,
             enters_attacking: false,
         },
+        SearchCreationImperativeAst::Seek {
+            filter,
+            count,
+            destination,
+            enter_tapped,
+        } => Effect::Seek {
+            filter,
+            count,
+            destination,
+            enter_tapped,
+        },
     }
 }
 
@@ -426,7 +459,7 @@ pub(super) fn parse_hand_reveal_ast(text: &str, lower: &str) -> Option<HandRevea
     if lower.contains("hand") && lower.contains("equal to ") {
         if let Some((_, qty_text)) = lower.split_once("equal to ") {
             let qty_text = qty_text.trim_end_matches('.');
-            if let Some(qty) = super::super::oracle_static::parse_quantity_ref(qty_text) {
+            if let Some(qty) = super::super::oracle_quantity::parse_quantity_ref(qty_text) {
                 return Some(HandRevealImperativeAst::RevealPartialHand {
                     count: crate::types::ability::QuantityExpr::Ref { qty },
                 });
@@ -1211,7 +1244,7 @@ pub(super) fn parse_imperative_family_ast(text: &str, lower: &str) -> Option<Imp
             .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::Targeted(ast))),
 
         // Search/creation verbs (CR 701.18, CR 111.2)
-        "search" => parse_search_and_creation_ast(text, lower)
+        "search" | "seek" => parse_search_and_creation_ast(text, lower)
             .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::SearchCreation(ast))),
         "create" => parse_search_and_creation_ast(text, lower)
             .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::SearchCreation(ast))),

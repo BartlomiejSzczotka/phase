@@ -29,6 +29,14 @@ pub enum Chooser {
     Opponent,
 }
 
+/// CR 608.2d: Who may choose to perform an optional effect during resolution.
+/// Used with `AbilityDefinition::optional_for` to route the "you may" prompt to opponents.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+pub enum OpponentMayScope {
+    /// "any opponent may" — each opponent in APNAP order gets the chance; first accept wins.
+    AnyOpponent,
+}
+
 /// What kind of named choice the player must make at resolution time.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub enum ChoiceType {
@@ -2156,6 +2164,19 @@ pub enum Effect {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },
+    /// Alchemy digital-only: randomly pick card(s) from library matching filter,
+    /// put to destination (default hand). No reveal, no shuffle, no player choice.
+    Seek {
+        #[serde(default = "default_target_filter_any")]
+        filter: TargetFilter,
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
+        /// Where the sought card goes. Usually Hand, but some cards put onto Battlefield.
+        #[serde(default = "default_zone_hand")]
+        destination: Zone,
+        #[serde(default)]
+        enter_tapped: bool,
+    },
     /// Semantic marker for effects the engine has not yet implemented a handler for.
     /// Carries zero HashMap -- architecturally distinct from the removed Effect::Other.
     Unimplemented {
@@ -2175,6 +2196,10 @@ fn default_one_i32() -> i32 {
 
 fn default_quantity_one() -> QuantityExpr {
     QuantityExpr::Fixed { value: 1 }
+}
+
+fn default_zone_hand() -> Zone {
+    Zone::Hand
 }
 
 fn default_pt_value_zero() -> PtValue {
@@ -2315,6 +2340,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::CollectEvidence { .. } => "CollectEvidence",
         Effect::Endure { .. } => "Endure",
         Effect::BlightEffect { .. } => "BlightEffect",
+        Effect::Seek { .. } => "Seek",
         Effect::Unimplemented { name, .. } => name,
     }
 }
@@ -2421,6 +2447,7 @@ pub enum EffectKind {
     CollectEvidence,
     Endure,
     BlightEffect,
+    Seek,
     Unimplemented,
     /// Engine-level equip action (not via an Effect handler).
     Equip,
@@ -2528,6 +2555,7 @@ impl From<&Effect> for EffectKind {
             Effect::CollectEvidence { .. } => EffectKind::CollectEvidence,
             Effect::Endure { .. } => EffectKind::Endure,
             Effect::BlightEffect { .. } => EffectKind::BlightEffect,
+            Effect::Seek { .. } => EffectKind::Seek,
             Effect::Unimplemented { .. } => EffectKind::Unimplemented,
         }
     }
@@ -2697,6 +2725,10 @@ pub struct AbilityDefinition {
     /// CR 609.3: When true, the controller chooses whether to perform this effect ("You may X").
     #[serde(default)]
     pub optional: bool,
+    /// CR 608.2d: When set, an opponent (not the controller) chooses whether to perform this
+    /// optional effect. Requires `optional: true`. Opponents are prompted in APNAP order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optional_for: Option<OpponentMayScope>,
     /// Variable-count targeting: min/max targets the player can choose.
     /// When present, resolution enters MultiTargetSelection instead of immediate resolve.
     /// CR 601.2c + CR 115.1d.
@@ -2753,6 +2785,7 @@ impl AbilityDefinition {
             condition: None,
             optional_targeting: false,
             optional: false,
+            optional_for: None,
             multi_target: None,
             distribute: None,
             modal: None,
@@ -2879,6 +2912,9 @@ pub enum AbilityCondition {
     /// (which reads SpellContext.additional_cost_paid), this reads
     /// GameObject.ninjutsu_variant_paid from the game state.
     NinjutsuVariantPaidInstead { variant: NinjutsuVariant },
+    /// CR 608.2d: "If a player does" / "if they do" — gates sub_ability on whether
+    /// any prompted opponent accepted an "any opponent may" optional effect.
+    IfAPlayerDoes,
     /// CR 608.2c: General-purpose quantity comparison condition on effects.
     /// "if its power is N or greater" / "if its toughness is less than N" etc.
     /// Composes existing `QuantityExpr` and `Comparator` building blocks.
@@ -2904,6 +2940,10 @@ pub struct SpellContext {
     /// Used by AbilityCondition::IfYouDo to gate dependent sub_abilities.
     #[serde(default)]
     pub optional_effect_performed: bool,
+    /// CR 608.2d: The player who accepted an "any opponent may" optional effect.
+    /// Used to resolve "that player" / "them" backreferences and target scoping.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepting_player: Option<PlayerId>,
     /// CR 603.4: The zone the spell was cast from. Propagated from casting through
     /// to ETB triggers so conditions like "if you cast it from your hand" can evaluate.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3622,6 +3662,9 @@ pub struct ResolvedAbility {
     /// CR 609.3: Optional effect — controller prompted before execution.
     #[serde(default)]
     pub optional: bool,
+    /// CR 608.2d: When set, an opponent chooses whether to perform this optional effect.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub optional_for: Option<OpponentMayScope>,
     /// Human-readable description of this ability (from Oracle text / trigger line).
     /// Used by `OptionalEffectChoice` to tell the player what they're choosing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -3667,6 +3710,7 @@ impl ResolvedAbility {
             context: SpellContext::default(),
             optional_targeting: false,
             optional: false,
+            optional_for: None,
             description: None,
             repeat_for: None,
             forward_result: false,

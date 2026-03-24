@@ -9,6 +9,7 @@ use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::identifiers::{ObjectId, TrackedSetId};
 use crate::types::mana::ManaCost;
+use crate::types::player::PlayerId;
 
 pub mod add_restriction;
 pub mod amass;
@@ -72,6 +73,7 @@ pub mod roll_die;
 pub mod sacrifice;
 pub mod scry;
 pub mod search_library;
+pub mod seek;
 pub mod set_class_level;
 pub mod shuffle;
 pub mod solve_case;
@@ -195,6 +197,7 @@ pub fn resolve_effect(
         Effect::Shuffle { .. } => shuffle::resolve(state, ability, events),
         Effect::Transform { .. } => transform_effect::resolve(state, ability, events),
         Effect::SearchLibrary { .. } => search_library::resolve(state, ability, events),
+        Effect::Seek { .. } => seek::resolve(state, ability, events),
         Effect::RevealHand { .. } => reveal_hand::resolve(state, ability, events),
         Effect::RevealTop { .. } => reveal_top::resolve(state, ability, events),
         Effect::TargetOnly { .. } => Ok(()), // no-op: targeting is established at cast time
@@ -353,6 +356,26 @@ pub fn resolve_ability_chain(
 
     // BeginGame abilities are handled at game-start setup, not during stack resolution
     if matches!(ability.kind, AbilityKind::BeginGame) {
+        return Ok(());
+    }
+
+    // CR 608.2d + CR 101.4: "Any opponent may" — prompt opponents in APNAP order.
+    if ability.optional && ability.optional_for.is_some() {
+        let description = ability.description.clone();
+        let mut opponent_order: Vec<PlayerId> = crate::game::players::apnap_order(state)
+            .into_iter()
+            .filter(|p| *p != ability.controller)
+            .collect();
+        if let Some(first) = opponent_order.first().copied() {
+            let remaining = opponent_order.split_off(1);
+            state.pending_optional_effect = Some(Box::new(ability.clone()));
+            state.waiting_for = WaitingFor::OpponentMayChoice {
+                player: first,
+                source_id: ability.source_id,
+                description,
+                remaining,
+            };
+        }
         return Ok(());
     }
 
@@ -657,7 +680,7 @@ pub fn resolve_ability_chain(
                 AbilityCondition::AdditionalCostPaidInstead => {
                     return Ok(());
                 }
-                AbilityCondition::IfYouDo => {
+                AbilityCondition::IfYouDo | AbilityCondition::IfAPlayerDoes => {
                     ability.context.optional_effect_performed && !state.cost_payment_failed_flag
                 }
                 // CR 603.12: "When you do" — reflexive trigger that always fires when
@@ -794,6 +817,7 @@ pub fn resolve_ability_chain(
                 | WaitingFor::NamedChoice { .. }
                 | WaitingFor::MultiTargetSelection { .. }
                 | WaitingFor::OptionalEffectChoice { .. }
+                | WaitingFor::OpponentMayChoice { .. }
                 | WaitingFor::DiscoverChoice { .. }
                 | WaitingFor::TopOrBottomChoice { .. }
                 | WaitingFor::ProliferateChoice { .. }

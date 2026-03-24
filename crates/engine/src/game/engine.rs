@@ -1,6 +1,7 @@
 use rand::Rng;
 use thiserror::Error;
 
+use crate::game::filter;
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, ChoiceType, ChoiceValue, ChosenAttribute, Effect,
     EffectKind, ResolvedAbility, TargetFilter, TargetRef, UnlessCost,
@@ -601,6 +602,148 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 }
             }
             // Resume with pending continuation if one was stashed (from resolve_ability_chain).
+            if let Some(continuation) = state.pending_continuation.take() {
+                effects::resolve_ability_chain(state, &continuation, &mut events, 0)
+                    .map_err(|e| EngineError::InvalidAction(format!("{e:?}")))?;
+            }
+            state.waiting_for.clone()
+        }
+        // CR 608.2d: Opponent decided on "any opponent may" effect.
+        (
+            WaitingFor::OpponentMayChoice {
+                player: promptee,
+                remaining,
+                source_id,
+                description,
+            },
+            GameAction::DecideOptionalEffect { accept },
+        ) => {
+            state.cost_payment_failed_flag = false;
+
+            if accept {
+                if let Some(mut ability) = state.pending_optional_effect.take() {
+                    ability.optional = false;
+                    ability.optional_for = None;
+                    ability.context.optional_effect_performed = true;
+                    ability.context.accepting_player = Some(*promptee);
+
+                    // CR 608.2d: Determine if the inner effect requires the opponent
+                    // to select a target from their own permanents (sacrifice/tap).
+                    let target_selection = match &ability.effect {
+                        Effect::Sacrifice { ref target } | Effect::Tap { ref target } => {
+                            let require_untapped =
+                                matches!(ability.effect, Effect::Tap { .. });
+                            // CR 701.21a: Opponent chooses from THEIR permanents.
+                            let legal: Vec<ObjectId> = state
+                                .objects
+                                .iter()
+                                .filter(|(_, obj)| {
+                                    obj.zone == Zone::Battlefield
+                                        && obj.controller == *promptee
+                                        && (!require_untapped || !obj.tapped)
+                                        && filter::matches_target_filter_controlled(
+                                            state,
+                                            obj.id,
+                                            target,
+                                            ability.source_id,
+                                            *promptee,
+                                        )
+                                })
+                                .map(|(id, _)| *id)
+                                .collect();
+                            Some(legal)
+                        }
+                        _ => None,
+                    };
+
+                    if let Some(legal) = target_selection {
+                        if !legal.is_empty() {
+                            // CR 608.2d: Stash sub_ability chain (the IfAPlayerDoes-
+                            // conditioned consequence) as pending_continuation so it
+                            // executes AFTER MultiTargetSelection resolves (engine.rs:2535).
+                            // The condition on the continuation is NOT re-checked when it
+                            // runs as a root — this is safe because we only reach this
+                            // branch on the accept path (optional_effect_performed = true).
+                            if let Some(sub) = ability.sub_ability.take() {
+                                state.pending_continuation = Some(sub);
+                            }
+                            state.waiting_for = WaitingFor::MultiTargetSelection {
+                                player: *promptee,
+                                legal_targets: legal,
+                                min_targets: 1,
+                                max_targets: 1,
+                                pending_ability: ability,
+                            };
+                            return Ok(ActionResult {
+                                events,
+                                waiting_for: state.waiting_for.clone(),
+                                log_entries: vec![],
+                            });
+                        }
+                        // No legal targets: effect impossible (CR 609.3).
+                        // optional_effect_performed is still true — sub-abilities execute.
+                        state.waiting_for = WaitingFor::Priority {
+                            player: state.active_player,
+                        };
+                        state.priority_player = state.active_player;
+                        effects::resolve_ability_chain(state, &ability, &mut events, 0)
+                            .map_err(|e| EngineError::InvalidAction(format!("{e:?}")))?;
+                    } else {
+                        // Non-target-selection effects (DealDamage, ChangeZone, etc.)
+                        if matches!(ability.effect, Effect::DealDamage { .. }) {
+                            // CR 608.2d: Inject accepting player as damage target.
+                            ability.targets = vec![TargetRef::Player(*promptee)];
+                        }
+                        state.waiting_for = WaitingFor::Priority {
+                            player: state.active_player,
+                        };
+                        state.priority_player = state.active_player;
+                        effects::resolve_ability_chain(state, &ability, &mut events, 0)
+                            .map_err(|e| EngineError::InvalidAction(format!("{e:?}")))?;
+                    }
+                }
+            } else {
+                // Decline: advance to next opponent or handle all-declined.
+                if !remaining.is_empty() {
+                    let next = remaining[0];
+                    let rest = remaining[1..].to_vec();
+                    state.waiting_for = WaitingFor::OpponentMayChoice {
+                        player: next,
+                        source_id: *source_id,
+                        description: description.clone(),
+                        remaining: rest,
+                    };
+                    return Ok(ActionResult {
+                        events,
+                        waiting_for: state.waiting_for.clone(),
+                        log_entries: vec![],
+                    });
+                }
+                // All opponents declined.
+                state.waiting_for = WaitingFor::Priority {
+                    player: state.active_player,
+                };
+                state.priority_player = state.active_player;
+                if let Some(ability) = state.pending_optional_effect.take() {
+                    // Walk sub_ability chain for IfAPlayerDoes else branches.
+                    if let Some(ref sub) = ability.sub_ability {
+                        if matches!(sub.condition, Some(AbilityCondition::IfAPlayerDoes)) {
+                            if let Some(ref else_branch) = sub.else_ability {
+                                let mut else_resolved = else_branch.as_ref().clone();
+                                else_resolved.context = ability.context.clone();
+                                effects::resolve_ability_chain(
+                                    state,
+                                    &else_resolved,
+                                    &mut events,
+                                    0,
+                                )
+                                .map_err(|e| EngineError::InvalidAction(format!("{e:?}")))?;
+                            }
+                        }
+                    }
+                }
+            }
+            // Resume pending continuation (for non-MultiTargetSelection paths).
             if let Some(continuation) = state.pending_continuation.take() {
                 effects::resolve_ability_chain(state, &continuation, &mut events, 0)
                     .map_err(|e| EngineError::InvalidAction(format!("{e:?}")))?;

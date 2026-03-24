@@ -398,6 +398,18 @@ pub enum WaitingFor {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
     },
+    /// CR 608.2d + CR 101.4: An opponent may choose to perform an optional effect.
+    /// Prompts opponents in APNAP order. First accept wins; remaining are not prompted.
+    OpponentMayChoice {
+        player: PlayerId,
+        source_id: ObjectId,
+        /// Human-readable description of the effect.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        description: Option<String>,
+        /// Opponents still to prompt after current `player` (APNAP order).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        remaining: Vec<PlayerId>,
+    },
     /// CR 118.12: Opponent must decide whether to pay a cost to prevent an effect.
     /// Used by "counter unless pays {X}" (Mana Leak), tax triggers (Esper Sentinel),
     /// and ward costs (CR 702.21a).
@@ -620,6 +632,7 @@ impl WaitingFor {
             | WaitingFor::ExileFromGraveyardForCost { player, .. }
             | WaitingFor::HarmonizeTapChoice { player, .. }
             | WaitingFor::OptionalEffectChoice { player, .. }
+            | WaitingFor::OpponentMayChoice { player, .. }
             | WaitingFor::UnlessPayment { player, .. }
             | WaitingFor::DiscoverChoice { player, .. }
             | WaitingFor::TopOrBottomChoice { player, .. }
