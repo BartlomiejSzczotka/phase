@@ -5,7 +5,7 @@
   "icon": "G",
   "format": "modern",
   "version": 1,
-  "updated": "2026-04-06T00:00:00Z",
+  "updated": "2026-04-07T00:00:00Z",
   "source": "https://www.mtggoldfish.com/metagame/modern",
   "decks": [
     {
@@ -315,31 +315,44 @@
       "name": "Ruby Storm",
       "author": "MTGGoldfish",
       "colors": [
-        "R"
+        "R",
+        "U"
       ],
       "tags": [
         "metagame"
       ],
       "main": [
         {
-          "count": 1,
-          "name": "Elegant Parlor"
+          "count": 2,
+          "name": "Arid Mesa"
         },
         {
-          "count": 1,
-          "name": "Commercial District"
-        },
-        {
-          "count": 4,
-          "name": "Wooded Foothills"
+          "count": 2,
+          "name": "Bloodstained Mire"
         },
         {
           "count": 4,
           "name": "Desperate Ritual"
         },
         {
+          "count": 1,
+          "name": "Fiery Islet"
+        },
+        {
+          "count": 1,
+          "name": "Gemstone Caverns"
+        },
+        {
+          "count": 1,
+          "name": "Grapeshot"
+        },
+        {
+          "count": 1,
+          "name": "Heroes' Hangout"
+        },
+        {
           "count": 4,
-          "name": "Pyretic Ritual"
+          "name": "Highway Robbery"
         },
         {
           "count": 4,
@@ -347,47 +360,7 @@
         },
         {
           "count": 4,
-          "name": "Bloodstained Mire"
-        },
-        {
-          "count": 1,
-          "name": "Grapeshot"
-        },
-        {
-          "count": 1,
-          "name": "Sunbaked Canyon"
-        },
-        {
-          "count": 2,
-          "name": "Wish"
-        },
-        {
-          "count": 1,
-          "name": "Arid Mesa"
-        },
-        {
-          "count": 2,
-          "name": "Artist's Talent"
-        },
-        {
-          "count": 4,
-          "name": "Wrenn's Resolve"
-        },
-        {
-          "count": 2,
-          "name": "Valakut Awakening"
-        },
-        {
-          "count": 1,
-          "name": "Sacred Foundry"
-        },
-        {
-          "count": 4,
           "name": "Mountain"
-        },
-        {
-          "count": 4,
-          "name": "Reckless Impulse"
         },
         {
           "count": 3,
@@ -395,49 +368,77 @@
         },
         {
           "count": 4,
-          "name": "Ruby Medallion"
+          "name": "Pyretic Ritual"
         },
         {
           "count": 4,
           "name": "Ral, Monsoon Mage"
         },
         {
-          "count": 2,
-          "name": "Heroes' Hangout"
+          "count": 4,
+          "name": "Reckless Impulse"
+        },
+        {
+          "count": 4,
+          "name": "Ruby Medallion"
+        },
+        {
+          "count": 3,
+          "name": "Scalding Tarn"
         },
         {
           "count": 1,
-          "name": "Gemstone Caverns"
+          "name": "Steam Vents"
         },
         {
           "count": 2,
-          "name": "Glimpse the Impossible"
+          "name": "Strike It Rich"
+        },
+        {
+          "count": 2,
+          "name": "Thundering Falls"
+        },
+        {
+          "count": 1,
+          "name": "Valakut Awakening"
+        },
+        {
+          "count": 2,
+          "name": "Wish"
+        },
+        {
+          "count": 2,
+          "name": "Wooded Foothills"
+        },
+        {
+          "count": 4,
+          "name": "Wrenn's Resolve"
         }
       ],
       "sideboard": [
+        {
+          "count": 2,
+          "name": "Abrade"
+        },
+        {
+          "count": 1,
+          "name": "Blood Moon"
+        },
+        {
+          "count": 1,
+          "name": "Brotherhood's End"
+        },
+        {
+          "count": 3,
+          "name": "Flusterstorm"
+        },
         {
           "count": 1,
           "name": "Grapeshot"
         },
         {
-          "count": 2,
-          "name": "Brotherhood's End"
-        },
-        {
-          "count": 1,
-          "name": "Empty the Warrens"
-        },
-        {
-          "count": 4,
-          "name": "Prismatic Ending"
-        },
-        {
-          "count": 2,
-          "name": "Orim's Chant"
-        },
-        {
           "count": 3,
-          "name": "Untimely Malfunction"
+          "name": "Into the Flood Maw"
         },
         {
           "count": 1,
@@ -445,7 +446,15 @@
         },
         {
           "count": 1,
-          "name": "Pyroclasm"
+          "name": "Spell Pierce"
+        },
+        {
+          "count": 1,
+          "name": "Stormscale Scion"
+        },
+        {
+          "count": 1,
+          "name": "Untimely Malfunction"
         }
       ]
     },
@@ -910,152 +919,6 @@
       ]
     },
     {
-      "name": "Domain Zoo",
-      "author": "MTGGoldfish",
-      "colors": [
-        "U",
-        "R",
-        "W",
-        "G",
-        "B"
-      ],
-      "tags": [
-        "metagame"
-      ],
-      "main": [
-        {
-          "count": 4,
-          "name": "Phlage, Titan of Fire's Fury"
-        },
-        {
-          "count": 4,
-          "name": "Territorial Kavu"
-        },
-        {
-          "count": 4,
-          "name": "Scion of Draco"
-        },
-        {
-          "count": 4,
-          "name": "Arid Mesa"
-        },
-        {
-          "count": 2,
-          "name": "Consign to Memory"
-        },
-        {
-          "count": 2,
-          "name": "Steam Vents"
-        },
-        {
-          "count": 1,
-          "name": "Mountain"
-        },
-        {
-          "count": 3,
-          "name": "Doorkeeper Thrull"
-        },
-        {
-          "count": 2,
-          "name": "Arena of Glory"
-        },
-        {
-          "count": 1,
-          "name": "Temple Garden"
-        },
-        {
-          "count": 4,
-          "name": "Leyline of the Guildpact"
-        },
-        {
-          "count": 4,
-          "name": "Leyline Binding"
-        },
-        {
-          "count": 4,
-          "name": "Wooded Foothills"
-        },
-        {
-          "count": 4,
-          "name": "Lightning Bolt"
-        },
-        {
-          "count": 1,
-          "name": "Plains"
-        },
-        {
-          "count": 4,
-          "name": "Flooded Strand"
-        },
-        {
-          "count": 4,
-          "name": "Ragavan, Nimble Pilferer"
-        },
-        {
-          "count": 1,
-          "name": "Winternight Stories"
-        },
-        {
-          "count": 1,
-          "name": "Indatha Triome"
-        },
-        {
-          "count": 2,
-          "name": "Stubborn Denial"
-        },
-        {
-          "count": 1,
-          "name": "Godless Shrine"
-        },
-        {
-          "count": 1,
-          "name": "Thundering Falls"
-        },
-        {
-          "count": 1,
-          "name": "Prismatic Ending"
-        },
-        {
-          "count": 1,
-          "name": "Teferi, Time Raveler"
-        }
-      ],
-      "sideboard": [
-        {
-          "count": 2,
-          "name": "Consign to Memory"
-        },
-        {
-          "count": 2,
-          "name": "Mystical Dispute"
-        },
-        {
-          "count": 1,
-          "name": "Clarion Conqueror"
-        },
-        {
-          "count": 2,
-          "name": "Wear // Tear"
-        },
-        {
-          "count": 2,
-          "name": "Nihil Spellbomb"
-        },
-        {
-          "count": 2,
-          "name": "Damping Sphere"
-        },
-        {
-          "count": 2,
-          "name": "Wrath of the Skies"
-        },
-        {
-          "count": 2,
-          "name": "Obsidian Charmaw"
-        }
-      ]
-    },
-    {
       "name": "Goryo's Vengeance",
       "author": "MTGGoldfish",
       "colors": [
@@ -1217,6 +1080,152 @@
         {
           "count": 1,
           "name": "Celestial Purge"
+        }
+      ]
+    },
+    {
+      "name": "Domain Zoo",
+      "author": "MTGGoldfish",
+      "colors": [
+        "U",
+        "R",
+        "W",
+        "G",
+        "B"
+      ],
+      "tags": [
+        "metagame"
+      ],
+      "main": [
+        {
+          "count": 4,
+          "name": "Phlage, Titan of Fire's Fury"
+        },
+        {
+          "count": 4,
+          "name": "Territorial Kavu"
+        },
+        {
+          "count": 4,
+          "name": "Scion of Draco"
+        },
+        {
+          "count": 4,
+          "name": "Arid Mesa"
+        },
+        {
+          "count": 2,
+          "name": "Consign to Memory"
+        },
+        {
+          "count": 2,
+          "name": "Steam Vents"
+        },
+        {
+          "count": 1,
+          "name": "Mountain"
+        },
+        {
+          "count": 3,
+          "name": "Doorkeeper Thrull"
+        },
+        {
+          "count": 2,
+          "name": "Arena of Glory"
+        },
+        {
+          "count": 1,
+          "name": "Temple Garden"
+        },
+        {
+          "count": 4,
+          "name": "Leyline of the Guildpact"
+        },
+        {
+          "count": 4,
+          "name": "Leyline Binding"
+        },
+        {
+          "count": 4,
+          "name": "Wooded Foothills"
+        },
+        {
+          "count": 4,
+          "name": "Lightning Bolt"
+        },
+        {
+          "count": 1,
+          "name": "Plains"
+        },
+        {
+          "count": 4,
+          "name": "Flooded Strand"
+        },
+        {
+          "count": 4,
+          "name": "Ragavan, Nimble Pilferer"
+        },
+        {
+          "count": 1,
+          "name": "Winternight Stories"
+        },
+        {
+          "count": 1,
+          "name": "Indatha Triome"
+        },
+        {
+          "count": 2,
+          "name": "Stubborn Denial"
+        },
+        {
+          "count": 1,
+          "name": "Godless Shrine"
+        },
+        {
+          "count": 1,
+          "name": "Thundering Falls"
+        },
+        {
+          "count": 1,
+          "name": "Prismatic Ending"
+        },
+        {
+          "count": 1,
+          "name": "Teferi, Time Raveler"
+        }
+      ],
+      "sideboard": [
+        {
+          "count": 2,
+          "name": "Consign to Memory"
+        },
+        {
+          "count": 2,
+          "name": "Mystical Dispute"
+        },
+        {
+          "count": 1,
+          "name": "Clarion Conqueror"
+        },
+        {
+          "count": 2,
+          "name": "Wear // Tear"
+        },
+        {
+          "count": 2,
+          "name": "Nihil Spellbomb"
+        },
+        {
+          "count": 2,
+          "name": "Damping Sphere"
+        },
+        {
+          "count": 2,
+          "name": "Wrath of the Skies"
+        },
+        {
+          "count": 2,
+          "name": "Obsidian Charmaw"
         }
       ]
     },
