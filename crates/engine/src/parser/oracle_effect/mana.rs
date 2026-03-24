@@ -200,12 +200,36 @@ pub(super) fn parse_mana_production_clause(text: &str) -> Option<ManaProduction>
         }
     }
 
-    if let Some((colors, _)) = parse_mana_production(text) {
-        return Some(ManaProduction::Fixed { colors });
+    if let Some((colors, remainder)) = parse_mana_production(text) {
+        let remainder = remainder.trim().trim_end_matches(['.', '"']).trim();
+        if remainder.is_empty() {
+            return Some(ManaProduction::Fixed { colors });
+        }
+        // CR 106.1: "{color} for each [filter]" → dynamic mana count
+        if let Some(for_each_clause) = remainder.strip_prefix("for each ") {
+            let qty = super::super::oracle_quantity::parse_for_each_clause(for_each_clause)?;
+            return Some(ManaProduction::AnyOneColor {
+                count: QuantityExpr::Ref { qty },
+                color_options: colors,
+            });
+        }
+        // Unknown trailing text — don't silently discard it
+        return None;
     }
 
-    if let Some((count, _)) = parse_colorless_mana_production(text) {
-        return Some(ManaProduction::Colorless { count });
+    if let Some((count, remainder)) = parse_colorless_mana_production(text) {
+        let remainder = remainder.trim().trim_end_matches(['.', '"']).trim();
+        if remainder.is_empty() {
+            return Some(ManaProduction::Colorless { count });
+        }
+        // CR 106.1: "{C} for each [filter]" → dynamic colorless mana count
+        if let Some(for_each_clause) = remainder.strip_prefix("for each ") {
+            let qty = super::super::oracle_quantity::parse_for_each_clause(for_each_clause)?;
+            return Some(ManaProduction::Colorless {
+                count: QuantityExpr::Ref { qty },
+            });
+        }
+        return None;
     }
 
     None
