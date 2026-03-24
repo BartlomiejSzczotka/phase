@@ -1,5 +1,5 @@
 use crate::game::quantity::resolve_quantity;
-use crate::game::{players, zones};
+use crate::game::zones;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility, TargetRef};
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
@@ -18,7 +18,8 @@ pub fn resolve(
         _ => 1,
     };
 
-    // Find target player: first TargetRef::Player, or default to next player (N-player safe)
+    // CR 701.13a: Find target player — first TargetRef::Player, or default to controller
+    // (self-mill when no explicit target, e.g. "mill a card").
     let target_player = ability
         .targets
         .iter()
@@ -29,7 +30,7 @@ pub fn resolve(
                 None
             }
         })
-        .unwrap_or_else(|| players::next_player(state, ability.controller));
+        .unwrap_or(ability.controller);
 
     let player = state
         .players

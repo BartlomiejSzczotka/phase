@@ -599,7 +599,8 @@ fn try_parse_equal_to_quantity_effect(tp: TextPair) -> Option<ParsedEffectClause
         let qty = super::oracle_quantity::parse_quantity_ref(rest)?;
         return Some(parsed_clause(Effect::Mill {
             count: QuantityExpr::Ref { qty },
-            target: TargetFilter::Any,
+            // CR 701.17a: No subject → controller mills.
+            target: TargetFilter::Controller,
         }));
     }
     if let Some(rest) = tp.strip_prefix("draw cards equal to ") {
@@ -1397,7 +1398,8 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
         | Effect::ForceBlock { target }
         | Effect::Suspect { target }
         | Effect::Goad { target }
-            if *target == TargetFilter::Any =>
+        | Effect::Mill { target, .. }
+            if *target == TargetFilter::Any || *target == TargetFilter::Controller =>
         {
             *target = subject_filter;
         }

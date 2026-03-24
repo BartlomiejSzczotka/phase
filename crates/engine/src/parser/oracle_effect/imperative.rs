@@ -198,7 +198,8 @@ pub(super) fn lower_numeric_imperative_ast(ast: NumericImperativeAst) -> Effect 
             count: QuantityExpr::Fixed {
                 value: count as i32,
             },
-            target: TargetFilter::Any,
+            // CR 701.17a: "Mill" with no subject defaults to the controller.
+            target: TargetFilter::Controller,
         },
     }
 }
@@ -803,7 +804,8 @@ pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
             count: QuantityExpr::Fixed {
                 value: count as i32,
             },
-            target: TargetFilter::Any,
+            // CR 701.17a: "Put top N into graveyard" is self-mill.
+            target: TargetFilter::Controller,
         },
         PutImperativeAst::ZoneChange {
             origin,
