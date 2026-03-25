@@ -4,6 +4,7 @@ use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
 use engine::types::player::PlayerId;
+use serde::{Deserialize, Serialize};
 
 use serde::{Deserialize, Serialize};
 
@@ -126,6 +127,25 @@ impl EvalWeightSet {
                 card_advantage: 1.7904,
                 synergy: 0.5,
             },
+        }
+    }
+}
+
+impl EvalWeights {
+    /// Weights refined by CMA-ES self-play optimization.
+    /// Seeded from 17Lands logistic regression (life, board_presence, board_power, hand_size)
+    /// then optimized via evolutionary strategy across 3 deck matchups.
+    /// Fields that 17Lands cannot measure (board_toughness, aggression) were
+    /// discovered by CMA-ES from scratch.
+    /// See data/learned-weights.json for the full output.
+    pub fn learned() -> Self {
+        EvalWeights {
+            life: 0.762,
+            aggression: 0.304,
+            board_presence: 2.084,
+            board_power: 1.240,
+            board_toughness: 1.125,
+            hand_size: 0.307,
         }
     }
 }

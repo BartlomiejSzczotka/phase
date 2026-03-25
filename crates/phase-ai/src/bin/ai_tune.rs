@@ -6,9 +6,7 @@ use phase_ai::config::{create_config, AiConfig, AiDifficulty, AiProfile, Platfor
 use phase_ai::eval::EvalWeights;
 
 use engine::database::CardDatabase;
-use engine::game::deck_loading::{
-    resolve_deck_list, DeckList, DeckPayload, PlayerDeckList,
-};
+use engine::game::deck_loading::{resolve_deck_list, DeckList, DeckPayload, PlayerDeckList};
 use engine::game::engine::start_game_skip_mulligan;
 use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::player::PlayerId;
@@ -115,19 +113,18 @@ impl CmaEs {
 
         // Adaptation parameters
         let c_sigma = (mu_eff + 2.0) / (dim as f64 + mu_eff + 5.0);
-        let d_sigma = 1.0
-            + 2.0 * (((mu_eff - 1.0) / (dim as f64 + 1.0)).sqrt() - 1.0).max(0.0)
-            + c_sigma;
+        let d_sigma =
+            1.0 + 2.0 * (((mu_eff - 1.0) / (dim as f64 + 1.0)).sqrt() - 1.0).max(0.0) + c_sigma;
         let c_c = (4.0 + mu_eff / dim as f64) / (dim as f64 + 4.0 + 2.0 * mu_eff / dim as f64);
         let c_1 = 2.0 / ((dim as f64 + 1.3).powi(2) + mu_eff);
-        let c_mu_param =
-            (2.0 * (mu_eff - 2.0 + 1.0 / mu_eff) / ((dim as f64 + 2.0).powi(2) + mu_eff))
-                .min(1.0 - c_1);
+        let c_mu_param = (2.0 * (mu_eff - 2.0 + 1.0 / mu_eff)
+            / ((dim as f64 + 2.0).powi(2) + mu_eff))
+            .min(1.0 - c_1);
 
         // Identity covariance matrix
         let mut cov = vec![vec![0.0; dim]; dim];
-        for i in 0..dim {
-            cov[i][i] = 1.0;
+        for (i, row) in cov.iter_mut().enumerate() {
+            row[i] = 1.0;
         }
 
         CmaEs {
@@ -183,8 +180,8 @@ impl CmaEs {
         // Compute new mean as weighted average of top mu individuals
         self.mean = vec![0.0; self.dim];
         for (i, (candidate, _)) in evaluated.iter().take(self.mu).enumerate() {
-            for j in 0..self.dim {
-                self.mean[j] += self.weights_recomb[i] * candidate[j];
+            for (mean_j, cand_j) in self.mean.iter_mut().zip(candidate.iter()) {
+                *mean_j += self.weights_recomb[i] * cand_j;
             }
         }
 
@@ -210,8 +207,8 @@ impl CmaEs {
             })
             .collect();
 
-        for i in 0..self.dim {
-            self.p_sigma[i] = c_sigma_complement * self.p_sigma[i] + c_sigma_scale * inv_c_diff[i];
+        for (ps, icd) in self.p_sigma.iter_mut().zip(inv_c_diff.iter()) {
+            *ps = c_sigma_complement * *ps + c_sigma_scale * icd;
         }
 
         // Expected length of N(0,I) vector
@@ -233,8 +230,8 @@ impl CmaEs {
         // Update evolution path for covariance
         let c_c_complement = (1.0 - self.c_c).sqrt();
         let c_c_scale = h_sigma * (self.c_c * (2.0 - self.c_c) * self.mu_eff).sqrt();
-        for i in 0..self.dim {
-            self.p_c[i] = c_c_complement * self.p_c[i] + c_c_scale * diff[i];
+        for (pc, d) in self.p_c.iter_mut().zip(diff.iter()) {
+            *pc = c_c_complement * *pc + c_c_scale * d;
         }
 
         // Update covariance matrix
@@ -254,9 +251,8 @@ impl CmaEs {
                     rank_mu += self.weights_recomb[k] * yi * yj;
                 }
 
-                self.cov[i][j] = c_old_scale.max(0.0) * self.cov[i][j]
-                    + rank_one
-                    + self.c_mu_param * rank_mu;
+                self.cov[i][j] =
+                    c_old_scale.max(0.0) * self.cov[i][j] + rank_one + self.c_mu_param * rank_mu;
                 self.cov[j][i] = self.cov[i][j];
             }
         }
@@ -290,10 +286,11 @@ fn cholesky(a: &[Vec<f64>]) -> Vec<Vec<f64>> {
     let mut l = vec![vec![0.0; n]; n];
     for i in 0..n {
         for j in 0..=i {
-            let mut sum = 0.0;
-            for k in 0..j {
-                sum += l[i][k] * l[j][k];
-            }
+            let sum: f64 = l[i][..j]
+                .iter()
+                .zip(l[j][..j].iter())
+                .map(|(a, b)| a * b)
+                .sum();
             if i == j {
                 // Add small epsilon for numerical stability
                 l[i][j] = (a[i][i] - sum).max(1e-12).sqrt();
@@ -800,10 +797,7 @@ fn run_cmaes(
             .zip(fitnesses.iter().copied())
             .collect();
 
-        let gen_best = fitnesses
-            .iter()
-            .copied()
-            .fold(f64::NEG_INFINITY, f64::max);
+        let gen_best = fitnesses.iter().copied().fold(f64::NEG_INFINITY, f64::max);
         let gen_mean = fitnesses.iter().sum::<f64>() / fitnesses.len() as f64;
 
         if gen_best > best_fitness {
@@ -879,11 +873,7 @@ mod tests {
             .map(|i| {
                 let x = vec![i as f64 * 0.2, i as f64 * 0.2, i as f64 * 0.2];
                 // Fitness = negative distance from [1, 1, 1]
-                let dist: f64 = x
-                    .iter()
-                    .map(|v| (v - 1.0).powi(2))
-                    .sum::<f64>()
-                    .sqrt();
+                let dist: f64 = x.iter().map(|v| (v - 1.0).powi(2)).sum::<f64>().sqrt();
                 (x, 1.0 / (1.0 + dist))
             })
             .collect();
