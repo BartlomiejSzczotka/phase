@@ -18,7 +18,7 @@ pub fn resolve(
 ) -> Result<(), EffectError> {
     let controller = ability.controller;
 
-    // CR 701.52b: Increment ring level, capping at 4 (the ring has 4 tiers).
+    // CR 701.54b: Increment ring level, capping at 4 (the ring has 4 tiers).
     // Level 0 = never tempted (no abilities). Levels 1–4 unlock progressive tiers.
     let level = state.ring_level.entry(controller).or_insert(0);
     if *level < 4 {
@@ -30,7 +30,7 @@ pub fn resolve(
         player_id: controller,
     });
 
-    // CR 701.52a: Collect candidate creatures controlled by this player.
+    // CR 701.54a: Collect candidate creatures controlled by this player.
     let candidates: Vec<_> = state
         .battlefield
         .iter()

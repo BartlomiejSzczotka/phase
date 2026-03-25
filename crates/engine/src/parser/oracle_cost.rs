@@ -288,7 +288,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
         return AbilityCost::Reveal { count: 1 };
     }
 
-    // "Exert this creature" / "Exert ~" — exert cost (CR 701.38)
+    // "Exert this creature" / "Exert ~" — exert cost (CR 701.43)
     if lower.starts_with("exert this ")
         || lower.starts_with("exert ~")
         || lower == "exert this creature"

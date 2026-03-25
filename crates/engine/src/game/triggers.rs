@@ -422,7 +422,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
             );
         }
 
-        // CR 722.3: At the beginning of the monarch's end step, the monarch draws a card.
+        // CR 724.2: At the beginning of the monarch's end step, that player draws a card.
         // Synthetic game-rule trigger — not attached to any permanent.
         if let GameEvent::PhaseChanged { phase: Phase::End } = event {
             if let Some(monarch_id) = state.monarch {
@@ -433,7 +433,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                     let draw_ability =
                         ResolvedAbility::new(draw_effect, Vec::new(), ObjectId(0), monarch_id);
                     let trig_def = TriggerDefinition::new(TriggerMode::Phase)
-                        .description("Monarch draw (CR 722.3)".to_string());
+                        .description("Monarch draw (CR 724.2)".to_string());
                     pending.push(PendingTrigger {
                         source_id: ObjectId(0),
                         controller: monarch_id,
@@ -450,8 +450,8 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
             }
         }
 
-        // CR 722.4: When a creature deals combat damage to the monarch, that creature's
-        // controller becomes the monarch. Synthetic game-rule trigger.
+        // CR 724.2: When a creature deals combat damage to the monarch, its controller
+        // becomes the monarch. Synthetic game-rule trigger.
         if let GameEvent::DamageDealt {
             source_id,
             target: TargetRef::Player(target_player),
@@ -472,7 +472,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                             new_monarch,
                         );
                         let trig_def = TriggerDefinition::new(TriggerMode::DamageDone)
-                            .description("Monarch steal (CR 722.4)".to_string());
+                            .description("Monarch steal (CR 724.2)".to_string());
                         pending.push(PendingTrigger {
                             source_id: *source_id,
                             controller: new_monarch,
