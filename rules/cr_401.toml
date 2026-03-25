@@ -1,0 +1,61 @@
+# Comprehensive Rules Section 401: Library
+
+[_meta]
+section = 401
+title = "Library"
+
+[cr_401_1]
+rule = "401.1"
+text = "When a game begins, each player’s deck becomes their library."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_401_2]
+rule = "401.2"
+text = "Each library must be kept in a single face-down pile. Players can’t look at or change the order of cards in a library."
+status = "implemented"
+impl_files = ["game/effects/search_library.rs:6", "game/effects/search_library.rs:7"]
+test_files = []
+notes = ""
+
+[cr_401_3]
+rule = "401.3"
+text = "Any player may count the number of cards remaining in any player’s library at any time."
+status = "implemented"
+impl_files = ["game/effects/change_zone.rs:16", "game/effects/change_zone.rs:127", "game/effects/change_zone.rs:525", "game/effects/put_on_top.rs:8", "game/effects/put_on_top.rs:10", "game/zones.rs:190", "parser/oracle_effect/imperative.rs:847", "types/ability.rs:2121"]
+test_files = []
+notes = ""
+
+[cr_401_4]
+rule = "401.4"
+text = "If an effect puts two or more cards in a specific position in a library at the same time, the owner of those cards may arrange them in any order. That library’s owner doesn’t reveal the order in which the cards go into the library."
+status = "implemented"
+impl_files = ["game/effects/put_on_top_or_bottom.rs:4", "game/effects/put_on_top_or_bottom.rs:30", "game/engine.rs:1668", "parser/oracle_effect/mod.rs:455", "parser/oracle_effect/mod.rs:643", "types/ability.rs:2127", "types/actions.rs:135", "types/game_state.rs:577"]
+test_files = []
+notes = ""
+
+[cr_401_5]
+rule = "401.5"
+text = "Some effects tell a player to play with the top card of their library revealed, or say that a player may look at the top card of their library. If the top card of the player’s library changes while a spell is being cast, the new top card won’t be revealed and can’t be looked at until the spell becomes cast (see rule 601.2i). The same is true with relation to an ability being activated. If the top card of the player’s library changes while a player is taking a special action (see rule 116, “Special Actions”), the new card won’t be revealed and can’t be looked at until the player has finished taking that special action."
+status = "implemented"
+impl_files = ["game/effects/dig.rs:37", "parser/oracle_effect/sequence.rs:388", "parser/oracle_effect/sequence.rs:647", "parser/oracle_effect/types.rs:139"]
+test_files = []
+notes = ""
+
+[cr_401_6]
+rule = "401.6"
+text = "If an effect causes a player to play with the top card of their library revealed, and that particular card stops being revealed for any length of time before being revealed again, it becomes a new object."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_401_7]
+rule = "401.7"
+text = "If an effect causes a player to put a card into a library “Nth from the top,” and that library has fewer than N cards in it, the player puts that card on the bottom of that library."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""

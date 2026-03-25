@@ -1,0 +1,45 @@
+# Comprehensive Rules Section 403: Battlefield
+
+[_meta]
+section = 403
+title = "Battlefield"
+
+[cr_403_1]
+rule = "403.1"
+text = "Most of the area between the players represents the battlefield. The battlefield starts out empty. Permanents a player controls are normally kept in front of them on the battlefield, though there are some cases (such as an Aura attached to another player’s permanent) when a permanent one player controls is kept closer to a different player."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_403_2]
+rule = "403.2"
+text = "A spell or ability affects and checks only the battlefield unless it specifically mentions a player or another zone."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_403_3]
+rule = "403.3"
+text = "Permanents exist only on the battlefield. Every object on the battlefield is a permanent. See rule 110, “Permanents.”"
+status = "implemented"
+impl_files = ["game/filter.rs:163"]
+test_files = []
+notes = ""
+
+[cr_403_4]
+rule = "403.4"
+text = "Whenever a permanent enters the battlefield, it becomes a new object and has no relationship to any previous permanent represented by the same card, except for the cases listed in rule 400.7. (This is also true for any objects entering any zone.)"
+status = "implemented"
+impl_files = ["game/zones.rs:115", "game/zones.rs:116"]
+test_files = []
+notes = ""
+
+[cr_403_5]
+rule = "403.5"
+text = "Previously, the battlefield was called the “in-play zone.” Cards that were printed with text that contains the phrases “in play,” “from play,” “into play,” or the like are referring to the battlefield. Cards that were printed with that text have received errata in the Oracle card reference."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""

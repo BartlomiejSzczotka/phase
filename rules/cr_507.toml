@@ -1,0 +1,21 @@
+# Comprehensive Rules Section 507: Beginning of Combat Step
+
+[_meta]
+section = 507
+title = "Beginning of Combat Step"
+
+[cr_507_1]
+rule = "507.1"
+text = "First, if the game being played is a multiplayer game in which the active player’s opponents don’t all automatically become defending players, the active player chooses one of their opponents. That player becomes the defending player. This turn-based action doesn’t use the stack. (See rule 506.2.)"
+status = "implemented"
+impl_files = ["game/engine.rs:6792", "game/engine.rs:6849", "game/turns.rs:395", "game/turns.rs:450", "game/turns.rs:451", "parser/oracle_trigger.rs:1557"]
+test_files = []
+notes = ""
+
+[cr_507_2]
+rule = "507.2"
+text = "Second, the active player gets priority. (See rule 117, “Timing and Priority.”)"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""

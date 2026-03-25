@@ -1,0 +1,13 @@
+# Comprehensive Rules Section 501: Beginning Phase
+
+[_meta]
+section = 501
+title = "Beginning Phase"
+
+[cr_501_1]
+rule = "501.1"
+text = "The beginning phase consists of three steps, in this order: untap, upkeep, and draw."
+status = "implemented"
+impl_files = ["types/phase.rs:11"]
+test_files = []
+notes = ""

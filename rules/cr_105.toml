@@ -1,0 +1,69 @@
+# Comprehensive Rules Section 105: Colors
+
+[_meta]
+section = 105
+title = "Colors"
+
+[cr_105_1]
+rule = "105.1"
+text = "There are five colors in the Magic game: white, blue, black, red, and green."
+status = "implemented"
+impl_files = ["game/effects/choose.rs:132"]
+test_files = []
+notes = ""
+
+[cr_105_2]
+rule = "105.2"
+text = "An object can be one or more of the five colors, or it can be no color at all. An object is the color or colors of the mana symbols in its mana cost, regardless of the color of its frame. An object’s color or colors may also be defined by a color indicator or a characteristic-defining ability. See rule 202.2."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_105_2a]
+rule = "105.2a"
+text = "A monocolored object is exactly one of the five colors."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_105_2b]
+rule = "105.2b"
+text = "A multicolored object is two or more of the five colors."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_105_2c]
+rule = "105.2c"
+text = "A colorless object has no color."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_105_3]
+rule = "105.3"
+text = "Effects may change an object’s color or give a color to a colorless object. If an effect gives an object a new color, the new color replaces all previous colors the object had (unless the effect said the object became that color “in addition” to its other colors). Effects may also make a colored object become colorless."
+status = "implemented"
+impl_files = ["game/layers.rs:722", "parser/oracle_effect/subject.rs:511", "types/ability.rs:3709"]
+test_files = []
+notes = ""
+
+[cr_105_4]
+rule = "105.4"
+text = "If a player is asked to choose a color, they must choose one of the five colors. “Multicolored” is not a color. Neither is “colorless.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_105_5]
+rule = "105.5"
+text = "If an effect refers to a color pair, it means exactly two of the five colors. There are ten color pairs: white and blue, white and black, blue and black, blue and red, black and red, black and green, red and green, red and white, green and white, and green and blue."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""

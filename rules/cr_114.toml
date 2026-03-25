@@ -1,0 +1,45 @@
+# Comprehensive Rules Section 114: Emblems
+
+[_meta]
+section = 114
+title = "Emblems"
+
+[cr_114_1]
+rule = "114.1"
+text = "Some effects put emblems into the command zone. An emblem is a marker used to represent an object that has one or more abilities, but usually no other characteristics."
+status = "implemented"
+impl_files = ["game/effects/create_emblem.rs:8", "game/effects/create_emblem.rs:20", "parser/oracle_effect/mod.rs:1450", "parser/oracle_effect/mod.rs:1541", "types/ability.rs:2022"]
+test_files = []
+notes = ""
+
+[cr_114_2]
+rule = "114.2"
+text = "An effect that creates an emblem is written “[Player] gets an emblem with [ability].” This means that [player] puts an emblem with [ability] into the command zone. The emblem is both owned and controlled by that player."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_114_3]
+rule = "114.3"
+text = "An emblem has no characteristics other than the abilities defined by the effect that created it. In particular, an emblem has no types, no mana cost, and no color. Most emblems also have no name."
+status = "implemented"
+impl_files = ["game/layers.rs:366", "game/static_abilities.rs:127"]
+test_files = []
+notes = ""
+
+[cr_114_4]
+rule = "114.4"
+text = "Abilities of emblems function in the command zone."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_114_5]
+rule = "114.5"
+text = "An emblem is neither a card nor a permanent. Emblem isn’t a card type."
+status = "implemented"
+impl_files = ["game/effects/bounce.rs:38", "game/effects/change_zone.rs:211", "game/effects/create_emblem.rs:29", "game/effects/destroy.rs:28", "game/effects/sacrifice.rs:20", "game/game_object.rs:212"]
+test_files = []
+notes = ""

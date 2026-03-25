@@ -1,0 +1,317 @@
+# Comprehensive Rules Section 704: State-Based Actions
+
+[_meta]
+section = 704
+title = "State-Based Actions"
+
+[cr_704_1]
+rule = "704.1"
+text = "State-based actions are game actions that happen automatically whenever certain conditions (listed below) are met. State-based actions don’t use the stack."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_1a]
+rule = "704.1a"
+text = "Abilities that watch for a specified game state are triggered abilities, not state-based actions. (See rule 603, “Handling Triggered Abilities.”)"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_2]
+rule = "704.2"
+text = "State-based actions are checked throughout the game and are not controlled by any player."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_3]
+rule = "704.3"
+text = "Whenever a player would get priority (see rule 117, “Timing and Priority”), the game checks for any of the listed conditions for state-based actions, then performs all applicable state-based actions simultaneously as a single event. If any state-based actions are performed as a result of a check, the check is repeated; otherwise all triggered abilities that are waiting to be put on the stack are put on the stack, then the check is repeated. Once no more state-based actions have been performed as the result of a check and no triggered abilities are waiting to be put on the stack, the appropriate player gets priority. This process also occurs during the cleanup step (see rule 514), except that if no state-based actions are performed as the result of the step’s first check and no triggered abilities are waiting to be put on the stack, then no player gets priority and the step ends."
+status = "implemented"
+impl_files = ["game/combat_damage.rs:26", "game/combat_damage.rs:43", "game/combat_damage.rs:1188", "game/combat_damage.rs:1253", "game/engine.rs:2889", "game/sba.rs:17", "game/turns.rs:529"]
+test_files = []
+notes = ""
+
+[cr_704_4]
+rule = "704.4"
+text = "Unlike triggered abilities, state-based actions pay no attention to what happens during the resolution of a spell or ability."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_5]
+rule = "704.5"
+text = "The state-based actions are as follows:"
+status = "implemented"
+impl_files = ["bin/rules_audit.rs:233", "bin/rules_audit.rs:233", "bin/rules_audit.rs:270", "bin/rules_audit.rs:270"]
+test_files = []
+notes = ""
+
+[cr_704_5a]
+rule = "704.5a"
+text = "If a player has 0 or less life, that player loses the game."
+status = "implemented"
+impl_files = ["bin/rules_audit.rs:233", "bin/rules_audit.rs:233", "bin/rules_audit.rs:233", "bin/rules_audit.rs:233", "bin/rules_audit.rs:270", "bin/rules_audit.rs:270", "bin/rules_audit.rs:270", "bin/rules_audit.rs:270", "game/sba.rs:56", "game/sba.rs:130"]
+test_files = []
+notes = ""
+
+[cr_704_5b]
+rule = "704.5b"
+text = "If a player attempted to draw a card from a library with no cards in it since the last time state-based actions were checked, that player loses the game."
+status = "implemented"
+impl_files = ["game/effects/draw.rs:51", "game/sba.rs:64", "game/sba.rs:147", "game/sba.rs:1316", "types/player.rs:68"]
+test_files = []
+notes = ""
+
+[cr_704_5c]
+rule = "704.5c"
+text = "If a player has ten or more poison counters, that player loses the game. Ignore this rule in Two-Headed Giant games; see rule 704.6b instead."
+status = "implemented"
+impl_files = ["game/sba.rs:72", "game/sba.rs:167"]
+test_files = []
+notes = ""
+
+[cr_704_5d]
+rule = "704.5d"
+text = "If a token is in a zone other than the battlefield, it ceases to exist."
+status = "implemented"
+impl_files = ["game/effects/token.rs:420", "game/sba.rs:121", "game/sba.rs:579", "game/sba.rs:594", "game/sba.rs:1446"]
+test_files = []
+notes = ""
+
+[cr_704_5e]
+rule = "704.5e"
+text = "If a copy of a spell is in a zone other than the stack, it ceases to exist. If a copy of a card is in any zone other than the stack or the battlefield, it ceases to exist."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_5f]
+rule = "704.5f"
+text = "If a creature has toughness 0 or less, it’s put into its owner’s graveyard. Regeneration can’t replace this event."
+status = "implemented"
+impl_files = ["game/sba.rs:89", "game/sba.rs:213"]
+test_files = []
+notes = ""
+
+[cr_704_5g]
+rule = "704.5g"
+text = "If a creature has toughness greater than 0, it has damage marked on it, and the total damage marked on it is greater than or equal to its toughness, that creature has been dealt lethal damage and is destroyed. Regeneration can replace this event."
+status = "implemented"
+impl_files = ["game/sba.rs:92", "game/sba.rs:241"]
+test_files = []
+notes = ""
+
+[cr_704_5h]
+rule = "704.5h"
+text = "If a creature has toughness greater than 0, and it’s been dealt damage by a source with deathtouch since the last time state-based actions were checked, that creature is destroyed. Regeneration can replace this event."
+status = "implemented"
+impl_files = ["game/sba.rs:241"]
+test_files = []
+notes = ""
+
+[cr_704_5i]
+rule = "704.5i"
+text = "If a planeswalker has loyalty 0, it’s put into its owner’s graveyard."
+status = "implemented"
+impl_files = ["game/sba.rs:111", "game/sba.rs:446"]
+test_files = []
+notes = ""
+
+[cr_704_5j]
+rule = "704.5j"
+text = "If two or more legendary permanents with the same name are controlled by the same player, that player chooses one of them, and the rest are put into their owners’ graveyards. This is called the “legend rule.”"
+status = "implemented"
+impl_files = ["ai_support/candidates.rs:522", "game/engine.rs:2148", "game/engine.rs:2155", "game/sba.rs:100", "game/sba.rs:324", "game/sba.rs:361", "game/sba.rs:755", "game/sba.rs:1352", "types/actions.rs:139", "types/game_state.rs:588"]
+test_files = []
+notes = ""
+
+[cr_704_5k]
+rule = "704.5k"
+text = "If two or more permanents have the supertype world, all except the one that has had the world supertype for the shortest amount of time are put into their owners’ graveyards. In the event of a tie for the shortest amount of time, all are put into their owners’ graveyards. This is called the “world rule.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_5m]
+rule = "704.5m"
+text = "If an Aura is attached to an illegal object or player, or is not attached to an object or player, that Aura is put into its owner’s graveyard."
+status = "implemented"
+impl_files = ["game/sba.rs:104", "game/sba.rs:378"]
+test_files = []
+notes = ""
+
+[cr_704_5n]
+rule = "704.5n"
+text = "If an Equipment or Fortification is attached to an illegal permanent or to a player, it becomes unattached from that permanent or player. It remains on the battlefield."
+status = "implemented"
+impl_files = ["game/sba.rs:108", "game/sba.rs:408"]
+test_files = []
+notes = ""
+
+[cr_704_5p]
+rule = "704.5p"
+text = "If a battle or creature is attached to an object or player, it becomes unattached and remains on the battlefield. Similarly, if any nonbattle, noncreature permanent that’s neither an Aura, an Equipment, nor a Fortification is attached to an object or player, it becomes unattached and remains on the battlefield."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_5q]
+rule = "704.5q"
+text = "If a permanent has both a +1/+1 counter and a -1/-1 counter on it, N +1/+1 and N -1/-1 counters are removed from it, where N is the smaller of the number of +1/+1 and -1/-1 counters on it."
+status = "implemented"
+impl_files = ["game/sba.rs:118", "game/sba.rs:548", "game/sba.rs:568", "game/sba.rs:1377"]
+test_files = []
+notes = ""
+
+[cr_704_5r]
+rule = "704.5r"
+text = "If a permanent with an ability that says it can’t have more than N counters of a certain kind on it has more than N counters of that kind on it, all but N of those counters are removed from it."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_5s]
+rule = "704.5s"
+text = "If the number of lore counters on a Saga permanent with one or more chapter abilities is greater than or equal to its final chapter number and it isn’t the source of a chapter ability that has triggered but not yet left the stack, that Saga’s controller sacrifices it. See rule 714, “Saga Cards.”"
+status = "implemented"
+impl_files = ["game/sba.rs:114", "game/sba.rs:474"]
+test_files = []
+notes = ""
+
+[cr_704_5t]
+rule = "704.5t"
+text = "If a player’s venture marker is on the bottommost room of a dungeon card, and that dungeon card isn’t the source of a room ability that has triggered but not yet left the stack, the dungeon card’s owner removes it from the game. See rule 309, “Dungeons.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_5u]
+rule = "704.5u"
+text = "If a permanent with space sculptor and any creatures without a sector designation are on the battlefield, each player who controls one or more of those creatures and doesn’t control a permanent with space sculptor chooses a sector designation for each of those creatures they control. Then, each other player who controls one or more of those creatures chooses a sector designation for each of those creatures they control. See rule 702.158, “Space Sculptor.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_5v]
+rule = "704.5v"
+text = "If a battle has defense 0 and it isn’t the source of an ability that has triggered but not yet left the stack, it’s put into its owner’s graveyard."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_5w]
+rule = "704.5w"
+text = "If a battle has no player in the game designated as its protector and no attacking creatures are currently attacking that battle, that battle’s controller chooses an appropriate player to be its protector based on its battle type. If no player can be chosen this way, the battle is put into its owner’s graveyard. See rule 310, “Battles.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_5x]
+rule = "704.5x"
+text = "If a Siege’s controller is also its designated protector, that player chooses an opponent to become its protector. If no player can be chosen this way, the battle is put into its owner’s graveyard. See rule 310, “Battles.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_5y]
+rule = "704.5y"
+text = "If a permanent has more than one Role controlled by the same player attached to it, each of those Roles except the one with the most recent timestamp is put into its owner’s graveyard."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_5z]
+rule = "704.5z"
+text = "If a player controls a permanent with start your engines! and that player has no speed, that player’s speed becomes 1. See rule 702.179, “Start Your Engines!”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_6]
+rule = "704.6"
+text = "Some variant games include additional state-based actions that aren’t normally applicable:"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_6a]
+rule = "704.6a"
+text = "In a Two-Headed Giant game, if a team has 0 or less life, that team loses the game. See rule 810, “Two-Headed Giant Variant.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_6b]
+rule = "704.6b"
+text = "In a Two-Headed Giant game, if a team has fifteen or more poison counters, that team loses the game. See rule 810, “Two-Headed Giant Variant.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_6c]
+rule = "704.6c"
+text = "In a Commander game, a player who’s been dealt 21 or more combat damage by the same commander over the course of the game loses the game. See rule 903, “Commander.”"
+status = "implemented"
+impl_files = ["game/combat_damage.rs:490", "game/sba.rs:80", "game/sba.rs:187"]
+test_files = []
+notes = ""
+
+[cr_704_6d]
+rule = "704.6d"
+text = "In a Commander game, if a commander is in a graveyard or in exile and that object was put into that zone since the last time state-based actions were checked, its owner may put it into the command zone. See rule 903, “Commander.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_6e]
+rule = "704.6e"
+text = "In an Archenemy game, if a non-ongoing scheme card is face up in the command zone, and no triggered abilities of any scheme are on the stack or waiting to be put on the stack, that scheme card is turned face down and put on the bottom of its owner’s scheme deck. See rule 904, “Archenemy.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_6f]
+rule = "704.6f"
+text = "In a Planechase game, if a phenomenon card is face up in the command zone, and it isn’t the source of a triggered ability that has triggered but not yet left the stack, the planar controller planeswalks. See rule 901, “Planechase.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_7]
+rule = "704.7"
+text = "If multiple state-based actions would have the same result at the same time, a single replacement effect will replace all of them."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_704_8]
+rule = "704.8"
+text = "If a state-based action results in a permanent leaving the battlefield at the same time other state-based actions were performed, that permanent’s last known information is derived from the game state before any of those state-based actions were performed."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""

@@ -1,0 +1,125 @@
+# Comprehensive Rules Section 500: General (Turn Structure)
+
+[_meta]
+section = 500
+title = "General (Turn Structure)"
+
+[cr_500_1]
+rule = "500.1"
+text = "A turn consists of five phases, in this order: beginning, precombat main, combat, postcombat main, and ending. Each of these phases takes place every turn, even if nothing happens during the phase. The beginning, combat, and ending phases are further broken down into steps, which proceed in order."
+status = "implemented"
+impl_files = ["game/players.rs:12", "game/turns.rs:73", "game/turns.rs:93", "types/phase.rs:4"]
+test_files = []
+notes = ""
+
+[cr_500_2]
+rule = "500.2"
+text = "A phase or step in which players receive priority ends when the stack is empty and all players pass in succession. Simply having the stack become empty doesn’t cause such a phase or step to end; all players have to pass in succession with the stack empty. Because of this, each player gets a chance to add new things to the stack before that phase or step ends."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_500_3]
+rule = "500.3"
+text = "A step in which no players receive priority ends when all specified actions that take place during that step are completed. The only such steps are the untap step (see rule 502) and certain cleanup steps (see rule 514)."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_500_4]
+rule = "500.4"
+text = "As a step or phase begins, if there are effects that last until that step or phase, those effects expire."
+status = "implemented"
+impl_files = ["game/turns.rs:37", "types/mana.rs:135", "types/mana.rs:443"]
+test_files = []
+notes = ""
+
+[cr_500_5]
+rule = "500.5"
+text = "As a step or phase ends, if there are effects that last until the end of that step or phase, those effects expire. Then any unspent mana left in a player’s mana pool empties. This is a turn-based action that doesn’t use the stack (see rule 703.4q)."
+status = "implemented"
+impl_files = ["game/turns.rs:48"]
+test_files = []
+notes = ""
+
+[cr_500_5a]
+rule = "500.5a"
+text = "Effects that last “until end of combat” expire at the end of the combat phase, not at the beginning of the end of combat step."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_500_5b]
+rule = "500.5b"
+text = "Effects that last “until end of turn” are subject to special rules; see rule 514.2."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_500_6]
+rule = "500.6"
+text = "When a phase or step begins, any abilities that trigger “at the beginning of” that phase or step trigger. They are put on the stack the next time a player would receive priority. (See rule 117, “Timing and Priority.”)"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_500_7]
+rule = "500.7"
+text = "Some effects can give a player extra turns. They do this by adding the turns directly after the specified turn. If a player is given multiple extra turns, the extra turns are added one at a time. If multiple players are given extra turns, the extra turns are added one at a time, in APNAP order (see rule 101.4). The most recently created turn will be taken first."
+status = "implemented"
+impl_files = ["game/effects/extra_turn.rs:7", "game/effects/extra_turn.rs:21", "game/effects/extra_turn.rs:35", "game/effects/extra_turn.rs:110", "game/turns.rs:77", "game/turns.rs:1300", "game/turns.rs:1316", "parser/oracle_effect/imperative.rs:1370", "parser/oracle_effect/mod.rs:1434", "types/ability.rs:2162", "types/game_state.rs:933"]
+test_files = []
+notes = ""
+
+[cr_500_8]
+rule = "500.8"
+text = "Some effects can add phases to a turn. They do this by adding the phases directly after the specified phase. If multiple extra phases are created after the same phase, the most recently created phase will occur first."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_500_9]
+rule = "500.9"
+text = "Some effects can add steps to a phase. They do this by adding the steps directly after a specified step or directly before a specified step. If multiple extra steps are created after the same step, the most recently created step will occur first."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_500_10]
+rule = "500.10"
+text = "Some effects add a step after a particular phase. In that case, that effect first creates the phase which normally contains that step directly after the specified phase. Any other steps that phase would normally have are skipped (see rule 500.11)."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_500_10a]
+rule = "500.10a"
+text = "If an effect that says “you get” an additional step or phase would add a step or phase to a turn other than its controller’s, no steps or phases are added."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_500_11]
+rule = "500.11"
+text = "Some effects can cause a step, phase, or turn to be skipped. To skip a step, phase, or turn is to proceed past it as though it didn’t exist. See rule 614.10."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_500_12]
+rule = "500.12"
+text = "No game events can occur between steps, phases, or turns."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""

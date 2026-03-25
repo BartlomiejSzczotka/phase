@@ -1,0 +1,29 @@
+# Comprehensive Rules Section 503: Upkeep Step
+
+[_meta]
+section = 503
+title = "Upkeep Step"
+
+[cr_503_1]
+rule = "503.1"
+text = "The upkeep step has no turn-based actions. Once it begins, the active player gets priority. (See rule 117, “Timing and Priority.”)"
+status = "implemented"
+impl_files = ["game/turns.rs:395"]
+test_files = []
+notes = ""
+
+[cr_503_1a]
+rule = "503.1a"
+text = "Any abilities that triggered during the untap step and any abilities that triggered at the beginning of the upkeep are put onto the stack before the active player gets priority; the order in which they triggered doesn’t matter. (See rule 603, “Handling Triggered Abilities.”)"
+status = "implemented"
+impl_files = ["game/engine.rs:6743", "game/turns.rs:418", "parser/oracle_trigger.rs:1557", "parser/oracle_trigger.rs:4278"]
+test_files = []
+notes = ""
+
+[cr_503_2]
+rule = "503.2"
+text = "If a spell states that it may be cast only “after [a player’s] upkeep step,” and the turn has multiple upkeep steps, that spell may be cast any time after the first upkeep step ends."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""

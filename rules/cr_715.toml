@@ -1,0 +1,101 @@
+# Comprehensive Rules Section 715: Adventurer Cards
+
+[_meta]
+section = 715
+title = "Adventurer Cards"
+
+[cr_715_1]
+rule = "715.1"
+text = "Adventurer cards have a two-part card frame, with a smaller frame inset within their text box."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_715_2]
+rule = "715.2"
+text = "The text that appears in the inset frame on the left defines alternative characteristics that the object may have while it’s a spell. The card’s normal characteristics appear as usual, although with a smaller text box on the right."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_715_2a]
+rule = "715.2a"
+text = "If an effect refers to a card, spell, or permanent that “has an Adventure,” it refers to an object that has the alternative characteristics of an Adventure spell, even if the object currently doesn’t use them."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_715_2b]
+rule = "715.2b"
+text = "The existence and values of these alternative characteristics are part of the object’s copiable values."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_715_2c]
+rule = "715.2c"
+text = "Although adventurer cards are printed with multiple sets of characteristics, each adventurer card is only one card. For example, a player who has drawn or discarded an adventurer card has drawn or discarded one card, not two."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_715_3]
+rule = "715.3"
+text = "As a player plays an adventurer card, the player chooses whether they play the card normally or as an Adventure."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_715_3a]
+rule = "715.3a"
+text = "When casting an adventurer card as an Adventure, only the alternative characteristics are evaluated to see if it can be cast."
+status = "implemented"
+impl_files = ["game/casting.rs:718", "game/casting.rs:748", "game/casting.rs:945", "game/engine.rs:326", "types/ability.rs:1485", "types/actions.rs:86", "types/game_state.rs:421"]
+test_files = []
+notes = ""
+
+[cr_715_3b]
+rule = "715.3b"
+text = "While on the stack as an Adventure, the spell has only its alternative characteristics."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_715_3c]
+rule = "715.3c"
+text = "If an Adventure spell is copied, the copy is also an Adventure. It has the alternative characteristics of the spell and not the normal characteristics of the card that represents the Adventure spell. Any rule or effect that refers to a spell cast as an Adventure refers to the copy as well."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_715_3d]
+rule = "715.3d"
+text = "Instead of putting a spell that was cast as an Adventure into its owner’s graveyard as it resolves, its controller exiles it. For as long as that card remains exiled, that player may play it. It can’t be cast as an Adventure this way, although other effects that allow a player to cast it may allow a player to cast it as an Adventure."
+status = "implemented"
+impl_files = ["game/casting.rs:110", "game/casting.rs:373", "game/game_object.rs:240", "game/stack.rs:97", "game/stack.rs:123"]
+test_files = []
+notes = ""
+
+[cr_715_4]
+rule = "715.4"
+text = "In every zone except the stack, and while on the stack not as an Adventure, an adventurer card has only its normal characteristics."
+status = "implemented"
+impl_files = ["types/game_state.rs:800"]
+test_files = []
+notes = ""
+
+[cr_715_5]
+rule = "715.5"
+text = "If an effect instructs a player to choose a card name and the player wants to choose an adventurer card’s alternative name, the player may do so."
+status = "implemented"
+impl_files = ["types/ability.rs:640"]
+test_files = []
+notes = ""

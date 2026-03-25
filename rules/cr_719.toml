@@ -1,0 +1,53 @@
+# Comprehensive Rules Section 719: Case Cards
+
+[_meta]
+section = 719
+title = "Case Cards"
+
+[cr_719_1]
+rule = "719.1"
+text = "Each Case card’s illustration is vertically oriented on the left side of the card, and its type line is along the bottom of the card."
+status = "implemented"
+impl_files = ["game/printed_cards.rs:72", "parser/oracle.rs:55", "parser/oracle.rs:273", "parser/oracle.rs:1345", "types/ability.rs:1209", "types/card.rs:51"]
+test_files = []
+notes = ""
+
+[cr_719_2]
+rule = "719.2"
+text = "The Case frame has no additional rules meaning."
+status = "implemented"
+impl_files = ["database/synthesis.rs:307", "game/effects/solve_case.rs:5", "game/trigger_matchers.rs:1061", "game/triggers.rs:926", "game/triggers.rs:976", "types/ability.rs:1210", "types/ability.rs:2001", "types/ability.rs:3095"]
+test_files = []
+notes = ""
+
+[cr_719_3]
+rule = "719.3"
+text = "Case cards have two special keyword abilities that appear before a long dash and represent a triggered ability and an ability that may be static, triggered, or activated."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_719_3a]
+rule = "719.3a"
+text = "“To solve — [Condition]” means “At the beginning of your end step, if [condition] and this Case is not solved, this Case becomes solved.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_719_3b]
+rule = "719.3b"
+text = "Solved is a designation a permanent can have. It has no rules meaning other than to act as a marker that spells and abilities can identify. Once a permanent becomes solved, it stays solved until it leaves the battlefield. The solved designation is neither an ability nor part of the permanent’s copiable values."
+status = "implemented"
+impl_files = ["game/effects/solve_case.rs:14", "game/game_object.rs:97", "game/game_object.rs:271", "types/events.rs:199"]
+test_files = []
+notes = ""
+
+[cr_719_3c]
+rule = "719.3c"
+text = "If a Case has the solved designation, “Solved — [Ability text]” is an ability that may affect the game if it’s a static ability, it may trigger if it’s a triggered ability, and it can be activated if it’s an activated ability. See rule 702.169, “Solved.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""

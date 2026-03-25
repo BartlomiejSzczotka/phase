@@ -1,0 +1,29 @@
+# Comprehensive Rules Section 404: Graveyard
+
+[_meta]
+section = 404
+title = "Graveyard"
+
+[cr_404_1]
+rule = "404.1"
+text = "A player’s graveyard is their discard pile. Any object that’s countered, discarded, destroyed, or sacrificed is put on top of its owner’s graveyard, as is any instant or sorcery spell that’s finished resolving. Each player’s graveyard starts out empty."
+status = "implemented"
+impl_files = ["parser/oracle_effect/mod.rs:4106"]
+test_files = []
+notes = ""
+
+[cr_404_2]
+rule = "404.2"
+text = "Each graveyard is kept in a single face-up pile. A player can examine the cards in any graveyard at any time but normally can’t change their order. Additional rules applying to sanctioned tournaments may allow a player to change the order of cards in their graveyard."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_404_3]
+rule = "404.3"
+text = "If an effect or rule puts two or more cards into the same graveyard at the same time, the owner of those cards may arrange them in any order."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""

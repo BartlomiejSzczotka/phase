@@ -1,0 +1,277 @@
+# Comprehensive Rules Section 700: General (Additional Rules)
+
+[_meta]
+section = 700
+title = "General (Additional Rules)"
+
+[cr_700_1]
+rule = "700.1"
+text = "Anything that happens in a game is an event. Multiple events may take place during the resolution of a spell or ability. The text of triggered abilities and replacement effects defines the event they’re looking for. One “happening” may be treated as a single event by one ability and as multiple events by another."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_2]
+rule = "700.2"
+text = "A spell or ability is modal if it has two or more options in a bulleted list preceded by instructions for a player to choose a number of those options, such as “Choose one —.” Each of those options is a mode. Modal cards printed prior to the Khans of Tarkir™ set didn’t use bulleted lists for the modes; these cards have received errata in the Oracle card reference so the modes do appear in a bulleted list."
+status = "implemented"
+impl_files = ["ai_support/candidates.rs:223", "game/ability_utils.rs:48", "game/ability_utils.rs:109", "game/ability_utils.rs:147", "game/ability_utils.rs:731", "game/effects/choose.rs:8", "game/effects/choose.rs:113", "game/effects/choose_card.rs:5", "game/effects/choose_from_zone.rs:8", "game/effects/choose_from_zone.rs:46", "game/effects/choose_from_zone.rs:57", "game/effects/choose_from_zone.rs:75", "game/engine.rs:1890", "game/engine.rs:3030", "game/engine.rs:6412", "parser/oracle_effect/imperative.rs:1282", "parser/oracle_effect/sequence.rs:669", "parser/oracle_modal.rs:211", "types/ability.rs:23", "types/ability.rs:29", "types/ability.rs:2088", "types/ability.rs:2665", "types/ability.rs:2668", "types/game_state.rs:344", "types/game_state.rs:471", "types/game_state.rs:1042", "types/game_state.rs:1047"]
+test_files = []
+notes = ""
+
+[cr_700_2a]
+rule = "700.2a"
+text = "The controller of a modal spell or activated ability chooses the mode(s) as part of casting that spell or activating that ability. If one of the modes would be illegal (due to an inability to choose legal targets, for example), that mode can’t be chosen. (See rule 601.2b.)"
+status = "implemented"
+impl_files = ["game/ability_utils.rs:701", "game/engine.rs:3025"]
+test_files = []
+notes = ""
+
+[cr_700_2b]
+rule = "700.2b"
+text = "The controller of a modal triggered ability chooses the mode(s) as part of putting that ability on the stack. If one of the modes would be illegal (due to an inability to choose legal targets, for example), that mode can’t be chosen. If no mode is chosen, the ability is removed from the stack. (See rule 603.3c.)"
+status = "implemented"
+impl_files = ["game/triggers.rs:49", "game/triggers.rs:520"]
+test_files = []
+notes = ""
+
+[cr_700_2c]
+rule = "700.2c"
+text = "If a spell or ability targets one or more targets only if a particular mode is chosen for it, its controller will need to choose those targets only if they chose that mode. Otherwise, the spell or ability is treated as though it did not have those targets. (See rule 601.2c.)"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_2d]
+rule = "700.2d"
+text = "If a player is allowed to choose more than one mode for a modal spell or ability, that player normally can’t choose the same mode more than once. However, some modal spells include the instruction “You may choose the same mode more than once.” If a particular mode is chosen multiple times, the spell is treated as if that mode appeared that many times in sequence. If that mode requires a target, the same player or object may be chosen as the target for each of those modes, or different targets may be chosen."
+status = "implemented"
+impl_files = ["ai_support/candidates.rs:260", "game/ability_utils.rs:703", "game/ability_utils.rs:742"]
+test_files = []
+notes = ""
+
+[cr_700_2e]
+rule = "700.2e"
+text = "Some spells and abilities specify that a player other than their controller chooses a mode for it. In that case, the other player does so when the spell or ability’s controller normally would do so. If there is more than one other player who could make such a choice, the spell or ability’s controller decides which of those players will make the choice."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_2f]
+rule = "700.2f"
+text = "Modal spells and abilities may have different targeting requirements for each mode. Changing a spell or ability’s target can’t change its mode."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_2g]
+rule = "700.2g"
+text = "A copy of a modal spell or ability copies the mode(s) chosen for it. The controller of the copy can’t choose a different mode. (See rule 707.10.)"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_2h]
+rule = "700.2h"
+text = "Some modal spells have one or more modes with a cost listed before the effect of that mode. This indicates that the mode has an additional cost that must be paid as the spell is cast if that mode is chosen. If more than one such mode is chosen, all additional costs must be paid to cast that spell. Paying these costs follows the rules for paying additional costs in rules 601.2b and 601.2f–h."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_2i]
+rule = "700.2i"
+text = "Some modal spells have one or more pawprint symbols ({P}) rather than bullet points, as well as an instruction to choose up to a specified number of {P} “worth of modes.” While casting such a spell, its controller can choose any number of modes such that the total number of pawprint symbols listed for the chosen modes is not greater than the specified number."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_3]
+rule = "700.3"
+text = "Some effects cause objects to be temporarily grouped into piles."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_3a]
+rule = "700.3a"
+text = "Each of the affected objects must be put into exactly one of those piles, unless the effect specifies otherwise."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_3b]
+rule = "700.3b"
+text = "Each object in a pile is still an individual object. The pile is not an object."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_3c]
+rule = "700.3c"
+text = "Objects grouped into piles don’t leave the zone they’re currently in. If cards in a graveyard are split into piles, the order of the graveyard must be maintained."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_3d]
+rule = "700.3d"
+text = "A pile can contain zero or more objects."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_4]
+rule = "700.4"
+text = "The term dies means “is put into a graveyard from the battlefield.”"
+status = "implemented"
+impl_files = ["game/restrictions.rs:232", "game/triggers.rs:955", "parser/oracle_effect/mod.rs:137", "parser/oracle_trigger.rs:715", "parser/oracle_trigger.rs:794", "parser/oracle_trigger.rs:1045", "parser/oracle_trigger.rs:2201", "parser/oracle_trigger.rs:2245", "parser/oracle_trigger.rs:3397", "parser/oracle_trigger.rs:4170", "parser/oracle_trigger.rs:4548", "types/ability.rs:3118"]
+test_files = []
+notes = ""
+
+[cr_700_5]
+rule = "700.5"
+text = "A player’s devotion to [color] is equal to the number of mana symbols of that color among the mana costs of permanents that player controls. A player’s devotion to [color 1] and [color 2] is equal to the number of mana symbols among the mana costs of permanents that player controls that are [color 1], [color 2], or both colors."
+status = "implemented"
+impl_files = ["game/derived.rs:12", "game/devotion.rs:8", "parser/oracle_target.rs:591", "parser/oracle_target.rs:1176", "parser/oracle_target.rs:2689", "types/ability.rs:837", "types/ability.rs:1072", "types/mana.rs:229"]
+test_files = []
+notes = ""
+
+[cr_700_5a]
+rule = "700.5a"
+text = "A player’s devotion to each color and combination of colors, taking into account any effects that modify devotion, is calculated after considering any copy, control, or text-changing effects but before any other effects that modify the characteristics of permanents. This is an exception to 613.10. See also rule 613, “Interaction of Continuous Effects.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_6]
+rule = "700.6"
+text = "The term historic refers to an object that has the legendary supertype, the artifact card type, or the Saga subtype."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_7]
+rule = "700.7"
+text = "If an ability uses a phrase such as “this [something]” to identify an object, where [something] is a characteristic or other quality, it is referring to that particular object, even if it isn’t the appropriate quality at the time."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_8]
+rule = "700.8"
+text = "Some cards refer to a player’s party. A player’s party consists of up to one Cleric creature that player controls, up to one Rogue creature they control, up to one Warrior creature they control, and up to one Wizard creature they control."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_8a]
+rule = "700.8a"
+text = "If a spell, ability, or effect needs to determine the number of creatures in a player’s party, the calculation of that number is performed automatically by the game and results in a number between zero and four. Players don’t declare which specific creatures they control are in their party for such an effect."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_8b]
+rule = "700.8b"
+text = "If a creature has multiple creature types for which it could be the party member, it is counted as the party member for only one of those types. If there are different ways to count such a creature that results in different numbers of creatures in a player’s party, it is counted in such a way to get the highest result."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_8c]
+rule = "700.8c"
+text = "A player has a full party if there are four creatures in that player’s party."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_8d]
+rule = "700.8d"
+text = "One card, Stick Together, instructs players to choose a party from among creatures they control. To do so, for each of the creature types listed in rule 700.8, each player chooses up to one creature they control of that type."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_9]
+rule = "700.9"
+text = "Some cards refer to modified permanents. A permanent is modified if it has one or more counters on it (see rule 122), if it is equipped (see rule 301.5), or if it is enchanted by an Aura that is controlled by that permanent’s controller (see rule 303.4)."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_10]
+rule = "700.10"
+text = "Some cards refer to a permanent “that was activated this turn.” This means that the permanent was the source of an ability that was activated this turn, regardless of whether that permanent still has that activated ability or the player who activated it is still in the game."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_11]
+rule = "700.11"
+text = "Some cards refer to whether a player has “descended this turn.” This means that a permanent card has been put into that player’s graveyard from anywhere this turn. “The number of times [a player] descended this turn” means “the number of permanent cards put into [that player’s] graveyard from anywhere this turn.” In both cases, no permanent cards put into the player’s graveyard that turn are required to still be in that graveyard."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_12]
+rule = "700.12"
+text = "The term outlaw refers to an object that has the Assassin, Mercenary, Pirate, Rogue, and/or Warlock creature types."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_12a]
+rule = "700.12a"
+text = "Some cards refer to outlaws that a player controls. Only outlaw permanents are considered for these effects unless otherwise specified."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_700_13]
+rule = "700.13"
+text = "Some cards refer to committing a crime. A player commits a crime as that player casts a spell, activates an ability, or puts a triggered ability on the stack and that spell or ability targets at least one opponent; at least one permanent, spell, or ability an opponent controls; and/or at least one card in an opponent’s graveyard."
+status = "implemented"
+impl_files = ["game/casting.rs:33"]
+test_files = []
+notes = ""
+
+[cr_700_14]
+rule = "700.14"
+text = "Some abilities trigger “Whenever you expend N.” A player expends N if they pay a cost to cast a spell and the amount of mana that player spent this turn to cast spells prior to paying that cost was less than N and became at least N after paying that cost."
+status = "implemented"
+impl_files = ["game/casting_costs.rs:796", "game/casting_costs.rs:806", "game/casting_costs.rs:887", "game/trigger_matchers.rs:151", "game/trigger_matchers.rs:1747", "game/trigger_matchers.rs:1765", "game/turns.rs:115", "parser/oracle_trigger.rs:1587", "types/ability.rs:3252", "types/events.rs:267", "types/game_state.rs:1037"]
+test_files = []
+notes = ""
+
+[cr_700_15]
+rule = "700.15"
+text = "The term enter[s] is short for “enter[s] the battlefield.”"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""

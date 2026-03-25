@@ -1,0 +1,29 @@
+# Comprehensive Rules Section 511: End of Combat Step
+
+[_meta]
+section = 511
+title = "End of Combat Step"
+
+[cr_511_1]
+rule = "511.1"
+text = "The end of combat step has no turn-based actions. Once it begins, the active player gets priority. (See rule 117, “Timing and Priority.”)"
+status = "implemented"
+impl_files = ["game/turns.rs:544"]
+test_files = []
+notes = ""
+
+[cr_511_2]
+rule = "511.2"
+text = "Abilities that trigger “at end of combat” trigger as the end of combat step begins. Effects that last “until end of combat” expire at the end of the combat phase."
+status = "implemented"
+impl_files = ["parser/oracle_trigger.rs:1520", "parser/oracle_trigger.rs:1528", "parser/oracle_trigger.rs:4218", "parser/oracle_trigger.rs:4230", "parser/oracle_trigger.rs:4242"]
+test_files = []
+notes = ""
+
+[cr_511_3]
+rule = "511.3"
+text = "As soon as the end of combat step ends, all creatures, battles, and planeswalkers are removed from combat. After the end of combat step ends, the combat phase is over and the postcombat main phase begins (see rule 505)."
+status = "implemented"
+impl_files = ["game/turns.rs:546"]
+test_files = []
+notes = ""

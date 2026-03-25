@@ -6,6 +6,7 @@ license.workspace = true
 
 [features]
 cli = ["tracing-subscriber"]
+audit = ["toml"]
 
 [dependencies]
 serde = { workspace = true }
@@ -16,6 +17,7 @@ rand_chacha = "0.9"
 indexmap = { version = "2", features = ["serde"] }
 petgraph = "0.6"
 tracing-subscriber = { version = "0.3", features = ["env-filter"], optional = true }
+toml = { version = "0.8", optional = true }
 
 serde_json = "1"
 schemars = "1"
@@ -26,9 +28,18 @@ name = "coverage-report"
 path = "src/bin/coverage_report.rs"
 
 [[bin]]
+name = "parser-gap-analyzer"
+path = "src/bin/parser_gap_analyzer.rs"
+
+[[bin]]
 name = "oracle-gen"
 path = "src/bin/oracle_gen.rs"
 required-features = ["cli"]
+
+[[bin]]
+name = "rules-audit"
+path = "src/bin/rules_audit.rs"
+required-features = ["audit"]
 
 [dev-dependencies]
 tempfile = "3"

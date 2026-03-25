@@ -1,0 +1,317 @@
+# Comprehensive Rules Section 118: Costs
+
+[_meta]
+section = 118
+title = "Costs"
+
+[cr_118_1]
+rule = "118.1"
+text = "A cost is an action or payment necessary to take another action or to stop another action from taking place. To pay a cost, a player carries out the instructions specified by the spell, ability, or effect that contains that cost."
+status = "implemented"
+impl_files = ["game/effects/pay.rs:8", "parser/oracle_effect/types.rs:403", "types/ability.rs:1295", "types/ability.rs:2028"]
+test_files = []
+notes = ""
+
+[cr_118_2]
+rule = "118.2"
+text = "If a cost includes a mana payment, the player paying the cost has a chance to activate mana abilities. Paying the cost to cast a spell or activate an activated ability follows the steps in rules 601.2f–h."
+status = "implemented"
+impl_files = ["game/effects/pay.rs:9", "game/effects/pay.rs:39", "parser/oracle_effect/imperative.rs:1128"]
+test_files = []
+notes = ""
+
+[cr_118_3]
+rule = "118.3"
+text = "A player can’t pay a cost without having the necessary resources to pay it fully. For example, a player with only 1 life can’t pay a cost of 2 life, and a permanent that’s already tapped can’t be tapped to pay a cost. See rule 202, “Mana Cost and Color,” and rule 602, “Activating Activated Abilities.”"
+status = "implemented"
+impl_files = ["ai_support/candidates.rs:366", "game/casting.rs:1396", "game/casting.rs:1402", "game/casting.rs:1489", "game/casting.rs:1522", "game/casting.rs:1689", "game/casting_costs.rs:132", "game/casting_costs.rs:504", "game/casting_costs.rs:573", "game/casting_costs.rs:577", "game/effects/pay.rs:39", "game/engine.rs:445", "game/sacrifice.rs:24", "types/game_state.rs:539"]
+test_files = []
+notes = ""
+
+[cr_118_3a]
+rule = "118.3a"
+text = "Paying mana is done by removing the indicated mana from a player’s mana pool. (Players can always pay 0 mana.) If excess mana remains in that player’s mana pool after making that payment, the player announces what mana is still there."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_3b]
+rule = "118.3b"
+text = "Paying life is done by subtracting the indicated amount of life from a player’s life total. (Players can always pay 0 life.)"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_3c]
+rule = "118.3c"
+text = "Activating mana abilities is not mandatory, even if paying a cost is."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_4]
+rule = "118.4"
+text = "Some costs include an {X} or an X. See rule 107.3."
+status = "implemented"
+impl_files = ["game/quantity.rs:127", "parser/oracle_static.rs:1255", "types/ability.rs:1093"]
+test_files = []
+notes = ""
+
+[cr_118_5]
+rule = "118.5"
+text = "Some costs are represented by {0}, or are reduced to {0}. The action necessary for a player to pay such a cost is the player’s acknowledgment that they are paying it. Even though such a cost requires no resources, it’s not automatically paid."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_5a]
+rule = "118.5a"
+text = "A spell whose mana cost is {0} must still be cast the same way as one with a cost greater than zero; it won’t cast itself automatically. The same is true for an activated ability whose cost is {0}."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_6]
+rule = "118.6"
+text = "Some objects have no mana cost. This represents an unpayable cost. An ability can also have an unpayable cost if its cost is based on the mana cost of an object with no mana cost. Attempting to cast a spell or activate an ability that has an unpayable cost is a legal action. However, attempting to pay an unpayable cost is an illegal action."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_6a]
+rule = "118.6a"
+text = "If an unpayable cost is increased by an effect or an additional cost is imposed, the cost is still unpayable. If an alternative cost is applied to an unpayable cost, including an effect that allows a player to cast a spell without paying its mana cost, the alternative cost may be paid."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_7]
+rule = "118.7"
+text = "What a player actually needs to do to pay a cost may be changed or reduced by effects. If the mana component of a cost is reduced to nothing by cost reduction effects, it’s considered to be {0}. Paying a cost changed or reduced by an effect counts as paying the original cost."
+status = "implemented"
+impl_files = ["game/effects/counter.rs:60"]
+test_files = []
+notes = ""
+
+[cr_118_7a]
+rule = "118.7a"
+text = "Effects that reduce a cost by an amount of generic mana affect only the generic mana component of that cost. They can’t affect the colored or colorless mana components of that cost."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_7b]
+rule = "118.7b"
+text = "If a cost is reduced by an amount of colored or colorless mana, but the cost doesn’t require mana of that type, the cost is reduced by that amount of generic mana."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_7c]
+rule = "118.7c"
+text = "If a cost is reduced by an amount of colored mana that exceeds its mana component of that color, the cost’s mana component of that color is reduced to nothing and the cost’s generic mana component is reduced by the difference."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_7d]
+rule = "118.7d"
+text = "If a cost is reduced by an amount of colorless mana that exceeds its colorless mana component, the cost’s colorless mana component is reduced to nothing and the cost’s generic mana component is reduced by the difference."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_7e]
+rule = "118.7e"
+text = "If a cost is reduced by an amount of mana represented by a hybrid mana symbol, the player paying that cost chooses one half of that symbol at the time the cost reduction is applied (see rule 601.2f). If a colored half is chosen, the cost is reduced by one mana of that color. If a generic half is chosen, the cost is reduced by an amount of generic mana equal to that half’s number."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_7f]
+rule = "118.7f"
+text = "If a cost is reduced by an amount of mana represented by a Phyrexian mana symbol, the cost is reduced by one mana of that symbol’s color."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_7g]
+rule = "118.7g"
+text = "If a cost is reduced by an amount of mana represented by one or more snow mana symbols, the cost is reduced by that much generic mana."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_8]
+rule = "118.8"
+text = "Some spells and abilities have additional costs. An additional cost is a cost listed in a spell’s rules text, or applied to a spell or ability from another effect, that its controller must pay at the same time they pay the spell’s mana cost or the ability’s activation cost. Note that some additional costs are listed in keywords; see rule 702."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_8a]
+rule = "118.8a"
+text = "Any number of additional costs may be applied to a spell as it’s being cast or to an ability as it’s being activated. The controller of the spell or ability announces their intentions to pay any or all of those costs as described in rule 601.2b."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_8b]
+rule = "118.8b"
+text = "Some additional costs are optional."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_8c]
+rule = "118.8c"
+text = "If an effect instructs a player to cast a spell “if able,” and that spell has a mandatory additional cost that includes actions involving cards with a stated quality in a hidden zone, the player isn’t required to cast that spell, even if those cards are present in that zone."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_8d]
+rule = "118.8d"
+text = "Additional costs don’t change a spell’s mana cost, only what its controller has to pay to cast it. Spells and abilities that ask for that spell’s mana cost still see the original value."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_9]
+rule = "118.9"
+text = "Some spells have alternative costs. An alternative cost is a cost listed in a spell’s text, or applied to it from another effect, that its controller may pay rather than paying the spell’s mana cost. Alternative costs are usually phrased, “You may [action] rather than pay [this object’s] mana cost,” or “You may cast [this object] without paying its mana cost.” Note that some alternative costs are listed in keywords; see rule 702."
+status = "implemented"
+impl_files = ["game/casting.rs:515", "game/effects/cast_from_zone.rs:10", "game/effects/cast_from_zone.rs:65", "parser/oracle_effect/mod.rs:1494", "parser/oracle_effect/mod.rs:1546", "types/ability.rs:2032"]
+test_files = []
+notes = ""
+
+[cr_118_9a]
+rule = "118.9a"
+text = "Only one alternative cost can be applied to any one spell as it’s being cast. The controller of the spell announces their intentions to pay that cost as described in rule 601.2b."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_9b]
+rule = "118.9b"
+text = "Alternative costs are generally optional. An effect that allows you to cast a spell may require a certain alternative cost to be paid."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_9c]
+rule = "118.9c"
+text = "An alternative cost doesn’t change a spell’s mana cost, only what its controller has to pay to cast it. Spells and abilities that ask for that spell’s mana cost still see the original value."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_9d]
+rule = "118.9d"
+text = "If an alternative cost is being paid to cast a spell, any additional costs, cost increases, and cost reductions that affect that spell are applied to that alternative cost. (See rule 601.2f.)"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_10]
+rule = "118.10"
+text = "Each payment of a cost applies to only one spell, ability, or effect. For example, a player can’t sacrifice just one creature to activate the activated abilities of two permanents that each require sacrificing a creature as a cost. Also, the resolution of a spell or ability doesn’t pay another spell or ability’s cost, even if part of its effect is doing the same thing the other cost asks for."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_11]
+rule = "118.11"
+text = "The actions performed when paying a cost may be modified by effects. Even if they are, meaning the actions that are performed don’t match the actions that are called for, the cost has still been paid."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_12]
+rule = "118.12"
+text = "Some spells, activated abilities, and triggered abilities read, “[Do something]. If [a player] [does, doesn’t, or can’t], [effect].” Or “[A player] may [do something]. If [that player] [does, doesn’t, or can’t], [effect].” The action [do something] is a cost, paid when the spell or ability resolves. The “If [a player] [does, doesn’t, or can’t]” clause checks whether the player chose to pay an optional cost or started to pay a mandatory cost, regardless of what events actually occurred."
+status = "implemented"
+impl_files = ["ai_support/candidates.rs:483", "game/casting.rs:1457", "game/effects/counter.rs:23", "game/effects/counter.rs:43", "game/effects/counter.rs:222", "game/effects/mod.rs:394", "game/engine.rs:764", "game/engine.rs:778", "game/engine.rs:854", "game/engine.rs:885", "game/engine.rs:925", "game/triggers.rs:1069", "parser/oracle_effect/imperative.rs:1086", "parser/oracle_effect/imperative.rs:1101", "parser/oracle_effect/mod.rs:988", "parser/oracle_effect/mod.rs:4045", "parser/oracle_trigger.rs:45", "parser/oracle_trigger.rs:138", "types/ability.rs:1493", "types/ability.rs:1511", "types/ability.rs:1594", "types/ability.rs:3246", "types/ability.rs:3795", "types/actions.rs:104", "types/game_state.rs:495"]
+test_files = []
+notes = ""
+
+[cr_118_12a]
+rule = "118.12a"
+text = "Some spells, activated abilities, and triggered abilities read, “[Do something] unless [a player does something else].” This means the same thing as “[A player may do something else]. If [that player doesn’t], [do something].”"
+status = "implemented"
+impl_files = ["game/effects/discard.rs:164"]
+test_files = []
+notes = ""
+
+[cr_118_12b]
+rule = "118.12b"
+text = "Some effects offer a player a choice to search a zone and take additional actions with the cards found in that zone, followed by an “If [a player] does” clause. This clause checks whether the player chose to search, not whether the player took any of the additional actions."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_13]
+rule = "118.13"
+text = "Some costs contain mana symbols that can be paid in multiple ways. These include hybrid mana symbols and Phyrexian mana symbols."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_13a]
+rule = "118.13a"
+text = "If the mana cost of a spell or the activation cost of an activated ability contains a mana symbol that can be paid in multiple ways, the choice of how to pay for that symbol is made as its controller proposes that spell or ability (see rule 601.2b)."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_13b]
+rule = "118.13b"
+text = "If a cost paid during the resolution of a spell or ability contains a mana symbol that can be paid in multiple ways, the player paying that cost chooses how to pay for that symbol immediately before they pay that cost."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_13c]
+rule = "118.13c"
+text = "If the cost associated with a special action contains a mana symbol that can be paid in multiple ways, the player taking the special action chooses how to pay for that symbol immediately before they pay that cost."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_118_14]
+rule = "118.14"
+text = "Some effects say that “mana of any type can be spent” to pay a cost. This means that players may spend mana as though it were colorless mana or mana of any color to pay that cost. If that effect also gives a player permission to cast spells, this applies only to mana that player spends to cast spells that way. See rule 609.4b."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""

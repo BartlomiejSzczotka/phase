@@ -1,0 +1,13 @@
+# Comprehensive Rules Section 512: Ending Phase
+
+[_meta]
+section = 512
+title = "Ending Phase"
+
+[cr_512_1]
+rule = "512.1"
+text = "The ending phase consists of two steps: end and cleanup."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""

@@ -1,0 +1,21 @@
+# Comprehensive Rules Section 504: Draw Step
+
+[_meta]
+section = 504
+title = "Draw Step"
+
+[cr_504_1]
+rule = "504.1"
+text = "First, the active player draws a card. This turn-based action doesn’t use the stack."
+status = "implemented"
+impl_files = ["game/turns.rs:205", "types/phase.rs:17"]
+test_files = []
+notes = ""
+
+[cr_504_2]
+rule = "504.2"
+text = "Second, the active player gets priority. (See rule 117, “Timing and Priority.”)"
+status = "implemented"
+impl_files = ["game/turns.rs:395", "game/turns.rs:430"]
+test_files = []
+notes = ""

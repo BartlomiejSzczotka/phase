@@ -1,0 +1,37 @@
+# Comprehensive Rules Section 514: Cleanup Step
+
+[_meta]
+section = 514
+title = "Cleanup Step"
+
+[cr_514_1]
+rule = "514.1"
+text = "First, if the active player’s hand contains more cards than their maximum hand size (normally seven), they discard enough cards to reduce their hand size to that number. This turn-based action doesn’t use the stack."
+status = "implemented"
+impl_files = ["game/engine.rs:1955", "game/turns.rs:266", "game/turns.rs:324", "game/turns.rs:566", "types/phase.rs:43"]
+test_files = []
+notes = ""
+
+[cr_514_2]
+rule = "514.2"
+text = "Second, the following actions happen simultaneously: all damage marked on permanents (including phased-out permanents) is removed and all “until end of turn” and “this turn” effects end. This turn-based action doesn’t use the stack."
+status = "implemented"
+impl_files = ["game/engine.rs:1331", "game/engine.rs:2996", "game/layers.rs:21", "game/layers.rs:33", "game/layers.rs:45", "game/turns.rs:151", "game/turns.rs:243", "game/turns.rs:246", "game/turns.rs:296", "game/turns.rs:566", "types/ability.rs:585"]
+test_files = []
+notes = ""
+
+[cr_514_3]
+rule = "514.3"
+text = "Normally, no player receives priority during the cleanup step, so no spells can be cast and no abilities can be activated. However, this rule is subject to the following exception:"
+status = "implemented"
+impl_files = ["game/effects/cleanup.rs:5"]
+test_files = []
+notes = ""
+
+[cr_514_3a]
+rule = "514.3a"
+text = "At this point, the game checks to see if any state-based actions would be performed and/or any triggered abilities are waiting to be put onto the stack (including those that trigger “at the beginning of the next cleanup step”). If so, those state-based actions are performed, then those triggered abilities are put on the stack, then the active player gets priority. Players may cast spells and activate abilities. Once the stack is empty and all players pass in succession, another cleanup step begins."
+status = "implemented"
+impl_files = ["game/effects/cleanup.rs:11"]
+test_files = []
+notes = ""

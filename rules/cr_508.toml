@@ -1,0 +1,309 @@
+# Comprehensive Rules Section 508: Declare Attackers Step
+
+[_meta]
+section = 508
+title = "Declare Attackers Step"
+
+[cr_508_1]
+rule = "508.1"
+text = "First, the active player declares attackers. This turn-based action doesn’t use the stack. To declare attackers, the active player follows the steps below, in order. If at any point during the declaration of attackers, the active player is unable to comply with any of the steps listed below, the declaration is illegal; the game returns to the moment before the declaration (see rule 732, “Handling Illegal Actions”)."
+status = "implemented"
+impl_files = ["game/combat.rs:133", "game/combat.rs:143", "game/restrictions.rs:382", "game/triggers.rs:940", "game/turns.rs:481", "parser/oracle_trigger.rs:308", "types/ability.rs:3107", "types/phase.rs:27"]
+test_files = []
+notes = ""
+
+[cr_508_1a]
+rule = "508.1a"
+text = "The active player chooses which creatures that they control, if any, will attack. The chosen creatures must be untapped, they can’t also be battles, and each one must either have haste or have been controlled by the active player continuously since the turn began."
+status = "implemented"
+impl_files = ["game/combat.rs:736", "game/combat.rs:825", "game/filter.rs:358", "game/filter.rs:362", "game/trigger_matchers.rs:645", "game/triggers.rs:909", "parser/oracle_target.rs:1179", "parser/oracle_trigger.rs:745", "parser/oracle_trigger.rs:1010", "parser/oracle_trigger.rs:1068", "parser/oracle_trigger.rs:4489", "parser/oracle_trigger.rs:4501", "types/ability.rs:849", "types/ability.rs:855", "types/ability.rs:3091", "types/game_state.rs:1013"]
+test_files = []
+notes = ""
+
+[cr_508_1b]
+rule = "508.1b"
+text = "If the defending player controls any planeswalkers, is the protector of any battles, or the game allows the active player to attack multiple other players, the active player announces which player, planeswalker, or battle each of the chosen creatures is attacking."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_1c]
+rule = "508.1c"
+text = "The active player checks each creature they control to see whether it’s affected by any restrictions (effects that say a creature can’t attack, or that it can’t attack unless some condition is met). If any restrictions are being disobeyed, the declaration of attackers is illegal."
+status = "implemented"
+impl_files = ["game/restrictions.rs:307"]
+test_files = []
+notes = ""
+
+[cr_508_1d]
+rule = "508.1d"
+text = "The active player checks each creature they control to see whether it’s affected by any requirements (effects that say a creature attacks if able, or that it attacks if some condition is met). If the number of requirements that are being obeyed is fewer than the maximum possible number of requirements that could be obeyed without disobeying any restrictions, the declaration of attackers is illegal. If a creature can’t attack unless a player pays a cost, that player is not required to pay that cost, even if attacking with that creature would increase the number of requirements being obeyed. If a requirement that says a creature attacks if able during a certain turn refers to a turn with multiple combat phases, the creature attacks if able during each declare attackers step in that turn."
+status = "implemented"
+impl_files = ["game/combat.rs:547", "parser/oracle_effect/subject.rs:551", "parser/oracle_effect/subject.rs:590", "parser/oracle_static.rs:1869"]
+test_files = []
+notes = ""
+
+[cr_508_1e]
+rule = "508.1e"
+text = "If any of the chosen creatures have banding or a “bands with other” ability, the active player announces which creatures, if any, are banded with which. (See rule 702.22, “Banding.”)"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_1f]
+rule = "508.1f"
+text = "The active player taps the chosen creatures. Tapping a creature when it’s declared as an attacker isn’t a cost; attacking simply causes creatures to become tapped."
+status = "implemented"
+impl_files = ["game/combat.rs:669"]
+test_files = []
+notes = ""
+
+[cr_508_1g]
+rule = "508.1g"
+text = "If there are any optional costs to attack with the chosen creatures (expressed as costs a player may pay “as” a creature attacks), the active player chooses which, if any, they will pay."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_1h]
+rule = "508.1h"
+text = "If any of the chosen creatures require paying costs to attack, or if any optional costs to attack were chosen, the active player determines the total cost to attack. Costs may include paying mana, tapping permanents, sacrificing permanents, discarding cards, and so on. Once the total cost is determined, it becomes “locked in.” If effects would change the total cost after this time, ignore this change."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_1i]
+rule = "508.1i"
+text = "If any of the costs require mana, the active player then has a chance to activate mana abilities (see rule 605, “Mana Abilities”)."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_1j]
+rule = "508.1j"
+text = "Once the player has enough mana in their mana pool, they pay all costs in any order. Partial payments are not allowed."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_1k]
+rule = "508.1k"
+text = "Each chosen creature still controlled by the active player becomes an attacking creature. It remains an attacking creature until it’s removed from combat or the combat phase ends, whichever comes first. See rule 506.4."
+status = "implemented"
+impl_files = ["game/combat.rs:669", "game/restrictions.rs:1058"]
+test_files = []
+notes = ""
+
+[cr_508_1m]
+rule = "508.1m"
+text = "Any abilities that trigger on attackers being declared trigger."
+status = "implemented"
+impl_files = ["game/restrictions.rs:127"]
+test_files = []
+notes = ""
+
+[cr_508_2]
+rule = "508.2"
+text = "Second, the active player gets priority. (See rule 117, “Timing and Priority.”)"
+status = "implemented"
+impl_files = ["game/engine.rs:1336"]
+test_files = []
+notes = ""
+
+[cr_508_2a]
+rule = "508.2a"
+text = "Abilities that trigger on a creature attacking trigger only at the point the creature is declared as an attacker. They will not trigger if a creature attacks and then that creature’s characteristics change to match the ability’s trigger condition."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_2b]
+rule = "508.2b"
+text = "Any abilities that triggered on attackers being declared or that triggered during the process described in rules 508.1 are put onto the stack before the active player gets priority; the order in which they triggered doesn’t matter. (See rule 603, “Handling Triggered Abilities.”)"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_3]
+rule = "508.3"
+text = "Triggered abilities that trigger on attackers being declared may have different trigger conditions."
+status = "implemented"
+impl_files = ["types/triggers.rs:54"]
+test_files = []
+notes = ""
+
+[cr_508_3a]
+rule = "508.3a"
+text = "An ability that reads “Whenever [a creature] attacks, . . .” triggers if that creature is declared as an attacker. Similarly, “Whenever [a creature] attacks [a player, planeswalker, or battle], . . .” triggers if that creature is declared as an attacker attacking that player or permanent. Such abilities won’t trigger if a creature is put onto the battlefield attacking."
+status = "implemented"
+impl_files = ["types/triggers.rs:55", "types/triggers.rs:294", "types/triggers.rs:296"]
+test_files = []
+notes = ""
+
+[cr_508_3b]
+rule = "508.3b"
+text = "An ability that reads “Whenever [a player, planeswalker, or battle] is attacked, . . .” triggers if one or more creatures are declared as attackers attacking that player or permanent. It won’t trigger if a creature is put onto the battlefield attacking that player or permanent."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_3c]
+rule = "508.3c"
+text = "An ability that reads “Whenever [a player] attacks with [a creature], . . .” triggers if a creature that player controls is declared as an attacker."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_3d]
+rule = "508.3d"
+text = "An ability that reads “Whenever [a player] attacks, . . .” triggers if one or more creatures that player controls are declared as attackers."
+status = "implemented"
+impl_files = ["types/triggers.rs:57", "types/triggers.rs:59"]
+test_files = []
+notes = ""
+
+[cr_508_3e]
+rule = "508.3e"
+text = "An ability that reads “Whenever [a player] attacks [another player], . . .” triggers if one or more creatures the first player controls are declared as attackers attacking the second player. It won’t trigger if a creature is put onto the battlefield attacking or if a creature attacks a planeswalker or a battle."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_3f]
+rule = "508.3f"
+text = "An ability that reads “Whenever [a creature] attacks and isn’t blocked, . . .” triggers during the declare blockers step, not the declare attackers step. See rule 509.3g."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_4]
+rule = "508.4"
+text = "If a creature is put onto the battlefield attacking, its controller chooses which defending player, planeswalker a defending player controls, or battle a defending player protects it’s attacking as it enters the battlefield (unless the effect that put it onto the battlefield specifies what it’s attacking). Similarly, if an effect states that a creature is attacking, its controller chooses which defending player, planeswalker a defending player controls, or battle a defending player protects it’s attacking (unless the effect has already specified). Such creatures are “attacking” but, for the purposes of trigger events and effects, they never “attacked.” They remain attacking creatures until they’re removed from combat or the combat phase ends, whichever comes first."
+status = "implemented"
+impl_files = ["game/combat.rs:86", "game/combat.rs:96", "game/combat.rs:118", "game/effects/change_zone.rs:259", "game/effects/change_zone.rs:948", "game/effects/token.rs:452", "game/effects/token_copy.rs:107", "game/effects/token_copy.rs:305", "game/keywords.rs:254", "parser/oracle_effect/sequence.rs:441", "parser/oracle_effect/sequence.rs:698", "parser/oracle_effect/types.rs:151", "parser/oracle_trigger.rs:4110", "parser/oracle_trigger.rs:4144", "types/ability.rs:1619", "types/ability.rs:1724", "types/ability.rs:1800"]
+test_files = []
+notes = ""
+
+[cr_508_4a]
+rule = "508.4a"
+text = "If the effect that puts a creature onto the battlefield attacking specifies it’s attacking a certain player, and that player is no longer in the game when the effect resolves, the creature is put onto the battlefield but is never considered an attacking creature. The same is true if the effect specifies a creature is put onto the battlefield attacking a planeswalker or battle and, when the effect resolves, that permanent is no longer on the battlefield, is no longer a planeswalker or battle, is a planeswalker that is no longer controlled by a defending player, or is a battle that is no longer protected by a defending player."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_4b]
+rule = "508.4b"
+text = "If the effect that states a creature is attacking specifies it’s attacking a certain player, and that player is no longer in the game when the effect resolves, the creature doesn’t become an attacking creature. The same is true if the effect specifies a creature is attacking a planeswalker or battle and, when the effect resolves, that permanent is no longer on the battlefield, is no longer a planeswalker or battle, is a planeswalker that is no longer controlled by a defending player, or is a battle that is no longer protected by a defending player."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_4c]
+rule = "508.4c"
+text = "A creature that’s put onto the battlefield attacking or that is stated to be attacking isn’t affected by requirements or restrictions that apply to the declaration of attackers."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_4d]
+rule = "508.4d"
+text = "A creature that’s put onto the battlefield attacking during the declare blockers step, combat damage step, or end of combat step enters the battlefield as an unblocked creature. It remains unblocked until it is removed from combat, an effect says it becomes blocked, or the combat phase ends, whichever comes first."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_5]
+rule = "508.5"
+text = "If an ability of an attacking creature refers to a defending player, or a spell or ability refers to both an attacking creature and a defending player, then unless otherwise specified, the defending player it’s referring to is the player that creature is attacking, the controller of the planeswalker that creature is attacking, or the protector of the battle that creature is attacking. If that creature is no longer attacking, the defending player it’s referring to is the player that creature was attacking before it was removed from combat, the controller of the planeswalker that creature was attacking before it was removed from combat, or the protector of the battle that creature was attacking before it was removed from combat."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_5a]
+rule = "508.5a"
+text = "In a multiplayer game, any rule, object, or effect that refers to a “defending player” refers to one specific defending player, not to all of the defending players. If a spell or ability could apply to multiple attacking creatures, the appropriate defending player is individually determined for each of those attacking creatures. If there are multiple defending players that could be chosen, the controller of the spell or ability chooses one."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_6]
+rule = "508.6"
+text = "A player is “attacking [a player]” if the first player controls a creature that is attacking the second player. A player has “attacked [a player]” if the first player declared one or more creatures as attackers attacking the second player."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_7]
+rule = "508.7"
+text = "Some cards allow a player to reselect which player, planeswalker, or battle a creature is attacking."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_7a]
+rule = "508.7a"
+text = "The attacking creature isn’t removed from combat and it isn’t considered to have attacked a second time. That creature is attacking the reselected player or permanent, but it’s still considered to have attacked the player or permanent chosen as it was declared as an attacker."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_7b]
+rule = "508.7b"
+text = "While reselecting which player, planeswalker, or battle a creature is attacking, that creature isn’t affected by requirements or restrictions that apply to the declaration of attackers."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_7c]
+rule = "508.7c"
+text = "The reselected player, planeswalker, or battle must be an opponent of the attacking creature’s controller, a planeswalker controlled by an opponent of the attacking creature’s controller, or a battle protected by an opponent of the attacking creature’s controller."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_7d]
+rule = "508.7d"
+text = "In a multiplayer game not using the attack multiple players option (see rule 802), the reselected player, planeswalker, or battle must be the chosen defending player, a planeswalker controlled by that player, or a battle protected by that player."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_7e]
+rule = "508.7e"
+text = "In a multiplayer game using the limited range of influence option (see rule 801), the reselected player, planeswalker, or battle must be within the range of influence of the attacking creature’s controller. In the case of a battle, the battle’s protector must also be within the range of influence of the attacking creature’s controller."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_508_8]
+rule = "508.8"
+text = "If no creatures are declared as attackers or put onto the battlefield attacking, skip the declare blockers and combat damage steps."
+status = "implemented"
+impl_files = ["game/turns.rs:514"]
+test_files = []
+notes = ""

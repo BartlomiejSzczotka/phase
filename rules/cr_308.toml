@@ -1,0 +1,29 @@
+# Comprehensive Rules Section 308: Tribals
+
+[_meta]
+section = 308
+title = "Tribals"
+
+[cr_308_1]
+rule = "308.1"
+text = "Each kindred card has another card type. Casting and resolving a kindred card follows the rules for casting and resolving a card of the other card type."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_308_2]
+rule = "308.2"
+text = "Kindred subtypes are usually a single word long and are listed after a long dash: “Kindred Enchantment — Merfolk.” The set of kindred subtypes is the same as the set of creature subtypes; these subtypes are called creature types. Kindreds may have multiple subtypes. See rule 205.3m for the complete list of creature types."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_308_3]
+rule = "308.3"
+text = "Some older kindred cards were printed with the “tribal” card type. Cards printed with that type have received errata in the Oracle card reference."
+status = "implemented"
+impl_files = ["types/card_type.rs:57"]
+test_files = []
+notes = ""

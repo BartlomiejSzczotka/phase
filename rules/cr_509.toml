@@ -1,0 +1,189 @@
+# Comprehensive Rules Section 509: Declare Blockers Step
+
+[_meta]
+section = 509
+title = "Declare Blockers Step"
+
+[cr_509_1]
+rule = "509.1"
+text = "First, the defending player declares blockers. This turn-based action doesn’t use the stack. To declare blockers, the defending player follows the steps below, in order. If at any point during the declaration of blockers, the defending player is unable to comply with any of the steps listed below, the declaration is illegal; the game returns to the moment before the declaration (see rule 732, “Handling Illegal Actions”)."
+status = "implemented"
+impl_files = ["game/combat.rs:183", "game/restrictions.rs:384", "game/turns.rs:491", "types/phase.rs:29"]
+test_files = []
+notes = ""
+
+[cr_509_1a]
+rule = "509.1a"
+text = "The defending player chooses which creatures they control, if any, will block. The chosen creatures must be untapped and they can’t also be battles. For each of the chosen creatures, the defending player chooses one creature for it to block that’s attacking that player, a planeswalker they control, or a battle they protect."
+status = "implemented"
+impl_files = ["game/combat.rs:220", "game/combat.rs:386", "game/combat.rs:510", "game/combat.rs:784", "game/combat.rs:926", "game/combat.rs:958", "game/combat.rs:1756", "game/filter.rs:360", "game/filter.rs:362", "game/turns.rs:498", "game/turns.rs:511", "parser/oracle_effect/subject.rs:551", "parser/oracle_effect/subject.rs:590", "parser/oracle_effect/subject.rs:594", "parser/oracle_target.rs:1180", "types/ability.rs:852", "types/ability.rs:855", "types/game_state.rs:1017", "types/statics.rs:111"]
+test_files = []
+notes = ""
+
+[cr_509_1b]
+rule = "509.1b"
+text = "The defending player checks each creature they control to see whether it’s affected by any restrictions (effects that say a creature can’t block, or that it can’t block unless some condition is met). If any restrictions are being disobeyed, the declaration of blockers is illegal."
+status = "implemented"
+impl_files = ["game/combat.rs:386", "game/combat.rs:850", "game/combat.rs:926", "game/combat.rs:1637", "game/restrictions.rs:307", "game/static_abilities.rs:70", "game/static_abilities.rs:117", "parser/oracle.rs:1179", "parser/oracle_static.rs:643", "parser/oracle_static.rs:676", "parser/oracle_static.rs:2124", "parser/oracle_static.rs:2148", "parser/oracle_static.rs:4142", "parser/oracle_static.rs:4953", "types/statics.rs:111", "types/statics.rs:144", "types/statics.rs:146"]
+test_files = []
+notes = ""
+
+[cr_509_1c]
+rule = "509.1c"
+text = "The defending player checks each creature they control to see whether it’s affected by any requirements (effects that say a creature must block, or that it must block if some condition is met). If the number of requirements that are being obeyed is fewer than the maximum possible number of requirements that could be obeyed without disobeying any restrictions, the declaration of blockers is illegal. If a creature can’t block unless a player pays a cost, that player is not required to pay that cost, even if blocking with that creature would increase the number of requirements being obeyed. If a requirement that says a creature blocks if able during a certain turn refers to a turn with multiple combat phases, the creature blocks if able during each declare blockers step in that turn."
+status = "implemented"
+impl_files = ["game/combat.rs:424", "game/combat.rs:479", "game/combat.rs:1816", "game/combat.rs:1831", "game/combat.rs:1851", "game/combat.rs:1897", "game/combat.rs:1924", "game/combat.rs:1948", "game/effects/force_block.rs:9", "game/effects/force_block.rs:24", "game/effects/force_block.rs:30", "game/static_abilities.rs:101", "parser/oracle_effect/imperative.rs:1413", "parser/oracle_effect/imperative.rs:1633", "parser/oracle_effect/mod.rs:460", "parser/oracle_effect/mod.rs:541", "parser/oracle_effect/mod.rs:5502", "parser/oracle_effect/mod.rs:5507", "parser/oracle_effect/mod.rs:5609", "parser/oracle_effect/subject.rs:140", "parser/oracle_effect/subject.rs:598", "parser/oracle_effect/types.rs:183", "parser/oracle_static.rs:1884", "types/statics.rs:179"]
+test_files = []
+notes = ""
+
+[cr_509_1d]
+rule = "509.1d"
+text = "If any of the chosen creatures require paying costs to block, the defending player determines the total cost to block. Costs may include paying mana, tapping permanents, sacrificing permanents, discarding cards, and so on. Once the total cost is determined, it becomes “locked in.” If effects would change the total cost after this time, ignore this change."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_1e]
+rule = "509.1e"
+text = "If any of the costs require mana, the defending player then has a chance to activate mana abilities (see rule 605, “Mana Abilities”)."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_1f]
+rule = "509.1f"
+text = "Once the player has enough mana in their mana pool, they pay all costs in any order. Partial payments are not allowed."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_1g]
+rule = "509.1g"
+text = "Each chosen creature still controlled by the defending player becomes a blocking creature. Each one is blocking the attacking creatures chosen for it. It remains a blocking creature until it’s removed from combat or the combat phase ends, whichever comes first. See rule 506.4."
+status = "implemented"
+impl_files = ["game/combat.rs:759", "game/restrictions.rs:1068", "parser/oracle_effect/imperative.rs:1403", "parser/oracle_effect/types.rs:177", "types/ability.rs:1996"]
+test_files = []
+notes = ""
+
+[cr_509_1h]
+rule = "509.1h"
+text = "An attacking creature with one or more creatures declared as blockers for it becomes a blocked creature; one with no creatures declared as blockers for it becomes an unblocked creature. This remains unchanged until the creature is removed from combat, an effect says that it becomes blocked or unblocked, or the combat phase ends, whichever comes first. A creature remains blocked even if all the creatures blocking it are removed from combat."
+status = "implemented"
+impl_files = ["game/combat.rs:57", "game/combat.rs:774", "game/combat.rs:796", "game/combat.rs:797", "game/combat_damage.rs:360", "game/combat_damage.rs:578", "game/filter.rs:213", "game/restrictions.rs:1076", "parser/oracle_static.rs:794", "parser/oracle_static.rs:873", "parser/oracle_target.rs:224", "parser/oracle_target.rs:901", "types/ability.rs:756", "types/triggers.rs:62", "types/triggers.rs:65", "types/triggers.rs:71", "types/triggers.rs:75", "types/triggers.rs:296"]
+test_files = []
+notes = ""
+
+[cr_509_1i]
+rule = "509.1i"
+text = "Any abilities that trigger on blockers being declared trigger. See rule 509.2a for more information."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_2]
+rule = "509.2"
+text = "Second, the active player gets priority. (See rule 117, “Timing and Priority.”)"
+status = "implemented"
+impl_files = ["game/engine.rs:1361"]
+test_files = []
+notes = ""
+
+[cr_509_2a]
+rule = "509.2a"
+text = "Any abilities that triggered on blockers being declared or that triggered during the process described in rule 509.1 are put onto the stack before the active player gets priority; the order in which they triggered doesn’t matter. (See rule 603, “Handling Triggered Abilities.”)"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_3]
+rule = "509.3"
+text = "Triggered abilities that trigger on blockers being declared may have different trigger conditions."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_3a]
+rule = "509.3a"
+text = "An ability that reads “Whenever [a creature] blocks, . . .” generally triggers only once each combat for that creature, even if it blocks multiple creatures. It triggers if the creature is declared as a blocker. It will also trigger if that creature becomes a blocker as the result of an effect, but only if it wasn’t a blocking creature at that time. (See rule 509.1g.) It won’t trigger if the creature is put onto the battlefield blocking."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_3b]
+rule = "509.3b"
+text = "An ability that reads “Whenever [a creature] blocks a creature, . . .” triggers once for each attacking creature the creature with the ability blocks. It triggers if the creature is declared as a blocker. It will also trigger if an effect causes that creature to block an attacking creature, but only if it wasn’t already blocking that attacking creature at that time. It won’t trigger if the creature is put onto the battlefield blocking."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_3c]
+rule = "509.3c"
+text = "An ability that reads “Whenever [a creature] becomes blocked, . . .” generally triggers only once each combat for that creature, even if it’s blocked by multiple creatures. It will trigger if that creature becomes blocked by at least one creature declared as a blocker. It will also trigger if that creature becomes blocked by an effect or by a creature that’s put onto the battlefield as a blocker, but only if the attacking creature was an unblocked creature at that time. (See rule 509.1h.)"
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_3d]
+rule = "509.3d"
+text = "An ability that reads “Whenever [a creature] becomes blocked by a creature, . . .” triggers once for each creature that blocks the specified creature. It triggers if a creature is declared as a blocker for the attacking creature. It will also trigger if an effect causes a creature to block the attacking creature, but only if it wasn’t already blocking that attacking creature at that time. In addition, it will trigger if a creature is put onto the battlefield blocking that creature. It won’t trigger if the creature becomes blocked by an effect rather than a creature."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_3e]
+rule = "509.3e"
+text = "If an ability triggers when a creature blocks or becomes blocked by a particular number of creatures, the ability triggers if the creature blocks or is blocked by that many creatures when blockers are declared. Effects that add or remove blockers can also cause such abilities to trigger. This applies to abilities that trigger on a creature blocking or being blocked by at least a certain number of creatures as well."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_3f]
+rule = "509.3f"
+text = "If an ability triggers when a creature with certain characteristics blocks, it will trigger only if the creature has those characteristics at the point blockers are declared, or at the point an effect causes it to block. If an ability triggers when a creature with certain characteristics becomes blocked, it will trigger only if the creature has those characteristics at the point it becomes a blocked creature. If an ability triggers when a creature becomes blocked by a creature with certain characteristics, it will trigger only if the latter creature has those characteristics at the point it becomes a blocking creature. None of those abilities will trigger if the relevant creature’s characteristics change to match the ability’s trigger condition later on."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_3g]
+rule = "509.3g"
+text = "An ability that reads “Whenever [a creature] attacks and isn’t blocked, . . .” triggers if no creatures are declared as blockers for that creature. It will trigger even if the creature was never declared as an attacker (for example, if it entered the battlefield attacking). It won’t trigger if the attacking creature is blocked and then all its blockers are removed from combat."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_4]
+rule = "509.4"
+text = "If a creature is put onto the battlefield blocking, its controller chooses which attacking creature it’s blocking as it enters the battlefield (unless the effect that put it onto the battlefield specifies what it’s blocking). A creature put onto the battlefield this way is “blocking” but, for the purposes of trigger events and effects, it never “blocked.”"
+status = "implemented"
+impl_files = ["types/triggers.rs:73"]
+test_files = []
+notes = ""
+
+[cr_509_4a]
+rule = "509.4a"
+text = "If the effect that puts a creature onto the battlefield blocking specifies it’s blocking a certain creature and that creature is no longer attacking, the creature is put onto the battlefield but is never considered a blocking creature. The same is true if the controller of the creature that’s put onto the battlefield blocking isn’t a defending player for the specified attacking creature."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
+
+[cr_509_4b]
+rule = "509.4b"
+text = "A creature that’s put onto the battlefield blocking isn’t affected by requirements or restrictions that apply to the declaration of blockers."
+status = "missing"
+impl_files = []
+test_files = []
+notes = ""
