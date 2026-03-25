@@ -1,19 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { WasmAdapter } from "../wasm-adapter";
-import type { EngineAdapter } from "../types";
+import type { EngineAdapter, GameState, SubmitResult } from "../types";
 import { AdapterError, AdapterErrorCode } from "../types";
 
-// Mock the shared cardData module
-vi.mock("../../services/cardData", () => ({
-  ensureWasmInit: vi.fn().mockResolvedValue(undefined),
-  ensureCardDatabase: vi.fn().mockResolvedValue(100),
-}));
-
-// Mock the WASM module
-vi.mock("@wasm/engine", () => {
-  const mockInit = vi.fn().mockResolvedValue(undefined);
-  const mockPing = vi.fn().mockReturnValue("phase-rs engine ready");
-  const mockCreateInitialState = vi.fn().mockReturnValue({
+// Mock EngineWorkerClient to avoid actual Worker creation in tests
+const mockWorkerClient = {
+  initialize: vi.fn().mockResolvedValue(undefined),
+  loadCardDb: vi.fn().mockResolvedValue(100),
+  loadCardDbFromUrl: vi.fn().mockResolvedValue(100),
+  initializeGame: vi
+    .fn()
+    .mockResolvedValue({ events: [{ type: "GameStarted" }], log_entries: [] }),
+  submitAction: vi
+    .fn()
+    .mockResolvedValue({ events: [], log_entries: [] } as SubmitResult),
+  getState: vi.fn().mockResolvedValue({
     turn_number: 1,
     active_player: 0,
     phase: "Untap",
@@ -22,29 +23,18 @@ vi.mock("@wasm/engine", () => {
       { id: 1, life: 20, mana_pool: { mana: [] } },
     ],
     priority_player: 0,
-  });
-  const mockInitializeGame = vi.fn().mockReturnValue({
-    events: [{ type: "GameStarted" }],
-    waiting_for: { type: "Priority", data: { player: 0 } },
-  });
-  const mockSubmitAction = vi.fn().mockReturnValue({
-    events: [],
-    waiting_for: { type: "Priority", data: { player: 0 } },
-  });
-  const mockGetGameState = vi.fn().mockReturnValue(null);
+  } as unknown as GameState),
+  getLegalActions: vi.fn().mockResolvedValue([]),
+  getAiAction: vi.fn().mockResolvedValue(null),
+  exportState: vi.fn().mockResolvedValue("{}"),
+  restoreState: vi.fn().mockResolvedValue(undefined),
+  ping: vi.fn().mockResolvedValue("phase-rs engine ready"),
+  dispose: vi.fn(),
+};
 
-  const mockRestoreGameState = vi.fn();
-
-  return {
-    default: mockInit,
-    ping: mockPing,
-    create_initial_state: mockCreateInitialState,
-    initialize_game: mockInitializeGame,
-    submit_action: mockSubmitAction,
-    get_game_state: mockGetGameState,
-    restore_game_state: mockRestoreGameState,
-  };
-});
+vi.mock("../engine-worker-client", () => ({
+  EngineWorkerClient: vi.fn().mockImplementation(() => mockWorkerClient),
+}));
 
 describe("WasmAdapter", () => {
   let adapter: WasmAdapter;
@@ -64,19 +54,15 @@ describe("WasmAdapter", () => {
   });
 
   describe("initialize", () => {
-    it("calls WASM init and sets initialized flag", async () => {
+    it("creates worker client and initializes", async () => {
       await adapter.initialize();
-      // Calling getState should work after initialization
-      const state = await adapter.getState();
-      expect(state).toBeDefined();
-      expect(state.turn_number).toBe(1);
+      expect(mockWorkerClient.initialize).toHaveBeenCalledOnce();
     });
 
     it("is idempotent - second call is a no-op", async () => {
       await adapter.initialize();
       await adapter.initialize();
-      const { ensureWasmInit } = await import("../../services/cardData");
-      expect(ensureWasmInit).toHaveBeenCalledTimes(1);
+      expect(mockWorkerClient.initialize).toHaveBeenCalledOnce();
     });
   });
 
@@ -96,20 +82,12 @@ describe("WasmAdapter", () => {
       }
     });
 
-    it("processes actions sequentially via queue", async () => {
+    it("delegates to worker client", async () => {
       await adapter.initialize();
-
-      const order: number[] = [];
-
-      // Submit multiple actions concurrently
-      const p1 = adapter.submitAction({ type: "PassPriority" }).then(() => order.push(1));
-      const p2 = adapter.submitAction({ type: "PassPriority" }).then(() => order.push(2));
-      const p3 = adapter.submitAction({ type: "PassPriority" }).then(() => order.push(3));
-
-      await Promise.all([p1, p2, p3]);
-
-      // Actions should resolve in order (serialized queue)
-      expect(order).toEqual([1, 2, 3]);
+      await adapter.submitAction({ type: "PassPriority" });
+      expect(mockWorkerClient.submitAction).toHaveBeenCalledWith({
+        type: "PassPriority",
+      });
     });
   });
 
@@ -118,7 +96,7 @@ describe("WasmAdapter", () => {
       await expect(adapter.getState()).rejects.toThrow(AdapterError);
     });
 
-    it("returns game state after initialization", async () => {
+    it("returns game state from worker", async () => {
       await adapter.initialize();
       const state = await adapter.getState();
       expect(state.turn_number).toBe(1);
@@ -132,14 +110,13 @@ describe("WasmAdapter", () => {
     it("cleans up state and prevents further operations", async () => {
       await adapter.initialize();
       adapter.dispose();
-
-      // Should throw NOT_INITIALIZED after dispose
+      expect(mockWorkerClient.dispose).toHaveBeenCalledOnce();
       await expect(adapter.getState()).rejects.toThrow(AdapterError);
     });
   });
 
   describe("restoreState", () => {
-    it("calls restore_game_state with the provided state", async () => {
+    it("serializes state to JSON and posts to worker", async () => {
       await adapter.initialize();
 
       const mockState = {
@@ -148,71 +125,74 @@ describe("WasmAdapter", () => {
         phase: "PreCombatMain",
         players: [],
         priority_player: 0,
-      } as unknown as import("../../adapter/types").GameState;
+      } as unknown as GameState;
 
-      const { restore_game_state } = await import("@wasm/engine");
       adapter.restoreState(mockState);
-      expect(restore_game_state).toHaveBeenCalledWith(JSON.stringify(mockState));
+      expect(mockWorkerClient.restoreState).toHaveBeenCalledWith(
+        JSON.stringify(mockState),
+      );
     });
 
     it("throws if not initialized", () => {
-      const mockState = {} as import("../../adapter/types").GameState;
+      const mockState = {} as GameState;
       expect(() => adapter.restoreState(mockState)).toThrow(AdapterError);
     });
   });
 
-  describe("initialize_game", () => {
-    it("returns events from initialize_game binding", async () => {
+  describe("initializeGame", () => {
+    it("delegates to worker client with seed", async () => {
       await adapter.initialize();
       const result = await adapter.initializeGame();
       expect(result.events).toEqual([{ type: "GameStarted" }]);
+      expect(mockWorkerClient.initializeGame).toHaveBeenCalledOnce();
+    });
+
+    it("loads card database when deck data is provided", async () => {
+      await adapter.initialize();
+      await adapter.initializeGame({ decks: [] });
+      expect(mockWorkerClient.loadCardDbFromUrl).toHaveBeenCalledOnce();
     });
   });
 
-  describe("getState returns current game state", () => {
-    it("returns state from get_game_state when available", async () => {
-      const fullState = {
-        turn_number: 5,
-        active_player: 1,
-        phase: "Draw",
-        players: [
-          { id: 0, life: 18, mana_pool: { mana: [] } },
-          { id: 1, life: 20, mana_pool: { mana: [] } },
+  describe("getAiAction", () => {
+    it("delegates to worker client", async () => {
+      await adapter.initialize();
+      await adapter.getAiAction("Medium");
+      expect(mockWorkerClient.getAiAction).toHaveBeenCalledWith("Medium", 1);
+    });
+  });
+
+  describe("getAiActionForSeats", () => {
+    it("delegates to getAiAction for the active seat", async () => {
+      await adapter.initialize();
+      await adapter.getAiActionForSeats(
+        [
+          { playerId: 0, difficulty: "Easy" },
+          { playerId: 1, difficulty: "Hard" },
         ],
-        priority_player: 1,
-      };
+        1,
+      );
+      expect(mockWorkerClient.getAiAction).toHaveBeenCalledWith("Hard", 1);
+    });
 
-      const { get_game_state } = await import("@wasm/engine");
-      vi.mocked(get_game_state).mockReturnValue(fullState);
-
+    it("returns null if no matching seat", async () => {
       await adapter.initialize();
-      const state = await adapter.getState();
-      expect(state.turn_number).toBe(5);
-      expect(state.active_player).toBe(1);
-      expect(state.phase).toBe("Draw");
+      const result = await adapter.getAiActionForSeats(
+        [{ playerId: 0, difficulty: "Easy" }],
+        1,
+      );
+      expect(result).toBeNull();
     });
   });
 
-  describe("error normalization", () => {
-    it("wraps WASM errors into AdapterError with recoverable flag", async () => {
-      const { create_initial_state, get_game_state } = await import("@wasm/engine");
-      vi.mocked(get_game_state).mockReturnValue(null);
-      vi.mocked(create_initial_state).mockImplementation(() => {
-        throw new Error("WASM execution failed");
-      });
+  describe("getEngineClient", () => {
+    it("returns null before initialization", () => {
+      expect(adapter.getEngineClient()).toBeNull();
+    });
 
+    it("returns the worker client after initialization", async () => {
       await adapter.initialize();
-
-      try {
-        await adapter.getState();
-        expect.fail("should have thrown");
-      } catch (error) {
-        expect(error).toBeInstanceOf(AdapterError);
-        const adapterError = error as AdapterError;
-        expect(adapterError.code).toBe(AdapterErrorCode.WASM_ERROR);
-        expect(adapterError.message).toContain("WASM execution failed");
-        expect(adapterError.recoverable).toBe(false);
-      }
+      expect(adapter.getEngineClient()).toBe(mockWorkerClient);
     });
   });
 });

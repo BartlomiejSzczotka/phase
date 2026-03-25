@@ -253,6 +253,16 @@ pub fn get_legal_actions_js() -> JsValue {
     }
 }
 
+/// Export the current game state as a JSON string.
+/// Used by the engine worker to transfer state to AI workers for root parallelism.
+#[wasm_bindgen]
+pub fn export_game_state_json() -> Result<String, JsValue> {
+    with_state(|state| {
+        serde_json::to_string(state)
+            .map_err(|e| JsValue::from_str(&format!("Failed to serialize GameState: {e}")))
+    })?
+}
+
 /// Restore the game state from a JSON string.
 /// Uses serde_json which handles string-keyed maps (from localStorage round-trip)
 /// correctly deserializing into HashMap<ObjectId, V>.
@@ -300,6 +310,68 @@ pub fn get_ai_action(difficulty: &str, player_id: u8) -> Result<JsValue, JsValue
             None => Ok(JsValue::NULL),
         }
     })?
+}
+
+/// Score all candidate actions and return `[GameAction, score]` tuples.
+/// Used by AI workers for root parallelism — each worker scores independently,
+/// then results are merged on the main thread.
+/// `rng_seed` seeds the game state's RNG so each worker's MCTS explores
+/// different paths through the search tree, producing diverse score vectors.
+#[wasm_bindgen]
+pub fn get_ai_scored_candidates(
+    difficulty: &str,
+    player_id: u8,
+    rng_seed: u64,
+) -> Result<JsValue, JsValue> {
+    let ai_difficulty = match difficulty {
+        "VeryEasy" => AiDifficulty::VeryEasy,
+        "Easy" => AiDifficulty::Easy,
+        "Medium" => AiDifficulty::Medium,
+        "Hard" => AiDifficulty::Hard,
+        "VeryHard" => AiDifficulty::VeryHard,
+        _ => AiDifficulty::Medium,
+    };
+
+    with_state_mut(|state| {
+        // Re-seed the state RNG so each parallel worker explores different
+        // MCTS rollout paths and beam-search tie-breaking orders.
+        state.rng = ChaCha20Rng::seed_from_u64(rng_seed);
+        let config =
+            create_config_for_players(ai_difficulty, Platform::Wasm, state.players.len() as u8);
+        let ai_player = PlayerId(player_id);
+        let scored = phase_ai::score_candidates(state, ai_player, &config);
+        Ok(to_js(&scored))
+    })?
+}
+
+/// Select an action from merged scores using softmax.
+/// Called after collecting scored candidates from parallel workers and merging.
+/// `scores_json` is a JSON array of `[GameAction, score]` tuples.
+/// `difficulty` determines the softmax temperature (engine is the single
+/// authority for AI tuning parameters — the frontend never specifies temperature).
+/// `rng_seed` provides deterministic randomness.
+#[wasm_bindgen]
+pub fn select_action_from_scores(
+    scores_json: &str,
+    difficulty: &str,
+    rng_seed: u64,
+) -> Result<JsValue, JsValue> {
+    let ai_difficulty = match difficulty {
+        "VeryEasy" => AiDifficulty::VeryEasy,
+        "Easy" => AiDifficulty::Easy,
+        "Medium" => AiDifficulty::Medium,
+        "Hard" => AiDifficulty::Hard,
+        "VeryHard" => AiDifficulty::VeryHard,
+        _ => AiDifficulty::Medium,
+    };
+    let config = phase_ai::config::create_config(ai_difficulty, Platform::Wasm);
+    let scored: Vec<(GameAction, f64)> = serde_json::from_str(scores_json)
+        .map_err(|e| JsValue::from_str(&format!("Failed to deserialize scores: {e}")))?;
+    let mut rng = ChaCha20Rng::seed_from_u64(rng_seed);
+    match phase_ai::softmax_select_pairs(&scored, config.temperature, &mut rng) {
+        Some(action) => Ok(to_js(&action)),
+        None => Ok(JsValue::NULL),
+    }
 }
 
 // Tsify re-exports for TypeScript type generation.

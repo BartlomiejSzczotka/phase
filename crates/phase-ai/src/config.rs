@@ -32,6 +32,10 @@ pub struct SearchConfig {
     pub mcts: Option<MctsConfig>,
     pub hidden_info_mode: HiddenInfoMode,
     pub opponent_model: OpponentModel,
+    /// Optional time budget in milliseconds. When set, search terminates
+    /// after this duration regardless of node count. Essential for WASM
+    /// where hardware performance varies widely.
+    pub time_budget_ms: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -94,6 +98,7 @@ impl Default for SearchConfig {
             mcts: None,
             hidden_info_mode: HiddenInfoMode::PerfectInfo,
             opponent_model: OpponentModel::DeterministicBestReply,
+            time_budget_ms: None,
         }
     }
 }
@@ -144,6 +149,7 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 mcts: None,
                 hidden_info_mode: HiddenInfoMode::PerfectInfo,
                 opponent_model: OpponentModel::DeterministicBestReply,
+                time_budget_ms: None,
             },
         ),
         AiDifficulty::Easy => (
@@ -166,6 +172,7 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 mcts: None,
                 hidden_info_mode: HiddenInfoMode::PerfectInfo,
                 opponent_model: OpponentModel::DeterministicBestReply,
+                time_budget_ms: None,
             },
         ),
         AiDifficulty::Medium => (
@@ -188,6 +195,7 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 mcts: None,
                 hidden_info_mode: HiddenInfoMode::PerfectInfo,
                 opponent_model: OpponentModel::DeterministicBestReply,
+                time_budget_ms: None,
             },
         ),
         AiDifficulty::Hard => (
@@ -210,6 +218,7 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 mcts: None,
                 hidden_info_mode: HiddenInfoMode::PerfectInfo,
                 opponent_model: OpponentModel::ThreatWeightedReply,
+                time_budget_ms: None,
             },
         ),
         AiDifficulty::VeryHard => (
@@ -238,6 +247,7 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 }),
                 hidden_info_mode: HiddenInfoMode::PerfectInfo,
                 opponent_model: OpponentModel::ThreatWeightedReply,
+                time_budget_ms: None,
             },
         ),
     };
@@ -253,14 +263,19 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
         player_count: 2,
     };
 
-    // WASM platform constraints
+    // WASM platform constraints: reduce budgets but keep MCTS with a time cap.
+    // AI computation runs in a Web Worker so it does not block the UI thread.
     if platform == Platform::Wasm {
         config.search.max_depth = config.search.max_depth.min(2);
         config.search.max_nodes = config.search.max_nodes * 2 / 3;
         config.search.rollout_depth = config.search.rollout_depth.min(1);
         if matches!(config.search.planner_mode, PlannerMode::BeamPlusMcts) {
-            config.search.planner_mode = PlannerMode::BeamPlusRollout;
-            config.search.mcts = None;
+            // Reduce simulations (48 → 20) and add 500ms time cap as safety net
+            if let Some(mcts) = &mut config.search.mcts {
+                mcts.simulations = mcts.simulations.min(20);
+                mcts.rollout_depth = mcts.rollout_depth.min(1);
+            }
+            config.search.time_budget_ms = Some(500);
         }
     }
 
@@ -380,11 +395,15 @@ mod tests {
     }
 
     #[test]
-    fn wasm_caps_depth_at_two() {
+    fn wasm_very_hard_has_mcts_with_time_budget() {
         let config = create_config(AiDifficulty::VeryHard, Platform::Wasm);
         assert_eq!(config.search.max_depth, 2);
-        assert_eq!(config.search.planner_mode, PlannerMode::BeamPlusRollout);
-        assert!(config.search.mcts.is_none());
+        assert_eq!(config.search.planner_mode, PlannerMode::BeamPlusMcts);
+        assert!(config.search.mcts.is_some());
+        let mcts = config.search.mcts.unwrap();
+        assert!(mcts.simulations <= 20);
+        assert_eq!(mcts.rollout_depth, 1);
+        assert_eq!(config.search.time_budget_ms, Some(500));
     }
 
     #[test]

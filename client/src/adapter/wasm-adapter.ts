@@ -1,14 +1,3 @@
-import {
-  ping,
-  create_initial_state,
-  initialize_game,
-  submit_action,
-  get_game_state,
-  get_ai_action,
-  get_legal_actions_js,
-  restore_game_state,
-} from "@wasm/engine";
-import { ensureWasmInit, ensureCardDatabase } from "../services/cardData";
 import type {
   EngineAdapter,
   FormatConfig,
@@ -18,30 +7,63 @@ import type {
   SubmitResult,
 } from "./types";
 import { AdapterError, AdapterErrorCode } from "./types";
+import { EngineWorkerClient } from "./engine-worker-client";
+import { AiWorkerPool } from "./ai-worker-pool";
 
 /**
  * WASM-backed implementation of EngineAdapter.
- * Communicates directly with the Rust engine compiled to WebAssembly.
- * Serializes all WASM access through an async queue (WASM is single-threaded).
+ *
+ * Delegates all engine operations to a Web Worker that owns its own WASM instance.
+ * The main thread never loads WASM — keeping the UI thread free from engine computation.
+ *
+ * Falls back to direct main-thread WASM calls if Worker creation fails
+ * (e.g., restrictive CSP, very old browser).
  */
 export class WasmAdapter implements EngineAdapter {
   private initialized = false;
-  private queue: Promise<void> = Promise.resolve();
   cardDbLoaded = false;
+
+  // Worker-based engine (primary path)
+  private engine: EngineWorkerClient | null = null;
+
+  // Multi-worker AI pool for VeryHard root parallelism (lazy-initialized)
+  private aiPool: AiWorkerPool | null = null;
+  private aiPoolFailed = false;
+
+  // Fallback: direct WASM on main thread (only used if Worker fails)
+  private fallback: MainThreadFallback | null = null;
 
   async initialize(): Promise<void> {
     if (this.initialized) return;
-    await ensureWasmInit();
+    try {
+      this.engine = new EngineWorkerClient();
+      await this.engine.initialize();
+    } catch {
+      // Worker creation failed — fall back to main-thread WASM
+      console.warn(
+        "Web Worker creation failed, falling back to main-thread WASM",
+      );
+      this.engine = null;
+      this.fallback = await createMainThreadFallback();
+    }
     this.initialized = true;
   }
 
-  /** Load the card database if not already loaded. Called before game init when deck data is provided. */
   private async ensureCardDb(): Promise<void> {
     if (this.cardDbLoaded) return;
     try {
-      const count = await ensureCardDatabase();
+      if (this.engine) {
+        const count = await this.engine.loadCardDbFromUrl();
+        console.log(`Card database loaded in worker: ${count} cards`);
+      } else if (this.fallback) {
+        const count = await this.fallback.ensureCardDatabase();
+        console.log(`Card database loaded: ${count} cards`);
+      }
       this.cardDbLoaded = true;
-      console.log(`Card database loaded: ${count} cards`);
+      // Also load into AI pool if it's already initialized
+      if (this.aiPool && !this.aiPool.isCardDbLoaded) {
+        await this.aiPool.loadCardDb();
+      }
     } catch (err) {
       console.warn("Failed to load card database:", err);
     }
@@ -49,30 +71,85 @@ export class WasmAdapter implements EngineAdapter {
 
   async submitAction(action: GameAction): Promise<SubmitResult> {
     this.assertInitialized();
-    return this.enqueue(() => this.processAction(action));
+    if (this.engine) {
+      return this.engine.submitAction(action);
+    }
+    return this.fallback!.submitAction(action);
   }
 
   async getState(): Promise<GameState> {
     this.assertInitialized();
-    return this.enqueue(() => this.fetchState());
+    if (this.engine) {
+      return this.engine.getState();
+    }
+    return this.fallback!.getState();
   }
 
   async getLegalActions(): Promise<GameAction[]> {
     this.assertInitialized();
-    return this.enqueue(() => {
-      const actions = get_legal_actions_js();
-      if (actions === null) return [];
-      return actions as GameAction[];
-    });
+    if (this.engine) {
+      return this.engine.getLegalActions();
+    }
+    return this.fallback!.getLegalActions();
   }
 
-  getAiAction(difficulty: string, playerId = 1): Promise<GameAction | null> {
+  async getAiAction(
+    difficulty: string,
+    playerId = 1,
+  ): Promise<GameAction | null> {
     this.assertInitialized();
-    return this.enqueue(() => {
-      const result = get_ai_action(difficulty, playerId);
-      if (result == null) return null;
-      return result as GameAction;
-    });
+
+    // Root parallelism for VeryHard: multiple workers score independently, merge results
+    if (difficulty === "VeryHard" && this.engine) {
+      const pool = await this.ensureAiPool();
+      if (pool) {
+        try {
+          const stateJson = await this.engine.exportState();
+          const merged = await pool.getAiScoredCandidates(
+            stateJson,
+            difficulty,
+            playerId,
+          );
+          if (merged && merged.length > 0) {
+            if (merged.length === 1) return merged[0][0];
+            // Delegate softmax selection to Rust (keeps all AI logic in the engine)
+            const scoresJson = JSON.stringify(merged);
+            return this.engine.selectActionFromScores(
+              scoresJson,
+              difficulty,
+              Date.now(),
+            );
+          }
+        } catch {
+          // Pool failed — fall through to single-worker path
+        }
+      }
+    }
+
+    // Single-worker path for non-VeryHard or when pool unavailable
+    if (this.engine) {
+      return this.engine.getAiAction(difficulty, playerId);
+    }
+    return this.fallback!.getAiAction(difficulty, playerId);
+  }
+
+  /** Lazy AI pool init — only created on first VeryHard request. */
+  private async ensureAiPool(): Promise<AiWorkerPool | null> {
+    if (this.aiPool) return this.aiPool;
+    if (this.aiPoolFailed) return null;
+    try {
+      const cores = navigator.hardwareConcurrency ?? 0;
+      const count = Math.max(2, Math.min(cores - 1, 4));
+      this.aiPool = new AiWorkerPool(count);
+      await this.aiPool.initialize();
+      if (this.cardDbLoaded) {
+        await this.aiPool.loadCardDb();
+      }
+      return this.aiPool;
+    } catch {
+      this.aiPoolFailed = true;
+      return null;
+    }
   }
 
   /**
@@ -90,23 +167,35 @@ export class WasmAdapter implements EngineAdapter {
 
   restoreState(state: GameState): void {
     this.assertInitialized();
-    // Enqueue to prevent RefCell borrow conflicts with in-flight operations.
-    // Callers follow with enqueued getState()/getLegalActions() so ordering is preserved.
-    this.enqueue(() => restore_game_state(JSON.stringify(state)));
+    const json = JSON.stringify(state);
+    if (this.engine) {
+      // Fire-and-forget for EngineAdapter interface compliance (returns void).
+      // Internally awaitable via engine.restoreState() for AI worker pool usage.
+      this.engine.restoreState(json);
+    } else {
+      this.fallback!.restoreState(json);
+    }
   }
 
   dispose(): void {
+    this.engine?.dispose();
+    this.engine = null;
+    this.aiPool?.dispose();
+    this.aiPool = null;
+    this.aiPoolFailed = false;
+    this.fallback = null;
     this.initialized = false;
-    this.queue = Promise.resolve();
+    this.cardDbLoaded = false;
   }
 
-  /** Verify WASM module is responding. */
-  ping(): string {
+  async ping(): Promise<string> {
     this.assertInitialized();
-    return ping();
+    if (this.engine) {
+      return this.engine.ping();
+    }
+    return this.fallback!.ping();
   }
 
-  /** Initialize a new game and return the initial events and log entries. */
   async initializeGame(
     deckData?: unknown,
     formatConfig?: FormatConfig,
@@ -114,26 +203,31 @@ export class WasmAdapter implements EngineAdapter {
     matchConfig?: MatchConfig,
   ): Promise<SubmitResult> {
     this.assertInitialized();
-    // Load card database on demand when deck data needs name resolution
     if (deckData) {
       await this.ensureCardDb();
     }
     const seed = Math.floor(Math.random() * Number.MAX_SAFE_INTEGER);
-    return this.enqueue(() => {
-      const result = initialize_game(
+    if (this.engine) {
+      return this.engine.initializeGame(
         deckData ?? null,
         seed,
         formatConfig ?? null,
         matchConfig ?? null,
-        playerCount ?? undefined,
+        playerCount,
       );
-      // Engine returns { error: true, reasons: [...] } when deck validation fails
-      if (result && typeof result === "object" && "error" in result && result.error) {
-        const reasons = (result as { reasons?: string[] }).reasons ?? [];
-        throw new Error(`Deck validation failed: ${reasons.join("; ")}`);
-      }
-      return { events: result.events ?? [], log_entries: result.log_entries ?? [] };
-    });
+    }
+    return this.fallback!.initializeGame(
+      deckData ?? null,
+      seed,
+      formatConfig ?? null,
+      matchConfig ?? null,
+      playerCount,
+    );
+  }
+
+  /** Expose the worker client for AI pool state export (Phase 4). */
+  getEngineClient(): EngineWorkerClient | null {
+    return this.engine;
   }
 
   private assertInitialized(): void {
@@ -145,56 +239,98 @@ export class WasmAdapter implements EngineAdapter {
       );
     }
   }
+}
 
-  /**
-   * Enqueue a WASM operation to ensure serialized access.
-   * Each operation waits for the previous one to complete.
-   */
-  private enqueue<T>(operation: () => T): Promise<T> {
-    const result = this.queue.then(() => {
-      try {
-        return operation();
-      } catch (error) {
-        throw this.normalizeError(error);
-      }
-    });
-    // Update queue to track completion (ignore rejections for queue chaining)
-    this.queue = result.then(
+// ── Main-Thread Fallback ─────────────────────────────────────────────────
+// Only used when Web Worker creation fails.
+
+interface MainThreadFallback {
+  ensureCardDatabase(): Promise<number>;
+  submitAction(action: GameAction): Promise<SubmitResult>;
+  getState(): Promise<GameState>;
+  getLegalActions(): Promise<GameAction[]>;
+  getAiAction(difficulty: string, playerId: number): Promise<GameAction | null>;
+  restoreState(stateJson: string): void;
+  ping(): string;
+  initializeGame(
+    deckData: unknown | null,
+    seed: number,
+    formatConfig: FormatConfig | null,
+    matchConfig: MatchConfig | null,
+    playerCount?: number,
+  ): Promise<SubmitResult>;
+}
+
+async function createMainThreadFallback(): Promise<MainThreadFallback> {
+  const wasm = await import("@wasm/engine");
+  const cardData = await import("../services/cardData");
+  await cardData.ensureWasmInit();
+
+  let queue: Promise<void> = Promise.resolve();
+
+  function enqueue<T>(operation: () => T): Promise<T> {
+    const p = queue.then(() => operation());
+    queue = p.then(
       () => undefined,
       () => undefined,
     );
-    return result;
+    return p;
   }
 
-  private processAction(action: GameAction): SubmitResult {
-    const result = submit_action(action);
-    if (typeof result === "string") {
-      throw new AdapterError(
-        AdapterErrorCode.INVALID_ACTION,
-        result,
-        true,
-      );
-    }
-    return { events: result.events ?? [], log_entries: result.log_entries ?? [] };
-  }
+  return {
+    ensureCardDatabase: () => cardData.ensureCardDatabase(),
 
-  private fetchState(): GameState {
-    const state = get_game_state();
-    if (state === null) {
-      return create_initial_state() as GameState;
-    }
-    return state as GameState;
-  }
+    submitAction: (action: GameAction) =>
+      enqueue(() => {
+        const r = wasm.submit_action(action);
+        if (typeof r === "string") throw new Error(r);
+        return { events: r.events ?? [], log_entries: r.log_entries ?? [] };
+      }),
 
-  private normalizeError(error: unknown): AdapterError {
-    if (error instanceof AdapterError) return error;
+    getState: () =>
+      enqueue(() => {
+        const s = wasm.get_game_state();
+        return (s === null ? wasm.create_initial_state() : s) as GameState;
+      }),
 
-    const message =
-      error instanceof Error ? error.message : String(error);
-    return new AdapterError(
-      AdapterErrorCode.WASM_ERROR,
-      message,
-      false,
-    );
-  }
+    getLegalActions: () =>
+      enqueue(() => {
+        const a = wasm.get_legal_actions_js();
+        return (a === null ? [] : a) as GameAction[];
+      }),
+
+    getAiAction: (difficulty: string, playerId: number) =>
+      enqueue(() => {
+        const r = wasm.get_ai_action(difficulty, playerId);
+        return (r ?? null) as GameAction | null;
+      }),
+
+    restoreState: (stateJson: string) => {
+      enqueue(() => wasm.restore_game_state(stateJson));
+    },
+
+    ping: () => wasm.ping(),
+
+    initializeGame: (
+      deckData: unknown | null,
+      seed: number,
+      formatConfig: FormatConfig | null,
+      matchConfig: MatchConfig | null,
+      playerCount?: number,
+    ) =>
+      enqueue(() => {
+        const r = wasm.initialize_game(
+          deckData,
+          seed,
+          formatConfig,
+          matchConfig,
+          playerCount ?? undefined,
+        );
+        if (r && typeof r === "object" && "error" in r && r.error) {
+          const reasons = (r as { reasons?: string[] }).reasons ?? [];
+          throw new Error(`Deck validation failed: ${reasons.join("; ")}`);
+        }
+        return { events: r.events ?? [], log_entries: r.log_entries ?? [] };
+      }),
+  };
 }

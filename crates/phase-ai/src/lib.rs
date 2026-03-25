@@ -17,4 +17,4 @@ pub use eval::{
     evaluate_creature, evaluate_for_planner, evaluate_state, evaluate_state_breakdown,
     strategic_intent, threat_level, EvalWeights, EvaluationBreakdown, StrategicIntent,
 };
-pub use search::choose_action;
+pub use search::{choose_action, score_candidates, softmax_select_pairs};

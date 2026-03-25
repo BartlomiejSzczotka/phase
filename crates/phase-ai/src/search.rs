@@ -1,6 +1,6 @@
 use rand::Rng;
 
-use engine::ai_support::{build_decision_context, CandidateAction};
+use engine::ai_support::build_decision_context;
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
 use engine::types::game_state::{GameState, WaitingFor};
@@ -13,13 +13,6 @@ use crate::planner::{
 };
 use crate::policies::PolicyRegistry;
 
-struct ScoredCandidate {
-    candidate: CandidateAction,
-    score: f64,
-}
-
-/// Filter candidate actions by testing each against the engine.
-/// Any candidate the engine rejects is dropped before scoring.
 /// Choose the best action for the AI player given the current game state.
 ///
 /// - For 0 or 1 legal actions, returns immediately.
@@ -32,6 +25,25 @@ pub fn choose_action(
     config: &AiConfig,
     rng: &mut impl Rng,
 ) -> Option<GameAction> {
+    let scored = score_candidates(state, ai_player, config);
+    if scored.is_empty() {
+        return None;
+    }
+    if scored.len() == 1 {
+        return Some(scored[0].0.clone());
+    }
+    softmax_select_pairs(&scored, config.temperature, rng)
+}
+
+/// Score all candidate actions without selecting one.
+/// Returns `(GameAction, f64)` pairs for external merging (root parallelism).
+/// For special cases (mulligan, combat, etc.) returns a single-element list
+/// with the deterministic choice scored at 1.0.
+pub fn score_candidates(
+    state: &GameState,
+    ai_player: PlayerId,
+    config: &AiConfig,
+) -> Vec<(GameAction, f64)> {
     let ctx = build_decision_context(state);
     let policies = PolicyRegistry::default();
     let mut services = PlannerServices::new(ai_player, config, &policies);
@@ -42,185 +54,23 @@ pub fn choose_action(
         .collect();
 
     if actions.is_empty() {
-        return None;
+        return vec![];
     }
 
-    if matches!(
-        state.waiting_for,
-        WaitingFor::BetweenGamesChoosePlayDraw { .. }
-    ) {
-        return Some(GameAction::ChoosePlayDraw { play_first: true });
+    // Deterministic early returns — these don't benefit from search/parallelism
+    if let Some(action) = deterministic_choice(state, ai_player, config, &actions) {
+        return vec![(action, 1.0)];
     }
 
-    if matches!(state.waiting_for, WaitingFor::BetweenGamesSideboard { .. }) {
-        return actions
-            .into_iter()
-            .find(|action| matches!(action, GameAction::SubmitSideboard { .. }));
-    }
-
-    if actions.len() == 1 {
-        return Some(actions.into_iter().next().unwrap());
-    }
-
-    if let Some(action) = prefer_land_drop(state, ai_player, &actions) {
-        return Some(action);
-    }
-
-    // Mulligan decisions: use hand-quality heuristic (search can't evaluate these)
-    if let WaitingFor::MulliganDecision {
-        player,
-        mulligan_count,
-    } = &state.waiting_for
-    {
-        let keep = should_keep_hand(state, *player, *mulligan_count);
-        return Some(GameAction::MulliganDecision { keep });
-    }
-
-    // Scry/Dig/Surveil: use card evaluation heuristics
-    if let WaitingFor::ScryChoice { cards, .. } = &state.waiting_for {
-        // Put higher-value cards on top, lower-value on bottom
-        let mut scored: Vec<_> = cards
-            .iter()
-            .map(|&id| (id, evaluate_card_value(state, id)))
-            .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let top_cards: Vec<_> = scored.iter().map(|(id, _)| *id).collect();
-        return Some(GameAction::SelectCards { cards: top_cards });
-    }
-
-    if let WaitingFor::DigChoice {
-        cards, keep_count, ..
-    } = &state.waiting_for
-    {
-        // Keep the highest-value cards
-        let mut scored: Vec<_> = cards
-            .iter()
-            .map(|&id| (id, evaluate_card_value(state, id)))
-            .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let kept: Vec<_> = scored.iter().take(*keep_count).map(|(id, _)| *id).collect();
-        return Some(GameAction::SelectCards { cards: kept });
-    }
-
-    if let WaitingFor::SurveilChoice { cards, .. } = &state.waiting_for {
-        // Send lowest-value cards to graveyard
-        let mut scored: Vec<_> = cards
-            .iter()
-            .map(|&id| (id, evaluate_card_value(state, id)))
-            .collect();
-        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        // Send bottom half to graveyard (heuristic: keep better cards on top)
-        let graveyard_count = scored.len().div_ceil(2);
-        let to_graveyard: Vec<_> = scored
-            .iter()
-            .take(graveyard_count)
-            .map(|(id, _)| *id)
-            .collect();
-        return Some(GameAction::SelectCards {
-            cards: to_graveyard,
-        });
-    }
-
-    if let WaitingFor::RevealChoice { cards, .. } = &state.waiting_for {
-        // Pick the highest-value card from opponent's hand to exile/discard
-        let mut scored: Vec<_> = cards
-            .iter()
-            .map(|&id| (id, evaluate_card_value(state, id)))
-            .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        if let Some((best, _)) = scored.first() {
-            return Some(GameAction::SelectCards { cards: vec![*best] });
-        }
-    }
-
-    if let WaitingFor::SearchChoice { cards, count, .. } = &state.waiting_for {
-        // Pick the highest-value card(s) from search results
-        let mut scored: Vec<_> = cards
-            .iter()
-            .map(|&id| (id, evaluate_card_value(state, id)))
-            .collect();
-        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        let chosen: Vec<_> = scored.iter().take(*count).map(|(id, _)| *id).collect();
-        if !chosen.is_empty() {
-            return Some(GameAction::SelectCards { cards: chosen });
-        }
-    }
-
-    // CR 700.2: ChooseFromZoneChoice — select cards from a tracked set.
-    // As the opponent, pick the highest-value card to remove from the controller.
-    // As the controller, pick the lowest-value card to sacrifice.
-    if let WaitingFor::ChooseFromZoneChoice {
-        cards,
-        count,
-        player,
-        ..
-    } = &state.waiting_for
-    {
-        let mut scored: Vec<_> = cards
-            .iter()
-            .map(|&id| (id, evaluate_card_value(state, id)))
-            .collect();
-        // If the AI is the opponent chooser, pick the strongest card(s) to remove
-        // from the controller. If the AI is the controller, pick the weakest.
-        let is_opponent_chooser = state
-            .players
-            .iter()
-            .any(|p| p.id == *player && p.id != state.priority_player);
-        if is_opponent_chooser {
-            // Pick highest-value cards (most damaging to remove from controller)
-            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-        } else {
-            // Pick lowest-value cards
-            scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        }
-        let chosen: Vec<_> = scored.iter().take(*count).map(|(id, _)| *id).collect();
-        if !chosen.is_empty() {
-            return Some(GameAction::SelectCards { cards: chosen });
-        }
-    }
-
-    if let WaitingFor::OptionalCostChoice { .. } = &state.waiting_for {
-        // AI always pays optional costs when it can (simple heuristic for now)
-        return Some(GameAction::DecideOptionalCost { pay: true });
-    }
-
-    if let WaitingFor::OptionalEffectChoice { .. } = &state.waiting_for {
-        // AI always accepts optional effects (simple heuristic for now)
-        return Some(GameAction::DecideOptionalEffect { accept: true });
-    }
-
-    if let WaitingFor::DiscardToHandSize { cards, count, .. } = &state.waiting_for {
-        // Discard the lowest-value cards
-        let mut scored: Vec<_> = cards
-            .iter()
-            .map(|&id| (id, evaluate_card_value(state, id)))
-            .collect();
-        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        let to_discard: Vec<_> = scored.iter().take(*count).map(|(id, _)| *id).collect();
-        return Some(GameAction::SelectCards { cards: to_discard });
-    }
-
-    // Combat decisions: delegate to specialized combat AI
-    if let WaitingFor::DeclareAttackers { .. } = &state.waiting_for {
-        let attacks = choose_attackers_with_targets_with_profile(state, ai_player, &config.profile);
-        return Some(GameAction::DeclareAttackers { attacks });
-    }
-
-    if let WaitingFor::DeclareBlockers { .. } = &state.waiting_for {
-        if let Some(combat) = &state.combat {
-            let attacker_ids: Vec<_> = combat.attackers.iter().map(|a| a.object_id).collect();
-            let assignments =
-                choose_blockers_with_profile(state, ai_player, &attacker_ids, &config.profile);
-            return Some(GameAction::DeclareBlockers { assignments });
-        }
-        return Some(GameAction::DeclareBlockers {
-            assignments: Vec::new(),
-        });
-    }
-
-    // Score actions
-    let scored: Vec<ScoredCandidate> = if config.search.enabled {
-        let mut budget = SearchBudget::new(config.search.max_nodes);
+    // Score actions via search or heuristics
+    if config.search.enabled {
+        let mut budget = match config.search.time_budget_ms {
+            Some(ms) => SearchBudget::with_time_limit(
+                config.search.max_nodes,
+                web_time::Duration::from_millis(ms as u64),
+            ),
+            None => SearchBudget::new(config.search.max_nodes),
+        };
         let branching = config.search.max_branching as usize;
         let mut planner = build_continuation_planner(config);
 
@@ -252,10 +102,7 @@ pub fn choose_action(
             } else {
                 ranked.score
             };
-            ScoredCandidate {
-                candidate: ranked.candidate,
-                score,
-            }
+            (ranked.candidate.action, score)
         })
         .collect()
     } else {
@@ -264,12 +111,180 @@ pub fn choose_action(
             .into_iter()
             .map(|candidate| {
                 let score = services.tactical_score(state, &ctx, &candidate, ai_player);
-                ScoredCandidate { candidate, score }
+                (candidate.action, score)
             })
             .collect()
-    };
+    }
+}
 
-    softmax_select(&scored, config.temperature, rng)
+/// Handle deterministic decisions that don't benefit from search or parallelism.
+/// Returns `Some(action)` for special cases, `None` to proceed to scoring.
+fn deterministic_choice(
+    state: &GameState,
+    ai_player: PlayerId,
+    config: &AiConfig,
+    actions: &[GameAction],
+) -> Option<GameAction> {
+    if matches!(
+        state.waiting_for,
+        WaitingFor::BetweenGamesChoosePlayDraw { .. }
+    ) {
+        return Some(GameAction::ChoosePlayDraw { play_first: true });
+    }
+
+    if matches!(state.waiting_for, WaitingFor::BetweenGamesSideboard { .. }) {
+        return actions
+            .iter()
+            .find(|action| matches!(action, GameAction::SubmitSideboard { .. }))
+            .cloned();
+    }
+
+    if actions.len() == 1 {
+        return Some(actions[0].clone());
+    }
+
+    if let Some(action) = prefer_land_drop(state, ai_player, actions) {
+        return Some(action);
+    }
+
+    // Mulligan decisions: use hand-quality heuristic (search can't evaluate these)
+    if let WaitingFor::MulliganDecision {
+        player,
+        mulligan_count,
+    } = &state.waiting_for
+    {
+        let keep = should_keep_hand(state, *player, *mulligan_count);
+        return Some(GameAction::MulliganDecision { keep });
+    }
+
+    // Scry/Dig/Surveil: use card evaluation heuristics
+    if let WaitingFor::ScryChoice { cards, .. } = &state.waiting_for {
+        let mut scored: Vec<_> = cards
+            .iter()
+            .map(|&id| (id, evaluate_card_value(state, id)))
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let top_cards: Vec<_> = scored.iter().map(|(id, _)| *id).collect();
+        return Some(GameAction::SelectCards { cards: top_cards });
+    }
+
+    if let WaitingFor::DigChoice {
+        cards, keep_count, ..
+    } = &state.waiting_for
+    {
+        let mut scored: Vec<_> = cards
+            .iter()
+            .map(|&id| (id, evaluate_card_value(state, id)))
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let kept: Vec<_> = scored.iter().take(*keep_count).map(|(id, _)| *id).collect();
+        return Some(GameAction::SelectCards { cards: kept });
+    }
+
+    if let WaitingFor::SurveilChoice { cards, .. } = &state.waiting_for {
+        let mut scored: Vec<_> = cards
+            .iter()
+            .map(|&id| (id, evaluate_card_value(state, id)))
+            .collect();
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let graveyard_count = scored.len().div_ceil(2);
+        let to_graveyard: Vec<_> = scored
+            .iter()
+            .take(graveyard_count)
+            .map(|(id, _)| *id)
+            .collect();
+        return Some(GameAction::SelectCards {
+            cards: to_graveyard,
+        });
+    }
+
+    if let WaitingFor::RevealChoice { cards, .. } = &state.waiting_for {
+        let mut scored: Vec<_> = cards
+            .iter()
+            .map(|&id| (id, evaluate_card_value(state, id)))
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        if let Some((best, _)) = scored.first() {
+            return Some(GameAction::SelectCards { cards: vec![*best] });
+        }
+    }
+
+    if let WaitingFor::SearchChoice { cards, count, .. } = &state.waiting_for {
+        let mut scored: Vec<_> = cards
+            .iter()
+            .map(|&id| (id, evaluate_card_value(state, id)))
+            .collect();
+        scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        let chosen: Vec<_> = scored.iter().take(*count).map(|(id, _)| *id).collect();
+        if !chosen.is_empty() {
+            return Some(GameAction::SelectCards { cards: chosen });
+        }
+    }
+
+    // CR 700.2: ChooseFromZoneChoice — select cards from a tracked set.
+    if let WaitingFor::ChooseFromZoneChoice {
+        cards,
+        count,
+        player,
+        ..
+    } = &state.waiting_for
+    {
+        let mut scored: Vec<_> = cards
+            .iter()
+            .map(|&id| (id, evaluate_card_value(state, id)))
+            .collect();
+        let is_opponent_chooser = state
+            .players
+            .iter()
+            .any(|p| p.id == *player && p.id != state.priority_player);
+        if is_opponent_chooser {
+            scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        } else {
+            scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        }
+        let chosen: Vec<_> = scored.iter().take(*count).map(|(id, _)| *id).collect();
+        if !chosen.is_empty() {
+            return Some(GameAction::SelectCards { cards: chosen });
+        }
+    }
+
+    if let WaitingFor::OptionalCostChoice { .. } = &state.waiting_for {
+        return Some(GameAction::DecideOptionalCost { pay: true });
+    }
+
+    if let WaitingFor::OptionalEffectChoice { .. } = &state.waiting_for {
+        return Some(GameAction::DecideOptionalEffect { accept: true });
+    }
+
+    if let WaitingFor::DiscardToHandSize { cards, count, .. } = &state.waiting_for {
+        let mut scored: Vec<_> = cards
+            .iter()
+            .map(|&id| (id, evaluate_card_value(state, id)))
+            .collect();
+        scored.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+        let to_discard: Vec<_> = scored.iter().take(*count).map(|(id, _)| *id).collect();
+        return Some(GameAction::SelectCards { cards: to_discard });
+    }
+
+    // Combat decisions: delegate to specialized combat AI
+    if let WaitingFor::DeclareAttackers { .. } = &state.waiting_for {
+        let attacks = choose_attackers_with_targets_with_profile(state, ai_player, &config.profile);
+        return Some(GameAction::DeclareAttackers { attacks });
+    }
+
+    if let WaitingFor::DeclareBlockers { .. } = &state.waiting_for {
+        if let Some(combat) = &state.combat {
+            let attacker_ids: Vec<_> = combat.attackers.iter().map(|a| a.object_id).collect();
+            let assignments =
+                choose_blockers_with_profile(state, ai_player, &attacker_ids, &config.profile);
+            return Some(GameAction::DeclareBlockers { assignments });
+        }
+        return Some(GameAction::DeclareBlockers {
+            assignments: Vec::new(),
+        });
+    }
+
+    None
 }
 
 fn prefer_land_drop(
@@ -365,8 +380,10 @@ fn evaluate_card_value(state: &GameState, obj_id: engine::types::identifiers::Ob
     value
 }
 
-fn softmax_select(
-    scored: &[ScoredCandidate],
+/// Select an action from scored `(GameAction, f64)` pairs using softmax.
+/// Used by `choose_action` and by the WASM `select_action_from_scores` export.
+pub fn softmax_select_pairs(
+    scored: &[(GameAction, f64)],
     temperature: f64,
     rng: &mut impl Rng,
 ) -> Option<GameAction> {
@@ -374,18 +391,15 @@ fn softmax_select(
         return None;
     }
     if scored.len() == 1 {
-        return Some(scored[0].candidate.action.clone());
+        return Some(scored[0].0.clone());
     }
 
     // Numerical stability: subtract max score
-    let max_score = scored
-        .iter()
-        .map(|s| s.score)
-        .fold(f64::NEG_INFINITY, f64::max);
+    let max_score = scored.iter().map(|s| s.1).fold(f64::NEG_INFINITY, f64::max);
 
     let weights: Vec<f64> = scored
         .iter()
-        .map(|s| ((s.score - max_score) / temperature).exp())
+        .map(|s| ((s.1 - max_score) / temperature).exp())
         .collect();
 
     let total: f64 = weights.iter().sum();
@@ -393,12 +407,8 @@ fn softmax_select(
         // Fallback: pick the highest-scored action
         return scored
             .iter()
-            .max_by(|a, b| {
-                a.score
-                    .partial_cmp(&b.score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|s| s.candidate.action.clone());
+            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|s| s.0.clone());
     }
 
     let threshold: f64 = rng.random::<f64>() * total;
@@ -406,12 +416,12 @@ fn softmax_select(
     for (i, w) in weights.iter().enumerate() {
         cumulative += w;
         if cumulative >= threshold {
-            return Some(scored[i].candidate.action.clone());
+            return Some(scored[i].0.clone());
         }
     }
 
     // Fallback to last
-    Some(scored.last().unwrap().candidate.action.clone())
+    Some(scored.last().unwrap().0.clone())
 }
 
 #[cfg(test)]
@@ -501,35 +511,20 @@ mod tests {
     #[test]
     fn softmax_low_temp_picks_highest() {
         let scored = vec![
-            ScoredCandidate {
-                candidate: CandidateAction {
-                    action: GameAction::PassPriority,
-                    metadata: engine::ai_support::ActionMetadata {
-                        actor: Some(PlayerId(0)),
-                        tactical_class: TacticalClass::Pass,
-                    },
+            (GameAction::PassPriority, 1.0),
+            (
+                GameAction::PlayLand {
+                    object_id: ObjectId(0),
+                    card_id: CardId(1),
                 },
-                score: 1.0,
-            },
-            ScoredCandidate {
-                candidate: CandidateAction {
-                    action: GameAction::PlayLand {
-                        object_id: ObjectId(0),
-                        card_id: CardId(1),
-                    },
-                    metadata: engine::ai_support::ActionMetadata {
-                        actor: Some(PlayerId(0)),
-                        tactical_class: TacticalClass::Land,
-                    },
-                },
-                score: 10.0,
-            },
+                10.0,
+            ),
         ];
         let mut rng = SmallRng::seed_from_u64(42);
-        // Very low temperature = nearly deterministic
         let mut picked_land = 0;
         for _ in 0..20 {
-            if let Some(GameAction::PlayLand { .. }) = softmax_select(&scored, 0.01, &mut rng) {
+            if let Some(GameAction::PlayLand { .. }) = softmax_select_pairs(&scored, 0.01, &mut rng)
+            {
                 picked_land += 1;
             }
         }
@@ -542,38 +537,22 @@ mod tests {
     #[test]
     fn softmax_high_temp_is_more_random() {
         let scored = vec![
-            ScoredCandidate {
-                candidate: CandidateAction {
-                    action: GameAction::PassPriority,
-                    metadata: engine::ai_support::ActionMetadata {
-                        actor: Some(PlayerId(0)),
-                        tactical_class: TacticalClass::Pass,
-                    },
+            (GameAction::PassPriority, 1.0),
+            (
+                GameAction::PlayLand {
+                    object_id: ObjectId(0),
+                    card_id: CardId(1),
                 },
-                score: 1.0,
-            },
-            ScoredCandidate {
-                candidate: CandidateAction {
-                    action: GameAction::PlayLand {
-                        object_id: ObjectId(0),
-                        card_id: CardId(1),
-                    },
-                    metadata: engine::ai_support::ActionMetadata {
-                        actor: Some(PlayerId(0)),
-                        tactical_class: TacticalClass::Land,
-                    },
-                },
-                score: 2.0,
-            },
+                2.0,
+            ),
         ];
         let mut rng = SmallRng::seed_from_u64(42);
         let mut picked_pass = 0;
         for _ in 0..100 {
-            if let Some(GameAction::PassPriority) = softmax_select(&scored, 4.0, &mut rng) {
+            if let Some(GameAction::PassPriority) = softmax_select_pairs(&scored, 4.0, &mut rng) {
                 picked_pass += 1;
             }
         }
-        // At high temp with close scores, should pick the lower option sometimes
         assert!(
             picked_pass > 10 && picked_pass < 90,
             "High temperature should produce mixed results, got pass={picked_pass}/100"
@@ -582,10 +561,7 @@ mod tests {
 
     #[test]
     fn budget_limits_stop_search() {
-        let mut budget = SearchBudget {
-            max_nodes: 3,
-            nodes_evaluated: 0,
-        };
+        let mut budget = SearchBudget::new(3);
         assert!(!budget.exhausted());
         budget.tick();
         budget.tick();

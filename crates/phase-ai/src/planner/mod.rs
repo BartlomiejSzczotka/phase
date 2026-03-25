@@ -29,6 +29,7 @@ pub struct RankedCandidate {
 pub struct SearchBudget {
     pub max_nodes: u32,
     pub nodes_evaluated: u32,
+    deadline: Option<web_time::Instant>,
 }
 
 impl SearchBudget {
@@ -36,11 +37,21 @@ impl SearchBudget {
         Self {
             max_nodes,
             nodes_evaluated: 0,
+            deadline: None,
+        }
+    }
+
+    pub fn with_time_limit(max_nodes: u32, duration: web_time::Duration) -> Self {
+        Self {
+            max_nodes,
+            nodes_evaluated: 0,
+            deadline: Some(web_time::Instant::now() + duration),
         }
     }
 
     pub fn exhausted(&self) -> bool {
         self.nodes_evaluated >= self.max_nodes
+            || self.deadline.is_some_and(|d| web_time::Instant::now() >= d)
     }
 
     pub fn tick(&mut self) {
@@ -752,6 +763,23 @@ mod tests {
         let mut budget = SearchBudget::new(3);
         assert!(!budget.exhausted());
         budget.tick();
+        budget.tick();
+        budget.tick();
+        assert!(budget.exhausted());
+    }
+
+    #[test]
+    fn search_budget_with_time_limit_expires() {
+        let budget = SearchBudget::with_time_limit(1000, web_time::Duration::from_millis(0));
+        // Zero-duration budget should be immediately exhausted
+        assert!(budget.exhausted());
+    }
+
+    #[test]
+    fn search_budget_time_limit_does_not_override_node_limit() {
+        // Large time budget but tiny node budget — node limit should still trigger
+        let mut budget = SearchBudget::with_time_limit(2, web_time::Duration::from_secs(60));
+        assert!(!budget.exhausted());
         budget.tick();
         budget.tick();
         assert!(budget.exhausted());

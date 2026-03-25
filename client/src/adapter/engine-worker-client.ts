@@ -1,0 +1,183 @@
+/**
+ * Promise-based RPC wrapper around the Engine Web Worker.
+ *
+ * All methods post a typed message to the worker with a unique request ID,
+ * then resolve the corresponding promise when the worker responds.
+ */
+import type {
+  FormatConfig,
+  GameAction,
+  GameState,
+  MatchConfig,
+  SubmitResult,
+} from "./types";
+
+type EngineResponse =
+  | { type: "ready" }
+  | { type: "result"; id: number; data: unknown }
+  | { type: "error"; id: number; message: string };
+
+export class EngineWorkerClient {
+  private worker: Worker;
+  private nextId = 0;
+  private pending = new Map<
+    number,
+    { resolve: (value: unknown) => void; reject: (reason: Error) => void }
+  >();
+  private readyPromise: Promise<void>;
+  private readyResolve!: () => void;
+
+  constructor() {
+    this.worker = new Worker(
+      new URL("./engine-worker.ts", import.meta.url),
+      { type: "module" },
+    );
+
+    this.readyPromise = new Promise<void>((resolve) => {
+      this.readyResolve = resolve;
+    });
+
+    this.worker.onmessage = (e: MessageEvent<EngineResponse>) => {
+      const msg = e.data;
+      switch (msg.type) {
+        case "ready":
+          this.readyResolve();
+          break;
+        case "result": {
+          const entry = this.pending.get(msg.id);
+          if (entry) {
+            this.pending.delete(msg.id);
+            entry.resolve(msg.data);
+          }
+          break;
+        }
+        case "error": {
+          const entry = this.pending.get(msg.id);
+          if (entry) {
+            this.pending.delete(msg.id);
+            entry.reject(new Error(msg.message));
+          }
+          break;
+        }
+      }
+    };
+
+    this.worker.onerror = (e: ErrorEvent) => {
+      // Reject all pending requests
+      for (const [, entry] of this.pending) {
+        entry.reject(new Error(e.message ?? "Worker error"));
+      }
+      this.pending.clear();
+    };
+  }
+
+  private request<T>(message: Record<string, unknown>): Promise<T> {
+    const id = this.nextId++;
+    return new Promise<T>((resolve, reject) => {
+      this.pending.set(id, {
+        resolve: resolve as (value: unknown) => void,
+        reject,
+      });
+      this.worker.postMessage({ ...message, id });
+    });
+  }
+
+  async initialize(): Promise<void> {
+    this.worker.postMessage({ type: "init" });
+    await this.readyPromise;
+  }
+
+  async loadCardDb(text: string): Promise<number> {
+    return this.request<number>({ type: "loadCardDb", cardDataText: text });
+  }
+
+  async loadCardDbFromUrl(): Promise<number> {
+    return this.request<number>({ type: "loadCardDbFromUrl" });
+  }
+
+  async initializeGame(
+    deckData: unknown | null,
+    seed: number,
+    formatConfig: FormatConfig | null,
+    matchConfig: MatchConfig | null,
+    playerCount?: number,
+  ): Promise<SubmitResult> {
+    return this.request<SubmitResult>({
+      type: "initializeGame",
+      deckData,
+      seed,
+      formatConfig,
+      matchConfig,
+      playerCount,
+    });
+  }
+
+  async submitAction(action: GameAction): Promise<SubmitResult> {
+    return this.request<SubmitResult>({ type: "submitAction", action });
+  }
+
+  async getState(): Promise<GameState> {
+    return this.request<GameState>({ type: "getState" });
+  }
+
+  async getLegalActions(): Promise<GameAction[]> {
+    return this.request<GameAction[]>({ type: "getLegalActions" });
+  }
+
+  async getAiAction(
+    difficulty: string,
+    playerId: number,
+  ): Promise<GameAction | null> {
+    return this.request<GameAction | null>({
+      type: "getAiAction",
+      difficulty,
+      playerId,
+    });
+  }
+
+  async getAiScoredCandidates(
+    difficulty: string,
+    playerId: number,
+    seed: number,
+  ): Promise<[GameAction, number][]> {
+    return this.request<[GameAction, number][]>({
+      type: "getAiScoredCandidates",
+      difficulty,
+      playerId,
+      seed,
+    });
+  }
+
+  async selectActionFromScores(
+    scoresJson: string,
+    difficulty: string,
+    seed: number,
+  ): Promise<GameAction | null> {
+    return this.request<GameAction | null>({
+      type: "selectActionFromScores",
+      scoresJson,
+      difficulty,
+      seed,
+    });
+  }
+
+  async exportState(): Promise<string> {
+    return this.request<string>({ type: "exportState" });
+  }
+
+  async restoreState(stateJson: string): Promise<void> {
+    await this.request<null>({ type: "restoreState", stateJson });
+  }
+
+  async ping(): Promise<string> {
+    return this.request<string>({ type: "ping" });
+  }
+
+  dispose(): void {
+    for (const [, entry] of this.pending) {
+      entry.reject(new Error("Worker disposed"));
+    }
+    this.pending.clear();
+    this.worker.terminate();
+  }
+}
