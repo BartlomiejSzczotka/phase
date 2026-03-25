@@ -331,6 +331,9 @@ struct Matchup {
     name: &'static str,
     deck_a: PlayerDeckList,
     deck_b: PlayerDeckList,
+    /// Expected winner based on MTG archetype triangle (aggro < midrange < control < aggro).
+    /// None = mirror/even matchup, Some(0) = deck_a favored, Some(1) = deck_b favored.
+    expected_winner: Option<u8>,
 }
 
 /// Build the 3 deck matchups for fitness evaluation.
@@ -414,16 +417,19 @@ fn build_matchups() -> Vec<Matchup> {
             name: "Red Aggro vs Green Midrange",
             deck_a: red_aggro.clone(),
             deck_b: green_midrange.clone(),
+            expected_winner: Some(1), // midrange > aggro
         },
         Matchup {
             name: "White Weenie vs Red Aggro",
             deck_a: white_weenie,
             deck_b: red_aggro,
+            expected_winner: None, // aggro mirror, roughly even
         },
         Matchup {
             name: "Green Midrange vs Blue Control",
             deck_a: green_midrange,
             deck_b: blue_control,
+            expected_winner: Some(1), // control > midrange
         },
     ]
 }
@@ -602,7 +608,7 @@ fn main() {
 
     // Build matchups
     let matchup_defs = build_matchups();
-    let matchups: Vec<(DeckPayload, &str)> = matchup_defs
+    let resolved: Vec<(DeckPayload, &Matchup)> = matchup_defs
         .iter()
         .map(|m| {
             let deck_list = DeckList {
@@ -610,7 +616,7 @@ fn main() {
                 opponent: m.deck_b.clone(),
                 ai_decks: vec![],
             };
-            (resolve_deck_list(&db, &deck_list), m.name)
+            (resolve_deck_list(&db, &deck_list), m)
         })
         .collect();
 
@@ -622,10 +628,14 @@ fn main() {
     });
 
     if validate {
-        run_validate(&matchups, games, base_seed, &output_path);
+        run_validate(&resolved, games, base_seed, &output_path);
     } else {
+        let fitness_matchups: Vec<(DeckPayload, &str)> = resolved
+            .iter()
+            .map(|(p, m)| (p.clone(), m.name))
+            .collect();
         run_cmaes(
-            &matchups,
+            &fitness_matchups,
             generations,
             population,
             games,
@@ -635,27 +645,48 @@ fn main() {
     }
 }
 
+/// Validates learned weights by measuring matchup correctness.
+///
+/// For each matchup, runs self-play (both players use the same weights) and checks
+/// whether the expected-favored deck wins more. Based on the MTG archetype triangle:
+/// aggro < midrange < control < aggro.
+///
+/// A weight set that produces correct matchup polarities is better than one that
+/// doesn't — regardless of raw win rate against a baseline.
 fn run_validate(
-    matchups: &[(DeckPayload, &str)],
+    matchups: &[(DeckPayload, &Matchup)],
     games: usize,
     base_seed: u64,
     output_path: &std::path::Path,
 ) {
     let games = if games == 20 { 500 } else { games }; // Default to 500 for validate
+    let r3 = |v: f64| (v * 1000.0).round() / 1000.0;
 
-    eprintln!("=== Validation Mode ===");
-    eprintln!("Games per matchup side: {games}");
+    eprintln!("=== Matchup Correctness Validation ===");
+    eprintln!("Games per matchup: {games}");
+    eprintln!("Metric: does the expected-favored deck win more? (aggro < midrange < control < aggro)");
 
     let baseline_config = create_config(AiDifficulty::Medium, Platform::Native);
     // "Learned" uses same defaults — in the future, load from a tuned weights file
     let learned_config = create_config(AiDifficulty::Medium, Platform::Native);
 
     let mut matchup_results = Vec::new();
+    let mut baseline_correct = 0;
+    let mut learned_correct = 0;
+    let mut polarized_count = 0;
 
-    for (payload, name) in matchups {
+    for (payload, matchup) in matchups {
+        let name = matchup.name;
+        let expected = matchup.expected_winner;
         eprintln!("\nMatchup: {name}");
+        if let Some(e) = expected {
+            eprintln!("  Expected winner: deck_{} ({})", if e == 0 { "A" } else { "B" },
+                if e == 0 { name.split(" vs ").next().unwrap() } else { name.split(" vs ").nth(1).unwrap() });
+        } else {
+            eprintln!("  Expected: even matchup");
+        }
 
-        // Baseline vs baseline (control)
+        // Self-play with baseline weights (both players use default weights)
         let mut baseline_p0_wins = 0usize;
         for g in 0..games {
             let seed = base_seed + g as u64;
@@ -664,62 +695,92 @@ fn run_validate(
                 baseline_p0_wins += 1;
             }
         }
-        let baseline_wr = baseline_p0_wins as f64 / games as f64;
+        let baseline_p0_wr = baseline_p0_wins as f64 / games as f64;
 
-        // Learned as P0
+        // Self-play with learned weights (both players use learned weights)
         let mut learned_p0_wins = 0usize;
         for g in 0..games {
             let seed = base_seed + 10000 + g as u64;
-            let (winner, _) = run_game(payload, seed, &learned_config, &baseline_config);
+            let (winner, _) = run_game(payload, seed, &learned_config, &learned_config);
             if winner == Some(PlayerId(0)) {
                 learned_p0_wins += 1;
             }
         }
-        let learned_as_p0_wr = learned_p0_wins as f64 / games as f64;
+        let learned_p0_wr = learned_p0_wins as f64 / games as f64;
 
-        // Learned as P1
-        let mut learned_p1_wins = 0usize;
-        for g in 0..games {
-            let seed = base_seed + 20000 + g as u64;
-            let (winner, _) = run_game(payload, seed, &baseline_config, &learned_config);
-            if winner == Some(PlayerId(1)) {
-                learned_p1_wins += 1;
+        // Check matchup polarity correctness
+        let baseline_polarity_correct = match expected {
+            Some(0) => baseline_p0_wr > 0.5, // deck_a should win
+            Some(1) => baseline_p0_wr < 0.5, // deck_b should win
+            _ => true, // even matchup, any result is "correct"
+        };
+        let learned_polarity_correct = match expected {
+            Some(0) => learned_p0_wr > 0.5,
+            Some(1) => learned_p0_wr < 0.5,
+            _ => true,
+        };
+
+        // Measure how close to expected polarity (further from 50% in correct direction = better)
+        let polarity_strength = |p0_wr: f64, expected: Option<u8>| -> f64 {
+            match expected {
+                Some(0) => p0_wr - 0.5,       // positive = correct (deck_a wins more)
+                Some(1) => 0.5 - p0_wr,       // positive = correct (deck_b wins more)
+                _ => (0.5 - p0_wr).abs() * -1.0, // closer to 50% = better for even matchups
+            }
+        };
+
+        let baseline_strength = polarity_strength(baseline_p0_wr, expected);
+        let learned_strength = polarity_strength(learned_p0_wr, expected);
+
+        if expected.is_some() {
+            polarized_count += 1;
+            if baseline_polarity_correct {
+                baseline_correct += 1;
+            }
+            if learned_polarity_correct {
+                learned_correct += 1;
             }
         }
-        let learned_as_p1_wr = learned_p1_wins as f64 / games as f64;
 
-        let learned_wr = (learned_as_p0_wr + learned_as_p1_wr) / 2.0;
-
-        eprintln!("  Baseline P0 WR: {baseline_wr:.3}");
-        eprintln!("  Learned as P0: {learned_as_p0_wr:.3}");
-        eprintln!("  Learned as P1: {learned_as_p1_wr:.3}");
-        eprintln!("  Learned avg WR: {learned_wr:.3}");
+        eprintln!("  Baseline self-play: deck_A wins {:.1}%{}", baseline_p0_wr * 100.0,
+            if baseline_polarity_correct { " ✓" } else { " ✗ WRONG POLARITY" });
+        eprintln!("  Learned self-play:  deck_A wins {:.1}%{}", learned_p0_wr * 100.0,
+            if learned_polarity_correct { " ✓" } else { " ✗ WRONG POLARITY" });
+        eprintln!("  Polarity strength:  baseline={:+.3} learned={:+.3}{}",
+            baseline_strength, learned_strength,
+            if learned_strength > baseline_strength { " (improved)" } else { "" });
 
         matchup_results.push(serde_json::json!({
             "name": name,
             "games": games,
-            "baseline_wr": (baseline_wr * 1000.0).round() / 1000.0,
-            "learned_wr": (learned_wr * 1000.0).round() / 1000.0,
+            "expected_winner": match expected { Some(0) => "deck_a", Some(1) => "deck_b", _ => "even" },
+            "baseline_p0_wr": r3(baseline_p0_wr),
+            "learned_p0_wr": r3(learned_p0_wr),
+            "baseline_polarity_correct": baseline_polarity_correct,
+            "learned_polarity_correct": learned_polarity_correct,
+            "baseline_polarity_strength": r3(baseline_strength),
+            "learned_polarity_strength": r3(learned_strength),
         }));
     }
 
-    let overall_baseline: f64 = matchup_results
-        .iter()
-        .map(|r| r["baseline_wr"].as_f64().unwrap())
-        .sum::<f64>()
-        / matchup_results.len() as f64;
-    let overall_learned: f64 = matchup_results
-        .iter()
-        .map(|r| r["learned_wr"].as_f64().unwrap())
-        .sum::<f64>()
-        / matchup_results.len() as f64;
+    let improvement = learned_correct >= baseline_correct
+        && matchup_results.iter().filter(|r| {
+            r["learned_polarity_strength"].as_f64().unwrap() > r["baseline_polarity_strength"].as_f64().unwrap()
+        }).count() >= matchup_results.len() / 2;
+
+    eprintln!("\n=== Summary ===");
+    eprintln!("Polarized matchups correct: baseline={}/{} learned={}/{}",
+        baseline_correct, polarized_count, learned_correct, polarized_count);
+    eprintln!("Matchup correctness improved: {improvement}");
 
     let result = serde_json::json!({
         "mode": "validate",
+        "metric": "matchup_correctness",
         "matchups": matchup_results,
-        "overall_baseline_wr": (overall_baseline * 1000.0).round() / 1000.0,
-        "overall_learned_wr": (overall_learned * 1000.0).round() / 1000.0,
-        "improvement_detected": overall_learned > overall_baseline,
+        "baseline_correct": baseline_correct,
+        "learned_correct": learned_correct,
+        "polarized_matchups": polarized_count,
+        "improvement_detected": improvement,
     });
 
     let json = serde_json::to_string_pretty(&result).unwrap();
