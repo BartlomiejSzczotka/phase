@@ -35,7 +35,7 @@ upload_to_r2() {
       else
         echo "  ^ $key (uploading)"
         (cd client && pnpm wrangler r2 object put "$R2_BUCKET/$key" \
-          --file "$file" --content-type application/json --remote)
+          --file "$file" --content-type application/json)
         # Update cache atomically
         grep -v "^$key:" "$DEPLOY_CACHE" > "$DEPLOY_CACHE.tmp" 2>/dev/null || true
         echo "$key:$local_hash" >> "$DEPLOY_CACHE.tmp"
@@ -56,7 +56,7 @@ upload_to_r2() {
       else
         echo "  ^ $name (uploading)"
         (cd client && pnpm wrangler r2 object put "$R2_BUCKET/audio/$name" \
-          --file "public/audio/music/$name" --content-type audio/mp4 --remote)
+          --file "public/audio/music/$name" --content-type audio/mp4)
       fi
     ) &
     audio_pids+=($!)
