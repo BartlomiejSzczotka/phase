@@ -4791,4 +4791,29 @@ mod tests {
             other => panic!("Expected PutCounter, got {:?}", other),
         }
     }
+
+    // --- CR 115.9b: "that targets" trigger integration tests ---
+
+    #[test]
+    fn trigger_heroic_that_targets_self() {
+        let def = parse_trigger_line(
+            "Heroic — Whenever you cast a spell that targets this creature, put a +1/+1 counter on each creature you control.",
+            "Phalanx Leader",
+        );
+        assert_eq!(def.mode, TriggerMode::SpellCast);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+        // valid_card should have Targets { SelfRef } property
+        let valid_card = def.valid_card.expect("should have valid_card");
+        if let TargetFilter::Typed(tf) = &valid_card {
+            assert!(
+                tf.properties
+                    .iter()
+                    .any(|p| matches!(p, FilterProp::Targets { filter } if **filter == TargetFilter::SelfRef)),
+                "expected Targets {{ SelfRef }} in properties: {:?}",
+                tf.properties
+            );
+        } else {
+            panic!("expected Typed filter, got {valid_card:?}");
+        }
+    }
 }

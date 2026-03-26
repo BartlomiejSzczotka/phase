@@ -3715,6 +3715,14 @@ fn strip_return_destination_ext(text: &str) -> (&str, Option<ReturnDestination>)
             false,
             true,
         ),
+        // Transformed + your control
+        (
+            " to the battlefield transformed under your control",
+            Zone::Battlefield,
+            true,
+            true,
+            false,
+        ),
         // Transformed + owner's control variants
         (
             " to the battlefield transformed under their owners' control",
@@ -7761,5 +7769,69 @@ mod tests {
             .unwrap()
             .join()
             .unwrap();
+    }
+
+    // --- ReturnDestination flag propagation tests ---
+
+    #[test]
+    fn return_destination_under_your_control() {
+        let (target_text, dest) =
+            strip_return_destination_ext("target creature to the battlefield under your control");
+        assert_eq!(target_text, "target creature");
+        let d = dest.expect("should parse destination");
+        assert_eq!(d.zone, Zone::Battlefield);
+        assert!(d.under_your_control);
+        assert!(!d.enter_tapped);
+        assert!(!d.transformed);
+    }
+
+    #[test]
+    fn return_destination_tapped() {
+        let (target_text, dest) =
+            strip_return_destination_ext("target creature to the battlefield tapped");
+        assert_eq!(target_text, "target creature");
+        let d = dest.expect("should parse destination");
+        assert_eq!(d.zone, Zone::Battlefield);
+        assert!(d.enter_tapped);
+        assert!(!d.under_your_control);
+    }
+
+    #[test]
+    fn return_destination_owners_control_not_under_your_control() {
+        let (_, dest) =
+            strip_return_destination_ext("it to the battlefield under its owner's control");
+        let d = dest.expect("should parse destination");
+        assert!(
+            !d.under_your_control,
+            "owner's control should not set under_your_control"
+        );
+    }
+
+    #[test]
+    fn return_destination_tapped_under_your_control() {
+        let (_, dest) =
+            strip_return_destination_ext("it to the battlefield tapped under your control");
+        let d = dest.expect("should parse destination");
+        assert!(d.enter_tapped);
+        assert!(d.under_your_control);
+    }
+
+    #[test]
+    fn return_destination_transformed_under_your_control() {
+        let (_, dest) =
+            strip_return_destination_ext("it to the battlefield transformed under your control");
+        let d = dest.expect("should parse destination");
+        assert!(d.transformed);
+        assert!(d.under_your_control);
+        assert!(!d.enter_tapped);
+    }
+
+    #[test]
+    fn return_destination_plain_battlefield() {
+        let (_, dest) = strip_return_destination_ext("target creature to the battlefield");
+        let d = dest.expect("should parse destination");
+        assert!(!d.under_your_control);
+        assert!(!d.enter_tapped);
+        assert!(!d.transformed);
     }
 }

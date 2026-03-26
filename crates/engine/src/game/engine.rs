@@ -2103,7 +2103,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             let expected = *count;
             let legal = legal_cards.clone();
             let src = *source_id;
-            let kind = effect_kind.clone();
+            let kind = *effect_kind;
 
             if chosen.len() != expected {
                 return Err(EngineError::InvalidAction(format!(
