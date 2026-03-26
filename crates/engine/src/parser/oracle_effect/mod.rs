@@ -1131,6 +1131,22 @@ fn try_split_targeted_compound(text: &str, ctx: &ParseContext) -> Option<ParsedE
     // Parse the sub-effect
     let mut sub_clause = parse_imperative_effect(sub_text, ctx);
 
+    // CR 608.2c: Verb carry-forward for bare "target X" clauses in compound actions.
+    // When the sub-text starts with "target" and parsed as Unimplemented, prepend
+    // the verb from the primary effect and re-parse. Handles "exile target creature
+    // and target artifact" where "target artifact" lacks a verb.
+    if matches!(sub_clause.effect, Effect::Unimplemented { .. })
+        && sub_text.to_lowercase().starts_with("target ")
+    {
+        if let Some(verb) = extract_effect_verb(&primary_effect) {
+            let reparsed_text = format!("{verb} {sub_text}");
+            let reparsed = parse_imperative_effect(&reparsed_text, ctx);
+            if !matches!(reparsed.effect, Effect::Unimplemented { .. }) {
+                sub_clause = reparsed;
+            }
+        }
+    }
+
     // If the remainder contains anaphoric references ("it", "that creature", "them"),
     // replace the sub_effect's target with ParentTarget so it inherits the parent's targets.
     let sub_lower = sub_text.to_lowercase();
@@ -2144,6 +2160,32 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         let (text_no_temporal, delayed_condition) = strip_temporal_suffix(&text);
         let (text_no_qty, multi_target) = strip_any_number_quantifier(text_no_temporal);
         let clause = parse_effect_clause(&text_no_qty, ctx);
+
+        // CR 608.2c: Verb carry-forward for bare "target X" clauses in multi-target
+        // conjunctions. When a clause parses as Unimplemented and starts with "target",
+        // inherit the verb from the previous successfully-parsed effect and re-parse.
+        // Handles patterns like "destroy target artifact, target creature, ..." (Decimate).
+        let clause = if matches!(clause.effect, Effect::Unimplemented { .. })
+            && text_no_qty.to_lowercase().starts_with("target ")
+        {
+            if let Some(verb) = defs
+                .last()
+                .and_then(|prev| extract_effect_verb(&prev.effect))
+            {
+                let reparsed_text = format!("{verb} {text_no_qty}");
+                let reparsed = parse_effect_clause(&reparsed_text, ctx);
+                if !matches!(reparsed.effect, Effect::Unimplemented { .. }) {
+                    reparsed
+                } else {
+                    clause
+                }
+            } else {
+                clause
+            }
+        } else {
+            clause
+        };
+
         let mut def = AbilityDefinition::new(kind, clause.effect);
         if is_optional {
             def.optional = true;
@@ -4650,6 +4692,28 @@ fn add_single_target_constraint(filter: TargetFilter) -> TargetFilter {
                 }),
             ],
         },
+    }
+}
+
+/// Extract the imperative verb keyword from an effect for verb carry-forward
+/// in multi-target conjunctions. Returns the verb string that, when prepended
+/// to a bare "target X" clause, allows re-parsing as the same effect type.
+fn extract_effect_verb(effect: &Effect) -> Option<&'static str> {
+    match effect {
+        Effect::Destroy { .. } | Effect::DestroyAll { .. } => Some("destroy"),
+        Effect::ChangeZone {
+            destination: Zone::Exile,
+            ..
+        } => Some("exile"),
+        Effect::ChangeZone {
+            destination: Zone::Hand,
+            origin: Some(Zone::Battlefield),
+            ..
+        } => Some("return"),
+        Effect::Sacrifice { .. } => Some("sacrifice"),
+        Effect::Tap { .. } => Some("tap"),
+        Effect::Untap { .. } => Some("untap"),
+        _ => None,
     }
 }
 
