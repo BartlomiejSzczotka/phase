@@ -1290,6 +1290,16 @@ fn parse_that_clause_suffix(text: &str) -> Option<(Vec<FilterProp>, usize)> {
         }
     }
 
+    // --- CR 115.9b: "that targets [filter]" (.any() semantics) ---
+    // Must come AFTER "targets only" check above (longest match first).
+    if let Some(rest) = after_that.strip_prefix("targets ") {
+        let targets_verb_len = "targets ".len();
+        if let Some((props, consumed)) = parse_targets_constraint(rest, that_len + targets_verb_len)
+        {
+            return Some((props, consumed));
+        }
+    }
+
     // --- Verb-phrase patterns: match fixed phrases after "that " ---
     // CR 510.1: "that was dealt damage this turn"
     static VERB_PHRASES: &[(&str, FilterProp)] = &[
@@ -1378,6 +1388,101 @@ fn parse_targets_only_constraint(
             filter: Box::new(inner_filter),
         }];
         return Some((props, prefix_len + article_len + consumed));
+    }
+
+    None
+}
+
+/// CR 115.9b: Parse the constraint after "that targets ".
+/// Returns `(properties_to_add, total_bytes_consumed)`.
+///
+/// Handles:
+/// - "~" / "it" / "this creature" / "this permanent" → `Targets { SelfRef }`
+/// - "you" → `Targets { Controller }`
+/// - "you or a [type]" → `Targets { Or(Controller, Typed) }`
+/// - "one or more [type phrase]" → strip prefix, then parse type phrase
+/// - "a/an [type phrase]" → `Targets { filter }`
+fn parse_targets_constraint(text: &str, prefix_len: usize) -> Option<(Vec<FilterProp>, usize)> {
+    // Strip "one or more " — redundant with .any() semantics
+    let (text, extra_len) = if let Some(rest) = text.strip_prefix("one or more ") {
+        (rest, "one or more ".len())
+    } else {
+        (text, 0)
+    };
+    let prefix_len = prefix_len + extra_len;
+
+    // Self-reference: "~" or "it"
+    if text.starts_with('~') {
+        let props = vec![FilterProp::Targets {
+            filter: Box::new(TargetFilter::SelfRef),
+        }];
+        return Some((props, prefix_len + 1));
+    }
+    if text.starts_with("it") && (text.len() == 2 || text[2..].starts_with([',', '.', ' '])) {
+        let props = vec![FilterProp::Targets {
+            filter: Box::new(TargetFilter::SelfRef),
+        }];
+        return Some((props, prefix_len + 2));
+    }
+
+    // Self-reference: "this creature" / "this permanent"
+    for phrase in ["this creature", "this permanent"] {
+        if text.starts_with(phrase)
+            && (text.len() == phrase.len() || text[phrase.len()..].starts_with([',', '.', ' ']))
+        {
+            let props = vec![FilterProp::Targets {
+                filter: Box::new(TargetFilter::SelfRef),
+            }];
+            return Some((props, prefix_len + phrase.len()));
+        }
+    }
+
+    // "you or a [type]" — compound controller + typed filter
+    let lower = text.to_lowercase();
+    if lower.starts_with("you or a ") || lower.starts_with("you or an ") {
+        let after_you_or = if lower.starts_with("you or an ") {
+            &text["you or an ".len()..]
+        } else {
+            &text["you or a ".len()..]
+        };
+        let you_or_len = text.len() - after_you_or.len();
+        let (type_filter, remainder) = parse_type_phrase(after_you_or);
+        let consumed = after_you_or.len() - remainder.len();
+        let combined = TargetFilter::Or {
+            filters: vec![TargetFilter::Controller, type_filter],
+        };
+        let props = vec![FilterProp::Targets {
+            filter: Box::new(combined),
+        }];
+        return Some((props, prefix_len + you_or_len + consumed));
+    }
+
+    // "you" — targets the controller (a player)
+    if lower.starts_with("you") && (text.len() == 3 || text[3..].starts_with([',', '.', ' '])) {
+        let props = vec![FilterProp::Targets {
+            filter: Box::new(TargetFilter::Controller),
+        }];
+        return Some((props, prefix_len + 3));
+    }
+
+    // "a/an [type phrase or player]" — parse type, using the same helper as TargetsOnly
+    if let Some(rest) = text.strip_prefix("a ").or_else(|| text.strip_prefix("an ")) {
+        let article_len = text.len() - rest.len();
+        let (inner_filter, consumed) = parse_targets_only_type_or_player(rest);
+        let props = vec![FilterProp::Targets {
+            filter: Box::new(inner_filter),
+        }];
+        return Some((props, prefix_len + article_len + consumed));
+    }
+
+    // Bare type phrase (no article) — e.g., "creatures you control"
+    let (filter, remainder) = parse_type_phrase(text);
+    let consumed = text.len() - remainder.len();
+    if consumed > 0 {
+        let props = vec![FilterProp::Targets {
+            filter: Box::new(filter),
+        }];
+        return Some((props, prefix_len + consumed));
     }
 
     None
@@ -3087,6 +3192,124 @@ mod tests {
             }
         } else {
             panic!("expected Or filter, got {filter:?}");
+        }
+    }
+
+    // --- CR 115.9b: "that targets [X]" tests (.any() semantics) ---
+
+    #[test]
+    fn that_targets_self_ref() {
+        let result = parse_that_clause_suffix(" that targets this creature,");
+        let (props, consumed) = result.expect("should parse");
+        assert_eq!(props.len(), 1);
+        assert!(matches!(
+            &props[0],
+            FilterProp::Targets { filter } if **filter == TargetFilter::SelfRef
+        ));
+        assert_eq!(consumed, " that targets this creature".len());
+    }
+
+    #[test]
+    fn that_targets_tilde() {
+        let result = parse_that_clause_suffix(" that targets ~,");
+        let (props, consumed) = result.expect("should parse");
+        assert_eq!(props.len(), 1);
+        assert!(matches!(
+            &props[0],
+            FilterProp::Targets { filter } if **filter == TargetFilter::SelfRef
+        ));
+        assert_eq!(consumed, " that targets ~".len());
+    }
+
+    #[test]
+    fn that_targets_this_permanent() {
+        let result = parse_that_clause_suffix(" that targets this permanent,");
+        let (props, consumed) = result.expect("should parse");
+        assert_eq!(props.len(), 1);
+        assert!(matches!(
+            &props[0],
+            FilterProp::Targets { filter } if **filter == TargetFilter::SelfRef
+        ));
+        assert_eq!(consumed, " that targets this permanent".len());
+    }
+
+    #[test]
+    fn that_targets_you() {
+        let result = parse_that_clause_suffix(" that targets you,");
+        let (props, consumed) = result.expect("should parse");
+        assert_eq!(props.len(), 1);
+        assert!(matches!(
+            &props[0],
+            FilterProp::Targets { filter } if **filter == TargetFilter::Controller
+        ));
+        assert_eq!(consumed, " that targets you".len());
+    }
+
+    #[test]
+    fn that_targets_you_or_a_creature() {
+        let result = parse_that_clause_suffix(" that targets you or a creature you control,");
+        let (props, consumed) = result.expect("should parse");
+        assert_eq!(props.len(), 1);
+        if let FilterProp::Targets { filter } = &props[0] {
+            if let TargetFilter::Or { filters } = &**filter {
+                assert_eq!(filters.len(), 2);
+                assert_eq!(filters[0], TargetFilter::Controller);
+                if let TargetFilter::Typed(tf) = &filters[1] {
+                    assert!(tf.type_filters.contains(&TypeFilter::Creature));
+                    assert_eq!(tf.controller, Some(ControllerRef::You));
+                } else {
+                    panic!("expected Typed filter, got {:?}", filters[1]);
+                }
+            } else {
+                panic!("expected Or filter, got {filter:?}");
+            }
+        } else {
+            panic!("expected Targets prop, got {:?}", props[0]);
+        }
+        assert_eq!(
+            consumed,
+            " that targets you or a creature you control".len()
+        );
+    }
+
+    #[test]
+    fn that_targets_one_or_more_creatures() {
+        // "one or more" prefix is stripped (redundant with .any() semantics)
+        let result = parse_that_clause_suffix(" that targets one or more creatures you control,");
+        let (props, consumed) = result.expect("should parse");
+        assert_eq!(props.len(), 1);
+        if let FilterProp::Targets { filter } = &props[0] {
+            if let TargetFilter::Typed(tf) = &**filter {
+                assert!(tf.type_filters.contains(&TypeFilter::Creature));
+                assert_eq!(tf.controller, Some(ControllerRef::You));
+            } else {
+                panic!("expected Typed filter, got {filter:?}");
+            }
+        } else {
+            panic!("expected Targets prop, got {:?}", props[0]);
+        }
+        assert_eq!(
+            consumed,
+            " that targets one or more creatures you control".len()
+        );
+    }
+
+    #[test]
+    fn type_phrase_spell_that_targets_self() {
+        // "spell that targets this creature" via parse_type_phrase
+        let (filter, rest) = parse_type_phrase("spell that targets this creature, put");
+        assert_eq!(rest.trim_start().trim_start_matches(',').trim(), "put");
+        if let TargetFilter::Typed(tf) = &filter {
+            assert!(tf.type_filters.contains(&TypeFilter::Card));
+            assert!(
+                tf.properties
+                    .iter()
+                    .any(|p| matches!(p, FilterProp::Targets { filter } if **filter == TargetFilter::SelfRef)),
+                "expected Targets {{ SelfRef }} in properties: {:?}",
+                tf.properties
+            );
+        } else {
+            panic!("expected Typed filter, got {filter:?}");
         }
     }
 

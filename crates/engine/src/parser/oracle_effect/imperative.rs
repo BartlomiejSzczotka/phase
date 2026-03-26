@@ -268,6 +268,8 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
                 Some(TargetedImperativeAst::ReturnToBattlefield {
                     target,
                     enter_transformed: d.transformed,
+                    under_your_control: d.under_your_control,
+                    enter_tapped: d.enter_tapped,
                 })
             }
             Some(d) if d.zone == Zone::Hand => Some(TargetedImperativeAst::Return { target }),
@@ -331,14 +333,16 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
         TargetedImperativeAst::ReturnToBattlefield {
             target,
             enter_transformed,
+            under_your_control,
+            enter_tapped,
         } => Effect::ChangeZone {
             origin: None,
             destination: Zone::Battlefield,
             target,
             owner_library: false,
             enter_transformed,
-            under_your_control: false,
-            enter_tapped: false, // TODO: parse "tapped" suffix when present
+            under_your_control,
+            enter_tapped,
             enters_attacking: false,
         },
         // CR 400.6: Return to a non-hand, non-battlefield zone (graveyard, library).

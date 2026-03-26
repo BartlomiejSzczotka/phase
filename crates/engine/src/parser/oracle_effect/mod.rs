@@ -1011,6 +1011,8 @@ fn try_parse_verb_and_target<'a>(
                 TargetedImperativeAst::ReturnToBattlefield {
                     target,
                     enter_transformed: d.transformed,
+                    under_your_control: d.under_your_control,
+                    enter_tapped: d.enter_tapped,
                 },
                 rem,
             )),
@@ -3691,6 +3693,10 @@ fn strip_any_number_quantifier(text: &str) -> (String, Option<MultiTargetSpec>) 
 struct ReturnDestination {
     zone: Zone,
     transformed: bool,
+    // CR 110.2: "under your control" — controller override on zone change.
+    under_your_control: bool,
+    // CR 614.1: "tapped" — enters the battlefield tapped.
+    enter_tapped: bool,
 }
 
 /// Detect "return ... to <zone>" destination phrase, including "transformed" flag.
@@ -3698,67 +3704,176 @@ fn strip_return_destination_ext(text: &str) -> (&str, Option<ReturnDestination>)
     let lower = text.to_lowercase();
     // Ordered longest-first to avoid partial matches.
     // "transformed" variants must come before their non-transformed counterparts.
-    let patterns: &[(&str, Zone, bool)] = &[
+    // Tuples: (phrase, zone, transformed, under_your_control, enter_tapped)
+    // Ordered longest-first; compound patterns must precede their shorter substrings.
+    let patterns: &[(&str, Zone, bool, bool, bool)] = &[
+        // Tapped + transformed + owner's control (compound, longest)
+        (
+            " to the battlefield tapped and transformed under its owner's control",
+            Zone::Battlefield,
+            true,
+            false,
+            true,
+        ),
+        // Transformed + owner's control variants
         (
             " to the battlefield transformed under their owners' control",
             Zone::Battlefield,
             true,
+            false,
+            false,
         ),
         (
             " to the battlefield transformed under its owner's control",
             Zone::Battlefield,
             true,
+            false,
+            false,
         ),
         (
             " to the battlefield transformed under his owner's control",
             Zone::Battlefield,
             true,
+            false,
+            false,
         ),
         (
             " to the battlefield transformed under her owner's control",
             Zone::Battlefield,
             true,
+            false,
+            false,
         ),
-        (" to the battlefield transformed", Zone::Battlefield, true),
+        (
+            " to the battlefield transformed",
+            Zone::Battlefield,
+            true,
+            false,
+            false,
+        ),
+        // Tapped + control variants (must precede shorter "tapped" and "under X control")
+        (
+            " to the battlefield tapped under their owners' control",
+            Zone::Battlefield,
+            false,
+            false,
+            true,
+        ),
+        (
+            " to the battlefield tapped under its owner's control",
+            Zone::Battlefield,
+            false,
+            false,
+            true,
+        ),
+        (
+            " to the battlefield tapped under your control",
+            Zone::Battlefield,
+            false,
+            true,
+            true,
+        ),
+        // Simple control variants
         (
             " to the battlefield under their owners' control",
             Zone::Battlefield,
+            false,
+            false,
             false,
         ),
         (
             " to the battlefield under its owner's control",
             Zone::Battlefield,
             false,
+            false,
+            false,
         ),
+        // CR 110.2: "under your control" — controller override.
         (
             " to the battlefield under your control",
             Zone::Battlefield,
             false,
+            true,
+            false,
         ),
-        (" to the battlefield tapped", Zone::Battlefield, false),
-        (" to the battlefield", Zone::Battlefield, false),
-        (" onto the battlefield", Zone::Battlefield, false),
+        // CR 614.1: "tapped" — enters tapped.
+        (
+            " to the battlefield tapped",
+            Zone::Battlefield,
+            false,
+            false,
+            true,
+        ),
+        (
+            " to the battlefield",
+            Zone::Battlefield,
+            false,
+            false,
+            false,
+        ),
+        // "onto" variants
+        (
+            " onto the battlefield under your control",
+            Zone::Battlefield,
+            false,
+            true,
+            false,
+        ),
+        (
+            " onto the battlefield tapped",
+            Zone::Battlefield,
+            false,
+            false,
+            true,
+        ),
+        (
+            " onto the battlefield",
+            Zone::Battlefield,
+            false,
+            false,
+            false,
+        ),
         // Hand destinations
-        (" to its owner's hand", Zone::Hand, false),
-        (" to their owner's hand", Zone::Hand, false),
-        (" to their owners' hands", Zone::Hand, false),
-        (" to your hand", Zone::Hand, false),
+        (" to its owner's hand", Zone::Hand, false, false, false),
+        (" to their owner's hand", Zone::Hand, false, false, false),
+        (" to their owners' hands", Zone::Hand, false, false, false),
+        (" to your hand", Zone::Hand, false, false, false),
         // Graveyard destinations
-        (" to its owner's graveyard", Zone::Graveyard, false),
-        (" to their owner's graveyard", Zone::Graveyard, false),
-        (" to their owners' graveyards", Zone::Graveyard, false),
-        (" to your graveyard", Zone::Graveyard, false),
+        (
+            " to its owner's graveyard",
+            Zone::Graveyard,
+            false,
+            false,
+            false,
+        ),
+        (
+            " to their owner's graveyard",
+            Zone::Graveyard,
+            false,
+            false,
+            false,
+        ),
+        (
+            " to their owners' graveyards",
+            Zone::Graveyard,
+            false,
+            false,
+            false,
+        ),
+        (" to your graveyard", Zone::Graveyard, false, false, false),
         // NOTE: Library destinations ("to the top/bottom of owner's library") are
         // intentionally NOT handled here. They require PutAtLibraryPosition (positional
         // placement without shuffling), not ChangeZone (which auto-shuffles).
     ];
-    for (phrase, zone, transformed) in patterns {
+    for (phrase, zone, transformed, under_your_control, enter_tapped) in patterns {
         if let Some(pos) = lower.rfind(phrase) {
             return (
                 text[..pos].trim(),
                 Some(ReturnDestination {
                     zone: *zone,
                     transformed: *transformed,
+                    under_your_control: *under_your_control,
+                    enter_tapped: *enter_tapped,
                 }),
             );
         }
@@ -4376,13 +4491,6 @@ pub(crate) fn normalize_verb_token(token: &str) -> String {
         _ if token.ends_with('s') && !token.ends_with("ss") => token[..token.len() - 1].to_string(),
         _ => token.to_string(),
     }
-}
-
-fn extract_number_before(text: &str, before_word: &str) -> Option<u32> {
-    let pos = text.find(before_word)?;
-    let prefix = text[..pos].trim();
-    let last_word = prefix.split_whitespace().last()?;
-    last_word.parse::<u32>().ok()
 }
 
 fn constrain_filter_to_stack(filter: TargetFilter) -> TargetFilter {

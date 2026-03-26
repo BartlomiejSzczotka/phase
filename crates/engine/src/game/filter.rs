@@ -375,6 +375,9 @@ fn matches_filter_prop(
         // CR 707.2: Match face-down permanents on the battlefield.
         FilterProp::FaceDown => obj.face_down,
         FilterProp::TargetsOnly { .. } => true,
+        // CR 115.9b: Permissive at per-object level; validated by trigger matchers against
+        // the stack entry's actual targets.
+        FilterProp::Targets { .. } => true,
         FilterProp::Other { .. } => true, // Permissive fallback for unrecognized properties
     }
 }
@@ -502,6 +505,25 @@ pub(crate) fn extract_targets_only(filter: &TargetFilter) -> Option<TargetFilter
             // All branches should have the same TargetsOnly (distributed by parser);
             // return the first one found.
             filters.iter().find_map(extract_targets_only)
+        }
+        _ => None,
+    }
+}
+
+/// CR 115.9b: Extract the first `Targets` inner filter from a filter tree.
+/// Walks through Or/And/Typed branches to find a `FilterProp::Targets`.
+pub(crate) fn extract_targets(filter: &TargetFilter) -> Option<TargetFilter> {
+    match filter {
+        TargetFilter::Typed(tf) => {
+            for prop in &tf.properties {
+                if let FilterProp::Targets { filter } = prop {
+                    return Some(*filter.clone());
+                }
+            }
+            None
+        }
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => {
+            filters.iter().find_map(extract_targets)
         }
         _ => None,
     }

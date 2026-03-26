@@ -672,7 +672,9 @@ mod tests {
 
     #[test]
     fn client_message_ping_roundtrips() {
-        let msg = ClientMessage::Ping { timestamp: 1700000000123 };
+        let msg = ClientMessage::Ping {
+            timestamp: 1700000000123,
+        };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: ClientMessage = serde_json::from_str(&json).unwrap();
         match parsed {
@@ -683,7 +685,9 @@ mod tests {
 
     #[test]
     fn server_message_pong_roundtrips() {
-        let msg = ServerMessage::Pong { timestamp: 1700000000123 };
+        let msg = ServerMessage::Pong {
+            timestamp: 1700000000123,
+        };
         let json = serde_json::to_string(&msg).unwrap();
         let parsed: ServerMessage = serde_json::from_str(&json).unwrap();
         match parsed {

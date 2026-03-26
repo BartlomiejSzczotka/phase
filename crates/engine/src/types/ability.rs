@@ -867,6 +867,12 @@ pub enum FilterProp {
     TargetsOnly {
         filter: Box<TargetFilter>,
     },
+    /// CR 115.9b: Matches stack entries that have at least one target satisfying the filter.
+    /// Used for "that targets ~", "that targets you", etc. (.any() semantics).
+    /// Contrast with TargetsOnly (CR 115.9c) which requires ALL targets to match (.all()).
+    Targets {
+        filter: Box<TargetFilter>,
+    },
     /// Matches objects with converted mana cost == N (for "with mana value N" exact match).
     /// CR 202.3: Uses QuantityExpr to support both fixed and dynamic comparisons.
     CmcEQ {

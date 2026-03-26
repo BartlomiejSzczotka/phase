@@ -262,6 +262,10 @@ pub(super) enum TargetedImperativeAst {
         target: TargetFilter,
         /// CR 711.8: "return ... transformed"
         enter_transformed: bool,
+        /// CR 110.2: "under your control" — controller override.
+        under_your_control: bool,
+        /// CR 614.1: "tapped" — enters tapped.
+        enter_tapped: bool,
     },
     /// CR 400.6: Return to a specific non-hand, non-battlefield zone (zone change).
     ReturnToZone {

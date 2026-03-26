@@ -288,6 +288,7 @@ fn add_stack_spells(
 ) {
     let requires_single_target = filter_requires_single_target(filter);
     let targets_only_constraint = super::filter::extract_targets_only(filter);
+    let targets_constraint = super::filter::extract_targets(filter);
     let source_controller_opt = state.objects.get(&source_id).map(|o| o.controller);
 
     for entry in &state.stack {
@@ -309,6 +310,24 @@ fn add_stack_spells(
             let ability = entry.ability();
             if ability.targets.is_empty()
                 || !ability.targets.iter().all(|t| match t {
+                    TargetRef::Object(id) => {
+                        super::filter::matches_target_filter(state, *id, constraint, source_id)
+                    }
+                    TargetRef::Player(pid) => super::filter::player_matches_target_filter(
+                        constraint,
+                        *pid,
+                        source_controller_opt,
+                    ),
+                })
+            {
+                continue;
+            }
+        }
+        // CR 115.9b: "that targets [X]" — at least one target must match (.any() semantics).
+        if let Some(ref constraint) = targets_constraint {
+            let ability = entry.ability();
+            if ability.targets.is_empty()
+                || !ability.targets.iter().any(|t| match t {
                     TargetRef::Object(id) => {
                         super::filter::matches_target_filter(state, *id, constraint, source_id)
                     }

@@ -636,6 +636,16 @@ pub(super) fn match_spell_cast(
                 return false;
             }
         }
+        // CR 115.9b: Check "that targets [X]" constraint (.any() semantics).
+        if let Some(targets_filter) = trigger
+            .valid_card
+            .as_ref()
+            .and_then(super::filter::extract_targets)
+        {
+            if !stack_entry_targets_any(state, *object_id, &targets_filter, source_id) {
+                return false;
+            }
+        }
         valid_player_matches(trigger, state, *controller, source_id)
     } else {
         false
@@ -1801,6 +1811,33 @@ fn stack_entry_targets_only(
     }
     let source_controller = state.objects.get(&source_id).map(|o| o.controller);
     ability.targets.iter().all(|t| match t {
+        TargetRef::Object(id) => {
+            super::filter::matches_target_filter(state, *id, constraint, source_id)
+        }
+        TargetRef::Player(pid) => {
+            super::filter::player_matches_target_filter(constraint, *pid, source_controller)
+        }
+    })
+}
+
+/// CR 115.9b: Check that a stack entry has at least one target matching the filter.
+/// A spell with no targets does not satisfy "that targets X" (it doesn't target at all).
+fn stack_entry_targets_any(
+    state: &GameState,
+    stack_object_id: ObjectId,
+    constraint: &TargetFilter,
+    source_id: ObjectId,
+) -> bool {
+    let entry = state.stack.iter().find(|e| e.id == stack_object_id);
+    let Some(entry) = entry else {
+        return false;
+    };
+    let ability = entry.ability();
+    if ability.targets.is_empty() {
+        return false;
+    }
+    let source_controller = state.objects.get(&source_id).map(|o| o.controller);
+    ability.targets.iter().any(|t| match t {
         TargetRef::Object(id) => {
             super::filter::matches_target_filter(state, *id, constraint, source_id)
         }

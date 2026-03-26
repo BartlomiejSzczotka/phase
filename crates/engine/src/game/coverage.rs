@@ -269,6 +269,9 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             FilterProp::TargetsOnly { filter } => {
                 parts.push(format!("targets only {}", fmt_target(filter)));
             }
+            FilterProp::Targets { filter } => {
+                parts.push(format!("targets {}", fmt_target(filter)));
+            }
         }
     }
     if let Some(ctrl) = &tf.controller {
