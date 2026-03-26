@@ -58,7 +58,7 @@ pub enum CounterType {
 }
 
 impl CounterType {
-    fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         match self {
             CounterType::Plus1Plus1 => "P1P1",
             CounterType::Minus1Minus1 => "M1M1",
