@@ -802,6 +802,7 @@ pub fn resolve_ability_chain(
                 | WaitingFor::RetargetChoice { .. }
                 | WaitingFor::ChooseFromZoneChoice { .. }
                 | WaitingFor::ManifestDreadChoice { .. }
+                | WaitingFor::DiscardChoice { .. }
         ) {
             let mut sub_clone = sub.as_ref().clone();
             if sub_clone.targets.is_empty() && !ability.targets.is_empty() {
@@ -1441,7 +1442,7 @@ mod tests {
 
         let mut ability = ResolvedAbility::new(
             Effect::Discard {
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::Controller,
             },
             vec![],

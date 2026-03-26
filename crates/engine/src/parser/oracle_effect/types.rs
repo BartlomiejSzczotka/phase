@@ -216,7 +216,7 @@ pub(super) enum ImperativeFamilyAst {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum NumericImperativeAst {
     Draw {
-        count: u32,
+        count: QuantityExpr,
     },
     GainLife {
         amount: QuantityExpr,
@@ -229,13 +229,13 @@ pub(super) enum NumericImperativeAst {
         toughness: crate::types::ability::PtValue,
     },
     Scry {
-        count: u32,
+        count: QuantityExpr,
     },
     Surveil {
-        count: u32,
+        count: QuantityExpr,
     },
     Mill {
-        count: u32,
+        count: QuantityExpr,
     },
 }
 
@@ -251,7 +251,7 @@ pub(super) enum TargetedImperativeAst {
         target: TargetFilter,
     },
     Discard {
-        count: u32,
+        count: QuantityExpr,
     },
     /// CR 701.3: Return to hand (bounce).
     Return {

@@ -185,6 +185,11 @@ pub(crate) fn evaluate_condition(
         StaticCondition::SourceIsTapped => {
             state.objects.get(&source_id).is_some_and(|obj| obj.tapped)
         }
+        // CR 113.6b: True when the source card is in the specified zone.
+        StaticCondition::SourceInZone { zone } => state
+            .objects
+            .get(&source_id)
+            .is_some_and(|obj| obj.zone == *zone),
         StaticCondition::None => true,
     }
 }

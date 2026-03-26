@@ -964,6 +964,23 @@ pub(crate) fn check_trigger_condition(
         TriggerCondition::WasType { card_type } => source_id
             .and_then(|id| state.lki_cache.get(&id))
             .is_some_and(|lki| lki.card_types.contains(card_type)),
+        // "if you control a [type]" — check for presence of matching permanent.
+        TriggerCondition::ControlsType { filter } => state.battlefield.iter().any(|id| {
+            crate::game::filter::matches_target_filter(
+                state,
+                *id,
+                filter,
+                source_id.unwrap_or(ObjectId(0)),
+            )
+        }),
+        // CR 603.4: "if no spells were cast last turn" — check previous turn spell count.
+        TriggerCondition::NoSpellsCastLastTurn => state.spells_cast_last_turn.unwrap_or(0) == 0,
+        // CR 603.4: "if two or more spells were cast last turn"
+        TriggerCondition::TwoOrMoreSpellsCastLastTurn => {
+            state.spells_cast_last_turn.unwrap_or(0) >= 2
+        }
+        // CR 603.4: "if it's not your turn"
+        TriggerCondition::NotYourTurn => state.active_player != controller,
         TriggerCondition::And { conditions } => conditions
             .iter()
             .all(|c| check_trigger_condition(state, c, controller, source_id)),
@@ -1123,8 +1140,6 @@ pub(crate) fn extract_target_filter_from_effect(effect: &Effect) -> Option<&Targ
         | Effect::PutOnTopOrBottom { target, .. }
         | Effect::Animate { target, .. }
         | Effect::Connive { target, .. }
-        | Effect::Discard { target, .. }
-        | Effect::DiscardCard { target, .. }
         | Effect::ForceBlock { target, .. }
         | Effect::Mill { target, .. }
         | Effect::PhaseOut { target, .. }
@@ -1149,6 +1164,7 @@ pub(crate) fn extract_target_filter_from_effect(effect: &Effect) -> Option<&Targ
                     | TargetFilter::TriggeringSource
                     | TargetFilter::DefendingPlayer
                     | TargetFilter::ParentTarget
+                    | TargetFilter::ParentTargetController
             ) {
                 None
             } else {
@@ -1170,6 +1186,7 @@ pub(crate) fn extract_target_filter_from_effect(effect: &Effect) -> Option<&Targ
                     | TargetFilter::TriggeringSource
                     | TargetFilter::DefendingPlayer
                     | TargetFilter::ParentTarget
+                    | TargetFilter::ParentTargetController
             ) {
                 None
             } else {
@@ -1231,7 +1248,9 @@ pub(crate) fn extract_target_filter_from_effect(effect: &Effect) -> Option<&Targ
         | Effect::Forage
         | Effect::CollectEvidence { .. }
         | Effect::Endure { .. }
-        | Effect::Seek { .. } => None,
+        | Effect::Seek { .. }
+        | Effect::Discard { .. }
+        | Effect::DiscardCard { .. } => None,
     }
 }
 // ---------------------------------------------------------------------------

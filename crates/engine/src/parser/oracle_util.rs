@@ -1,4 +1,4 @@
-use crate::types::ability::TargetFilter;
+use crate::types::ability::{QuantityExpr, QuantityRef, TargetFilter};
 use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
 
 /// A borrowed pair of `(original, lowercase)` slices kept in lockstep.
@@ -270,7 +270,8 @@ pub fn parse_number(text: &str) -> Option<(u32, &str)> {
             return Some((val, rest.trim_start()));
         }
     }
-    // "X" → 0 (caller should check for "X" and use QuantityRef::Variable where applicable)
+    // "X" → 0 for callers that genuinely want numeric-only (P/T, costs, counters).
+    // For effect quantities, use `parse_count_expr` which returns Variable("X") instead.
     if lower.starts_with('x') {
         let rest = &text[1..];
         if rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace()) {
@@ -278,6 +279,33 @@ pub fn parse_number(text: &str) -> Option<(u32, &str)> {
         }
     }
     None
+}
+
+/// Parse a count expression that may be a variable ("X") or a fixed number.
+///
+/// Checks for "X"/"x" first → `QuantityExpr::Ref(Variable("X"))`, then falls back to
+/// `parse_number` → `QuantityExpr::Fixed`. Returns `None` if neither matches.
+/// Use this instead of `parse_number` at call sites that represent effect quantities
+/// (draw count, life amount, damage, mill count, scry count, etc.).
+pub fn parse_count_expr(text: &str) -> Option<(QuantityExpr, &str)> {
+    let text = text.trim_start();
+    let lower = text.to_lowercase();
+    // CR 107.3a: "X" in Oracle text represents a variable determined at cast time.
+    if lower.starts_with('x') {
+        let rest = &text[1..];
+        if rest.is_empty() || rest.starts_with(|c: char| c.is_whitespace()) {
+            return Some((
+                QuantityExpr::Ref {
+                    qty: QuantityRef::Variable {
+                        name: "X".to_string(),
+                    },
+                },
+                rest.trim_start(),
+            ));
+        }
+    }
+    let (n, rest) = parse_number(text)?;
+    Some((QuantityExpr::Fixed { value: n as i32 }, rest))
 }
 
 /// Parse an English ordinal number word at the start of text.
@@ -1342,6 +1370,56 @@ mod tests {
     fn parse_number_none() {
         assert_eq!(parse_number("target creature"), None);
         assert_eq!(parse_number(""), None);
+    }
+
+    #[test]
+    fn parse_count_expr_variable_x() {
+        let (qty, rest) = parse_count_expr("X cards").unwrap();
+        assert!(matches!(
+            qty,
+            QuantityExpr::Ref {
+                qty: QuantityRef::Variable { .. }
+            }
+        ));
+        assert_eq!(rest, "cards");
+    }
+
+    #[test]
+    fn parse_count_expr_fixed_number() {
+        let (qty, rest) = parse_count_expr("3 cards").unwrap();
+        assert!(matches!(qty, QuantityExpr::Fixed { value: 3 }));
+        assert_eq!(rest, "cards");
+    }
+
+    #[test]
+    fn parse_count_expr_word_number() {
+        let (qty, rest) = parse_count_expr("two creatures").unwrap();
+        assert!(matches!(qty, QuantityExpr::Fixed { value: 2 }));
+        assert_eq!(rest, "creatures");
+    }
+
+    #[test]
+    fn parse_count_expr_article() {
+        let (qty, rest) = parse_count_expr("a card").unwrap();
+        assert!(matches!(qty, QuantityExpr::Fixed { value: 1 }));
+        assert_eq!(rest, "card");
+    }
+
+    #[test]
+    fn parse_count_expr_bare_x() {
+        let (qty, rest) = parse_count_expr("X").unwrap();
+        assert!(matches!(
+            qty,
+            QuantityExpr::Ref {
+                qty: QuantityRef::Variable { .. }
+            }
+        ));
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn parse_count_expr_none_for_text() {
+        assert!(parse_count_expr("target creature").is_none());
     }
 
     #[test]

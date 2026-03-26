@@ -396,6 +396,7 @@ fn spell_types_match_filter(types: &[CoreType], tf: &TypeFilter) -> bool {
         TypeFilter::Instant => types.contains(&CoreType::Instant),
         TypeFilter::Sorcery => types.contains(&CoreType::Sorcery),
         TypeFilter::Planeswalker => types.contains(&CoreType::Planeswalker),
+        TypeFilter::Battle => types.contains(&CoreType::Battle),
         TypeFilter::Permanent => types.iter().any(|ct| {
             matches!(
                 ct,
@@ -460,6 +461,7 @@ fn type_filter_to_core_type(tf: &TypeFilter) -> Option<CoreType> {
         TypeFilter::Artifact => Some(CoreType::Artifact),
         TypeFilter::Enchantment => Some(CoreType::Enchantment),
         TypeFilter::Planeswalker => Some(CoreType::Planeswalker),
+        TypeFilter::Battle => Some(CoreType::Battle),
         TypeFilter::Permanent | TypeFilter::Card | TypeFilter::Any => None,
         TypeFilter::Non(_) => None,
         TypeFilter::Subtype(_) => None,

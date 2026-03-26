@@ -14,8 +14,8 @@ use crate::types::zones::Zone;
 
 use super::super::oracle_target::parse_target;
 use super::super::oracle_util::{
-    contains_object_pronoun, contains_possessive, parse_mana_symbols, parse_number, parse_ordinal,
-    starts_with_possessive, strip_after, TextPair,
+    contains_object_pronoun, contains_possessive, parse_count_expr, parse_mana_symbols,
+    parse_number, parse_ordinal, starts_with_possessive, strip_after, TextPair,
 };
 
 /// Earthbend keyword action default target: "target land you control".
@@ -61,7 +61,9 @@ pub(super) fn parse_numeric_imperative_ast(
     lower: &str,
 ) -> Option<NumericImperativeAst> {
     if lower.starts_with("draw ") {
-        let count = parse_number(&text[5..]).map(|(n, _)| n).unwrap_or(1);
+        let count = parse_count_expr(&text[5..])
+            .map(|(q, _)| q)
+            .unwrap_or(QuantityExpr::Fixed { value: 1 });
         return Some(NumericImperativeAst::Draw { count });
     }
 
@@ -84,10 +86,10 @@ pub(super) fn parse_numeric_imperative_ast(
             ""
         };
         if !after_gain.is_empty() {
-            let amount = parse_number(after_gain).map(|(n, _)| n as i32).unwrap_or(1);
-            return Some(NumericImperativeAst::GainLife {
-                amount: QuantityExpr::Fixed { value: amount },
-            });
+            let amount = parse_count_expr(after_gain)
+                .map(|(q, _)| q)
+                .unwrap_or(QuantityExpr::Fixed { value: 1 });
+            return Some(NumericImperativeAst::GainLife { amount });
         }
     }
 
@@ -105,10 +107,17 @@ pub(super) fn parse_numeric_imperative_ast(
                 return Some(NumericImperativeAst::LoseLife { amount: qty });
             }
         }
-        let amount = super::extract_number_before(lower, "life").unwrap_or(1) as i32;
-        return Some(NumericImperativeAst::LoseLife {
-            amount: QuantityExpr::Fixed { value: amount },
-        });
+        // Extract count before "life": "lose 3 life", "you lose X life", etc.
+        let amount = if let Some(life_pos) = lower.find("life") {
+            let before_life = lower[..life_pos].trim();
+            let last_word = before_life.split_whitespace().next_back().unwrap_or("");
+            parse_count_expr(last_word)
+                .map(|(q, _)| q)
+                .unwrap_or(QuantityExpr::Fixed { value: 1 })
+        } else {
+            QuantityExpr::Fixed { value: 1 }
+        };
+        return Some(NumericImperativeAst::LoseLife { amount });
     }
 
     if lower.contains("gets +")
@@ -127,15 +136,21 @@ pub(super) fn parse_numeric_imperative_ast(
     }
 
     if lower.starts_with("scry ") {
-        let count = parse_number(&text[5..]).map(|(n, _)| n).unwrap_or(1);
+        let count = parse_count_expr(&text[5..])
+            .map(|(q, _)| q)
+            .unwrap_or(QuantityExpr::Fixed { value: 1 });
         return Some(NumericImperativeAst::Scry { count });
     }
     if lower.starts_with("surveil ") {
-        let count = parse_number(&text[8..]).map(|(n, _)| n).unwrap_or(1);
+        let count = parse_count_expr(&text[8..])
+            .map(|(q, _)| q)
+            .unwrap_or(QuantityExpr::Fixed { value: 1 });
         return Some(NumericImperativeAst::Surveil { count });
     }
     if lower.starts_with("mill ") {
-        let count = parse_number(&text[5..]).map(|(n, _)| n).unwrap_or(1);
+        let count = parse_count_expr(&text[5..])
+            .map(|(q, _)| q)
+            .unwrap_or(QuantityExpr::Fixed { value: 1 });
         return Some(NumericImperativeAst::Mill { count });
     }
 
@@ -180,11 +195,7 @@ fn try_parse_half_life_amount(lower: &str) -> Option<QuantityExpr> {
 
 pub(super) fn lower_numeric_imperative_ast(ast: NumericImperativeAst) -> Effect {
     match ast {
-        NumericImperativeAst::Draw { count } => Effect::Draw {
-            count: QuantityExpr::Fixed {
-                value: count as i32,
-            },
-        },
+        NumericImperativeAst::Draw { count } => Effect::Draw { count },
         NumericImperativeAst::GainLife { amount } => Effect::GainLife {
             amount,
             player: GainLifePlayer::Controller,
@@ -198,9 +209,7 @@ pub(super) fn lower_numeric_imperative_ast(ast: NumericImperativeAst) -> Effect 
         NumericImperativeAst::Scry { count } => Effect::Scry { count },
         NumericImperativeAst::Surveil { count } => Effect::Surveil { count },
         NumericImperativeAst::Mill { count } => Effect::Mill {
-            count: QuantityExpr::Fixed {
-                value: count as i32,
-            },
+            count,
             // CR 701.17a: "Mill" with no subject defaults to the controller.
             target: TargetFilter::Controller,
         },
@@ -243,7 +252,9 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
         return Some(TargetedImperativeAst::Sacrifice { target });
     }
     if lower.starts_with("discard ") {
-        let count = parse_number(&text[8..]).map(|(n, _)| n).unwrap_or(1);
+        let count = parse_count_expr(&text[8..])
+            .map(|(q, _)| q)
+            .unwrap_or(QuantityExpr::Fixed { value: 1 });
         return Some(TargetedImperativeAst::Discard { count });
     }
     if lower.starts_with("return ") {
@@ -1959,19 +1970,10 @@ fn try_parse_amass(text: &str, lower: &str) -> Option<Effect> {
     let (subtype, consumed) = crate::parser::oracle_util::parse_subtype(original_rest)?;
     let remainder = rest[consumed..].trim();
 
-    // Parse count: numeric or "X"
-    let count = if remainder.eq_ignore_ascii_case("x") {
-        QuantityExpr::Ref {
-            qty: QuantityRef::Variable {
-                name: "X".to_string(),
-            },
-        }
-    } else {
-        let n = super::super::oracle_util::parse_number(remainder)
-            .map(|(n, _)| n)
-            .unwrap_or(1);
-        QuantityExpr::Fixed { value: n as i32 }
-    };
+    // Parse count: numeric or "X" via shared helper.
+    let count = parse_count_expr(remainder)
+        .map(|(q, _)| q)
+        .unwrap_or(QuantityExpr::Fixed { value: 1 });
 
     Some(Effect::Amass { subtype, count })
 }
@@ -1985,16 +1987,7 @@ fn try_parse_monstrosity(lower: &str) -> Option<Effect> {
         .trim()
         .trim_end_matches('.');
 
-    let count = if rest.eq_ignore_ascii_case("x") {
-        QuantityExpr::Ref {
-            qty: QuantityRef::Variable {
-                name: "X".to_string(),
-            },
-        }
-    } else {
-        let n = super::super::oracle_util::parse_number(rest).map(|(n, _)| n)?;
-        QuantityExpr::Fixed { value: n as i32 }
-    };
+    let count = parse_count_expr(rest).map(|(q, _)| q)?;
 
     Some(Effect::Monstrosity { count })
 }

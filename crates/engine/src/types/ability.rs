@@ -713,6 +713,8 @@ pub enum TypeFilter {
     Instant,
     Sorcery,
     Planeswalker,
+    /// CR 310: Battle — a permanent type introduced in March of the Machine.
+    Battle,
     Permanent,
     Card,
     Any,
@@ -1026,6 +1028,10 @@ pub enum TargetFilter {
     /// (e.g., "tap target creature and put a stun counter on it").
     /// At resolution time, the sub_ability chain inherits parent targets automatically.
     ParentTarget,
+    /// CR 608.2c: Resolves to the controller of the parent ability's target object.
+    /// Used for "its controller" in compound effects (e.g., "counter target spell. Its controller
+    /// loses 2 life."). At resolution time, looks up the controller of the first parent target.
+    ParentTargetController,
     /// CR 506.3d: Resolves to the player being attacked by the source creature.
     /// Looked up from `state.combat.attackers` using the trigger's source_id.
     DefendingPlayer,
@@ -1287,6 +1293,11 @@ pub enum StaticCondition {
     /// CR 611.2b: True when the source object is tapped.
     /// Used for "for as long as ~ remains tapped" duration conditions.
     SourceIsTapped,
+    /// CR 113.6b: True when the source card is in the specified zone.
+    /// Used for "as long as ~ is in your graveyard" / "this card is in your graveyard" conditions.
+    SourceInZone {
+        zone: crate::types::zones::Zone,
+    },
     None,
 }
 
@@ -1672,8 +1683,8 @@ pub enum Effect {
         target: TargetFilter,
     },
     Scry {
-        #[serde(default = "default_one")]
-        count: u32,
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
     },
     PumpAll {
         #[serde(default = "default_pt_value_zero")]
@@ -1765,8 +1776,8 @@ pub enum Effect {
         target: TargetFilter,
     },
     Surveil {
-        #[serde(default = "default_one")]
-        count: u32,
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
     },
     Fight {
         #[serde(default = "default_target_filter_any")]
@@ -1916,8 +1927,8 @@ pub enum Effect {
         expiry: Option<crate::types::mana::ManaExpiry>,
     },
     Discard {
-        #[serde(default = "default_one")]
-        count: u32,
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },
@@ -3114,6 +3125,14 @@ pub enum TriggerCondition {
     Descended,
     /// "if you control N or more creatures"
     ControlCreatures { minimum: u32 },
+    /// "if you control a [type]" — general control presence check.
+    ControlsType { filter: TargetFilter },
+    /// CR 603.4: "if no spells were cast last turn" — werewolf transform condition.
+    NoSpellsCastLastTurn,
+    /// CR 603.4: "if two or more spells were cast last turn" — werewolf reverse transform.
+    TwoOrMoreSpellsCastLastTurn,
+    /// CR 603.4: "if it's not your turn" / "if it isn't your turn"
+    NotYourTurn,
     /// CR 508.1a: "Whenever ~ and at least N other creatures attack."
     /// True when combat is active and at least `minimum` other creatures
     /// controlled by the same player are also attacking.

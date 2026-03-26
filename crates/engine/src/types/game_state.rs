@@ -359,6 +359,15 @@ pub enum WaitingFor {
         cards: Vec<ObjectId>,
         count: usize,
     },
+    /// CR 701.9b: Player chooses card(s) to discard during effect resolution.
+    /// Used when an effect says "discard a card" without "at random."
+    DiscardChoice {
+        player: PlayerId,
+        count: usize,
+        cards: Vec<ObjectId>,
+        source_id: ObjectId,
+        effect_kind: crate::types::ability::EffectKind,
+    },
     /// CR 701.62a: Player chooses one of the top 2 revealed cards to manifest face-down.
     /// The unchosen card goes to graveyard. Cards are visible only to the manifesting player.
     ManifestDreadChoice {
@@ -728,9 +737,26 @@ impl WaitingFor {
             | WaitingFor::RetargetChoice { player, .. }
             | WaitingFor::WardDiscardChoice { player, .. }
             | WaitingFor::WardSacrificeChoice { player, .. }
-            | WaitingFor::ConniveDiscard { player, .. } => Some(*player),
+            | WaitingFor::ConniveDiscard { player, .. }
+            | WaitingFor::DiscardChoice { player, .. } => Some(*player),
             WaitingFor::GameOver { .. } => None,
         }
+    }
+
+    /// Whether this state is part of the casting flow and can be backed out of
+    /// with `CancelCast`. This is true for every state that carries a `pending_cast`.
+    pub fn has_pending_cast(&self) -> bool {
+        matches!(
+            self,
+            WaitingFor::ManaPayment { .. }
+                | WaitingFor::TargetSelection { .. }
+                | WaitingFor::ModeChoice { .. }
+                | WaitingFor::OptionalCostChoice { .. }
+                | WaitingFor::DiscardForCost { .. }
+                | WaitingFor::SacrificeForCost { .. }
+                | WaitingFor::ExileFromGraveyardForCost { .. }
+                | WaitingFor::HarmonizeTapChoice { .. }
+        )
     }
 }
 
@@ -906,6 +932,10 @@ pub struct GameState {
     pub day_night: Option<DayNight>,
     #[serde(default)]
     pub spells_cast_this_turn: u8,
+    /// CR 603.4: Snapshot of `spells_cast_this_turn` from the previous turn.
+    /// Used by werewolf "if no/two or more spells were cast last turn" conditions.
+    #[serde(default)]
+    pub spells_cast_last_turn: Option<u8>,
 
     // Triggered ability targeting
     #[serde(default)]
@@ -1211,6 +1241,7 @@ impl GameState {
             next_continuous_effect_id: 1,
             day_night: None,
             spells_cast_this_turn: 0,
+            spells_cast_last_turn: None,
             pending_trigger: None,
             exile_links: Vec::new(),
             delayed_triggers: Vec::new(),
@@ -1350,6 +1381,7 @@ impl PartialEq for GameState {
             && self.next_timestamp == other.next_timestamp
             && self.day_night == other.day_night
             && self.spells_cast_this_turn == other.spells_cast_this_turn
+            && self.spells_cast_last_turn == other.spells_cast_last_turn
             && self.pending_trigger == other.pending_trigger
             && self.exile_links == other.exile_links
             && self.delayed_triggers == other.delayed_triggers
@@ -1663,7 +1695,14 @@ mod tests {
             cards: vec![ObjectId(2)],
             count: 1,
         }));
-        assert_eq!(variants.len(), 22);
+        variants.push(Box::new(WaitingFor::DiscardChoice {
+            player: PlayerId(0),
+            count: 1,
+            cards: vec![ObjectId(1)],
+            source_id: ObjectId(100),
+            effect_kind: crate::types::ability::EffectKind::Discard,
+        }));
+        assert_eq!(variants.len(), 23);
     }
 
     #[test]

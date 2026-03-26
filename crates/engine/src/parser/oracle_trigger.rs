@@ -150,8 +150,13 @@ fn extract_unless_pay_modifier(text: &str) -> (String, Option<UnlessPayModifier>
     };
 
     let after_unless = &lower[unless_pos + 8..];
+
+    // "unless you [verb]" without "pays" — strip the clause even if we can't
+    // fully parse the cost. This ensures the main effect text is clean.
     let Some(pays_pos) = after_unless.find("pays ") else {
-        return (text.to_string(), None);
+        // Still strip the unless clause so the main effect parses correctly.
+        let cleaned = text[..unless_pos].trim().to_string();
+        return (cleaned, None);
     };
     let cost_str = &after_unless[pays_pos + 5..];
 
@@ -364,6 +369,47 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
                 variant: NinjutsuVariant::Ninjutsu,
             }),
         );
+    }
+
+    // CR 603.4: "if no spells were cast last turn" — werewolf transform
+    if let Some(pos) = tp.find("if no spells were cast last turn") {
+        return (
+            strip_condition_clause(text, pos, "if no spells were cast last turn".len()),
+            Some(TriggerCondition::NoSpellsCastLastTurn),
+        );
+    }
+
+    // CR 603.4: "if two or more spells were cast last turn" — werewolf reverse
+    if let Some(pos) = tp.find("if two or more spells were cast last turn") {
+        return (
+            strip_condition_clause(text, pos, "if two or more spells were cast last turn".len()),
+            Some(TriggerCondition::TwoOrMoreSpellsCastLastTurn),
+        );
+    }
+
+    // CR 603.4: "if it's not your turn" / "if it isn't your turn"
+    for pattern in &["if it's not your turn", "if it isn't your turn"] {
+        if let Some(pos) = tp.find(pattern) {
+            return (
+                strip_condition_clause(text, pos, pattern.len()),
+                Some(TriggerCondition::NotYourTurn),
+            );
+        }
+    }
+
+    // "if you control a/an [type]" — general control presence
+    for prefix in &["if you control a ", "if you control an "] {
+        if let Some(pos) = tp.find(prefix) {
+            let after = &text[pos + prefix.len()..];
+            let (filter, rest) = crate::parser::oracle_target::parse_type_phrase(after);
+            if !matches!(filter, TargetFilter::Any) {
+                let consumed = after.len() - rest.len();
+                return (
+                    strip_condition_clause(text, pos, prefix.len() + consumed),
+                    Some(TriggerCondition::ControlsType { filter }),
+                );
+            }
+        }
     }
 
     // CR 400.7 + CR 603.10: "if it was a [type]" / "if it was an [type]"

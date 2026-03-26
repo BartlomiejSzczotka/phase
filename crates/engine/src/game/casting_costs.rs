@@ -1104,7 +1104,7 @@ pub(super) fn auto_tap_mana_sources(
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::{AbilityKind, Effect};
+    use crate::types::ability::{AbilityKind, Effect, QuantityExpr};
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::CardId;
     use crate::types::mana::ManaCost;
@@ -1114,7 +1114,9 @@ mod tests {
             object_id: source_id,
             card_id: CardId(0),
             ability: ResolvedAbility::new(
-                Effect::Scry { count: 1 },
+                Effect::Scry {
+                    count: QuantityExpr::Fixed { value: 1 },
+                },
                 Vec::new(),
                 source_id,
                 PlayerId(0),
@@ -1171,7 +1173,9 @@ mod tests {
         state.objects.get_mut(&source).unwrap().abilities =
             vec![crate::types::ability::AbilityDefinition::new(
                 AbilityKind::Activated,
-                Effect::Scry { count: 1 },
+                Effect::Scry {
+                    count: QuantityExpr::Fixed { value: 1 },
+                },
             )];
 
         let pending = make_pending(source);

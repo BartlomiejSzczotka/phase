@@ -285,7 +285,12 @@ mod tests {
     }
 
     fn sac_outlet_entry(name: &str) -> DeckEntry {
-        let mut ability = AbilityDefinition::new(AbilityKind::Activated, Effect::Scry { count: 1 });
+        let mut ability = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Scry {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+        );
         ability.cost = Some(AbilityCost::Sacrifice {
             target: TargetFilter::Any,
         });

@@ -163,10 +163,14 @@ fn setup_kaito_on_battlefield(phase: Phase) -> (GameRunner, ObjectId) {
                 },
             },
         );
-        let surveil_ability =
-            AbilityDefinition::new(AbilityKind::Activated, Effect::Surveil { count: 2 })
-                .cost(AbilityCost::Loyalty { amount: 0 })
-                .sub_ability(draw_sub);
+        let surveil_ability = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Surveil {
+                count: QuantityExpr::Fixed { value: 2 },
+            },
+        )
+        .cost(AbilityCost::Loyalty { amount: 0 })
+        .sub_ability(draw_sub);
         obj.abilities.push(surveil_ability.clone());
         obj.base_abilities.push(surveil_ability);
 

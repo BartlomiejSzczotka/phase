@@ -29,6 +29,16 @@ pub fn parse_event_context_ref(text: &str) -> Option<(TargetFilter, &str)> {
             &text[text.len() - rest.len()..],
         ));
     }
+    // CR 608.2c: "its controller" / "their controller" — controller of the parent target object.
+    if let Some(rest) = lower
+        .strip_prefix("its controller")
+        .or_else(|| lower.strip_prefix("their controller"))
+    {
+        return Some((
+            TargetFilter::ParentTargetController,
+            &text[text.len() - rest.len()..],
+        ));
+    }
     if let Some(rest) = lower.strip_prefix("that spell's owner") {
         return Some((
             TargetFilter::TriggeringSpellOwner,
@@ -256,6 +266,10 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
     } else if lower_trimmed.starts_with("another ") {
         properties.push(FilterProp::Another);
         pos += offset + "another ".len();
+    }
+    // "another target [type]" — strip "target " after "another " so the type is reachable.
+    if properties.contains(&FilterProp::Another) && lower[pos..].starts_with("target ") {
+        pos += "target ".len();
     }
 
     // CR 509.1h: Consume combat status prefixes (unblocked, attacking)
@@ -846,6 +860,9 @@ fn parse_core_type(text: &str) -> (Option<TypeFilter>, Option<String>, usize) {
         ("sorcery", TypeFilter::Sorcery),
         ("planeswalkers", TypeFilter::Planeswalker),
         ("planeswalker", TypeFilter::Planeswalker),
+        // CR 310: Battle type recognition.
+        ("battles", TypeFilter::Battle),
+        ("battle", TypeFilter::Battle),
         ("lands", TypeFilter::Land),
         ("land", TypeFilter::Land),
         ("spells", TypeFilter::Card),
@@ -879,6 +896,11 @@ fn parse_controller_suffix(text: &str) -> Option<(ControllerRef, usize)> {
         Some((
             ControllerRef::Opponent,
             leading_ws + "an opponent controls".len(),
+        ))
+    } else if trimmed.starts_with("you don't control") {
+        Some((
+            ControllerRef::Opponent,
+            leading_ws + "you don't control".len(),
         ))
     } else if trimmed.starts_with("that player controls") {
         // "that player controls" → ControllerRef::You, resolved against scope_player

@@ -535,6 +535,7 @@ pub(super) fn parse_token_keyword_clause(text: &str) -> Vec<Keyword> {
         .unwrap_or(after_with)
         .trim()
         .trim_end_matches('.')
+        .trim_end_matches(',')
         .trim_end_matches(" and")
         .trim();
 
@@ -576,5 +577,30 @@ pub(super) fn title_case_word(word: &str) -> String {
 pub(super) fn push_unique_string(values: &mut Vec<String>, value: impl Into<String> + AsRef<str>) {
     if !values.iter().any(|existing| existing == value.as_ref()) {
         values.push(value.into());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keyword_clause_with_trailing_comma_before_where() {
+        // "with flying, where X is..." — comma must not poison the keyword
+        let kws = parse_token_keyword_clause("with flying, where X is that spell's mana value");
+        assert_eq!(kws, vec![Keyword::Flying]);
+    }
+
+    #[test]
+    fn keyword_clause_multiple_with_where() {
+        let kws =
+            parse_token_keyword_clause("with flying and haste, where X is that spell's mana value");
+        assert_eq!(kws, vec![Keyword::Flying, Keyword::Haste]);
+    }
+
+    #[test]
+    fn keyword_clause_no_where() {
+        let kws = parse_token_keyword_clause("with flying");
+        assert_eq!(kws, vec![Keyword::Flying]);
     }
 }

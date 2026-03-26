@@ -1207,6 +1207,47 @@ fn parse_conditional_static(text: &str) -> Option<StaticDefinition> {
 /// Returns a typed `StaticCondition` for known patterns, or `None` if the
 /// condition text is not recognized. Callers may fall back to `Unrecognized`.
 ///
+/// CR 113.6b: Parse "~ is in your graveyard" / "this card is in your graveyard" /
+/// "~ is in your hand" → `SourceInZone { zone }`.
+fn parse_source_in_zone_condition(lower: &str) -> Option<StaticCondition> {
+    // Strip self-reference prefix: "~ is in your " or "this card is in your "
+    let after = lower
+        .strip_prefix("~ is in your ")
+        .or_else(|| lower.strip_prefix("this card is in your "))?;
+
+    let zone = match after.trim_end_matches('.').trim() {
+        "graveyard" => Zone::Graveyard,
+        "hand" => Zone::Hand,
+        "library" => Zone::Library,
+        "exile" => Zone::Exile,
+        _ => return None,
+    };
+    Some(StaticCondition::SourceInZone { zone })
+}
+
+/// Try splitting a condition on " and " into compound `StaticCondition::And`.
+/// Only succeeds when BOTH halves parse as valid conditions — prevents false splits
+/// on noun phrases like "artifacts and creatures".
+fn try_split_compound_and(text: &str) -> Option<StaticCondition> {
+    let lower = text.to_lowercase();
+    // Find " and " boundaries — try each occurrence in case the first is a noun conjunction.
+    let mut search_from = 0;
+    while let Some(pos) = lower[search_from..].find(" and ") {
+        let abs_pos = search_from + pos;
+        let left = &text[..abs_pos];
+        let right = &text[abs_pos + 5..]; // " and " is 5 bytes
+        if let (Some(lhs), Some(rhs)) =
+            (parse_static_condition(left), parse_static_condition(right))
+        {
+            return Some(StaticCondition::And {
+                conditions: vec![lhs, rhs],
+            });
+        }
+        search_from = abs_pos + 5;
+    }
+    None
+}
+
 /// Supported patterns:
 /// - "you have at least N life more than your starting life total" → LifeMoreThanStartingBy
 /// - "your devotion to [colors] is less than N" → DevotionGE (with inverted threshold)
@@ -1215,6 +1256,18 @@ fn parse_conditional_static(text: &str) -> Option<StaticDefinition> {
 fn parse_static_condition(text: &str) -> Option<StaticCondition> {
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
+
+    // CR 113.6b: "~ is in your graveyard" / "this card is in your graveyard" / "~ is in your hand"
+    if let Some(condition) = parse_source_in_zone_condition(tp.lower) {
+        return Some(condition);
+    }
+
+    // Compound " and " splitting: try splitting on " and ", parse both halves recursively.
+    // Only succeeds if BOTH halves parse independently — avoids false splits on
+    // noun phrases like "artifacts and creatures".
+    if let Some(condition) = try_split_compound_and(text) {
+        return Some(condition);
+    }
 
     // "you have at least N life more than your starting life total"
     if let Some(amount_text) = tp
@@ -2489,6 +2542,25 @@ fn parse_quoted_abilities(text: &str) -> Vec<AbilityDefinition> {
 /// activated ability with the cost parsed separately. Otherwise it's treated as
 /// a spell-like effect.
 fn parse_quoted_ability(text: &str) -> AbilityDefinition {
+    let lower = text.to_lowercase();
+
+    // CR 603.1: Detect trigger prefixes and route to trigger parser.
+    // Quoted ability text starting with "When"/"Whenever"/"At the beginning of" is a
+    // triggered ability, not a spell-like effect chain. Extract the trigger's execute
+    // chain as the granted AbilityDefinition (trigger metadata like mode/condition is
+    // handled by the GrantTrigger path if available, but the effect chain is always useful).
+    if lower.starts_with("when ")
+        || lower.starts_with("whenever ")
+        || lower.starts_with("at the beginning of ")
+        || lower.starts_with("at the end of ")
+    {
+        let trigger = super::oracle_trigger::parse_trigger_line(text, "~");
+        if let Some(execute) = trigger.execute {
+            return *execute;
+        }
+        // Fallback: parse as effect chain if trigger parsing produced no execute
+    }
+
     // Find the cost/effect separator — look for ": " after a cost-like prefix
     // (mana symbols, {T}, loyalty, etc.)
     if let Some(colon_pos) = find_cost_separator(text) {
@@ -5470,6 +5542,52 @@ mod tests {
                 }
             )),
             "Should produce AddKeyword(Changeling), got: {mods:?}"
+        );
+    }
+
+    #[test]
+    fn static_condition_source_in_graveyard() {
+        let cond = parse_static_condition("this card is in your graveyard");
+        assert!(
+            matches!(
+                cond,
+                Some(StaticCondition::SourceInZone {
+                    zone: Zone::Graveyard
+                })
+            ),
+            "Expected SourceInZone(Graveyard), got: {cond:?}"
+        );
+    }
+
+    #[test]
+    fn static_condition_source_in_hand() {
+        let cond = parse_static_condition("~ is in your hand");
+        assert!(
+            matches!(
+                cond,
+                Some(StaticCondition::SourceInZone { zone: Zone::Hand })
+            ),
+            "Expected SourceInZone(Hand), got: {cond:?}"
+        );
+    }
+
+    #[test]
+    fn static_condition_compound_and() {
+        let cond =
+            parse_static_condition("this card is in your graveyard and you control a Mountain");
+        assert!(
+            matches!(cond, Some(StaticCondition::And { ref conditions }) if conditions.len() == 2),
+            "Expected And with 2 conditions, got: {cond:?}"
+        );
+    }
+
+    #[test]
+    fn static_condition_no_false_split_noun_phrase() {
+        // "artifacts and creatures you control" is NOT a compound condition
+        let cond = parse_static_condition("artifacts and creatures you control");
+        assert!(
+            !matches!(cond, Some(StaticCondition::And { .. })),
+            "Should not split noun phrase, got: {cond:?}"
         );
     }
 }

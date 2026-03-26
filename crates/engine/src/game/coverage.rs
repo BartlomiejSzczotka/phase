@@ -194,6 +194,7 @@ fn fmt_target(filter: &TargetFilter) -> String {
         TargetFilter::TriggeringSource => "triggering source".into(),
         TargetFilter::DefendingPlayer => "defending player".into(),
         TargetFilter::ParentTarget => "parent target".into(),
+        TargetFilter::ParentTargetController => "parent target's controller".into(),
         TargetFilter::SpecificObject { id } => format!("object #{}", id.0),
         TargetFilter::TrackedSet { id } => format!("tracked set #{}", id.0),
         TargetFilter::ExiledBySource => "cards exiled by source".into(),
@@ -316,6 +317,7 @@ fn fmt_type_filter(tf: &TypeFilter) -> String {
         TypeFilter::Instant => "instant",
         TypeFilter::Sorcery => "sorcery",
         TypeFilter::Planeswalker => "planeswalker",
+        TypeFilter::Battle => "battle",
         TypeFilter::Permanent => "permanent",
         TypeFilter::Card => "card",
         TypeFilter::Any => "any",
@@ -812,10 +814,14 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             d.push(("mode".into(), fmt_double_pt_mode(mode).into()));
             d.push(("filter".into(), fmt_target(target)));
         }
-        Effect::DiscardCard { count, target } | Effect::Discard { count, target } => {
+        Effect::DiscardCard { count, target } => {
             if *count != 1 {
                 d.push(("count".into(), count.to_string()));
             }
+            d.push(("target".into(), fmt_target(target)));
+        }
+        Effect::Discard { count, target } => {
+            d.push(("count".into(), fmt_quantity(count)));
             d.push(("target".into(), fmt_target(target)));
         }
         Effect::Mill { count, target } => {
@@ -823,7 +829,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             d.push(("target".into(), fmt_target(target)));
         }
         Effect::Scry { count } | Effect::Surveil { count } => {
-            d.push(("count".into(), count.to_string()));
+            d.push(("count".into(), fmt_quantity(count)));
         }
         Effect::GainLife { amount, player } => {
             d.push(("amount".into(), fmt_quantity(amount)));

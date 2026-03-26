@@ -306,6 +306,23 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         });
     }
 
+    // CR 608.2c: "that creature/permanent/land" — anaphoric back-reference to a
+    // previously mentioned object in the same effect sequence. Strip "that " and parse
+    // the remainder as a type phrase. Covers all "that [type]" patterns generically.
+    if let Some(rest_subject) = lower.strip_prefix("that ") {
+        // CR 608.2c: "that creature/permanent/land" — anaphoric back-reference to a
+        // previously mentioned object in the same effect sequence. Strip "that " and parse
+        // the remainder as a type phrase. Covers all "that [type]" patterns generically.
+        let original_rest = &subject[subject.len() - rest_subject.len()..];
+        let (filter, rem) = parse_type_phrase(original_rest);
+        if rem.trim().is_empty() && !matches!(filter, TargetFilter::Any) {
+            return Some(SubjectApplication {
+                affected: filter,
+                target: None,
+            });
+        }
+    }
+
     let (filter, rest) = parse_type_phrase(subject);
     if rest.trim().is_empty() {
         return subject_filter_application(filter, false);
@@ -849,6 +866,7 @@ fn add_another_property(filter: TargetFilter) -> TargetFilter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ability::TypeFilter;
 
     #[test]
     fn starts_with_subject_prefix_each_of() {
@@ -923,5 +941,56 @@ mod tests {
         assert!(result.is_some());
         let app = result.unwrap();
         assert_eq!(app.affected, TargetFilter::Player);
+    }
+
+    // CR 608.2c: "that [type]" anaphoric back-references
+    #[test]
+    fn parse_subject_that_creature() {
+        let ctx = ParseContext::default();
+        let result = parse_subject_application("That creature", &ctx);
+        assert!(result.is_some(), "should recognize 'That creature'");
+        let app = result.unwrap();
+        assert!(
+            matches!(app.affected, TargetFilter::Typed(ref t) if t.type_filters.contains(&TypeFilter::Creature)),
+            "affected should be Creature filter, got {:?}",
+            app.affected
+        );
+        assert!(app.target.is_none(), "anaphoric ref is non-targeted");
+    }
+
+    #[test]
+    fn parse_subject_that_land() {
+        let ctx = ParseContext::default();
+        let result = parse_subject_application("that land", &ctx);
+        assert!(result.is_some(), "should recognize 'that land'");
+        let app = result.unwrap();
+        assert!(
+            matches!(app.affected, TargetFilter::Typed(ref t) if t.type_filters.contains(&TypeFilter::Land)),
+            "affected should be Land filter, got {:?}",
+            app.affected
+        );
+    }
+
+    #[test]
+    fn parse_subject_that_permanent() {
+        let ctx = ParseContext::default();
+        let result = parse_subject_application("that permanent", &ctx);
+        assert!(result.is_some(), "should recognize 'that permanent'");
+        let app = result.unwrap();
+        assert!(
+            matches!(app.affected, TargetFilter::Typed(ref t) if t.type_filters.contains(&TypeFilter::Permanent)),
+            "affected should be Permanent filter, got {:?}",
+            app.affected
+        );
+    }
+
+    #[test]
+    fn parse_subject_that_player_unchanged() {
+        // "that player" has its own handler at line 266 — ensure "that " prefix
+        // doesn't shadow it (it shouldn't, since it's checked earlier)
+        let ctx = ParseContext::default();
+        let result = parse_subject_application("that player", &ctx);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().affected, TargetFilter::Player);
     }
 }

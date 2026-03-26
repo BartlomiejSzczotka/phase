@@ -461,8 +461,8 @@ pub(super) fn target_filter_matches_object(
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
         | TargetFilter::DefendingPlayer => false,
-        // ParentTarget resolves to parent ability's targets at resolution time.
-        TargetFilter::ParentTarget => false,
+        // ParentTarget/ParentTargetController resolve at resolution time, not during matching.
+        TargetFilter::ParentTarget | TargetFilter::ParentTargetController => false,
     }
 }
 

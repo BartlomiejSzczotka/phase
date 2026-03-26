@@ -138,9 +138,8 @@ fn filter_inner(
         | TargetFilter::TriggeringPlayer
         | TargetFilter::TriggeringSource
         | TargetFilter::DefendingPlayer => false,
-        // ParentTarget resolves to parent ability's targets at resolution time,
-        // not via object matching.
-        TargetFilter::ParentTarget => false,
+        // ParentTarget/ParentTargetController resolve at resolution time, not via object matching.
+        TargetFilter::ParentTarget | TargetFilter::ParentTargetController => false,
     }
 }
 
@@ -160,13 +159,16 @@ pub fn type_filter_matches(tf: &TypeFilter, obj: &GameObject) -> bool {
         TypeFilter::Sorcery => obj.card_types.core_types.contains(&CoreType::Sorcery),
         // CR 306: Planeswalker type check.
         TypeFilter::Planeswalker => obj.card_types.core_types.contains(&CoreType::Planeswalker),
-        // CR 403.3: Permanents exist only on the battlefield — creatures, artifacts, enchantments, lands, planeswalkers.
+        // CR 310: Battle type check.
+        TypeFilter::Battle => obj.card_types.core_types.contains(&CoreType::Battle),
+        // CR 403.3: Permanents exist only on the battlefield — creatures, artifacts, enchantments, lands, planeswalkers, battles.
         TypeFilter::Permanent => {
             obj.card_types.core_types.contains(&CoreType::Creature)
                 || obj.card_types.core_types.contains(&CoreType::Artifact)
                 || obj.card_types.core_types.contains(&CoreType::Enchantment)
                 || obj.card_types.core_types.contains(&CoreType::Land)
                 || obj.card_types.core_types.contains(&CoreType::Planeswalker)
+                || obj.card_types.core_types.contains(&CoreType::Battle)
         }
         TypeFilter::Card | TypeFilter::Any => true,
         TypeFilter::Non(inner) => !type_filter_matches(inner, obj),

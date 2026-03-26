@@ -224,9 +224,12 @@ pub(super) fn starts_clause_text(text: &str) -> bool {
 
 /// Restricted clause-start check for bare " and " splitting (not after comma).
 /// Only includes imperative verbs that are unambiguously clause starters —
-/// excludes pronouns/determiners like "all", "each", "it", "that", "those",
-/// "they", "you" which commonly appear in noun phrases after "and"
+/// excludes bare pronouns/determiners like "all", "each", "it", "that", "those"
+/// which commonly appear in noun phrases after "and"
 /// (e.g. "target creature and all other creatures").
+///
+/// Subject-prefixed verb patterns ("you gain", "you lose", etc.) are safe because
+/// "you" + verb is never a noun phrase — it always starts an independent clause.
 pub(super) fn starts_bare_and_clause(text: &str) -> bool {
     let lower = text.to_ascii_lowercase();
     let prefixes = [
@@ -247,6 +250,23 @@ pub(super) fn starts_bare_and_clause(text: &str) -> bool {
         "surveil ",
         "tap ",
         "untap ",
+        // CR 608.2c: Subject-prefixed verb patterns — "you [verb]" is always a clause start.
+        "you gain ",
+        "you lose ",
+        "you draw ",
+        "you create ",
+        "you mill ",
+        "you scry ",
+        "you put ",
+        "you exile ",
+        "you return ",
+        "you sacrifice ",
+        "you search ",
+        "you surveil ",
+        "you get ",
+        "you may ",
+        "its controller ",
+        "their controller ",
     ];
     prefixes.iter().any(|prefix| lower.starts_with(prefix)) || starts_with_damage_clause(&lower)
 }
@@ -1013,6 +1033,49 @@ mod tests {
             Some(ContinuationAst::PutRest {
                 destination: Zone::Library
             })
+        );
+    }
+
+    // --- Subject-prefixed "you [verb]" splitting ---
+
+    #[test]
+    fn bare_and_splits_discard_and_you_gain() {
+        // Basilica Bell-Haunt pattern: "each opponent discards a card and you gain 3 life"
+        let chunks = clause_texts("each opponent discards a card and you gain 3 life");
+        assert_eq!(
+            chunks,
+            vec!["each opponent discards a card", "you gain 3 life"]
+        );
+    }
+
+    #[test]
+    fn bare_and_splits_lose_and_you_gain() {
+        // Blood Artist drain pattern: "target opponent loses 1 life and you gain 1 life"
+        let chunks = clause_texts("target opponent loses 1 life and you gain 1 life");
+        assert_eq!(
+            chunks,
+            vec!["target opponent loses 1 life", "you gain 1 life"]
+        );
+    }
+
+    #[test]
+    fn bare_and_splits_you_draw_clause() {
+        let chunks = clause_texts("destroy target creature and you draw a card");
+        assert_eq!(chunks, vec!["destroy target creature", "you draw a card"]);
+    }
+
+    #[test]
+    fn bare_and_splits_you_may_clause() {
+        let chunks = clause_texts("exile target creature and you may draw a card");
+        assert_eq!(chunks, vec!["exile target creature", "you may draw a card"]);
+    }
+
+    #[test]
+    fn bare_and_splits_its_controller_clause() {
+        let chunks = clause_texts("destroy target creature and its controller loses 3 life");
+        assert_eq!(
+            chunks,
+            vec!["destroy target creature", "its controller loses 3 life"]
         );
     }
 }

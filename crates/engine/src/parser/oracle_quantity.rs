@@ -427,6 +427,21 @@ pub(crate) fn parse_for_each_clause(clause: &str) -> Option<QuantityRef> {
         }
     }
 
+    // Compose with parse_quantity_ref for named quantity patterns like
+    // "card in your hand" (→ HandSize), "life you gained this turn", etc.
+    // "for each" strips the quantifier, so the clause may be singular or have
+    // slightly different phrasing. Try both as-is and with "s" appended.
+    if let Some(qty) = parse_quantity_ref(clause) {
+        return Some(qty);
+    }
+    // Handle singular → plural: "card in your hand" → "cards in your hand"
+    if let Some((first_word, rest)) = clause.split_once(' ') {
+        let pluralized = format!("{first_word}s {rest}");
+        if let Some(qty) = parse_quantity_ref(&pluralized) {
+            return Some(qty);
+        }
+    }
+
     // "creature you control", "artifact you control", etc.
     let (filter, _) = parse_target(clause);
     if !matches!(filter, TargetFilter::Any) {
@@ -747,6 +762,33 @@ mod tests {
         assert_eq!(
             parse_event_context_quantity("each opponent's life total"),
             None
+        );
+    }
+
+    #[test]
+    fn for_each_card_in_hand_via_quantity_ref() {
+        let qty = parse_for_each_clause("card in your hand").unwrap();
+        assert!(
+            matches!(qty, QuantityRef::HandSize),
+            "Expected HandSize, got {qty:?}"
+        );
+    }
+
+    #[test]
+    fn for_each_card_in_graveyard() {
+        let qty = parse_for_each_clause("card in your graveyard").unwrap();
+        assert!(
+            matches!(qty, QuantityRef::GraveyardSize),
+            "Expected GraveyardSize, got {qty:?}"
+        );
+    }
+
+    #[test]
+    fn for_each_creature_still_works() {
+        let qty = parse_for_each_clause("creature you control").unwrap();
+        assert!(
+            matches!(qty, QuantityRef::ObjectCount { .. }),
+            "Expected ObjectCount, got {qty:?}"
         );
     }
 }

@@ -1,3 +1,4 @@
+use crate::game::quantity::resolve_quantity;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
@@ -9,7 +10,9 @@ pub fn resolve(
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
     let scry_num: usize = match &ability.effect {
-        Effect::Scry { count } => *count as usize,
+        Effect::Scry { count } => {
+            resolve_quantity(state, count, ability.controller, ability.source_id) as usize
+        }
         _ => 1,
     };
 
@@ -53,9 +56,11 @@ mod tests {
     use crate::types::player::PlayerId;
     use crate::types::zones::Zone;
 
-    fn make_scry_ability(scry_num: u32) -> ResolvedAbility {
+    fn make_scry_ability(scry_num: i32) -> ResolvedAbility {
         ResolvedAbility::new(
-            Effect::Scry { count: scry_num },
+            Effect::Scry {
+                count: crate::types::ability::QuantityExpr::Fixed { value: scry_num },
+            },
             vec![],
             ObjectId(100),
             PlayerId(0),
