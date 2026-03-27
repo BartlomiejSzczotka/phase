@@ -111,6 +111,7 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
     state.creatures_attacked_this_turn.clear();
     state.creatures_blocked_this_turn.clear();
     state.players_who_created_token_this_turn.clear();
+    state.players_who_added_counter_this_turn.clear();
     state.players_who_discarded_card_this_turn.clear();
     state.players_who_sacrificed_artifact_this_turn.clear();
     state.players_who_had_creature_etb_this_turn.clear();

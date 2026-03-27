@@ -48,6 +48,11 @@ pub fn add_counter_with_replacement(
                         state.layers_dirty = true;
                     }
 
+                    // CR 122.1: Track that this player added a counter this turn
+                    state
+                        .players_who_added_counter_this_turn
+                        .insert(obj.controller);
+
                     events.push(GameEvent::CounterAdded {
                         object_id,
                         counter_type,

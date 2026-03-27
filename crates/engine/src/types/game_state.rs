@@ -1057,6 +1057,8 @@ pub struct GameState {
     #[serde(default)]
     pub players_who_created_token_this_turn: HashSet<PlayerId>,
     #[serde(default)]
+    pub players_who_added_counter_this_turn: HashSet<PlayerId>,
+    #[serde(default)]
     pub players_who_discarded_card_this_turn: HashSet<PlayerId>,
     #[serde(default)]
     pub players_who_sacrificed_artifact_this_turn: HashSet<PlayerId>,
@@ -1291,6 +1293,7 @@ impl GameState {
             creatures_attacked_this_turn: HashSet::new(),
             creatures_blocked_this_turn: HashSet::new(),
             players_who_created_token_this_turn: HashSet::new(),
+            players_who_added_counter_this_turn: HashSet::new(),
             players_who_discarded_card_this_turn: HashSet::new(),
             players_who_sacrificed_artifact_this_turn: HashSet::new(),
             players_who_had_creature_etb_this_turn: HashSet::new(),
@@ -1432,6 +1435,7 @@ impl PartialEq for GameState {
             && self.creatures_attacked_this_turn == other.creatures_attacked_this_turn
             && self.creatures_blocked_this_turn == other.creatures_blocked_this_turn
             && self.players_who_created_token_this_turn == other.players_who_created_token_this_turn
+            && self.players_who_added_counter_this_turn == other.players_who_added_counter_this_turn
             && self.players_who_discarded_card_this_turn
                 == other.players_who_discarded_card_this_turn
             && self.players_who_sacrificed_artifact_this_turn

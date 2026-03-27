@@ -3206,6 +3206,10 @@ pub enum TriggerCondition {
     /// a spell matching the optional filter this turn.
     CastSpellThisTurn { filter: Option<TargetFilter> },
 
+    /// CR 122.1: "if you put a counter on a permanent this turn" — true when the controller
+    /// added any counter to any permanent this turn.
+    CounterAddedThisTurn,
+
     // -- Combinators --
     /// All conditions must be true ("if you gained and lost life this turn")
     And { conditions: Vec<TriggerCondition> },

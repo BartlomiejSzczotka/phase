@@ -493,6 +493,23 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
         }
     }
 
+    // CR 122.1: "if you put a counter on a permanent this turn"
+    for pattern in &[
+        "if you put a counter on a permanent this turn",
+        "if you've put a counter on a permanent this turn",
+        "if you put one or more counters on a permanent this turn",
+        "if you've put one or more counters on a permanent this turn",
+        "if you put a counter on a creature this turn",
+        "if you put one or more counters on a creature this turn",
+    ] {
+        if let Some(pos) = tp.find(pattern) {
+            return (
+                strip_condition_clause(text, pos, pattern.len()),
+                Some(TriggerCondition::CounterAddedThisTurn),
+            );
+        }
+    }
+
     (text.to_string(), None)
 }
 

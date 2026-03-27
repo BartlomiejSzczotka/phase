@@ -1046,6 +1046,10 @@ pub(crate) fn check_trigger_condition(
                 }
             }
         }
+        // CR 122.1: "if you put a counter on a permanent this turn"
+        TriggerCondition::CounterAddedThisTurn => state
+            .players_who_added_counter_this_turn
+            .contains(&controller),
         TriggerCondition::And { conditions } => conditions
             .iter()
             .all(|c| check_trigger_condition(state, c, controller, source_id)),
