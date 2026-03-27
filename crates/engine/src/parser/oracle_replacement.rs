@@ -2,13 +2,14 @@ use super::oracle_effect::{parse_effect_chain, try_parse_named_choice};
 use super::oracle_quantity::capitalize_first;
 use super::oracle_target::parse_type_phrase;
 use super::oracle_util::{
-    normalize_card_name_refs, parse_number, strip_after, strip_reminder_text, TextPair,
+    normalize_card_name_refs, parse_number, parse_ordinal, strip_after, strip_reminder_text,
+    TextPair,
 };
 use crate::types::ability::{
-    AbilityDefinition, AbilityKind, ChoiceType, CombatDamageScope, ControllerRef,
+    AbilityDefinition, AbilityKind, ChoiceType, CombatDamageScope, Comparator, ControllerRef,
     DamageModification, DamageTargetFilter, Effect, FilterProp, PreventionAmount, QuantityExpr,
-    ReplacementCondition, ReplacementDefinition, ReplacementMode, TargetFilter, TypeFilter,
-    TypedFilter,
+    QuantityRef, ReplacementCondition, ReplacementDefinition, ReplacementMode, TargetFilter,
+    TypeFilter, TypedFilter,
 };
 use crate::types::replacements::ReplacementEvent;
 use crate::types::zones::Zone;
@@ -69,6 +70,16 @@ pub fn parse_replacement_line(text: &str, card_name: &str) -> Option<Replacement
 
     // --- "enters tapped unless you have two or more opponents" (battlebond lands) ---
     if let Some(def) = parse_unless_multiple_opponents(&norm_lower, &text) {
+        return Some(def);
+    }
+
+    // --- "enters tapped unless it's your turn" (Horned Loch-Whale) ---
+    if let Some(def) = parse_unless_your_turn(&norm_lower, &text) {
+        return Some(def);
+    }
+
+    // --- "enters tapped unless it's your first, second, or third turn of the game" ---
+    if let Some(def) = parse_unless_turn_of_game(&norm_lower, &text) {
         return Some(def);
     }
 
@@ -1207,6 +1218,93 @@ fn parse_unless_multiple_opponents(
             .valid_card(TargetFilter::SelfRef)
             .description(original_text.to_string())
             .condition(ReplacementCondition::UnlessMultipleOpponents),
+    )
+}
+
+/// CR 614.1d + CR 500: Parse "enters tapped unless it's your turn" (Horned Loch-Whale).
+fn parse_unless_your_turn(norm_lower: &str, original_text: &str) -> Option<ReplacementDefinition> {
+    if !norm_lower.contains("enters tapped")
+        && !norm_lower.contains("enters the battlefield tapped")
+    {
+        return None;
+    }
+    if !norm_lower.contains("unless it's your turn") {
+        return None;
+    }
+    Some(
+        ReplacementDefinition::new(ReplacementEvent::Moved)
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Tap {
+                    target: TargetFilter::SelfRef,
+                },
+            ))
+            .valid_card(TargetFilter::SelfRef)
+            .description(original_text.to_string())
+            .condition(ReplacementCondition::UnlessYourTurn),
+    )
+}
+
+/// CR 614.1d + CR 500: Parse "enters tapped unless it's your <ordinal-list> turn of the game".
+/// Handles variable-length ordinal lists ("first", "first or second", "first, second, or third").
+/// Takes the maximum ordinal as the threshold.
+fn parse_unless_turn_of_game(
+    norm_lower: &str,
+    original_text: &str,
+) -> Option<ReplacementDefinition> {
+    if !norm_lower.contains("enters tapped")
+        && !norm_lower.contains("enters the battlefield tapped")
+    {
+        return None;
+    }
+    let rest = strip_after(norm_lower, "unless it's your ")?;
+    // Parse comma/or-separated ordinal list: "first, second, or third turn"
+    let mut max_ordinal: u32 = 0;
+    let mut remaining = rest;
+    loop {
+        // Strip optional separator: ", or ", ", ", " or ", "or "
+        // parse_ordinal trims leading space, so after parsing "first" from
+        // "first or second", remaining is "or second" (no leading space).
+        remaining = remaining
+            .strip_prefix(", or ")
+            .or_else(|| remaining.strip_prefix(", "))
+            .or_else(|| remaining.strip_prefix(" or "))
+            .or_else(|| remaining.strip_prefix("or "))
+            .unwrap_or(remaining);
+        if let Some((val, rest)) = parse_ordinal(remaining) {
+            max_ordinal = max_ordinal.max(val);
+            remaining = rest;
+        } else {
+            break;
+        }
+    }
+    if max_ordinal == 0 {
+        return None;
+    }
+    // Expect "turn" (optionally followed by "of the game")
+    if !remaining.starts_with("turn") {
+        return None;
+    }
+    Some(
+        ReplacementDefinition::new(ReplacementEvent::Moved)
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Tap {
+                    target: TargetFilter::SelfRef,
+                },
+            ))
+            .valid_card(TargetFilter::SelfRef)
+            .description(original_text.to_string())
+            .condition(ReplacementCondition::UnlessQuantity {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::TurnsTaken,
+                },
+                comparator: Comparator::LE,
+                rhs: QuantityExpr::Fixed {
+                    value: max_ordinal as i32,
+                },
+                active_player_req: Some(ControllerRef::You),
+            }),
     )
 }
 
@@ -2401,5 +2499,59 @@ mod tests {
         let original = "Some Very Long Card Name enters the battlefield tapped unless you pay {2}.";
         let result = parse_enters_tapped_unless_generic(norm, original);
         assert!(result.is_some(), "Should parse enters-tapped-unless");
+    }
+
+    #[test]
+    fn enters_tapped_unless_your_turn() {
+        let text = "~ enters tapped unless it's your turn.";
+        let result = parse_replacement_line(text, "Test Card");
+        let def = result.expect("Should parse unless-your-turn");
+        assert_eq!(def.condition, Some(ReplacementCondition::UnlessYourTurn));
+    }
+
+    #[test]
+    fn enters_tapped_unless_first_second_third_turn() {
+        let text = "~ enters tapped unless it's your first, second, or third turn of the game.";
+        let result = parse_replacement_line(text, "Starting Town");
+        let def = result.expect("Should parse unless-turn-of-game");
+        assert_eq!(
+            def.condition,
+            Some(ReplacementCondition::UnlessQuantity {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::TurnsTaken
+                },
+                comparator: Comparator::LE,
+                rhs: QuantityExpr::Fixed { value: 3 },
+                active_player_req: Some(ControllerRef::You),
+            })
+        );
+    }
+
+    #[test]
+    fn enters_tapped_unless_first_or_second_turn() {
+        let text = "~ enters tapped unless it's your first or second turn of the game.";
+        let result = parse_unless_turn_of_game(text, text);
+        assert!(
+            result.is_some(),
+            "Should parse unless-turn-of-game with 2 ordinals"
+        );
+    }
+
+    #[test]
+    fn enters_tapped_unless_sixth_turn() {
+        let text = "~ enters tapped unless it's your sixth turn of the game.";
+        let result = parse_replacement_line(text, "Test Card");
+        let def = result.expect("Should parse single ordinal");
+        assert_eq!(
+            def.condition,
+            Some(ReplacementCondition::UnlessQuantity {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::TurnsTaken
+                },
+                comparator: Comparator::LE,
+                rhs: QuantityExpr::Fixed { value: 6 },
+                active_player_req: Some(ControllerRef::You),
+            })
+        );
     }
 }

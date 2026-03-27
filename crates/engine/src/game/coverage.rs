@@ -496,6 +496,7 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         QuantityRef::PermanentsLeftBattlefieldThisTurn => {
             "permanents left battlefield this turn".into()
         }
+        QuantityRef::TurnsTaken => "turns taken".into(),
     }
 }
 
@@ -2860,6 +2861,7 @@ fn quantity_ref_variant_name(qref: &QuantityRef) -> &'static str {
         QuantityRef::CrimesCommittedThisTurn => "CrimesCommittedThisTurn",
         QuantityRef::LifeGainedThisTurn => "LifeGainedThisTurn",
         QuantityRef::PermanentsLeftBattlefieldThisTurn => "PermanentsLeftBattlefieldThisTurn",
+        QuantityRef::TurnsTaken => "TurnsTaken",
     }
 }
 

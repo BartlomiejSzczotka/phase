@@ -1138,6 +1138,9 @@ pub enum QuantityRef {
     CrimesCommittedThisTurn,
     /// Amount of life the controller has gained this turn.
     LifeGainedThisTurn,
+    /// CR 500: Number of turns this player has taken so far in the game.
+    /// Resolved against the controller/scope player.
+    TurnsTaken,
     /// CR 400.7: Count of permanents the controller owned that left the battlefield this turn.
     /// Used for Revolt ability word ("if a permanent you controlled left the battlefield this turn").
     PermanentsLeftBattlefieldThisTurn,
@@ -3249,6 +3252,23 @@ pub enum ReplacementCondition {
     /// "unless you have two or more opponents"
     /// CR 614.1d — Battlebond lands (Luxury Suite, etc.)
     UnlessMultipleOpponents,
+    /// "unless it's your turn"
+    /// CR 614.1d + CR 500 — Replacement suppressed when active player is the controller.
+    UnlessYourTurn,
+    /// General quantity-comparison condition for replacement effects.
+    /// "unless <quantity condition>" — suppressed when the comparison is true.
+    /// Reuses QuantityExpr + Comparator building blocks.
+    /// `active_player_req` optionally gates the condition on whose turn it is:
+    ///   - `None` → pure quantity check, no turn requirement
+    ///   - `Some(You)` → must be controller's turn ("it's your Nth turn")
+    ///   - `Some(Opponent)` → must be opponent's turn
+    UnlessQuantity {
+        lhs: QuantityExpr,
+        comparator: Comparator,
+        rhs: QuantityExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_player_req: Option<ControllerRef>,
+    },
     /// "unless you revealed a [type] card" / "unless you paid {mana}"
     /// CR 614.1d — Generic condition text that the engine does not yet decompose further.
     /// Using this variant lets the replacement be recognized for coverage while deferring

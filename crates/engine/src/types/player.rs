@@ -70,6 +70,11 @@ pub struct Player {
     #[serde(default)]
     pub drew_from_empty_library: bool,
 
+    /// Number of turns this player has taken (cumulative, never reset).
+    /// Used by "your Nth turn of the game" Oracle conditions (QuantityRef::TurnsTaken).
+    #[serde(default)]
+    pub turns_taken: u32,
+
     // Elimination tracking (N-player support)
     #[serde(default)]
     pub is_eliminated: bool,
@@ -112,6 +117,7 @@ impl Default for Player {
             cards_drawn_this_turn: 0,
             crimes_committed_this_turn: 0,
             drew_from_empty_library: false,
+            turns_taken: 0,
             is_eliminated: false,
             bending_types_this_turn: HashSet::new(),
             player_counters: HashMap::new(),

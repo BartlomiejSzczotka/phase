@@ -387,6 +387,8 @@ fn resolve_ref(
             .get(&controller)
             .copied()
             .unwrap_or(0) as i32,
+        // CR 500: Cumulative turns taken by this player.
+        QuantityRef::TurnsTaken => player.map_or(0, |p| p.turns_taken as i32),
     }
 }
 

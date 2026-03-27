@@ -88,6 +88,9 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
         state.active_player = super::players::next_player(state, state.active_player);
     }
 
+    // CR 500: Track per-player turn count for "your Nth turn of the game" conditions.
+    state.players[state.active_player.0 as usize].turns_taken += 1;
+
     // Reset priority
     state.priority_player = state.active_player;
     state.priority_passes.clear();

@@ -1,8 +1,8 @@
 use indexmap::IndexMap;
 
 use crate::types::ability::{
-    AbilityDefinition, CombatDamageScope, DamageModification, DamageTargetFilter, Effect,
-    PreventionAmount, QuantityExpr, ReplacementCondition, ReplacementMode, ShieldKind,
+    AbilityDefinition, CombatDamageScope, ControllerRef, DamageModification, DamageTargetFilter,
+    Effect, PreventionAmount, QuantityExpr, ReplacementCondition, ReplacementMode, ShieldKind,
     TargetFilter, TargetRef,
 };
 use crate::types::card_type::CoreType;
@@ -1108,6 +1108,31 @@ fn evaluate_replacement_condition(
                 })
                 .count();
             matching_count < *minimum as usize
+        }
+        // CR 614.1d + CR 500: "unless it's your turn" — suppressed on controller's turn.
+        ReplacementCondition::UnlessYourTurn => state.active_player != controller,
+        // CR 614.1d: General quantity comparison — suppressed when comparison is true.
+        ReplacementCondition::UnlessQuantity {
+            lhs,
+            comparator,
+            rhs,
+            active_player_req,
+        } => {
+            // Optional active-player gate: "it's your Nth turn" requires controller's turn;
+            // "it's an opponent's Nth turn" requires opponent's turn; None = no gate.
+            let turn_ok = match active_player_req {
+                Some(ControllerRef::You) => state.active_player == controller,
+                Some(ControllerRef::Opponent) => state.active_player != controller,
+                None => true,
+            };
+            if !turn_ok {
+                return true; // Turn requirement not met → replacement applies
+            }
+            let lhs_val =
+                crate::game::quantity::resolve_quantity(state, lhs, controller, source_id);
+            let rhs_val =
+                crate::game::quantity::resolve_quantity(state, rhs, controller, source_id);
+            !comparator.clone().evaluate(lhs_val, rhs_val)
         }
         // Unrecognized condition — always applies (enters tapped) as a safe default.
         // The engine recognizes the replacement but cannot evaluate the condition,
@@ -2847,6 +2872,109 @@ mod tests {
         assert!(
             candidates.is_empty(),
             "Consumed shield should not be a candidate"
+        );
+    }
+
+    #[test]
+    fn unless_your_turn_untapped_on_controllers_turn() {
+        let state = GameState::new_two_player(42);
+        // active_player is PlayerId(0) by default
+        let cond = ReplacementCondition::UnlessYourTurn;
+        // Controller is active player → replacement suppressed (enters untapped)
+        assert!(
+            !evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state),
+            "Should be suppressed (untapped) on controller's turn"
+        );
+    }
+
+    #[test]
+    fn unless_your_turn_tapped_on_opponents_turn() {
+        let state = GameState::new_two_player(42);
+        let cond = ReplacementCondition::UnlessYourTurn;
+        // Controller is NOT active player → replacement applies (enters tapped)
+        assert!(
+            evaluate_replacement_condition(&cond, PlayerId(1), ObjectId(1), &state),
+            "Should apply (tapped) on opponent's turn"
+        );
+    }
+
+    #[test]
+    fn unless_quantity_turn_count_untapped_within_threshold() {
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(0);
+        state.players[0].turns_taken = 2;
+        let cond = ReplacementCondition::UnlessQuantity {
+            lhs: QuantityExpr::Ref {
+                qty: crate::types::ability::QuantityRef::TurnsTaken,
+            },
+            comparator: crate::types::ability::Comparator::LE,
+            rhs: QuantityExpr::Fixed { value: 3 },
+            active_player_req: Some(ControllerRef::You),
+        };
+        // turns_taken=2 ≤ 3 on controller's turn → suppressed (untapped)
+        assert!(
+            !evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state),
+            "Should be suppressed (untapped) when turns_taken <= threshold"
+        );
+    }
+
+    #[test]
+    fn unless_quantity_turn_count_tapped_beyond_threshold() {
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(0);
+        state.players[0].turns_taken = 4;
+        let cond = ReplacementCondition::UnlessQuantity {
+            lhs: QuantityExpr::Ref {
+                qty: crate::types::ability::QuantityRef::TurnsTaken,
+            },
+            comparator: crate::types::ability::Comparator::LE,
+            rhs: QuantityExpr::Fixed { value: 3 },
+            active_player_req: Some(ControllerRef::You),
+        };
+        // turns_taken=4 > 3 → replacement applies (tapped)
+        assert!(
+            evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state),
+            "Should apply (tapped) when turns_taken > threshold"
+        );
+    }
+
+    #[test]
+    fn unless_quantity_tapped_on_opponents_turn_regardless_of_count() {
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(1); // Opponent's turn
+        state.players[0].turns_taken = 1; // Controller's count is low
+        let cond = ReplacementCondition::UnlessQuantity {
+            lhs: QuantityExpr::Ref {
+                qty: crate::types::ability::QuantityRef::TurnsTaken,
+            },
+            comparator: crate::types::ability::Comparator::LE,
+            rhs: QuantityExpr::Fixed { value: 3 },
+            active_player_req: Some(ControllerRef::You),
+        };
+        // Not controller's turn → replacement applies (tapped) even though turns_taken ≤ 3
+        assert!(
+            evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state),
+            "Should apply (tapped) when not controller's turn"
+        );
+    }
+
+    #[test]
+    fn unless_quantity_no_turn_req_works_on_any_turn() {
+        let mut state = GameState::new_two_player(42);
+        state.active_player = PlayerId(1); // Opponent's turn
+        state.players[0].turns_taken = 2;
+        let cond = ReplacementCondition::UnlessQuantity {
+            lhs: QuantityExpr::Ref {
+                qty: crate::types::ability::QuantityRef::TurnsTaken,
+            },
+            comparator: crate::types::ability::Comparator::LE,
+            rhs: QuantityExpr::Fixed { value: 3 },
+            active_player_req: None, // No turn requirement
+        };
+        // No turn gate, turns_taken=2 ≤ 3 → suppressed regardless of active player
+        assert!(
+            !evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state),
+            "Should be suppressed (untapped) with no turn requirement"
         );
     }
 }
