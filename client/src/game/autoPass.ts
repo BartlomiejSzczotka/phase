@@ -34,11 +34,20 @@ export function shouldAutoPass(
   // so an empty array means the actions haven't arrived (e.g. P2P latency).
   if (legalActions.length === 0) return false;
 
-  // If the only legal action is PassPriority, always auto-pass.
-  // The engine gates combat correctly via has_potential_attackers at BeginCombat,
-  // so the frontend doesn't need to duplicate that check here.
-  const onlyPassAvailable = !legalActions.some((a) => a.type !== "PassPriority");
-  if (onlyPassAvailable) return true;
+  // If no meaningful actions exist beyond PassPriority, auto-pass.
+  // Land-based activated abilities (e.g. Abandoned Air Temple's {3}{W},{T}: put counters)
+  // are not considered meaningful — they're utility abilities the player would only use
+  // deliberately on their own turn, not in response to opponent actions. Full control
+  // mode (checked above) overrides this for players who want to respond with land abilities.
+  const hasMeaningfulAction = legalActions.some((a) => {
+    if (a.type === "PassPriority") return false;
+    if (a.type === "ActivateAbility") {
+      const obj = state.objects[a.data.source_id];
+      if (obj?.card_types.core_types.includes("Land")) return false;
+    }
+    return true;
+  });
+  if (!hasMeaningfulAction) return true;
 
   // MTGA-style: auto-pass when our own spell/ability is on top of the stack.
   // The player almost never wants to respond to their own spell (e.g. counter

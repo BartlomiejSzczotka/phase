@@ -42,6 +42,17 @@ function createCreature(
   };
 }
 
+function createLand(id: number, controller: number) {
+  return {
+    [id]: {
+      id,
+      controller,
+      card_types: { core_types: ["Land"] },
+      tapped: false,
+    },
+  };
+}
+
 function priority(player: number): WaitingFor {
   return { type: "Priority", data: { player } } as WaitingFor;
 }
@@ -63,6 +74,11 @@ const HAS_ABILITY: GameAction[] = [
   { type: "ActivateAbility", data: { source_id: 3, ability_index: 0 } },
 ];
 
+const HAS_LAND_ABILITY: GameAction[] = [
+  { type: "PassPriority" },
+  { type: "ActivateAbility", data: { source_id: 30, ability_index: 1 } },
+];
+
 describe("shouldAutoPass", () => {
   it("auto-passes when only PassPriority is available", () => {
     expect(
@@ -82,10 +98,28 @@ describe("shouldAutoPass", () => {
     ).toBe(false);
   });
 
-  it("does not auto-pass when an ability can be activated", () => {
+  it("does not auto-pass when a non-land ability can be activated", () => {
+    const state = createState({ objects: createCreature(3, 0) });
     expect(
-      shouldAutoPass(createState(), priority(0), [], false, HAS_ABILITY),
+      shouldAutoPass(state, priority(0), [], false, HAS_ABILITY),
     ).toBe(false);
+  });
+
+  it("auto-passes when only land-based abilities are available", () => {
+    const state = createState({ objects: createLand(30, 0) });
+    expect(
+      shouldAutoPass(state, priority(0), [], false, HAS_LAND_ABILITY),
+    ).toBe(true);
+  });
+
+  it("auto-passes when opponent spell on stack and only land ability available", () => {
+    const state = createState({
+      objects: createLand(30, 0),
+      stack: [{ id: 1, card_id: 5, controller: 1 }],
+    });
+    expect(
+      shouldAutoPass(state, priority(0), [], false, HAS_LAND_ABILITY),
+    ).toBe(true);
   });
 
   it("does not auto-pass in full control mode", () => {
