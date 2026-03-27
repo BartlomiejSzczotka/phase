@@ -852,7 +852,7 @@ mod tests {
                 AttackTarget::Player(pid) => {
                     assert_ne!(*pid, PlayerId(0), "Cannot attack self");
                 }
-                AttackTarget::Planeswalker(_) => {} // Valid but unlikely here
+                AttackTarget::Planeswalker(_) | AttackTarget::Battle(_) => {}
             }
         }
     }

@@ -639,11 +639,12 @@ mod tests {
     fn test_static_keyword_handlers_return_correct_modes() {
         let state = setup();
 
-        let test_cases: &[(
+        type StaticHandlerTestCase<'a> = (
             fn(&GameState, &StaticMode, ObjectId) -> Vec<StaticEffect>,
             StaticMode,
-            &str,
-        )] = &[
+            &'a str,
+        );
+        let test_cases: &[StaticHandlerTestCase<'_>] = &[
             (handle_static_vigilance, StaticMode::Vigilance, "Vigilance"),
             (handle_static_menace, StaticMode::Menace, "Menace"),
             (handle_static_reach, StaticMode::Reach, "Reach"),
