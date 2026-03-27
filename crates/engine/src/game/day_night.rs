@@ -52,6 +52,43 @@ pub fn check_day_night_transition(state: &mut GameState, events: &mut Vec<GameEv
     }
 }
 
+/// CR 730.1: Set the game's day/night designation to a specific value.
+/// Triggered by Effect::SetDayNight. Transforms all Daybound/Nightbound permanents
+/// as appropriate for the new designation.
+pub fn resolve_set_day_night(state: &mut GameState, to: DayNight, events: &mut Vec<GameEvent>) {
+    let current = state.day_night;
+    state.day_night = Some(to);
+
+    events.push(GameEvent::DayNightChanged {
+        new_state: match to {
+            DayNight::Day => "Day".to_string(),
+            DayNight::Night => "Night".to_string(),
+        },
+    });
+
+    // Only transform permanents if the designation actually changed
+    if current == Some(to) {
+        return;
+    }
+
+    // Transform all Daybound/Nightbound permanents
+    let to_transform: Vec<_> = state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|id| {
+            state.objects.get(id).is_some_and(|obj| match to {
+                DayNight::Night => obj.has_keyword(&Keyword::Daybound) && !obj.transformed,
+                DayNight::Day => obj.has_keyword(&Keyword::Nightbound) && obj.transformed,
+            })
+        })
+        .collect();
+
+    for id in to_transform {
+        let _ = transform::transform_permanent(state, id, events);
+    }
+}
+
 /// Initialize day/night to Day when a daybound/nightbound card first enters the game.
 ///
 /// CR 702.145d / CR 730.1: The game starts with no day/night designation. Once a permanent

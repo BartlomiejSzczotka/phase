@@ -464,6 +464,7 @@ mod tests {
                 Effect::Mill {
                     count: crate::types::ability::QuantityExpr::Fixed { value: 3 },
                     target: crate::types::ability::TargetFilter::Any,
+                    destination: crate::types::zones::Zone::Graveyard,
                 }
             )),
             0

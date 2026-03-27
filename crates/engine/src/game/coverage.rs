@@ -857,9 +857,16 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             d.push(("count".into(), fmt_quantity(count)));
             d.push(("target".into(), fmt_target(target)));
         }
-        Effect::Mill { count, target } => {
+        Effect::Mill {
+            count,
+            target,
+            destination,
+        } => {
             d.push(("count".into(), fmt_quantity(count)));
             d.push(("target".into(), fmt_target(target)));
+            if *destination != Zone::Graveyard {
+                d.push(("destination".into(), format!("{destination:?}")));
+            }
         }
         Effect::Scry { count } | Effect::Surveil { count } => {
             d.push(("count".into(), fmt_quantity(count)));
@@ -1118,7 +1125,10 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::CollectEvidence { .. }
         | Effect::Endure { .. }
         | Effect::BlightEffect { .. }
-        | Effect::Seek { .. } => {}
+        | Effect::Seek { .. }
+        | Effect::SetLifeTotal { .. }
+        | Effect::SetDayNight { .. }
+        | Effect::GiveControl { .. } => {}
     }
     d
 }

@@ -96,7 +96,7 @@ mod tuple_key_map {
 }
 
 /// Tracks whether the game is in day or night state (CR 730).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum DayNight {
     Day,
     Night,

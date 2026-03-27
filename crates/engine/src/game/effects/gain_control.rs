@@ -47,6 +47,56 @@ pub fn resolve(
     Ok(())
 }
 
+/// CR 110.2: Give control of target permanent to a specified recipient player.
+/// Unlike `resolve` (controller takes), this transfers to a different player
+/// specified by the recipient target.
+pub fn resolve_give(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let duration = ability.duration.clone().unwrap_or(Duration::Permanent);
+
+    // The recipient is the player target; the object is the object target.
+    let recipient_id = ability
+        .targets
+        .iter()
+        .find_map(|t| {
+            if let TargetRef::Player(pid) = t {
+                Some(*pid)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(ability.controller);
+
+    for target in &ability.targets {
+        if let TargetRef::Object(obj_id) = target {
+            if !state.objects.contains_key(obj_id) {
+                return Err(EffectError::ObjectNotFound(*obj_id));
+            }
+
+            // CR 613.3: Create a transient continuous effect at Layer 2 (Control)
+            // with the recipient as the new controller.
+            state.add_transient_continuous_effect(
+                ability.source_id,
+                recipient_id,
+                duration.clone(),
+                TargetFilter::SpecificObject { id: *obj_id },
+                vec![ContinuousModification::ChangeController],
+                None,
+            );
+        }
+    }
+
+    events.push(GameEvent::EffectResolved {
+        kind: EffectKind::GiveControl,
+        source_id: ability.source_id,
+    });
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

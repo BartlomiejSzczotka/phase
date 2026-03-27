@@ -6,16 +6,21 @@ use crate::types::game_state::GameState;
 use crate::types::zones::Zone;
 
 /// CR 701.17a: Mill N — put the top N cards of a player's library into their graveyard.
+/// When `destination` is set to a zone other than Graveyard (e.g., Exile),
+/// cards are moved there instead -- building block for "exile the top N cards" patterns.
 pub fn resolve(
     state: &mut GameState,
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let num_cards: usize = match &ability.effect {
-        Effect::Mill { count, .. } => {
-            resolve_quantity(state, count, ability.controller, ability.source_id) as usize
-        }
-        _ => 1,
+    let (num_cards, destination) = match &ability.effect {
+        Effect::Mill {
+            count, destination, ..
+        } => (
+            resolve_quantity(state, count, ability.controller, ability.source_id) as usize,
+            *destination,
+        ),
+        _ => (1, Zone::Graveyard),
     };
 
     // CR 701.17a: Find target player, or default to controller (self-mill).
@@ -32,9 +37,9 @@ pub fn resolve(
     let count = num_cards.min(player.library.len());
     let cards_to_mill: Vec<_> = player.library[..count].to_vec();
 
-    // Move each card from library to graveyard
+    // Move each card from library to destination zone
     for obj_id in cards_to_mill {
-        zones::move_to_zone(state, obj_id, Zone::Graveyard, events);
+        zones::move_to_zone(state, obj_id, destination, events);
     }
 
     events.push(GameEvent::EffectResolved {
@@ -61,6 +66,7 @@ mod tests {
                     value: num_cards as i32,
                 },
                 target: TargetFilter::Any,
+                destination: Zone::Graveyard,
             },
             targets,
             ObjectId(100),

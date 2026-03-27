@@ -250,6 +250,12 @@ pub fn resolve_effect(
             // They're no-ops at runtime but count as supported for coverage.
             Ok(())
         }
+        Effect::SetLifeTotal { .. } => life::resolve_set_life_total(state, ability, events),
+        Effect::SetDayNight { to } => {
+            crate::game::day_night::resolve_set_day_night(state, *to, events);
+            Ok(())
+        }
+        Effect::GiveControl { .. } => gain_control::resolve_give(state, ability, events),
         Effect::Unimplemented { name, .. } => {
             // Log warning and return Ok (no-op) for unimplemented effects
             eprintln!("Warning: Unimplemented effect: {}", name);

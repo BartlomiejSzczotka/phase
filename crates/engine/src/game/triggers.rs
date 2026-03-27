@@ -1234,7 +1234,9 @@ pub(crate) fn extract_target_filter_from_effect(effect: &Effect) -> Option<&Targ
         | Effect::GivePlayerCounter { target, .. }
         | Effect::AdditionalCombatPhase { target, .. }
         | Effect::Double { target, .. }
-        | Effect::BlightEffect { target, .. } => {
+        | Effect::BlightEffect { target, .. }
+        | Effect::SetLifeTotal { target, .. }
+        | Effect::GiveControl { target, .. } => {
             if matches!(
                 target,
                 TargetFilter::None
@@ -1333,7 +1335,8 @@ pub(crate) fn extract_target_filter_from_effect(effect: &Effect) -> Option<&Targ
         | Effect::Endure { .. }
         | Effect::Seek { .. }
         | Effect::Discard { .. }
-        | Effect::DiscardCard { .. } => None,
+        | Effect::DiscardCard { .. }
+        | Effect::SetDayNight { .. } => None,
     }
 }
 // ---------------------------------------------------------------------------

@@ -1715,6 +1715,11 @@ pub enum Effect {
         count: QuantityExpr,
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
+        /// CR 701.17a: Destination zone for milled cards. Defaults to Graveyard.
+        /// Set to Exile for "exile the top N cards" patterns that reuse Mill's
+        /// top-of-library mechanics with a different destination.
+        #[serde(default = "default_zone_graveyard")]
+        destination: Zone,
     },
     Scry {
         #[serde(default = "default_quantity_one")]
@@ -2297,6 +2302,27 @@ pub enum Effect {
         #[serde(default)]
         enter_tapped: bool,
     },
+    /// CR 119.5: Set a player's life total to a specific number.
+    /// The player gains or loses the necessary amount of life to reach the target.
+    SetLifeTotal {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+        amount: QuantityExpr,
+    },
+    /// CR 730.1: Set the game's day/night designation.
+    /// Triggers daybound/nightbound transformations on all relevant permanents.
+    SetDayNight {
+        to: crate::types::game_state::DayNight,
+    },
+    /// CR 110.2: Give control of target permanent to a specified recipient player.
+    /// Unlike GainControl (controller takes), GiveControl transfers to a different player.
+    GiveControl {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+        /// The player who receives control (usually the targeted opponent).
+        #[serde(default = "default_target_filter_any")]
+        recipient: TargetFilter,
+    },
     /// Semantic marker for effects the engine has not yet implemented a handler for.
     /// Carries zero HashMap -- architecturally distinct from the removed Effect::Other.
     Unimplemented {
@@ -2320,6 +2346,10 @@ fn default_quantity_one() -> QuantityExpr {
 
 fn default_zone_hand() -> Zone {
     Zone::Hand
+}
+
+fn default_zone_graveyard() -> Zone {
+    Zone::Graveyard
 }
 
 fn default_pt_value_zero() -> PtValue {
@@ -2464,6 +2494,9 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Endure { .. } => "Endure",
         Effect::BlightEffect { .. } => "BlightEffect",
         Effect::Seek { .. } => "Seek",
+        Effect::SetLifeTotal { .. } => "SetLifeTotal",
+        Effect::SetDayNight { .. } => "SetDayNight",
+        Effect::GiveControl { .. } => "GiveControl",
         Effect::Unimplemented { name, .. } => name,
     }
 }
@@ -2574,6 +2607,9 @@ pub enum EffectKind {
     Endure,
     BlightEffect,
     Seek,
+    SetLifeTotal,
+    SetDayNight,
+    GiveControl,
     Unimplemented,
     /// Engine-level equip action (not via an Effect handler).
     Equip,
@@ -2685,6 +2721,9 @@ impl From<&Effect> for EffectKind {
             Effect::Endure { .. } => EffectKind::Endure,
             Effect::BlightEffect { .. } => EffectKind::BlightEffect,
             Effect::Seek { .. } => EffectKind::Seek,
+            Effect::SetLifeTotal { .. } => EffectKind::SetLifeTotal,
+            Effect::SetDayNight { .. } => EffectKind::SetDayNight,
+            Effect::GiveControl { .. } => EffectKind::GiveControl,
             Effect::Unimplemented { .. } => EffectKind::Unimplemented,
         }
     }

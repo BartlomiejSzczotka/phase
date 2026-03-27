@@ -213,6 +213,7 @@ pub(super) fn lower_numeric_imperative_ast(ast: NumericImperativeAst) -> Effect 
             count,
             // CR 701.17a: "Mill" with no subject defaults to the controller.
             target: TargetFilter::Controller,
+            destination: Zone::Graveyard,
         },
     }
 }
@@ -904,6 +905,7 @@ pub(super) fn lower_put_ast(ast: PutImperativeAst) -> Effect {
             },
             // CR 701.17a: "Put top N into graveyard" is self-mill.
             target: TargetFilter::Controller,
+            destination: Zone::Graveyard,
         },
         PutImperativeAst::ZoneChange {
             origin,

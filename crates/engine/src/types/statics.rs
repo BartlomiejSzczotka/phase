@@ -196,6 +196,10 @@ pub enum StaticMode {
     NoMaximumHandSize,
     MayPlayAdditionalLand,
 
+    /// CR 104.3a: This player can't win the game (Platinum Angel effect).
+    CantWinTheGame,
+    /// CR 104.3b: This player can't lose the game (Platinum Angel effect).
+    CantLoseTheGame,
     /// Fallback for unrecognized static mode strings.
     Other(String),
 }
@@ -309,6 +313,8 @@ impl fmt::Display for StaticMode {
             StaticMode::BlockRestriction => write!(f, "BlockRestriction"),
             StaticMode::NoMaximumHandSize => write!(f, "NoMaximumHandSize"),
             StaticMode::MayPlayAdditionalLand => write!(f, "MayPlayAdditionalLand"),
+            StaticMode::CantWinTheGame => write!(f, "CantWinTheGame"),
+            StaticMode::CantLoseTheGame => write!(f, "CantLoseTheGame"),
             // Fallback
             StaticMode::Other(s) => write!(f, "{s}"),
         }
@@ -414,6 +420,8 @@ impl FromStr for StaticMode {
             "BlockRestriction" => StaticMode::BlockRestriction,
             "NoMaximumHandSize" => StaticMode::NoMaximumHandSize,
             "MayPlayAdditionalLand" => StaticMode::MayPlayAdditionalLand,
+            "CantWinTheGame" => StaticMode::CantWinTheGame,
+            "CantLoseTheGame" => StaticMode::CantLoseTheGame,
             // Parameterized
             other => {
                 if let Some(inner) = other

@@ -647,6 +647,36 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         );
     }
 
+    // --- "can't win the game" / "can't lose the game" (CR 104.3a/b) ---
+    if tp.contains("can't win the game") {
+        let affected = if tp.contains("your opponents") || tp.starts_with("opponents") {
+            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent))
+        } else if tp.starts_with("you ") || tp.contains("you can't") {
+            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You))
+        } else {
+            TargetFilter::Typed(TypedFilter::default())
+        };
+        return Some(
+            StaticDefinition::new(StaticMode::CantWinTheGame)
+                .affected(affected)
+                .description(text.to_string()),
+        );
+    }
+    if tp.contains("can't lose the game") {
+        let affected = if tp.contains("your opponents") || tp.starts_with("opponents") {
+            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent))
+        } else if tp.starts_with("you ") || tp.contains("you can't") {
+            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You))
+        } else {
+            TargetFilter::Typed(TypedFilter::default())
+        };
+        return Some(
+            StaticDefinition::new(StaticMode::CantLoseTheGame)
+                .affected(affected)
+                .description(text.to_string()),
+        );
+    }
+
     // --- "as though it/they had flash" (CR 702.8d) ---
     if tp.contains("as though it had flash") || tp.contains("as though they had flash") {
         return Some(

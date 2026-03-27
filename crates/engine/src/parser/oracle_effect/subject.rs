@@ -3,9 +3,10 @@ use super::types::*;
 use super::{resolve_it_pronoun, ParseContext};
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, ContinuousModification, ControllerRef, Duration, Effect,
-    FilterProp, GainLifePlayer, PtValue, QuantityExpr, QuantityRef, StaticDefinition, TargetFilter,
-    TypedFilter,
+    FilterProp, GainLifePlayer, PtValue, QuantityExpr, QuantityRef, RoundingMode, StaticDefinition,
+    TargetFilter, TypedFilter,
 };
+use crate::types::game_state::DayNight;
 use crate::types::statics::StaticMode;
 
 use super::super::oracle_static::parse_continuous_modifications;
@@ -485,6 +486,18 @@ fn build_become_clause(
     let duration = duration.or(Some(Duration::Permanent));
     let become_text = predicate.strip_prefix("become ")?.trim();
 
+    // CR 119.5: "life total becomes N" — set life total to a specific number.
+    // Must intercept before parse_animation_spec which tokenizes each word as a subtype.
+    if let Some(clause) = try_parse_set_life_total(become_text, &application) {
+        return Some(clause);
+    }
+
+    // CR 730.1: "it becomes night" / "it becomes day" — set game day/night designation.
+    // Must intercept before parse_animation_spec which produces AddSubtype("Night"/"Day").
+    if let Some(clause) = try_parse_set_day_night(become_text) {
+        return Some(clause);
+    }
+
     // CR 205.3 / CR 305.7: "become the [type] of your choice" — player chooses a subtype.
     // Must intercept before parse_animation_spec which rejects "of your choice" patterns.
     if let Some(clause) = try_parse_become_choice(become_text, &application, duration.clone()) {
@@ -532,6 +545,64 @@ fn build_become_clause(
         distribute: None,
         multi_target: None,
     })
+}
+
+/// CR 119.5: Parse "life total becomes N" into SetLifeTotal effect.
+/// Handles: "half that player's starting life total", numeric amounts,
+/// "their starting life total", and other quantity expressions.
+fn try_parse_set_life_total(
+    become_text: &str,
+    application: &SubjectApplication,
+) -> Option<ParsedEffectClause> {
+    let lower = become_text.to_lowercase();
+
+    // Parse the amount expression
+    let amount = if let Some(rest) = lower.strip_prefix("half ") {
+        // "half their starting life total" / "half that player's starting life total"
+        if rest.contains("starting life total") {
+            QuantityExpr::HalfRounded {
+                inner: Box::new(QuantityExpr::Ref {
+                    qty: QuantityRef::StartingLifeTotal,
+                }),
+                rounding: RoundingMode::Down,
+            }
+        } else {
+            return None;
+        }
+    } else if lower.contains("starting life total") {
+        QuantityExpr::Ref {
+            qty: QuantityRef::StartingLifeTotal,
+        }
+    } else if let Some((n, _)) = parse_number(&lower) {
+        QuantityExpr::Fixed { value: n as i32 }
+    } else {
+        return None;
+    };
+
+    Some(ParsedEffectClause {
+        effect: Effect::SetLifeTotal {
+            target: application.target.clone().unwrap_or(TargetFilter::Any),
+            amount,
+        },
+        duration: None,
+        sub_ability: None,
+        distribute: None,
+        multi_target: None,
+    })
+}
+
+/// CR 730.1: Parse "night" / "day" after "becomes" into SetDayNight effect.
+fn try_parse_set_day_night(become_text: &str) -> Option<ParsedEffectClause> {
+    let lower = become_text.to_lowercase();
+    let to = if lower == "night" {
+        DayNight::Night
+    } else if lower == "day" {
+        DayNight::Day
+    } else {
+        return None;
+    };
+
+    Some(super::parsed_clause(Effect::SetDayNight { to }))
 }
 
 /// CR 205.3 / CR 305.7: Parse "become the creature type of your choice" and similar

@@ -626,6 +626,7 @@ fn try_parse_equal_to_quantity_effect(tp: TextPair) -> Option<ParsedEffectClause
             count: QuantityExpr::Ref { qty },
             // CR 701.17a: No subject → controller mills.
             target: TargetFilter::Controller,
+            destination: Zone::Graveyard,
         }));
     }
     if let Some(rest) = tp.strip_prefix("draw cards equal to ") {

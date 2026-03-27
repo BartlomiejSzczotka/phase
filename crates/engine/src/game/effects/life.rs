@@ -271,6 +271,67 @@ pub fn resolve_lose(
     Ok(())
 }
 
+/// CR 119.5: Set a player's life total to a specific number.
+/// The player gains or loses the necessary amount of life to reach the target.
+pub fn resolve_set_life_total(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let amount = match &ability.effect {
+        Effect::SetLifeTotal { amount, .. } => {
+            crate::game::quantity::resolve_quantity_with_targets(state, amount, ability)
+        }
+        _ => return Err(EffectError::MissingParam("SetLifeTotal amount".to_string())),
+    };
+
+    let target_player_id = ability
+        .targets
+        .iter()
+        .find_map(|t| {
+            if let TargetRef::Player(pid) = t {
+                Some(*pid)
+            } else {
+                None
+            }
+        })
+        .unwrap_or(ability.controller);
+
+    let player = state
+        .players
+        .iter_mut()
+        .find(|p| p.id == target_player_id)
+        .ok_or(EffectError::PlayerNotFound)?;
+
+    let current_life = player.life;
+    let diff = amount - current_life;
+
+    // CR 119.5: If the new total is higher, the player gains the difference.
+    // If lower, the player loses the difference.
+    if diff > 0 {
+        player.life = amount;
+        player.life_gained_this_turn += diff as u32;
+    } else if diff < 0 {
+        player.life = amount;
+        player.life_lost_this_turn += (-diff) as u32;
+    }
+    state.layers_dirty = true;
+
+    if diff != 0 {
+        events.push(GameEvent::LifeChanged {
+            player_id: target_player_id,
+            amount: diff,
+        });
+    }
+
+    events.push(GameEvent::EffectResolved {
+        kind: EffectKind::from(&ability.effect),
+        source_id: ability.source_id,
+    });
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
