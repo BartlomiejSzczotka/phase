@@ -124,19 +124,20 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
     }
 
     if let Some(after_then) = trimmed.strip_prefix("then ") {
-        if starts_clause_text(after_then) {
+        let after_then_lower = after_then.to_ascii_lowercase();
+        if starts_clause_text(after_then) || starts_with_damage_clause(&after_then_lower) {
             return Some((ClauseBoundary::Then, whitespace_len + "then ".len()));
         }
     }
 
-    if starts_clause_text(trimmed) {
+    if starts_clause_text(trimmed) || starts_with_damage_clause(&trimmed_lower) {
         return Some((ClauseBoundary::Comma, whitespace_len));
     }
 
     // Strip "and " connector before checking clause start
     // Handles patterns like ", and get {E}{E}" or ", and draw a card"
     if let Some(after_and) = trimmed_lower.strip_prefix("and ") {
-        if starts_clause_text(after_and) {
+        if starts_clause_text(after_and) || starts_with_damage_clause(after_and) {
             return Some((ClauseBoundary::Comma, whitespace_len));
         }
     }
@@ -194,6 +195,7 @@ pub(super) fn starts_clause_text(text: &str) -> bool {
         "gain control ",
         "gain ",
         "get ",
+        "have ",
         "look at ",
         "lose ",
         "mill ",
@@ -238,8 +240,11 @@ pub(super) fn starts_bare_and_clause(text: &str) -> bool {
         "draw ",
         "discard ",
         "exile ",
-        "gain ",
-        "lose ",
+        // "gain " / "lose " — only the base form (imperative), NOT the conjugated
+        // "gains"/"loses" form which is a shared-subject continuation
+        // (e.g., "gets +2/+2 and gains flying" must NOT split at "gains").
+        "gain control ",
+        "have ",
         "mill ",
         "put ",
         "return ",
@@ -268,7 +273,17 @@ pub(super) fn starts_bare_and_clause(text: &str) -> bool {
         "its controller ",
         "their controller ",
     ];
-    prefixes.iter().any(|prefix| lower.starts_with(prefix)) || starts_with_damage_clause(&lower)
+    if prefixes.iter().any(|prefix| lower.starts_with(prefix)) {
+        return true;
+    }
+    // "gain N" / "lose N" — imperative with numeric argument (e.g., "gain 3 life",
+    // "lose 2 life") is a clause start, but conjugated "gains"/"loses" is NOT.
+    if (lower.starts_with("gain ") && !lower.starts_with("gains "))
+        || (lower.starts_with("lose ") && !lower.starts_with("loses "))
+    {
+        return true;
+    }
+    starts_with_damage_clause(&lower)
 }
 
 /// Checks if text starts with a subject-prefixed damage verb.

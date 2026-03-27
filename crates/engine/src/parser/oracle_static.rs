@@ -205,24 +205,9 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         return Some(def);
     }
 
-    // --- "Other [Subtype] creatures you control get/have..." ---
-    // e.g. "Other Zombies you control get +1/+1"
-    if let Some(rest) = tp.lower.strip_prefix("other ") {
-        if let Some(result) = parse_typed_you_control(&tp.original[6..], rest, true) {
-            return Some(result);
-        }
-    }
-
-    // --- "[Subtype] creatures you control get/have..." ---
-    // e.g. "Elf creatures you control get +1/+1"
-    // Skip for "other" prefix — already handled above with is_other=true.
-    if !tp.starts_with("other ") {
-        if let Some(result) = parse_typed_you_control(tp.original, tp.lower, false) {
-            return Some(result);
-        }
-    }
-
     // --- "Creatures you control [with counter condition] get/have ..." ---
+    // Must come BEFORE parse_typed_you_control to prevent core type words like
+    // "Creatures" from falling through to the subtype path (A1 fix: 162+ cards).
     if tp.starts_with("creatures you control ") {
         let after_prefix = &text[22..];
         let (filter, predicate_text) =
@@ -272,6 +257,23 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
             };
         if let Some(def) = parse_continuous_gets_has(predicate_text, filter, &text) {
             return Some(def);
+        }
+    }
+
+    // --- "Other [Subtype] creatures you control get/have..." ---
+    // e.g. "Other Zombies you control get +1/+1"
+    if let Some(rest) = tp.lower.strip_prefix("other ") {
+        if let Some(result) = parse_typed_you_control(&tp.original[6..], rest, true) {
+            return Some(result);
+        }
+    }
+
+    // --- "[Subtype] creatures you control get/have..." ---
+    // e.g. "Elf creatures you control get +1/+1"
+    // Skip for "other" prefix — already handled above with is_other=true.
+    if !tp.starts_with("other ") {
+        if let Some(result) = parse_typed_you_control(tp.original, tp.lower, false) {
+            return Some(result);
         }
     }
 

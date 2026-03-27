@@ -1,3 +1,5 @@
+use super::oracle_modal::split_short_label_prefix;
+use super::oracle_quantity::parse_for_each_clause;
 use super::oracle_target::{parse_target, parse_type_phrase};
 use super::oracle_util::parse_mana_symbols;
 use super::oracle_util::parse_number;
@@ -120,11 +122,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     // "Pay N life" / "N life"
     if (lower.starts_with("pay ") || lower.ends_with(" life")) && lower.contains("life") {
         let rest = lower.strip_prefix("pay ").unwrap_or(&lower);
-        if let Some(n) = rest
-            .split_whitespace()
-            .next()
-            .and_then(|w| w.parse::<u32>().ok())
-        {
+        if let Some((n, _)) = parse_number(rest) {
             return AbilityCost::PayLife { amount: n };
         }
     }
@@ -148,7 +146,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
                 self_ref: false,
             };
         }
-        if let Ok(n) = rest.split_whitespace().next().unwrap_or("").parse::<u32>() {
+        if let Some((n, _)) = parse_number(rest) {
             return AbilityCost::Discard {
                 count: n,
                 filter: None,
@@ -200,22 +198,32 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
 
     // "Blight N"
     if let Some(rest) = lower.strip_prefix("blight ") {
-        let count = rest
-            .split_whitespace()
-            .next()
-            .and_then(|w| w.parse::<u32>().ok())
-            .unwrap_or(1);
+        let count = parse_number(rest).map(|(n, _)| n).unwrap_or(1);
         return AbilityCost::Blight { count };
     }
 
     // "Remove N {type} counter(s) from ~"
     if lower.starts_with("remove ") && lower.contains("counter") {
-        let words: Vec<&str> = text.split_whitespace().collect();
-        if words.len() >= 4 {
-            let count = words[1].parse::<u32>().unwrap_or(1);
-            let counter_type = words[2].to_string();
+        let after_remove = &lower["remove ".len()..];
+        if let Some((count, rest)) = parse_number(after_remove) {
+            let counter_type = rest
+                .trim()
+                .split_whitespace()
+                .next()
+                .unwrap_or("")
+                .to_string();
             return AbilityCost::RemoveCounter {
                 count,
+                counter_type,
+                target: None,
+            };
+        }
+        // Fallback: "remove a/an {type} counter from ~"
+        let words: Vec<&str> = text.split_whitespace().collect();
+        if words.len() >= 4 {
+            let counter_type = words[2].to_string();
+            return AbilityCost::RemoveCounter {
+                count: 1,
                 counter_type,
                 target: None,
             };
@@ -389,6 +397,15 @@ pub(crate) fn try_parse_cost_reduction(text: &str) -> Option<CostReduction> {
                 .strip_prefix("less to cast for each ")
         })?;
 
+    // Try parse_for_each_clause first (handles counters, player counts, etc.),
+    // then fall back to parse_type_phrase for standard object count patterns.
+    if let Some(qty) = parse_for_each_clause(after_less) {
+        return Some(CostReduction {
+            amount_per,
+            count: QuantityExpr::Ref { qty },
+        });
+    }
+
     // Parse the condition as a type phrase
     let (filter, remainder) = parse_type_phrase(after_less);
     if !remainder.trim().is_empty() {
@@ -512,32 +529,13 @@ fn try_parse_return_to_hand_cost(rest_lower: &str, _rest_original: &str) -> Opti
 /// These are ability words or ticket costs that precede a standard cost.
 fn try_strip_ability_word_cost(text: &str) -> Option<AbilityCost> {
     let lower = text.to_lowercase();
-    let ability_words = [
-        "Cohort",
-        "Boast",
-        "Metalcraft",
-        "Exhaust",
-        "Max speed",
-        "Renew",
-        "Delirium",
-        "Blow Up",
-        "GOOOOAAAALLL!",
-        "Smear Campaign",
-        "Web Support",
-        "Kerplunk",
-        "Gestalt Mode",
-        "Brimstone",
-        "Mesmerize",
-        "Wings of Light",
-        "Jecht Beam",
-    ];
-    for word in &ability_words {
-        if let Some(rest) = text.strip_prefix(word) {
-            let rest = strip_em_dash(rest)?;
-            let cost = parse_single_cost(rest.trim());
-            if !matches!(cost, AbilityCost::Unimplemented { .. }) {
-                return Some(cost);
-            }
+    // Use split_short_label_prefix to generically strip ability word prefixes
+    // (e.g. "Cohort — {T}", "Boast — {1}", "Exhaust — {3}") without
+    // maintaining a hardcoded ability word list.
+    if let Some((_label, rest)) = split_short_label_prefix(text, 4) {
+        let cost = parse_single_cost(rest.trim());
+        if !matches!(cost, AbilityCost::Unimplemented { .. }) {
+            return Some(cost);
         }
     }
     // Ticket costs: "{TK}{TK} — {T}", "{TK}{TK}{TK} — {3}"
