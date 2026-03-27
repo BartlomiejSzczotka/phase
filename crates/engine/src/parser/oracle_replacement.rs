@@ -564,7 +564,9 @@ fn parse_enters_with_counters(
         AbilityKind::Spell,
         Effect::PutCounter {
             counter_type,
-            count: count as i32,
+            count: QuantityExpr::Fixed {
+                value: count as i32,
+            },
             target: TargetFilter::SelfRef,
         },
     );
@@ -1212,7 +1214,7 @@ fn parse_enters_tapped_unless_generic(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ability::ShieldKind;
+    use crate::types::ability::{QuantityExpr, ShieldKind};
 
     #[test]
     fn replacement_enters_tapped() {
@@ -1553,7 +1555,7 @@ mod tests {
             *def.execute.as_ref().unwrap().effect,
             Effect::PutCounter {
                 ref counter_type,
-                count: 12,
+                count: QuantityExpr::Fixed { value: 12 },
                 ..
             } if counter_type == "P1P1"
         ));
@@ -1571,7 +1573,7 @@ mod tests {
             *def.execute.as_ref().unwrap().effect,
             Effect::PutCounter {
                 ref counter_type,
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 ..
             } if counter_type == "P1P1"
         ));
@@ -1600,7 +1602,7 @@ mod tests {
             *def.execute.as_ref().unwrap().effect,
             Effect::PutCounter {
                 ref counter_type,
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 ..
             } if counter_type == "P1P1"
         ));

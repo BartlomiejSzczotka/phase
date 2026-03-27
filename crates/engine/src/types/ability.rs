@@ -1660,8 +1660,8 @@ pub enum Effect {
     },
     AddCounter {
         counter_type: String,
-        #[serde(default = "default_one_i32")]
-        count: i32,
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },
@@ -1755,8 +1755,8 @@ pub enum Effect {
     /// CR 701.20e + CR 608.2c: Look at top N cards (shown only to the looking player),
     /// select some to keep per the effect's instructions, rest go elsewhere.
     Dig {
-        #[serde(default = "default_one")]
-        count: u32,
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
         /// Kept-card destination override (None = Hand).
         #[serde(default)]
         destination: Option<Zone>,
@@ -1839,8 +1839,8 @@ pub enum Effect {
     },
     PutCounter {
         counter_type: String,
-        #[serde(default = "default_one_i32")]
-        count: i32,
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },

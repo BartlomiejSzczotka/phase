@@ -1307,7 +1307,13 @@ fn extract_etb_counters(execute: Option<&AbilityDefinition>) -> Vec<(String, u32
             counter_type,
             count,
             ..
-        } => vec![(counter_type.clone(), *count as u32)],
+        } => {
+            let n = match count {
+                QuantityExpr::Fixed { value } => (*value).max(0) as u32,
+                _ => 1, // Dynamic counts fall back to 1 for ETB counters
+            };
+            vec![(counter_type.clone(), n)]
+        }
         _ => Vec::new(),
     }
 }
