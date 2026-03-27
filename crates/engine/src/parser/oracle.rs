@@ -20,7 +20,9 @@ use super::oracle_keyword::{
     extract_keyword_line, is_keyword_cost_line, parse_keyword_from_oracle,
 };
 use super::oracle_level::parse_level_blocks;
-use super::oracle_modal::{lower_oracle_block, parse_oracle_block, strip_ability_word};
+use super::oracle_modal::{
+    lower_oracle_block, parse_oracle_block, strip_ability_word, strip_ability_word_with_name,
+};
 use super::oracle_replacement::parse_replacement_line;
 use super::oracle_saga::{is_saga_chapter, parse_saga_chapters};
 use super::oracle_static::parse_static_line;
@@ -77,6 +79,78 @@ impl ActivatedConstraintAst {
 ///
 /// Splits on newlines, strips reminder text, then classifies each line
 /// according to a priority table (keywords, enchant, equip, activated,
+/// Map a known ability word name to a typed `StaticCondition`.
+/// Returns `None` for unrecognized ability words (Landfall, Constellation, etc.
+/// don't have implicit conditions — their trigger text encodes the condition).
+///
+/// Covers:
+/// - Threshold: 7+ cards in graveyard
+/// - Metalcraft: 3+ artifacts you control
+/// - Delirium: 4+ card types in graveyard
+/// - Spell mastery: 2+ instant/sorcery in graveyard
+/// - Revolt: a permanent you controlled left the battlefield this turn
+fn ability_word_to_condition(word: &str) -> Option<crate::types::ability::StaticCondition> {
+    use crate::types::ability::{
+        ControllerRef, CountScope, QuantityExpr, QuantityRef, StaticCondition, TargetFilter,
+        TypeFilter, TypedFilter, ZoneRef,
+    };
+
+    match word {
+        "threshold" => Some(StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::GraveyardSize,
+            },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 7 },
+        }),
+        "metalcraft" => Some(StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::ObjectCount {
+                    filter: TargetFilter::Typed(
+                        TypedFilter::new(TypeFilter::Artifact).controller(ControllerRef::You),
+                    ),
+                },
+            },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 3 },
+        }),
+        "delirium" => Some(StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::CardTypesInGraveyards {
+                    scope: CountScope::Controller,
+                },
+            },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 4 },
+        }),
+        "spell mastery" => Some(StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::ZoneCardCount {
+                    zone: ZoneRef::Graveyard,
+                    card_types: vec![TypeFilter::Instant, TypeFilter::Sorcery],
+                    scope: CountScope::Controller,
+                },
+            },
+            comparator: Comparator::GE,
+            rhs: QuantityExpr::Fixed { value: 2 },
+        }),
+        "revolt" => {
+            // Revolt: "a permanent you controlled left the battlefield this turn"
+            // Uses the per-turn zone-change tracking on GameState.
+            // Mapped to a QuantityComparison checking permanents_left_battlefield > 0.
+            // The tracking field already exists as part of the general zone-change tracking.
+            Some(StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::PermanentsLeftBattlefieldThisTurn,
+                },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            })
+        }
+        _ => None,
+    }
+}
+
 /// triggered, static, replacement, spell effect, modal, loyalty, etc.).
 ///
 /// `mtgjson_keyword_names` are the raw lowercased keyword names from MTGJSON
@@ -624,8 +698,11 @@ pub fn parse_oracle_text(
             continue;
         }
 
-        // Priority 14: Ability word — strip prefix and re-classify effect
-        if let Some(effect_text) = strip_ability_word(&line) {
+        // Priority 14: Ability word — strip prefix and re-classify effect.
+        // B7: Known ability words (Threshold, Metalcraft, Delirium, Spell mastery, Revolt)
+        // are mapped to typed conditions and attached to the resulting definition.
+        if let Some((aw_name, effect_text)) = strip_ability_word_with_name(&line) {
+            let aw_condition = ability_word_to_condition(&aw_name);
             let effect_lower = effect_text.to_lowercase();
 
             // Try as trigger
@@ -647,7 +724,13 @@ pub fn parse_oracle_text(
             // Try as static
             if is_static_pattern(&effect_lower) {
                 let effect_static = normalize_self_refs_for_static(&effect_text, card_name);
-                if let Some(static_def) = parse_static_line(&effect_static) {
+                if let Some(mut static_def) = parse_static_line(&effect_static) {
+                    // B7: Attach ability word condition to static definition
+                    if static_def.condition.is_none() {
+                        if let Some(cond) = aw_condition.clone() {
+                            static_def.condition = Some(cond);
+                        }
+                    }
                     result.statics.push(static_def);
                     i += 1;
                     continue;

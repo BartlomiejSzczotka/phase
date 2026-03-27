@@ -120,6 +120,7 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
     state.players_who_had_artifact_etb_this_turn.clear();
     state.cards_left_graveyard_this_turn.clear();
     state.creature_died_this_turn = false;
+    state.permanents_left_battlefield_this_turn.clear();
     // CR 500.8: Clear any leftover extra phases from the previous turn.
     state.extra_phases.clear();
     // CR 700.14: Reset cumulative mana spent on spells for Expend triggers.

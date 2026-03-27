@@ -680,9 +680,7 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
     let named_offset = lower[pos..].len() - remaining_named.len();
     if let Some(name_text) = remaining_named.strip_prefix("named ") {
         // Name extends to end-of-clause markers: comma, period, "you control", "that", or end.
-        let name_end = name_text
-            .find([',', '.'])
-            .unwrap_or(name_text.len());
+        let name_end = name_text.find([',', '.']).unwrap_or(name_text.len());
         let raw_name = name_text[..name_end].trim();
         if !raw_name.is_empty() {
             // Reconstruct original-case name from the same position in `text`

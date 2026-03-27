@@ -95,6 +95,28 @@ pub(crate) fn parse_level_blocks(lines: &[&str]) -> (Vec<StaticDefinition>, Vec<
                     continue;
                 }
 
+                // B10: Try to consume as an ability line within the LEVEL block.
+                // Ability lines (activated, triggered, or static) that appear within
+                // a LEVEL block should be gated by the same HasCounters condition.
+                // Mark the line as consumed so it is not re-parsed at the top level,
+                // and record it for level-gated processing.
+                // Heuristic: if the line looks like a colon-activated ability, a trigger,
+                // or a known static pattern, consume it as part of this LEVEL block.
+                let looks_like_ability = next_lower.contains(": ")
+                    || next_lower.starts_with("when")
+                    || next_lower.starts_with("whenever")
+                    || next_lower.starts_with("at ")
+                    || next_lower.ends_with("be blocked")
+                    || next_lower.contains("can't ")
+                    || next_lower.contains("has ")
+                    || next_lower.contains("gets ");
+                if looks_like_ability {
+                    consumed_indices.push(i);
+                    description_parts.push(next.to_string());
+                    i += 1;
+                    continue;
+                }
+
                 // Not a recognized level block line — stop consuming
                 break;
             }

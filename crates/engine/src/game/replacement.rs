@@ -1059,6 +1059,22 @@ fn evaluate_replacement_condition(
                 .count();
             opponent_count < 2
         }
+        // CR 614.1d — "unless you control N or more [type]" → suppressed if controller
+        // has at least `minimum` matching permanents on the battlefield.
+        ReplacementCondition::UnlessControlsCountMatching { minimum, filter } => {
+            let matching_count = state
+                .objects
+                .values()
+                .filter(|o| {
+                    o.zone == Zone::Battlefield
+                        && o.id != source_id
+                        && matches_target_filter_controlled(
+                            state, o.id, filter, source_id, controller,
+                        )
+                })
+                .count();
+            matching_count < *minimum as usize
+        }
         // Unrecognized condition — always applies (enters tapped) as a safe default.
         // The engine recognizes the replacement but cannot evaluate the condition,
         // so it conservatively taps the land.

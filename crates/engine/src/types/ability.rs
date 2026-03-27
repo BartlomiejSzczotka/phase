@@ -1138,6 +1138,9 @@ pub enum QuantityRef {
     CrimesCommittedThisTurn,
     /// Amount of life the controller has gained this turn.
     LifeGainedThisTurn,
+    /// CR 400.7: Count of permanents the controller owned that left the battlefield this turn.
+    /// Used for Revolt ability word ("if a permanent you controlled left the battlefield this turn").
+    PermanentsLeftBattlefieldThisTurn,
 }
 
 /// CR 107.2: Rounding direction for "half X" expressions in Magic.
@@ -3231,6 +3234,11 @@ pub enum ReplacementCondition {
     /// The filter MUST have `ControllerRef::You` pre-set by the parser.
     /// Covers: basic lands, legendary creatures, Mount/Vehicle, etc.
     UnlessControlsMatching { filter: TargetFilter },
+    /// "unless you control N or more [type phrase]"
+    /// CR 614.1d — Quantity-gated ETB replacement condition.
+    /// The filter MUST have `ControllerRef::You` pre-set by the parser.
+    /// Used for temple lands ("two or more other lands") and similar patterns.
+    UnlessControlsCountMatching { minimum: u32, filter: TargetFilter },
     /// "unless a player has N or less life"
     /// CR 614.1d — Bond lands (Abandoned Campground, etc.)
     UnlessPlayerLifeAtMost { amount: u32 },
