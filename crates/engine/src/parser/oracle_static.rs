@@ -1389,6 +1389,25 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
         }
     }
 
+    // CR 110.5: "~ is untapped" → Not(SourceIsTapped)
+    // Also handles "this creature is untapped", "this permanent is untapped"
+    {
+        let is_untapped_self_ref = tp.lower.ends_with("is untapped")
+            && (tp.lower.starts_with("~ ") || tp.lower.contains(" is untapped"));
+        if is_untapped_self_ref {
+            return Some(StaticCondition::Not {
+                condition: Box::new(StaticCondition::SourceIsTapped),
+            });
+        }
+    }
+
+    // CR 611.2b: "~ is tapped" → SourceIsTapped (direct, no negation needed)
+    if tp.lower.ends_with("is tapped")
+        && (tp.lower.starts_with("~ ") || tp.lower.contains(" is tapped"))
+    {
+        return Some(StaticCondition::SourceIsTapped);
+    }
+
     // "the chosen color is [color]"
     if let Some(color_name) = tp.lower.strip_prefix("the chosen color is ") {
         use crate::types::mana::ManaColor;

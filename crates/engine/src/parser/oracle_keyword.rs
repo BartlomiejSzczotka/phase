@@ -136,37 +136,84 @@ pub(crate) fn extract_keyword_line(
 
 /// CR 702.21a: Parse a non-mana ward cost from the em-dash remainder.
 /// Handles "pay N life", "discard a card", "sacrifice a permanent/creature/etc."
+/// Also handles compound costs like "{2}, Pay 2 life" → Compound([Mana, PayLife]).
 fn parse_ward_cost(cost_text: &str) -> Option<Keyword> {
     let lower = cost_text.trim().trim_end_matches('.').to_lowercase();
 
+    // CR 702.21a: Detect compound costs — comma-separated sub-costs.
+    // Only split on ", " that is NOT inside mana braces {}.
+    // Example: "{2}, Pay 2 life" → ["{2}", "Pay 2 life"]
+    if lower.contains(", ") {
+        let parts = split_outside_braces(&lower);
+        if parts.len() > 1 {
+            let sub_costs: Vec<WardCost> = parts
+                .iter()
+                .filter_map(|part| parse_ward_cost_single(part.trim()))
+                .collect();
+            if sub_costs.len() == parts.len() {
+                return Some(Keyword::Ward(WardCost::Compound(sub_costs)));
+            }
+        }
+    }
+
+    // Single cost
+    let cost = parse_ward_cost_single(&lower)?;
+    Some(Keyword::Ward(cost))
+}
+
+/// Parse a single ward cost component (not compound).
+fn parse_ward_cost_single(lower: &str) -> Option<WardCost> {
     // "pay N life"
     if let Some(rest) = lower.strip_prefix("pay ") {
         if let Some(life_str) = rest.strip_suffix(" life") {
             if let Ok(n) = life_str.trim().parse::<i32>() {
-                return Some(Keyword::Ward(WardCost::PayLife(n)));
+                return Some(WardCost::PayLife(n));
             }
         }
     }
 
     // "discard a card" / "discard two cards" etc.
     if lower.starts_with("discard") {
-        return Some(Keyword::Ward(WardCost::DiscardCard));
+        return Some(WardCost::DiscardCard);
     }
 
     // "sacrifice a permanent" / "sacrifice a creature" / etc.
     if lower.starts_with("sacrifice") {
-        return Some(Keyword::Ward(WardCost::SacrificeAPermanent));
+        return Some(WardCost::SacrificeAPermanent);
     }
 
     // CR 702.21a + CR 701.67: "waterbend {N}" — ward cost paid via waterbend mechanic.
     if let Some(rest) = lower.strip_prefix("waterbend") {
         let cost = crate::database::mtgjson::parse_mtgjson_mana_cost(rest.trim());
-        return Some(Keyword::Ward(WardCost::Waterbend(cost)));
+        return Some(WardCost::Waterbend(cost));
     }
 
     // Fall back to mana cost parsing
-    let cost = crate::database::mtgjson::parse_mtgjson_mana_cost(cost_text.trim());
-    Some(Keyword::Ward(WardCost::Mana(cost)))
+    let cost = crate::database::mtgjson::parse_mtgjson_mana_cost(lower.trim());
+    Some(WardCost::Mana(cost))
+}
+
+/// Split a string on ", " but only when the comma is outside mana braces {}.
+fn split_outside_braces(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0u32;
+    let mut start = 0;
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b',' if depth == 0 => {
+                parts.push(text[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(text[start..].trim());
+    parts
 }
 
 /// Parse a keyword from Oracle text format (natural language) into a `Keyword`.

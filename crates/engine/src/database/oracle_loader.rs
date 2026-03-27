@@ -5,7 +5,9 @@ use std::path::{Path, PathBuf};
 use crate::database::card_db::CardDatabase;
 use crate::database::legality::normalize_legalities;
 use crate::database::mtgjson::load_atomic_cards;
-use crate::database::synthesis::{build_oracle_face, layout_faces, map_layout, LayoutKind};
+use crate::database::synthesis::{
+    build_oracle_face, build_oracle_face_multi, layout_faces, map_layout, LayoutKind,
+};
 use crate::types::card::{CardFace, CardLayout, CardRules};
 
 /// Load a card database from MTGJSON, running the Oracle text parser on each card.
@@ -25,8 +27,10 @@ pub fn load_from_mtgjson(mtgjson_path: &Path) -> Result<CardDatabase, Box<dyn Er
         let layout_kind = map_layout(&faces[0].layout);
 
         if faces.len() >= 2 {
-            let face_a = build_oracle_face(&faces[0], oracle_id.clone());
-            let face_b = build_oracle_face(&faces[1], oracle_id);
+            // B8: Multi-face cards use parser-extracted keywords only to prevent
+            // MTGJSON cross-face keyword leakage (e.g., Saga back-face Flying on front).
+            let face_a = build_oracle_face_multi(&faces[0], oracle_id.clone());
+            let face_b = build_oracle_face_multi(&faces[1], oracle_id);
             let mut legalities_by_name = HashMap::new();
             let legalities_a = normalize_legalities(&faces[0].legalities);
             if !legalities_a.is_empty() {

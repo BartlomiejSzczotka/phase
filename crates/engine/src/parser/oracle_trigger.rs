@@ -446,6 +446,53 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
         }
     }
 
+    // CR 508.1a: "if you attacked this turn" / "if you've attacked this turn"
+    for pattern in &[
+        "if you attacked this turn",
+        "if you've attacked this turn",
+        "if you attacked with a creature this turn",
+    ] {
+        if let Some(pos) = tp.find(pattern) {
+            return (
+                strip_condition_clause(text, pos, pattern.len()),
+                Some(TriggerCondition::AttackedThisTurn),
+            );
+        }
+    }
+
+    // CR 601.2: "if you cast a [type] spell this turn" / "if you've cast a [type] spell this turn"
+    for prefix in &[
+        "if you cast a ",
+        "if you've cast a ",
+        "if you cast an ",
+        "if you've cast an ",
+    ] {
+        if let Some(pos) = tp.find(prefix) {
+            let after = &lower[pos + prefix.len()..];
+            if let Some(spell_pos) = after.find(" spell this turn") {
+                let type_text = &after[..spell_pos];
+                let (filter, leftover) = parse_type_phrase(type_text);
+                if leftover.trim().is_empty() && filter != TargetFilter::Any {
+                    let clause_len = prefix.len() + spell_pos + " spell this turn".len();
+                    return (
+                        strip_condition_clause(text, pos, clause_len),
+                        Some(TriggerCondition::CastSpellThisTurn {
+                            filter: Some(filter),
+                        }),
+                    );
+                }
+            }
+            // Fallback: "if you cast a spell this turn" (no type filter)
+            if after.starts_with("spell this turn") {
+                let clause_len = prefix.len() + "spell this turn".len();
+                return (
+                    strip_condition_clause(text, pos, clause_len),
+                    Some(TriggerCondition::CastSpellThisTurn { filter: None }),
+                );
+            }
+        }
+    }
+
     (text.to_string(), None)
 }
 
@@ -467,19 +514,24 @@ fn strip_condition_clause(text: &str, clause_start: usize, clause_len: usize) ->
     }
 }
 
-/// Parse "if you control N or more creatures" → (condition, end_byte_offset)
+/// Parse "if you control N or more [type]" → (condition, end_byte_offset).
+/// Generalized: uses `parse_type_phrase` to handle any permanent type, not just creatures.
 fn parse_control_count_condition(lower: &str) -> Option<(TriggerCondition, usize)> {
     let start = lower.find("if you control ")?;
     let after_prefix = &lower[start + "if you control ".len()..];
     let (n, rest) = parse_number(after_prefix)?;
-    if rest.starts_with("or more creatures") {
-        let end = start
-            + "if you control ".len()
-            + (after_prefix.len() - rest.len())
-            + "or more creatures".len();
-        return Some((TriggerCondition::ControlCreatures { minimum: n }, end));
+    let or_more = rest.strip_prefix("or more ")?;
+    let (filter, leftover) = parse_type_phrase(or_more);
+    if filter == TargetFilter::Any {
+        return None;
     }
-    None
+    let consumed_type_len = or_more.len() - leftover.len();
+    let end = start
+        + "if you control ".len()
+        + (after_prefix.len() - rest.len())
+        + "or more ".len()
+        + consumed_type_len;
+    Some((TriggerCondition::ControlCount { minimum: n, filter }, end))
 }
 
 /// Parse "N or more life this turn" → N, or "life this turn" → 1
@@ -3140,7 +3192,7 @@ mod tests {
         assert_eq!(def.valid_target, Some(TargetFilter::Controller));
     }
 
-    // --- ControlCreatures condition tests ---
+    // --- ControlCount condition tests ---
 
     #[test]
     fn trigger_leonin_vanguard_control_creature_count() {
@@ -3153,7 +3205,10 @@ mod tests {
         assert_eq!(def.constraint, Some(TriggerConstraint::OnlyDuringYourTurn));
         assert_eq!(
             def.condition,
-            Some(TriggerCondition::ControlCreatures { minimum: 3 })
+            Some(TriggerCondition::ControlCount {
+                minimum: 3,
+                filter: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
+            })
         );
         // Effect: pump self +1/+1 with life gain sub_ability
         let exec = def.execute.as_ref().expect("should have execute");
@@ -3185,7 +3240,10 @@ mod tests {
         assert_eq!(cleaned, "~ gets +1/+1 until end of turn");
         assert_eq!(
             cond,
-            Some(TriggerCondition::ControlCreatures { minimum: 3 })
+            Some(TriggerCondition::ControlCount {
+                minimum: 3,
+                filter: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
+            })
         );
     }
 

@@ -272,6 +272,7 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             FilterProp::Targets { filter } => {
                 parts.push(format!("targets {}", fmt_target(filter)));
             }
+            FilterProp::Named { name } => parts.push(format!("named \"{name}\"")),
         }
     }
     if let Some(ctrl) = &tf.controller {
@@ -492,6 +493,9 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         }
         QuantityRef::CrimesCommittedThisTurn => "crimes committed this turn".into(),
         QuantityRef::LifeGainedThisTurn => "life gained this turn".into(),
+        QuantityRef::PermanentsLeftBattlefieldThisTurn => {
+            "permanents left battlefield this turn".into()
+        }
     }
 }
 
@@ -2855,6 +2859,7 @@ fn quantity_ref_variant_name(qref: &QuantityRef) -> &'static str {
         QuantityRef::EnteredThisTurn { .. } => "EnteredThisTurn",
         QuantityRef::CrimesCommittedThisTurn => "CrimesCommittedThisTurn",
         QuantityRef::LifeGainedThisTurn => "LifeGainedThisTurn",
+        QuantityRef::PermanentsLeftBattlefieldThisTurn => "PermanentsLeftBattlefieldThisTurn",
     }
 }
 

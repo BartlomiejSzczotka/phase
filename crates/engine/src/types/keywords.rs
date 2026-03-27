@@ -102,6 +102,9 @@ pub enum WardCost {
     /// CR 702.21a: Ward cost paid via waterbend — tap artifacts/creatures to help pay.
     /// Distinct from Mana because waterbend has unique payment semantics (CR 701.67).
     Waterbend(ManaCost),
+    /// CR 702.21a: Compound ward cost — multiple costs that must all be paid.
+    /// Used for "Ward—{2}, Pay 2 life" where comma-separated sub-costs are conjoined.
+    Compound(Vec<WardCost>),
 }
 
 /// All MTG keywords as typed enum variants.

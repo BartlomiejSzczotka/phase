@@ -403,25 +403,47 @@ pub fn synthesize_all(face: &mut CardFace) {
 /// Build a `CardFace` from MTGJSON data, running the Oracle text parser and all synthesis.
 /// Both `oracle_loader.rs` and `oracle_gen.rs` call this to ensure identical processing.
 pub fn build_oracle_face(mtgjson: &AtomicCard, oracle_id: Option<String>) -> CardFace {
+    build_oracle_face_inner(mtgjson, oracle_id, false)
+}
+
+/// Build an Oracle face for a multi-face card, skipping MTGJSON keywords
+/// to prevent cross-face keyword leakage (B8: Saga back-face keyword contamination).
+pub fn build_oracle_face_multi(mtgjson: &AtomicCard, oracle_id: Option<String>) -> CardFace {
+    build_oracle_face_inner(mtgjson, oracle_id, true)
+}
+
+fn build_oracle_face_inner(
+    mtgjson: &AtomicCard,
+    oracle_id: Option<String>,
+    skip_mtgjson_keywords: bool,
+) -> CardFace {
     let card_type = build_card_type(mtgjson);
-    // Raw MTGJSON keyword names (lowercased) for keyword-only line detection
+    // Raw MTGJSON keyword names (lowercased) for keyword-only line detection.
+    // Still needed for keyword line detection even when skipping MTGJSON keywords.
     let mtgjson_keyword_names: Vec<String> = mtgjson
         .keywords
         .as_ref()
         .map(|kws| kws.iter().map(|s| s.to_ascii_lowercase()).collect())
         .unwrap_or_default();
 
-    // Parsed keywords from MTGJSON (filtering Unknown entries like bare "Protection")
-    let mut keywords: Vec<Keyword> = mtgjson
-        .keywords
-        .as_ref()
-        .map(|kws| {
-            kws.iter()
-                .map(|s| s.parse::<Keyword>().unwrap())
-                .filter(|k| !matches!(k, Keyword::Unknown(_)))
-                .collect()
-        })
-        .unwrap_or_default();
+    // B8: For multi-face cards, skip MTGJSON-provided keywords entirely.
+    // MTGJSON duplicates keywords across both faces of Transform/DFC cards,
+    // causing the front face to incorrectly gain back-face keywords.
+    // Parser-extracted keywords from `extract_keyword_line` are face-specific.
+    let mut keywords: Vec<Keyword> = if skip_mtgjson_keywords {
+        Vec::new()
+    } else {
+        mtgjson
+            .keywords
+            .as_ref()
+            .map(|kws| {
+                kws.iter()
+                    .map(|s| s.parse::<Keyword>().unwrap())
+                    .filter(|k| !matches!(k, Keyword::Unknown(_)))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
 
     let oracle_text = mtgjson.text.as_deref().unwrap_or("");
     let face_name = mtgjson.face_name.as_deref().unwrap_or(&mtgjson.name);

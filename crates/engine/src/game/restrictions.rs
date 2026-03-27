@@ -233,6 +233,14 @@ pub fn record_zone_change(
         state.creature_died_this_turn = true;
     }
 
+    // CR 400.7: Track when any permanent leaves the battlefield (Revolt tracking).
+    if from == Zone::Battlefield {
+        *state
+            .permanents_left_battlefield_this_turn
+            .entry(obj.controller)
+            .or_insert(0) += 1;
+    }
+
     if to == Zone::Battlefield {
         record_battlefield_entry(state, object_id);
     }

@@ -252,6 +252,8 @@ fn matches_filter_prop(
             let threshold = resolve_quantity(state, value, controller, source.id);
             cmc == threshold
         }
+        // CR 201.2: Name matching is exact (case-insensitive comparison).
+        FilterProp::Named { name } => obj.name.eq_ignore_ascii_case(name),
         // SameName: matches objects with the same name as the tracked card from context.
         // At runtime, this checks against the source object's name (the event context card).
         FilterProp::SameName => {

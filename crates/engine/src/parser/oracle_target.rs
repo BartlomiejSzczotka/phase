@@ -705,6 +705,25 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
         }
     }
 
+    // CR 201.2: "named [card name]" suffix — filter by exact card name.
+    // Handles "creature named X", "cards named X", "named X" patterns.
+    let remaining_named = lower[pos..].trim_start();
+    let named_offset = lower[pos..].len() - remaining_named.len();
+    if let Some(name_text) = remaining_named.strip_prefix("named ") {
+        // Name extends to end-of-clause markers: comma, period, "you control", "that", or end.
+        let name_end = name_text.find([',', '.']).unwrap_or(name_text.len());
+        let raw_name = name_text[..name_end].trim();
+        if !raw_name.is_empty() {
+            // Reconstruct original-case name from the same position in `text`
+            let orig_offset = pos + named_offset + "named ".len();
+            let orig_name = text[orig_offset..orig_offset + raw_name.len()].trim();
+            properties.push(FilterProp::Named {
+                name: orig_name.to_string(),
+            });
+            pos += named_offset + "named ".len() + name_end;
+        }
+    }
+
     let filter = TargetFilter::Typed(TypedFilter {
         type_filters: [
             card_type.map(|ct| vec![ct]).unwrap_or_default(),

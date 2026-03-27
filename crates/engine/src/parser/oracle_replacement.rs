@@ -467,6 +467,7 @@ fn canonical_land_subtype(raw: &str) -> Option<String> {
 /// Parse general "enters tapped unless you control a [type phrase]" pattern.
 /// CR 614.1d — Handles basic lands, legendary creatures, Mount/Vehicle, etc.
 /// Uses `parse_type_phrase` to parse the type expression after article stripping.
+/// Also handles "unless you control N or more [type]" quantity prefix patterns.
 fn parse_unless_controls_typed(
     norm_lower: &str,
     original_text: &str,
@@ -478,6 +479,28 @@ fn parse_unless_controls_typed(
     }
 
     let rest = strip_after(norm_lower, "unless you control ")?;
+
+    // Try "N or more [type]" pattern first (e.g., "two or more other lands")
+    if let Some((minimum, type_text)) = try_parse_quantity_prefix(rest) {
+        let (filter, leftover) = parse_type_phrase(type_text);
+        if !leftover.trim().trim_end_matches('.').is_empty() || filter == TargetFilter::Any {
+            return None;
+        }
+        let filter = inject_controller_you(filter);
+        return Some(
+            ReplacementDefinition::new(ReplacementEvent::Moved)
+                .execute(AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::Tap {
+                        target: TargetFilter::SelfRef,
+                    },
+                ))
+                .valid_card(TargetFilter::SelfRef)
+                .description(original_text.to_string())
+                .condition(ReplacementCondition::UnlessControlsCountMatching { minimum, filter }),
+        );
+    }
+
     // Strip leading article — parse_type_phrase does NOT handle "a "/"an "
     let rest = rest.trim_start_matches("a ").trim_start_matches("an ");
 
@@ -508,6 +531,14 @@ fn parse_unless_controls_typed(
             .description(original_text.to_string())
             .condition(ReplacementCondition::UnlessControlsMatching { filter }),
     )
+}
+
+/// Try to parse "N or more " quantity prefix before a type phrase.
+/// Returns (minimum, remainder) if matched.
+fn try_parse_quantity_prefix(text: &str) -> Option<(u32, &str)> {
+    let (n, rest) = parse_number(text)?;
+    let type_text = rest.strip_prefix("or more ")?;
+    Some((n, type_text))
 }
 
 /// Inject `ControllerRef::You` into a `TargetFilter`, handling both `Typed` and `Or` variants.

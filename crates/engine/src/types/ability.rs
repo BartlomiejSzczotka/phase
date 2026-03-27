@@ -878,6 +878,12 @@ pub enum FilterProp {
     CmcEQ {
         value: QuantityExpr,
     },
+    /// CR 201.2: Matches objects whose card name equals the given name.
+    /// Used for "cards named [X]" and "named [X]" filter patterns.
+    /// Name comparison is exact per CR 201.2a (case-insensitive at evaluation).
+    Named {
+        name: String,
+    },
     /// Matches objects with the same name as a previously-referenced card.
     /// Used for "search your library for a card with that name" patterns.
     SameName,
@@ -1132,6 +1138,9 @@ pub enum QuantityRef {
     CrimesCommittedThisTurn,
     /// Amount of life the controller has gained this turn.
     LifeGainedThisTurn,
+    /// CR 400.7: Count of permanents the controller owned that left the battlefield this turn.
+    /// Used for Revolt ability word ("if a permanent you controlled left the battlefield this turn").
+    PermanentsLeftBattlefieldThisTurn,
 }
 
 /// CR 107.2: Rounding direction for "half X" expressions in Magic.
@@ -1267,6 +1276,12 @@ pub enum StaticCondition {
     /// True when ANY sub-condition is satisfied.
     Or {
         conditions: Vec<StaticCondition>,
+    },
+    /// True when the inner condition is NOT satisfied.
+    /// Follows the existing And/Or combinator pattern.
+    /// Used for "as long as ~ is untapped" → `Not(SourceIsTapped)`.
+    Not {
+        condition: Box<StaticCondition>,
     },
     /// CR 122.1: True when the source object has at least `minimum` (and at most `maximum`,
     /// if specified) counters of the given type. Used for level-up ranges (CR 710.3).
@@ -3129,7 +3144,8 @@ pub enum TriggerCondition {
     LostLife,
     /// "if you descended this turn" (a permanent card was put into your graveyard)
     Descended,
-    /// "if you control N or more creatures"
+    /// Deprecated: Use `ControlCount { minimum, filter }` instead.
+    /// Kept for backward compatibility with serialized card data.
     ControlCreatures { minimum: u32 },
     /// "if you control a [type]" — general control presence check.
     ControlsType { filter: TargetFilter },
@@ -3178,6 +3194,18 @@ pub enum TriggerCondition {
     /// CR 603.4: "if you have N or more life" — intervening-if condition checking life total.
     LifeTotalGE { minimum: i32 },
 
+    /// CR 603.4: "if you control N or more [type]" — generalized control count condition.
+    /// Subsumes ControlCreatures for any permanent type (artifacts, enchantments, lands, etc.).
+    ControlCount { minimum: u32, filter: TargetFilter },
+
+    /// CR 603.4: "if you attacked this turn" — true when the controller declared attackers
+    /// during this turn's combat phase.
+    AttackedThisTurn,
+
+    /// CR 603.4: "if you cast a [type] spell this turn" — true when the controller cast
+    /// a spell matching the optional filter this turn.
+    CastSpellThisTurn { filter: Option<TargetFilter> },
+
     // -- Combinators --
     /// All conditions must be true ("if you gained and lost life this turn")
     And { conditions: Vec<TriggerCondition> },
@@ -3206,6 +3234,11 @@ pub enum ReplacementCondition {
     /// The filter MUST have `ControllerRef::You` pre-set by the parser.
     /// Covers: basic lands, legendary creatures, Mount/Vehicle, etc.
     UnlessControlsMatching { filter: TargetFilter },
+    /// "unless you control N or more [type phrase]"
+    /// CR 614.1d — Quantity-gated ETB replacement condition.
+    /// The filter MUST have `ControllerRef::You` pre-set by the parser.
+    /// Used for temple lands ("two or more other lands") and similar patterns.
+    UnlessControlsCountMatching { minimum: u32, filter: TargetFilter },
     /// "unless a player has N or less life"
     /// CR 614.1d — Bond lands (Abandoned Campground, etc.)
     UnlessPlayerLifeAtMost { amount: u32 },

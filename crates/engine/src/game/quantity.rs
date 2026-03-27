@@ -381,6 +381,12 @@ fn resolve_ref(
         }
         // Life gained this turn — uses tracked counter on player.
         QuantityRef::LifeGainedThisTurn => player.map_or(0, |p| p.life_gained_this_turn as i32),
+        // CR 400.7: Count of permanents owned by controller that left the battlefield this turn.
+        QuantityRef::PermanentsLeftBattlefieldThisTurn => state
+            .permanents_left_battlefield_this_turn
+            .get(&controller)
+            .copied()
+            .unwrap_or(0) as i32,
     }
 }
 

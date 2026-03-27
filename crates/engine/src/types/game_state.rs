@@ -1070,6 +1070,10 @@ pub struct GameState {
     pub cards_left_graveyard_this_turn: HashMap<PlayerId, u32>,
     #[serde(default)]
     pub creature_died_this_turn: bool,
+    /// CR 400.7: Count of permanents per player that left the battlefield this turn.
+    /// Used for Revolt ("if a permanent you controlled left the battlefield this turn").
+    #[serde(default)]
+    pub permanents_left_battlefield_this_turn: HashMap<PlayerId, u32>,
     /// CR 700.14: Cumulative mana spent on spells this turn per player (for Expend triggers).
     #[serde(default)]
     pub mana_spent_on_spells_this_turn: HashMap<PlayerId, u32>,
@@ -1294,6 +1298,7 @@ impl GameState {
             players_who_had_artifact_etb_this_turn: HashSet::new(),
             cards_left_graveyard_this_turn: HashMap::new(),
             creature_died_this_turn: false,
+            permanents_left_battlefield_this_turn: HashMap::new(),
             mana_spent_on_spells_this_turn: HashMap::new(),
             modal_modes_chosen_this_turn: HashSet::new(),
             modal_modes_chosen_this_game: HashSet::new(),
@@ -1439,6 +1444,8 @@ impl PartialEq for GameState {
                 == other.players_who_had_artifact_etb_this_turn
             && self.cards_left_graveyard_this_turn == other.cards_left_graveyard_this_turn
             && self.creature_died_this_turn == other.creature_died_this_turn
+            && self.permanents_left_battlefield_this_turn
+                == other.permanents_left_battlefield_this_turn
             && self.modal_modes_chosen_this_turn == other.modal_modes_chosen_this_turn
             && self.modal_modes_chosen_this_game == other.modal_modes_chosen_this_game
             && self.pending_continuation == other.pending_continuation

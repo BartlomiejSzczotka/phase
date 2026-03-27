@@ -375,6 +375,12 @@ pub(super) fn strip_ability_word(line: &str) -> Option<String> {
     split_short_label_prefix(line, 4).map(|(_, rest)| rest.to_string())
 }
 
+/// Strip an ability word prefix and also return the ability word name (lowercased).
+/// Used for mapping known ability words to typed conditions (B7).
+pub(super) fn strip_ability_word_with_name(line: &str) -> Option<(String, String)> {
+    split_short_label_prefix(line, 4).map(|(name, rest)| (name.to_lowercase(), rest.to_string()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

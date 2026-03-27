@@ -124,6 +124,9 @@ pub(crate) fn evaluate_condition(
         StaticCondition::Or { conditions } => conditions
             .iter()
             .any(|c| evaluate_condition(state, c, controller, source_id)),
+        StaticCondition::Not { condition } => {
+            !evaluate_condition(state, condition, controller, source_id)
+        }
         // CR 122.1: Check counters on the source object, with optional maximum.
         StaticCondition::HasCounters {
             counter_type,

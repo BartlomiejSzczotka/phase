@@ -70,6 +70,17 @@ fn ward_cost_to_unless_cost(ward_cost: &WardCost) -> UnlessCost {
         WardCost::Waterbend(mana_cost) => UnlessCost::Fixed {
             cost: mana_cost.clone(),
         },
+        // CR 702.21a: Compound ward cost — use the first mana component as the unless cost.
+        // Full compound cost resolution deferred to ward cost payment integration.
+        WardCost::Compound(costs) => {
+            if let Some(first) = costs.first() {
+                ward_cost_to_unless_cost(first)
+            } else {
+                UnlessCost::Fixed {
+                    cost: crate::types::mana::ManaCost::zero(),
+                }
+            }
+        }
     }
 }
 
@@ -985,12 +996,86 @@ pub(crate) fn check_trigger_condition(
         }
         // CR 603.4: "if it's not your turn"
         TriggerCondition::NotYourTurn => state.active_player != controller,
+        // CR 603.4: "if you control N or more [type]" — generalized control count.
+        TriggerCondition::ControlCount { minimum, filter } => {
+            let count = state
+                .battlefield
+                .iter()
+                .filter(|id| {
+                    state.objects.get(id).is_some_and(|obj| {
+                        obj.controller == controller
+                            && crate::game::filter::matches_target_filter(
+                                state,
+                                **id,
+                                filter,
+                                source_id.unwrap_or(ObjectId(0)),
+                            )
+                    })
+                })
+                .count();
+            count >= *minimum as usize
+        }
+        // CR 508.1a: "if you attacked this turn" — true if controller declared attackers.
+        TriggerCondition::AttackedThisTurn => {
+            state.players_attacked_this_turn.contains(&controller)
+        }
+        // CR 603.4: "if you cast a [type] spell this turn" — check per-player cast history.
+        TriggerCondition::CastSpellThisTurn { filter } => {
+            match filter {
+                None => state
+                    .spells_cast_this_turn_by_player
+                    .get(&controller)
+                    .is_some_and(|spells| !spells.is_empty()),
+                Some(tf) => {
+                    // Check if any spell cast this turn matches the filter.
+                    // Per-player history tracks CoreTypes; for general filter matching
+                    // we map TypeFilter variants to CoreType for comparison.
+                    state
+                        .spells_cast_this_turn_by_player
+                        .get(&controller)
+                        .is_some_and(|spells| {
+                            spells.iter().any(|core_types| match tf {
+                                TargetFilter::Typed(typed) => {
+                                    typed.type_filters.iter().all(|tf_item| {
+                                        type_filter_matches_core_types(tf_item, core_types)
+                                    })
+                                }
+                                _ => true,
+                            })
+                        })
+                }
+            }
+        }
         TriggerCondition::And { conditions } => conditions
             .iter()
             .all(|c| check_trigger_condition(state, c, controller, source_id)),
         TriggerCondition::Or { conditions } => conditions
             .iter()
             .any(|c| check_trigger_condition(state, c, controller, source_id)),
+    }
+}
+
+/// Check if a TypeFilter variant matches a list of CoreTypes from spell history.
+fn type_filter_matches_core_types(
+    tf: &crate::types::ability::TypeFilter,
+    core_types: &[CoreType],
+) -> bool {
+    use crate::types::ability::TypeFilter;
+    match tf {
+        TypeFilter::Creature => core_types.contains(&CoreType::Creature),
+        TypeFilter::Instant => core_types.contains(&CoreType::Instant),
+        TypeFilter::Sorcery => core_types.contains(&CoreType::Sorcery),
+        TypeFilter::Artifact => core_types.contains(&CoreType::Artifact),
+        TypeFilter::Enchantment => core_types.contains(&CoreType::Enchantment),
+        TypeFilter::Planeswalker => core_types.contains(&CoreType::Planeswalker),
+        TypeFilter::Land => core_types.contains(&CoreType::Land),
+        TypeFilter::Battle => core_types.contains(&CoreType::Battle),
+        TypeFilter::Non(inner) => !type_filter_matches_core_types(inner, core_types),
+        TypeFilter::AnyOf(filters) => filters
+            .iter()
+            .any(|f| type_filter_matches_core_types(f, core_types)),
+        TypeFilter::Permanent | TypeFilter::Card | TypeFilter::Any => true,
+        TypeFilter::Subtype(_) => true, // Subtype matching not available from CoreType history
     }
 }
 
