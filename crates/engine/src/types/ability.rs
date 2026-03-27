@@ -3591,6 +3591,11 @@ pub struct ReplacementDefinition {
     /// Marks this replacement as consumed (one-shot). Skipped by find_applicable_replacements.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub is_consumed: bool,
+    /// CR 615.1a: Damage redirection target filter — when present, prevented damage is
+    /// redirected to matching target instead (e.g., Pariah: "all damage that would be dealt
+    /// to you is dealt to ~ instead" → SelfRef, meaning the enchanted permanent/source).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect_target: Option<TargetFilter>,
 }
 
 impl ReplacementDefinition {
@@ -3613,6 +3618,7 @@ impl ReplacementDefinition {
             quantity_modification: None,
             token_owner_scope: None,
             is_consumed: false,
+            redirect_target: None,
         }
     }
 
@@ -3686,6 +3692,12 @@ impl ReplacementDefinition {
 
     pub fn token_owner_scope(mut self, scope: ControllerRef) -> Self {
         self.token_owner_scope = Some(scope);
+        self
+    }
+
+    /// CR 615.1a: Set the redirect target filter for damage redirection replacements.
+    pub fn redirect_target(mut self, target: TargetFilter) -> Self {
+        self.redirect_target = Some(target);
         self
     }
 }
