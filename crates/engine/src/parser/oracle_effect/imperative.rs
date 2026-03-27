@@ -2060,6 +2060,27 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parse_gain_life_equal_to_life_lost() {
+        let text = "gain life equal to the life you've lost this turn";
+        let lower = text.to_lowercase();
+        let result = parse_numeric_imperative_ast(text, &lower);
+        match result {
+            Some(NumericImperativeAst::GainLife { amount }) => {
+                assert!(
+                    matches!(
+                        amount,
+                        QuantityExpr::Ref {
+                            qty: crate::types::ability::QuantityRef::LifeLostThisTurn
+                        }
+                    ),
+                    "Expected LifeLostThisTurn, got {amount:?}"
+                );
+            }
+            other => panic!("Expected GainLife, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn parse_earthbend_verb() {
         let text = "Earthbend 3 target land";
         let lower = text.to_lowercase();

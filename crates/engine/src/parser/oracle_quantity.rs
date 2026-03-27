@@ -359,6 +359,14 @@ pub(crate) fn parse_event_context_quantity(text: &str) -> Option<QuantityExpr> {
         }
     }
 
+    // Fall back to parse_quantity_ref for named quantity patterns
+    // (e.g., "the life you've lost this turn" → LifeLostThisTurn).
+    // Strip leading "the " article before matching.
+    let stripped = lower.strip_prefix("the ").unwrap_or(lower);
+    if let Some(qty) = parse_quantity_ref(stripped) {
+        return Some(QuantityExpr::Ref { qty });
+    }
+
     None
 }
 
@@ -713,6 +721,26 @@ mod tests {
         assert_eq!(
             parse_event_context_quantity("the number of creatures you control"),
             None
+        );
+    }
+
+    #[test]
+    fn parse_event_context_quantity_life_lost_this_turn() {
+        assert_eq!(
+            parse_event_context_quantity("the life you've lost this turn"),
+            Some(QuantityExpr::Ref {
+                qty: QuantityRef::LifeLostThisTurn
+            })
+        );
+    }
+
+    #[test]
+    fn parse_event_context_quantity_life_gained_this_turn() {
+        assert_eq!(
+            parse_event_context_quantity("the life you gained this turn"),
+            Some(QuantityExpr::Ref {
+                qty: QuantityRef::LifeGainedThisTurn
+            })
         );
     }
 

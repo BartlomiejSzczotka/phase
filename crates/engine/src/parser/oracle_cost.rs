@@ -206,12 +206,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     if lower.starts_with("remove ") && lower.contains("counter") {
         let after_remove = &lower["remove ".len()..];
         if let Some((count, rest)) = parse_number(after_remove) {
-            let counter_type = rest
-                .trim()
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .to_string();
+            let counter_type = rest.split_whitespace().next().unwrap_or("").to_string();
             return AbilityCost::RemoveCounter {
                 count,
                 counter_type,
