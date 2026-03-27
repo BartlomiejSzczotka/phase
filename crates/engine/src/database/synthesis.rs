@@ -486,6 +486,15 @@ pub fn build_oracle_face(mtgjson: &AtomicCard, oracle_id: Option<String>) -> Car
         keywords.retain(|kw| !matches!(kw, Keyword::Partner(PartnerType::Generic)));
     }
 
+    // CR 702.11c: Deduplicate — if any HexproofFrom variant exists, remove
+    // bare Hexproof (MTGJSON sends both "Hexproof" and "Hexproof from [quality]").
+    let has_hexproof_from = keywords
+        .iter()
+        .any(|kw| matches!(kw, Keyword::HexproofFrom(_)));
+    if has_hexproof_from {
+        keywords.retain(|kw| !matches!(kw, Keyword::Hexproof));
+    }
+
     let mana_cost = mtgjson
         .mana_cost
         .as_deref()

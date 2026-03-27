@@ -25,6 +25,15 @@ pub(crate) fn parse_quantity_ref(text: &str) -> Option<QuantityRef> {
         "your life total" => Some(QuantityRef::LifeTotal),
         "your starting life total" => Some(QuantityRef::StartingLifeTotal),
         "cards in your graveyard" => Some(QuantityRef::GraveyardSize),
+        // CR 118.4: Life change tracking — amount of life lost/gained this turn.
+        "life you lost this turn"
+        | "life you've lost this turn"
+        | "total life you lost this turn"
+        | "total life you've lost this turn" => Some(QuantityRef::LifeLostThisTurn),
+        "life you gained this turn"
+        | "life you've gained this turn"
+        | "total life you gained this turn"
+        | "total life you've gained this turn" => Some(QuantityRef::LifeGainedThisTurn),
         // CR 208.3: Self-referential P/T lookups.
         "~'s power" | "its power" | "this creature's power" => Some(QuantityRef::SelfPower),
         "~'s toughness" | "its toughness" | "this creature's toughness" => {
@@ -348,6 +357,14 @@ pub(crate) fn parse_event_context_quantity(text: &str) -> Option<QuantityExpr> {
                 return Some(QuantityExpr::Ref { qty });
             }
         }
+    }
+
+    // Fall back to parse_quantity_ref for named quantity patterns
+    // (e.g., "the life you've lost this turn" → LifeLostThisTurn).
+    // Strip leading "the " article before matching.
+    let stripped = lower.strip_prefix("the ").unwrap_or(lower);
+    if let Some(qty) = parse_quantity_ref(stripped) {
+        return Some(QuantityExpr::Ref { qty });
     }
 
     None
@@ -704,6 +721,26 @@ mod tests {
         assert_eq!(
             parse_event_context_quantity("the number of creatures you control"),
             None
+        );
+    }
+
+    #[test]
+    fn parse_event_context_quantity_life_lost_this_turn() {
+        assert_eq!(
+            parse_event_context_quantity("the life you've lost this turn"),
+            Some(QuantityExpr::Ref {
+                qty: QuantityRef::LifeLostThisTurn
+            })
+        );
+    }
+
+    #[test]
+    fn parse_event_context_quantity_life_gained_this_turn() {
+        assert_eq!(
+            parse_event_context_quantity("the life you gained this turn"),
+            Some(QuantityExpr::Ref {
+                qty: QuantityRef::LifeGainedThisTurn
+            })
         );
     }
 

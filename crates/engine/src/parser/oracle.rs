@@ -372,6 +372,9 @@ pub fn parse_oracle_text(
             if !constraints.restrictions.is_empty() {
                 def.activation_restrictions = constraints.restrictions;
             }
+            // CR 601.2f: Extract self-referential cost reduction from the terminal
+            // sub_ability in the chain (may be several levels deep).
+            extract_cost_reduction_from_chain(&mut def);
             i += 1;
             // CR 706: If the activated ability ends with "roll a dN", consume
             // subsequent d20 table lines and attach them as die result branches.

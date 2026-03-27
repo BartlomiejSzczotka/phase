@@ -205,24 +205,9 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         return Some(def);
     }
 
-    // --- "Other [Subtype] creatures you control get/have..." ---
-    // e.g. "Other Zombies you control get +1/+1"
-    if let Some(rest) = tp.lower.strip_prefix("other ") {
-        if let Some(result) = parse_typed_you_control(&tp.original[6..], rest, true) {
-            return Some(result);
-        }
-    }
-
-    // --- "[Subtype] creatures you control get/have..." ---
-    // e.g. "Elf creatures you control get +1/+1"
-    // Skip for "other" prefix — already handled above with is_other=true.
-    if !tp.starts_with("other ") {
-        if let Some(result) = parse_typed_you_control(tp.original, tp.lower, false) {
-            return Some(result);
-        }
-    }
-
     // --- "Creatures you control [with counter condition] get/have ..." ---
+    // Must come BEFORE parse_typed_you_control to prevent core type words like
+    // "Creatures" from falling through to the subtype path (A1 fix: 162+ cards).
     if tp.starts_with("creatures you control ") {
         let after_prefix = &text[22..];
         let (filter, predicate_text) =
@@ -272,6 +257,23 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
             };
         if let Some(def) = parse_continuous_gets_has(predicate_text, filter, &text) {
             return Some(def);
+        }
+    }
+
+    // --- "Other [Subtype] creatures you control get/have..." ---
+    // e.g. "Other Zombies you control get +1/+1"
+    if let Some(rest) = tp.lower.strip_prefix("other ") {
+        if let Some(result) = parse_typed_you_control(&tp.original[6..], rest, true) {
+            return Some(result);
+        }
+    }
+
+    // --- "[Subtype] creatures you control get/have..." ---
+    // e.g. "Elf creatures you control get +1/+1"
+    // Skip for "other" prefix — already handled above with is_other=true.
+    if !tp.starts_with("other ") {
+        if let Some(result) = parse_typed_you_control(tp.original, tp.lower, false) {
+            return Some(result);
         }
     }
 
@@ -2097,7 +2099,8 @@ fn parse_cant_be_countered_subject(tp: &TextPair) -> TargetFilter {
 
                 // Split on " and " to handle compound types: "creature and enchantment"
                 for part in before_spells.split(" and ") {
-                    for word in part.split_whitespace() {
+                    for raw_word in part.split_whitespace() {
+                        let word = raw_word.trim_end_matches(',');
                         if let Some(color) = parse_named_color(word) {
                             properties.push(FilterProp::HasColor {
                                 color: color.to_string(),
@@ -2664,14 +2667,17 @@ fn find_cost_separator(text: &str) -> Option<usize> {
 /// CR 702: Split a keyword list like "flying and first strike" into individual keywords.
 fn split_keyword_list(text: &str) -> Vec<Cow<'_, str>> {
     let text = text.trim().trim_end_matches('.');
-    // Split on ", and ", " and ", or ", "
+    // Split on ", and/or ", ", and ", " and ", or ", " — longest-match-first
+    // ordering prevents ", and " from consuming the prefix of ", and/or ".
     let mut parts: Vec<&str> = Vec::new();
-    for chunk in text.split(", and ") {
-        for sub in chunk.split(" and ") {
-            for item in sub.split(", ") {
-                let trimmed = item.trim();
-                if !trimmed.is_empty() {
-                    parts.push(trimmed);
+    for chunk in text.split(", and/or ") {
+        for sub_chunk in chunk.split(", and ") {
+            for sub in sub_chunk.split(" and ") {
+                for item in sub.split(", ") {
+                    let trimmed = item.trim();
+                    if !trimmed.is_empty() {
+                        parts.push(trimmed);
+                    }
                 }
             }
         }
