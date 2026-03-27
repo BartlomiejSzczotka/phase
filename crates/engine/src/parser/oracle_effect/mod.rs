@@ -2874,6 +2874,21 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
         );
     }
 
+    // CR 702.32b: Negated kicker: "if it wasn't kicked", "if this spell wasn't kicked",
+    // "then if it wasn't kicked" — produces AdditionalCostNotPaid.
+    if lower.starts_with("if ") || lower.starts_with("then if ") {
+        if let Some((_, rest)) = lower
+            .split_once(" wasn't kicked, ")
+            .or_else(|| lower.split_once(" wasn't bargained, "))
+        {
+            let offset = text.len() - rest.len();
+            return (
+                Some(AbilityCondition::AdditionalCostNotPaid),
+                text[offset..].to_string(),
+            );
+        }
+    }
+
     // Try the legacy phrasing first: "if this spell's additional cost was paid, ..."
     let body = if let Some(rest) = lower.strip_prefix("if this spell's additional cost was paid, ")
     {
@@ -4109,7 +4124,7 @@ fn try_parse_distribute_damage(lower: &str, text: &str) -> Option<ParsedEffectCl
 fn try_parse_distribute_counters(lower: &str, text: &str) -> Option<ParsedEffectClause> {
     // "distribute " is 11 bytes; Oracle text is ASCII so byte == char offsets.
     let after_lower = lower.strip_prefix("distribute ")?;
-    let (count, rest_lower) = parse_number(after_lower)?;
+    let (count_expr, rest_lower) = super::oracle_util::parse_count_expr(after_lower)?;
 
     let type_end = rest_lower
         .find(|c: char| c.is_whitespace())
@@ -4158,9 +4173,7 @@ fn try_parse_distribute_counters(lower: &str, text: &str) -> Option<ParsedEffect
     Some(ParsedEffectClause {
         effect: Effect::PutCounter {
             counter_type,
-            count: QuantityExpr::Fixed {
-                value: count as i32,
-            },
+            count: count_expr,
             target,
         },
         duration: None,

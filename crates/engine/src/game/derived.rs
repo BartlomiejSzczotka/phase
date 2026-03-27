@@ -39,10 +39,18 @@ pub fn derive_display_state(state: &mut GameState) {
         .objects
         .iter()
         .filter_map(|(&id, obj)| {
-            let has_devotion_static = obj
-                .static_definitions
-                .iter()
-                .any(|def| matches!(&def.condition, Some(StaticCondition::DevotionGE { .. })));
+            let has_devotion_static =
+                obj.static_definitions
+                    .iter()
+                    .any(|def| match &def.condition {
+                        Some(StaticCondition::DevotionGE { .. }) => true,
+                        Some(StaticCondition::Not { condition })
+                            if matches!(condition.as_ref(), StaticCondition::DevotionGE { .. }) =>
+                        {
+                            true
+                        }
+                        _ => false,
+                    });
             if has_devotion_static && !obj.base_color.is_empty() {
                 let devotion = count_devotion(state, obj.controller, &obj.base_color);
                 Some((id, devotion))

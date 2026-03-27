@@ -347,6 +347,7 @@ mod tests {
             Effect::Discard {
                 count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::Any,
+                random: false,
             },
             vec![],
             ObjectId(100),
@@ -386,6 +387,7 @@ mod tests {
             Effect::Discard {
                 count: QuantityExpr::Fixed { value: 2 },
                 target: TargetFilter::Any,
+                random: false,
             },
             vec![],
             ObjectId(100),
@@ -416,6 +418,7 @@ mod tests {
             Effect::Discard {
                 count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::Any,
+                random: false,
             },
             vec![],
             ObjectId(100),

@@ -1247,6 +1247,11 @@ pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
         }
     }
 
+    // Restore card name in "named ~" and "chosen name ~" clauses —
+    // tilde normalization should not apply inside "named [CardName]" patterns.
+    let effective_name_str = effective_name;
+    result = result.replace("named ~", &format!("named {effective_name_str}"));
+
     result
 }
 

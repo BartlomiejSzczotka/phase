@@ -1445,6 +1445,7 @@ mod tests {
             Effect::Discard {
                 count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::Controller,
+                random: false,
             },
             vec![],
             ObjectId(100),

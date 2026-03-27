@@ -287,8 +287,23 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "During your turn, [subject] has/gets ..." ---
-    if let Some(rest) = tp.lower.strip_prefix("during your turn, ") {
-        let original_rest = &text["during your turn, ".len()..];
+    // --- "During turns other than yours, [subject] has/gets ..." ---
+    let (turn_rest, turn_condition) =
+        if let Some(rest) = tp.lower.strip_prefix("during your turn, ") {
+            (Some(rest), Some(StaticCondition::DuringYourTurn))
+        } else if let Some(rest) = tp.lower.strip_prefix("during turns other than yours, ") {
+            (
+                Some(rest),
+                Some(StaticCondition::Not {
+                    condition: Box::new(StaticCondition::DuringYourTurn),
+                }),
+            )
+        } else {
+            (None, None)
+        };
+    if let (Some(rest), Some(condition)) = (turn_rest, turn_condition) {
+        let prefix_len = tp.lower.len() - rest.len();
+        let original_rest = &text[prefix_len..];
         if let Some(subject_end) = find_continuous_predicate_start(rest) {
             let subject = original_rest[..subject_end].trim();
             let predicate = original_rest[subject_end + 1..].trim();
@@ -299,7 +314,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
                         StaticDefinition::continuous()
                             .affected(affected)
                             .modifications(modifications)
-                            .condition(StaticCondition::DuringYourTurn)
+                            .condition(condition)
                             .description(text.to_string()),
                     );
                 }
@@ -1279,9 +1294,6 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
     }
 
     // "your devotion to [color(s)] is less than N" (Theros gods)
-    // Note: "less than N" is stored as DevotionGE with the same threshold —
-    // the *effect* typically removes creature type, so the condition being false
-    // (devotion >= N) means the removal doesn't apply and the god IS a creature.
     if let Some(condition) = parse_devotion_condition(tp.lower) {
         return Some(condition);
     }
@@ -1415,15 +1427,20 @@ fn parse_devotion_condition(lower: &str) -> Option<StaticCondition> {
     let colors = parse_color_list(color_text)?;
 
     // Parse comparison: "less than N" or "N or greater"
-    let threshold = if let Some(n_text) = comparison.strip_prefix("less than ") {
-        parse_number(n_text.trim())?.0
-    } else if let Some(n_rest) = comparison.strip_suffix(" or greater") {
-        parse_number(n_rest.trim())?.0
-    } else {
-        return None;
-    };
+    // CR 110.4b: "less than N" means NOT (devotion >= N), "N or greater" means devotion >= N.
+    if let Some(n_text) = comparison.strip_prefix("less than ") {
+        let threshold = parse_number(n_text.trim())?.0;
+        return Some(StaticCondition::Not {
+            condition: Box::new(StaticCondition::DevotionGE { colors, threshold }),
+        });
+    }
 
-    Some(StaticCondition::DevotionGE { colors, threshold })
+    if let Some(n_rest) = comparison.strip_suffix(" or greater") {
+        let threshold = parse_number(n_rest.trim())?.0;
+        return Some(StaticCondition::DevotionGE { colors, threshold });
+    }
+
+    None
 }
 
 /// Parse "you control a/an [type/subtype]" into IsPresent.
@@ -3704,6 +3721,7 @@ mod tests {
     #[test]
     fn static_devotion_condition() {
         use crate::types::mana::ManaColor;
+        // CR 110.4b: "less than five" → Not(DevotionGE { threshold: 5 })
         let def = parse_static_line(
             "As long as your devotion to black is less than five, Erebos isn't a creature.",
         )
@@ -3711,9 +3729,11 @@ mod tests {
         assert_eq!(def.mode, StaticMode::Continuous);
         assert_eq!(
             def.condition,
-            Some(StaticCondition::DevotionGE {
-                colors: vec![ManaColor::Black],
-                threshold: 5,
+            Some(StaticCondition::Not {
+                condition: Box::new(StaticCondition::DevotionGE {
+                    colors: vec![ManaColor::Black],
+                    threshold: 5,
+                }),
             })
         );
     }
@@ -3721,6 +3741,7 @@ mod tests {
     #[test]
     fn static_devotion_multicolor_condition() {
         use crate::types::mana::ManaColor;
+        // CR 110.4b: "less than seven" → Not(DevotionGE { threshold: 7 })
         let def = parse_static_line(
             "As long as your devotion to white and black is less than seven, Athreos isn't a creature.",
         )
@@ -3728,9 +3749,11 @@ mod tests {
         assert_eq!(def.mode, StaticMode::Continuous);
         assert_eq!(
             def.condition,
-            Some(StaticCondition::DevotionGE {
-                colors: vec![ManaColor::White, ManaColor::Black],
-                threshold: 7,
+            Some(StaticCondition::Not {
+                condition: Box::new(StaticCondition::DevotionGE {
+                    colors: vec![ManaColor::White, ManaColor::Black],
+                    threshold: 7,
+                }),
             })
         );
     }

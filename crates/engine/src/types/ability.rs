@@ -1973,6 +1973,9 @@ pub enum Effect {
         count: QuantityExpr,
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
+        /// CR 701.8a: When true, the discard is random (e.g., "discard a card at random").
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        random: bool,
     },
     Shuffle {
         #[serde(default = "default_target_filter_controller")]

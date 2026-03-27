@@ -253,6 +253,8 @@ pub(super) enum TargetedImperativeAst {
     },
     Discard {
         count: QuantityExpr,
+        /// CR 701.8a: When true, the discard is random.
+        random: bool,
     },
     /// CR 701.3: Return to hand (bounce).
     Return {

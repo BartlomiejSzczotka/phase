@@ -853,7 +853,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             }
             d.push(("target".into(), fmt_target(target)));
         }
-        Effect::Discard { count, target } => {
+        Effect::Discard { count, target, .. } => {
             d.push(("count".into(), fmt_quantity(count)));
             d.push(("target".into(), fmt_target(target)));
         }

@@ -951,12 +951,20 @@ fn parse_token_replacement(lower: &str, original_text: &str) -> Option<Replaceme
 }
 
 /// CR 614.1a: Parse counter addition replacement effects.
-/// Handles "twice that many ... counters" (Primal Vigor, Doubling Season).
+/// Handles "twice that many ... counters" (Primal Vigor, Doubling Season)
+/// and "that many plus N ... counters" (Hardened Scales, Branching Evolution).
 fn parse_counter_replacement(lower: &str, original_text: &str) -> Option<ReplacementDefinition> {
     use crate::types::ability::QuantityModification;
 
     let modification = if lower.contains("twice that many") {
         QuantityModification::Double
+    } else if let Some(rest) = strip_after(lower, "that many plus ") {
+        // "that many plus one ... counters are put on it instead"
+        let (value, _) = parse_number(rest)?;
+        QuantityModification::Plus { value }
+    } else if let Some(rest) = strip_after(lower, "that many minus ") {
+        let (value, _) = parse_number(rest)?;
+        QuantityModification::Minus { value }
     } else {
         return None;
     };
@@ -1070,11 +1078,13 @@ fn parse_damage_prevention_replacement(
     };
 
     // --- 2. Extract combat scope ---
-    // CR 615: "combat damage" restricts to combat damage only
-    let combat_scope = if norm_lower.contains("combat damage") {
-        Some(CombatDamageScope::CombatOnly)
-    } else if norm_lower.contains("noncombat damage") {
+    // CR 615: "combat damage" restricts to combat damage only.
+    // Longest-match-first: "noncombat damage" before "combat damage" because
+    // "noncombat" contains the substring "combat".
+    let combat_scope = if norm_lower.contains("noncombat damage") {
         Some(CombatDamageScope::NoncombatOnly)
+    } else if norm_lower.contains("combat damage") {
+        Some(CombatDamageScope::CombatOnly)
     } else {
         None
     };

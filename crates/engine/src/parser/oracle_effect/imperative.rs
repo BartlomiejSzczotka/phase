@@ -253,6 +253,8 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
         return Some(TargetedImperativeAst::Sacrifice { target });
     }
     if let Some(after_discard) = lower.strip_prefix("discard ") {
+        // CR 701.8a: Detect "at random" suffix for random discard effects.
+        let random = after_discard.contains(" at random");
         // Strip "all the cards in " / "all cards in " prefix compositionally for
         // patterns like "discard all the cards in your hand" / "discards all cards in their hand".
         let after_discard = after_discard
@@ -269,13 +271,14 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
                 count: QuantityExpr::Ref {
                     qty: QuantityRef::HandSize,
                 },
+                random,
             });
         }
         let original_after = &text[text.len() - after_discard.len()..];
         let count = parse_count_expr(original_after)
             .map(|(q, _)| q)
             .unwrap_or(QuantityExpr::Fixed { value: 1 });
-        return Some(TargetedImperativeAst::Discard { count });
+        return Some(TargetedImperativeAst::Discard { count, random });
     }
     if lower.starts_with("return ") {
         let rest = &text[7..];
@@ -341,9 +344,10 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
         TargetedImperativeAst::Tap { target } => Effect::Tap { target },
         TargetedImperativeAst::Untap { target } => Effect::Untap { target },
         TargetedImperativeAst::Sacrifice { target } => Effect::Sacrifice { target },
-        TargetedImperativeAst::Discard { count } => Effect::Discard {
+        TargetedImperativeAst::Discard { count, random } => Effect::Discard {
             count,
             target: TargetFilter::Any,
+            random,
         },
         TargetedImperativeAst::Return { target } => Effect::Bounce {
             target,
@@ -2494,7 +2498,7 @@ mod tests {
         let lower = text.to_lowercase();
         let result = parse_targeted_action_ast(text, &lower);
         match result {
-            Some(TargetedImperativeAst::Discard { count }) => {
+            Some(TargetedImperativeAst::Discard { count, .. }) => {
                 assert!(
                     matches!(
                         count,
@@ -2515,7 +2519,7 @@ mod tests {
         let lower = text.to_lowercase();
         let result = parse_targeted_action_ast(text, &lower);
         match result {
-            Some(TargetedImperativeAst::Discard { count }) => {
+            Some(TargetedImperativeAst::Discard { count, .. }) => {
                 assert!(
                     matches!(
                         count,
@@ -2536,7 +2540,7 @@ mod tests {
         let lower = text.to_lowercase();
         let result = parse_targeted_action_ast(text, &lower);
         match result {
-            Some(TargetedImperativeAst::Discard { count }) => {
+            Some(TargetedImperativeAst::Discard { count, .. }) => {
                 assert!(
                     matches!(count, QuantityExpr::Fixed { value: 1 }),
                     "Expected Fixed(1), got {count:?}"
@@ -2552,7 +2556,7 @@ mod tests {
         let lower = text.to_lowercase();
         let result = parse_targeted_action_ast(text, &lower);
         match result {
-            Some(TargetedImperativeAst::Discard { count }) => {
+            Some(TargetedImperativeAst::Discard { count, .. }) => {
                 assert!(
                     matches!(count, QuantityExpr::Fixed { value: 2 }),
                     "Expected Fixed(2), got {count:?}"

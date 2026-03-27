@@ -1,10 +1,8 @@
-use crate::types::ability::{
-    DoublePTMode, DoubleTarget, Effect, MultiTargetSpec, QuantityExpr, TargetFilter,
-};
+use crate::types::ability::{DoublePTMode, DoubleTarget, Effect, MultiTargetSpec, TargetFilter};
 use crate::types::mana::ManaColor;
 
 use super::super::oracle_target::{parse_target, parse_type_phrase};
-use super::super::oracle_util::parse_number;
+use super::super::oracle_util::{parse_count_expr, parse_number};
 use super::{resolve_it_pronoun, ParseContext};
 
 pub(super) fn try_parse_put_counter<'a>(
@@ -13,8 +11,9 @@ pub(super) fn try_parse_put_counter<'a>(
     ctx: &ParseContext,
 ) -> Option<(Effect, &'a str, Option<MultiTargetSpec>)> {
     // "put N {type} counter(s) on {target}"
+    // Use parse_count_expr to handle Variable("X") for kicker-X patterns.
     let after_put = lower[4..].trim();
-    let (count, rest) = parse_number(after_put)?;
+    let (count_expr, rest) = parse_count_expr(after_put)?;
     // Next word is counter type (e.g. "+1/+1", "loyalty", "charge")
     let type_end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
     let raw_type = &rest[..type_end];
@@ -77,9 +76,7 @@ pub(super) fn try_parse_put_counter<'a>(
     Some((
         Effect::PutCounter {
             counter_type,
-            count: QuantityExpr::Fixed {
-                value: count as i32,
-            },
+            count: count_expr,
             target,
         },
         remainder,
