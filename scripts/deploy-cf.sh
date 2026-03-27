@@ -35,7 +35,7 @@ upload_to_r2() {
       else
         echo "  ^ $key (uploading)"
         (cd client && pnpm wrangler r2 object put "$R2_BUCKET/$key" \
-          --file "$file" --content-type application/json)
+          --file "$file" --content-type application/json --remote)
         # Update cache atomically
         grep -v "^$key:" "$DEPLOY_CACHE" > "$DEPLOY_CACHE.tmp" 2>/dev/null || true
         echo "$key:$local_hash" >> "$DEPLOY_CACHE.tmp"
@@ -56,7 +56,7 @@ upload_to_r2() {
       else
         echo "  ^ $name (uploading)"
         (cd client && pnpm wrangler r2 object put "$R2_BUCKET/audio/$name" \
-          --file "public/audio/music/$name" --content-type audio/mp4)
+          --file "public/audio/music/$name" --content-type audio/mp4 --remote)
       fi
     ) &
     audio_pids+=($!)
@@ -67,6 +67,14 @@ upload_to_r2() {
     wait "$pid"
   done
   echo "R2 uploads complete."
+
+  # Verify uploads actually reached remote R2 (not local emulator)
+  echo "Verifying R2 uploads are accessible..."
+  if ! curl -sf --head "$R2_PUBLIC/coverage-summary.json" >/dev/null 2>&1; then
+    echo "ERROR: R2 upload verification failed — coverage-summary.json not accessible at $R2_PUBLIC"
+    echo "  Uploads may have gone to local emulator. Ensure --remote flag is present on all r2 object put commands."
+    exit 1
+  fi
 }
 
 echo "Starting R2 uploads (background) and WASM build (foreground)..."
