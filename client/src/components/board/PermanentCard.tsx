@@ -33,7 +33,7 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
   const {
     selectedObjectId, selectObject, hoverObject, inspectObject,
     combatMode, selectedAttackers, toggleAttacker,
-    blockerAssignments, combatClickHandler,
+    blockerAssignments, combatClickHandler, selectedCardIds, toggleSelectedCard,
   } = useUiStore(useShallow((s) => ({
     selectedObjectId: s.selectedObjectId,
     selectObject: s.selectObject,
@@ -44,6 +44,8 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
     toggleAttacker: s.toggleAttacker,
     blockerAssignments: s.blockerAssignments,
     combatClickHandler: s.combatClickHandler,
+    selectedCardIds: s.selectedCardIds,
+    toggleSelectedCard: s.toggleSelectedCard,
   })));
   const combatAttackers = useGameStore(
     (s) => s.gameState?.combat?.attackers,
@@ -98,6 +100,13 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
       || (o.has_mana_ability && !o.has_summoning_sickness);
   });
   const isActivatable = hasActivatableAbility || canTapForMana;
+  const tapCreatureCostChoice = useGameStore((s) =>
+    s.waitingFor?.type === "TapCreaturesForManaAbility" && s.waitingFor.data.player === playerId
+      ? s.waitingFor.data
+      : null,
+  );
+  const isSelectableForManaCost = tapCreatureCostChoice?.creatures.includes(objectId) ?? false;
+  const isSelectedForManaCost = isSelectableForManaCost && selectedCardIds.includes(objectId);
 
   const setPendingAbilityChoice = useUiStore((s) => s.setPendingAbilityChoice);
   const cardRef = useRef<HTMLDivElement | null>(null);
@@ -163,6 +172,12 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
   } else if (isBlocking) {
     glowClass =
       "ring-2 ring-orange-500 shadow-[0_0_12px_3px_rgba(249,115,22,0.7)]";
+  } else if (isSelectedForManaCost) {
+    glowClass =
+      "ring-2 ring-emerald-400 shadow-[0_0_14px_4px_rgba(52,211,153,0.55)]";
+  } else if (isSelectableForManaCost) {
+    glowClass =
+      "ring-2 ring-emerald-300/70 shadow-[0_0_10px_3px_rgba(74,222,128,0.35)]";
   } else if (isValidTarget) {
     glowClass =
       "ring-2 ring-amber-400/60 shadow-[0_0_12px_3px_rgba(201,176,55,0.8)]";
@@ -198,6 +213,13 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
       if (isValidAttacker) toggleAttacker(objectId);
     } else if (combatMode === "blockers" && combatClickHandler) {
       combatClickHandler(objectId);
+    } else if (isSelectableForManaCost && tapCreatureCostChoice) {
+      if (
+        isSelectedForManaCost
+        || selectedCardIds.length < tapCreatureCostChoice.count
+      ) {
+        toggleSelectedCard(objectId);
+      }
     } else if (isValidTarget) {
       dispatchAction({ type: "ChooseTarget", data: { target: { Object: objectId } } });
     } else if (isActivatable) {
@@ -402,4 +424,3 @@ const ExileGhostCard = memo(function ExileGhostCard({ objectId, offset }: ExileG
     </div>
   );
 });
-

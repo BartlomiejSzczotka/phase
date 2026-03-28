@@ -155,6 +155,12 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
                 Some(*player),
             ),
         ],
+        WaitingFor::TapCreaturesForManaAbility {
+            player,
+            count,
+            creatures,
+            ..
+        } => select_cards_variants(*player, creatures, Some(*count)),
         WaitingFor::TopOrBottomChoice { player, .. } => vec![
             candidate(
                 GameAction::ChooseTopOrBottom { top: true },

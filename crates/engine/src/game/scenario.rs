@@ -1059,6 +1059,7 @@ impl GameRunner {
             WaitingFor::ChooseRingBearer { .. } => "ChooseRingBearer",
             WaitingFor::DiscardForCost { .. } => "DiscardForCost",
             WaitingFor::SacrificeForCost { .. } => "SacrificeForCost",
+            WaitingFor::TapCreaturesForManaAbility { .. } => "TapCreaturesForManaAbility",
             WaitingFor::ExileFromGraveyardForCost { .. } => "ExileFromGraveyardForCost",
             WaitingFor::HarmonizeTapChoice { .. } => "HarmonizeTapChoice",
             WaitingFor::DiscoverChoice { .. } => "DiscoverChoice",

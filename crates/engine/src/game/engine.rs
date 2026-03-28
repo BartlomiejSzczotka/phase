@@ -300,15 +300,16 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             {
                 // CR 605.3b: Mana abilities resolve immediately without using the stack.
                 let ability_def = obj.abilities[ability_index].clone();
-                mana_abilities::resolve_mana_ability(
+                mana_abilities::activate_mana_ability(
                     state,
                     source_id,
                     *player,
+                    ability_index,
                     &ability_def,
                     &mut events,
+                    crate::types::game_state::ManaAbilityResume::Priority,
                     None,
-                )?;
-                WaitingFor::Priority { player: *player }
+                )?
             } else if obj.loyalty.is_some()
                 && ability_index < obj.abilities.len()
                 && matches!(
@@ -514,6 +515,22 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             casting::handle_cancel_cast(state, pending_cast, &mut events);
             WaitingFor::Priority { player: *player }
         }
+        (
+            WaitingFor::TapCreaturesForManaAbility {
+                count,
+                creatures,
+                pending_mana_ability,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => mana_abilities::handle_tap_creatures_for_mana_ability(
+            state,
+            *count,
+            creatures,
+            pending_mana_ability,
+            &chosen,
+            &mut events,
+        )?,
         // CR 702.138a: Player selected cards to exile from graveyard as escape cost.
         (
             WaitingFor::ExileFromGraveyardForCost {
@@ -967,7 +984,12 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
         }
         // Allow mana abilities during unless-payment choice (CR 118.12)
         (
-            WaitingFor::UnlessPayment { player, .. },
+            WaitingFor::UnlessPayment {
+                player,
+                cost,
+                pending_effect,
+                effect_description,
+            },
             GameAction::ActivateAbility {
                 source_id,
                 ability_index,
@@ -981,15 +1003,20 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 && mana_abilities::is_mana_ability(&obj.abilities[ability_index])
             {
                 let ability_def = obj.abilities[ability_index].clone();
-                mana_abilities::resolve_mana_ability(
+                mana_abilities::activate_mana_ability(
                     state,
                     source_id,
                     *player,
+                    ability_index,
                     &ability_def,
                     &mut events,
+                    crate::types::game_state::ManaAbilityResume::UnlessPayment {
+                        cost: cost.clone(),
+                        pending_effect: pending_effect.clone(),
+                        effect_description: effect_description.clone(),
+                    },
                     None,
-                )?;
-                state.waiting_for.clone()
+                )?
             } else {
                 return Err(EngineError::ActionNotAllowed(
                     "Only mana abilities can be activated during unless payment".to_string(),
@@ -1200,18 +1227,18 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 && mana_abilities::is_mana_ability(&obj.abilities[ability_index])
             {
                 let ability_def = obj.abilities[ability_index].clone();
-                mana_abilities::resolve_mana_ability(
+                mana_abilities::activate_mana_ability(
                     state,
                     source_id,
                     *player,
+                    ability_index,
                     &ability_def,
                     &mut events,
+                    crate::types::game_state::ManaAbilityResume::ManaPayment {
+                        convoke_mode: *convoke_mode,
+                    },
                     None,
-                )?;
-                WaitingFor::ManaPayment {
-                    player: *player,
-                    convoke_mode: *convoke_mode,
-                }
+                )?
             } else {
                 return Err(EngineError::ActionNotAllowed(
                     "Only mana abilities can be activated during mana payment".to_string(),
@@ -5383,6 +5410,106 @@ mod tests {
         assert!(state.stack.is_empty());
         // Object should be tapped
         assert!(state.objects.get(&obj_id).unwrap().tapped);
+    }
+
+    #[test]
+    fn springleaf_drum_prompts_for_creature_then_adds_mana() {
+        let mut state = setup_game_at_main_phase();
+
+        let drum = create_object(
+            &mut state,
+            CardId(102),
+            PlayerId(0),
+            "Springleaf Drum".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&drum).unwrap();
+            obj.card_types.core_types.push(CoreType::Artifact);
+            obj.abilities.push(
+                AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::Mana {
+                        produced: crate::types::ability::ManaProduction::AnyOneColor {
+                            count: QuantityExpr::Fixed { value: 1 },
+                            color_options: vec![
+                                crate::types::mana::ManaColor::White,
+                                crate::types::mana::ManaColor::Blue,
+                                crate::types::mana::ManaColor::Black,
+                                crate::types::mana::ManaColor::Red,
+                                crate::types::mana::ManaColor::Green,
+                            ],
+                        },
+                        restrictions: vec![],
+                        expiry: None,
+                    },
+                )
+                .cost(AbilityCost::Composite {
+                    costs: vec![
+                        AbilityCost::Tap,
+                        AbilityCost::TapCreatures {
+                            count: 1,
+                            filter: crate::types::ability::TypedFilter::creature()
+                                .controller(crate::types::ability::ControllerRef::You)
+                                .into(),
+                        },
+                    ],
+                }),
+            );
+        }
+
+        let creature = create_object(
+            &mut state,
+            CardId(103),
+            PlayerId(0),
+            "Memnite".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&creature)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let result = apply(
+            &mut state,
+            GameAction::ActivateAbility {
+                source_id: drum,
+                ability_index: 0,
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::TapCreaturesForManaAbility {
+                player: PlayerId(0),
+                count: 1,
+                ..
+            }
+        ));
+        assert!(!state.objects.get(&drum).unwrap().tapped);
+        assert!(!state.objects.get(&creature).unwrap().tapped);
+
+        let result = apply(
+            &mut state,
+            GameAction::SelectCards {
+                cards: vec![creature],
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::Priority {
+                player: PlayerId(0)
+            }
+        ));
+        assert!(state.objects.get(&drum).unwrap().tapped);
+        assert!(state.objects.get(&creature).unwrap().tapped);
+        assert_eq!(state.players[0].mana_pool.total(), 1);
     }
 
     mod equip_tests {

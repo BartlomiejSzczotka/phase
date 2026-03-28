@@ -30,6 +30,7 @@ interface UiStoreActions {
   hoverObject: (id: ObjectId | null) => void;
   inspectObject: (id: ObjectId | null, faceIndex?: number) => void;
   addSelectedCard: (cardId: ObjectId) => void;
+  toggleSelectedCard: (cardId: ObjectId) => void;
   clearSelectedCards: () => void;
   toggleFullControl: () => void;
   toggleAutoPass: () => void;
@@ -82,6 +83,13 @@ export const useUiStore = create<UiStore>()((set) => ({
   addSelectedCard: (cardId) =>
     set((state) => ({
       selectedCardIds: [...state.selectedCardIds, cardId],
+    })),
+
+  toggleSelectedCard: (cardId) =>
+    set((state) => ({
+      selectedCardIds: state.selectedCardIds.includes(cardId)
+        ? state.selectedCardIds.filter((id) => id !== cardId)
+        : [...state.selectedCardIds, cardId],
     })),
 
   clearSelectedCards: () =>

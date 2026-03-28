@@ -1,17 +1,21 @@
 import { AnimatePresence, motion } from "framer-motion";
-import { useCallback } from "react";
+import { useCallback, useEffect } from "react";
 
 import { usePlayerId } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
+import { useUiStore } from "../../stores/uiStore.ts";
 
 export function TargetingOverlay() {
   const playerId = usePlayerId();
   const waitingFor = useGameStore((s) => s.waitingFor);
   const dispatch = useGameStore((s) => s.dispatch);
   const objects = useGameStore((s) => s.gameState?.objects);
+  const selectedCardIds = useUiStore((s) => s.selectedCardIds);
+  const clearSelectedCards = useUiStore((s) => s.clearSelectedCards);
 
   const isTargetSelection = waitingFor?.type === "TargetSelection" || waitingFor?.type === "TriggerTargetSelection";
   const isCopyTargetChoice = waitingFor?.type === "CopyTargetChoice";
+  const isTapCreatureChoice = waitingFor?.type === "TapCreaturesForManaAbility";
   const targetSlots = isTargetSelection ? waitingFor.data.target_slots : [];
   const selection = isTargetSelection ? waitingFor.data.selection : null;
   const currentTargetSlot = selection?.current_slot ?? 0;
@@ -23,6 +27,8 @@ export function TargetingOverlay() {
     ? waitingFor.data.source_id
     : waitingFor?.type === "TargetSelection"
       ? waitingFor.data.pending_cast?.object_id
+      : waitingFor?.type === "TapCreaturesForManaAbility"
+        ? (waitingFor.data.pending_mana_ability as { source_id?: number } | undefined)?.source_id
       : undefined;
   const sourceName = sourceId != null ? objects?.[sourceId]?.name : undefined;
   const triggerDescription = waitingFor?.type === "TriggerTargetSelection"
@@ -37,7 +43,20 @@ export function TargetingOverlay() {
     dispatch({ type: "ChooseTarget", data: { target: null } });
   }, [dispatch]);
 
-  if (!isTargetSelection && !isCopyTargetChoice) return null;
+  const handleConfirmTap = useCallback(() => {
+    dispatch({ type: "SelectCards", data: { cards: selectedCardIds } });
+  }, [dispatch, selectedCardIds]);
+
+  useEffect(() => {
+    if (!isTapCreatureChoice) {
+      clearSelectedCards();
+      return;
+    }
+    clearSelectedCards();
+    return () => clearSelectedCards();
+  }, [clearSelectedCards, isTapCreatureChoice]);
+
+  if (!isTargetSelection && !isCopyTargetChoice && !isTapCreatureChoice) return null;
 
   // Only show targeting UI for the human player
   if (waitingFor.data.player !== playerId) return null;
@@ -61,13 +80,15 @@ export function TargetingOverlay() {
               {sourceName}
             </div>
           )}
-          <div className="rounded-lg bg-gray-900/90 px-6 py-2 text-lg font-semibold text-cyan-400 shadow-lg">
-            {isCopyTargetChoice
-              ? "Choose a permanent to copy"
-              : targetSlots.length > 1
-                ? `Choose target ${Math.min(currentTargetSlot + 1, targetSlots.length)} of ${targetSlots.length}`
-                : "Choose a target"}
-          </div>
+            <div className="rounded-lg bg-gray-900/90 px-6 py-2 text-lg font-semibold text-cyan-400 shadow-lg">
+              {isCopyTargetChoice
+                ? "Choose a permanent to copy"
+                : isTapCreatureChoice
+                  ? `Tap ${waitingFor.data.count} untapped creature${waitingFor.data.count > 1 ? "s" : ""}`
+                : targetSlots.length > 1
+                  ? `Choose target ${Math.min(currentTargetSlot + 1, targetSlots.length)} of ${targetSlots.length}`
+                  : "Choose a target"}
+            </div>
           {triggerDescription && (
             <div className="max-w-md rounded-md bg-gray-800/90 px-4 py-1 text-center text-xs text-gray-300 shadow">
               {triggerDescription}
@@ -84,6 +105,15 @@ export function TargetingOverlay() {
               className="rounded-lg bg-gray-700 px-6 py-2 font-semibold text-gray-200 shadow-lg transition hover:bg-gray-600"
             >
               Cancel
+            </button>
+          )}
+          {isTapCreatureChoice && (
+            <button
+              onClick={handleConfirmTap}
+              disabled={selectedCardIds.length !== waitingFor.data.count}
+              className="rounded-lg bg-emerald-700 px-6 py-2 font-semibold text-gray-100 shadow-lg transition hover:bg-emerald-600 disabled:cursor-not-allowed disabled:bg-gray-700 disabled:text-gray-400"
+            >
+              Confirm Tap ({selectedCardIds.length}/{waitingFor.data.count})
             </button>
           )}
           {isOptionalCurrentSlot && (

@@ -15,7 +15,7 @@ use super::events::GameEvent;
 use super::format::FormatConfig;
 use super::identifiers::{CardId, ObjectId, TrackedSetId};
 use super::keywords::Keyword;
-use super::mana::{ManaColor, ManaCost};
+use super::mana::{ManaColor, ManaCost, ManaType};
 use super::match_config::{MatchConfig, MatchPhase, MatchScore};
 use super::phase::Phase;
 use super::player::{Player, PlayerId};
@@ -240,6 +240,31 @@ impl PendingCast {
             distribute: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ManaAbilityResume {
+    Priority,
+    ManaPayment {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        convoke_mode: Option<ConvokeMode>,
+    },
+    UnlessPayment {
+        cost: UnlessCost,
+        pending_effect: Box<ResolvedAbility>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effect_description: Option<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingManaAbility {
+    pub player: PlayerId,
+    pub source_id: ObjectId,
+    pub ability_index: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color_override: Option<ManaType>,
+    pub resume: ManaAbilityResume,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -604,6 +629,13 @@ pub enum WaitingFor {
         /// The pending cast to resume after the sacrifice is complete.
         pending_cast: Box<PendingCast>,
     },
+    /// CR 118.3 / CR 605.3b: Player must choose untapped creatures to pay a mana ability cost.
+    TapCreaturesForManaAbility {
+        player: PlayerId,
+        count: usize,
+        creatures: Vec<ObjectId>,
+        pending_mana_ability: Box<PendingManaAbility>,
+    },
     /// CR 702.138a: Player must choose cards to exile from graveyard as escape cost.
     ExileFromGraveyardForCost {
         player: PlayerId,
@@ -780,6 +812,7 @@ impl WaitingFor {
             | WaitingFor::ChooseRingBearer { player, .. }
             | WaitingFor::DiscardForCost { player, .. }
             | WaitingFor::SacrificeForCost { player, .. }
+            | WaitingFor::TapCreaturesForManaAbility { player, .. }
             | WaitingFor::ExileFromGraveyardForCost { player, .. }
             | WaitingFor::HarmonizeTapChoice { player, .. }
             | WaitingFor::OptionalEffectChoice { player, .. }
@@ -814,6 +847,7 @@ impl WaitingFor {
                 | WaitingFor::DefilerPayment { .. }
                 | WaitingFor::DiscardForCost { .. }
                 | WaitingFor::SacrificeForCost { .. }
+                | WaitingFor::TapCreaturesForManaAbility { .. }
                 | WaitingFor::ExileFromGraveyardForCost { .. }
                 | WaitingFor::HarmonizeTapChoice { .. }
         )

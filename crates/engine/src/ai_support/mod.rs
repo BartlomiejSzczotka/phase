@@ -77,7 +77,9 @@ fn activatable_mana_ability_actions(state: &GameState) -> Vec<GameAction> {
                 continue;
             }
             // CR 605.3b: Activation restrictions still apply to mana abilities.
-            if mana_sources::activation_condition_satisfied(state, player, obj_id, idx, ability) {
+            if mana_sources::activation_condition_satisfied(state, player, obj_id, idx, ability)
+                && mana_abilities::can_activate_mana_ability_now(state, player, obj_id, ability)
+            {
                 actions.push(GameAction::ActivateAbility {
                     source_id: obj_id,
                     ability_index: idx,

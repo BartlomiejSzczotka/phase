@@ -118,7 +118,7 @@ pub fn activatable_mana_options(
     if combat::has_summoning_sickness(obj, state.turn_number) {
         return Vec::new();
     }
-    scan_mana_abilities(state, obj, object_id, controller)
+    scan_mana_abilities(state, obj, object_id, controller, true)
 }
 
 fn land_mana_options(
@@ -145,7 +145,7 @@ fn land_mana_options(
         return Vec::new();
     }
 
-    let mut options = scan_mana_abilities(state, obj, object_id, controller);
+    let mut options = scan_mana_abilities(state, obj, object_id, controller, require_untapped);
 
     // Legacy fallback for basic-land subtype-only objects (no explicit mana ability).
     if options.is_empty() {
@@ -175,10 +175,16 @@ fn scan_mana_abilities(
     obj: &crate::game::game_object::GameObject,
     object_id: ObjectId,
     controller: PlayerId,
+    require_current_payability: bool,
 ) -> Vec<ManaSourceOption> {
     let mut options = Vec::new();
     for (ability_index, ability) in obj.abilities.iter().enumerate() {
         if ability.kind != AbilityKind::Activated || !mana_abilities::is_mana_ability(ability) {
+            continue;
+        }
+        if require_current_payability
+            && !mana_abilities::can_activate_mana_ability_now(state, controller, object_id, ability)
+        {
             continue;
         }
         if !has_tap_component(&ability.cost) {

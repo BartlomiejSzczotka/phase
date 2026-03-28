@@ -1,12 +1,14 @@
 use crate::types::ability::{AbilityCost, AbilityDefinition, Effect, TargetFilter};
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{GameState, ManaAbilityResume, PendingManaAbility, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaType;
 use crate::types::player::PlayerId;
+use crate::types::zones::Zone;
 
 use super::effects::mana::resolve_mana_types;
 use super::engine::EngineError;
+use super::filter::matches_target_filter;
 use super::mana_payment;
 use super::mana_sources;
 use super::sacrifice;
@@ -67,6 +69,118 @@ pub fn resolve_mana_ability(
     Ok(())
 }
 
+/// CR 605.3b: Mana abilities resolve immediately unless paying the cost requires a choice.
+pub fn activate_mana_ability(
+    state: &mut GameState,
+    source_id: ObjectId,
+    player: PlayerId,
+    ability_index: usize,
+    ability_def: &AbilityDefinition,
+    events: &mut Vec<GameEvent>,
+    resume: ManaAbilityResume,
+    color_override: Option<ManaType>,
+) -> Result<WaitingFor, EngineError> {
+    if let Some((count, creatures)) =
+        tap_creature_cost_choice(state, player, source_id, &ability_def.cost)
+    {
+        if creatures.len() < count {
+            return Err(EngineError::ActionNotAllowed(
+                "Not enough untapped creatures to pay mana ability cost".to_string(),
+            ));
+        }
+        return Ok(WaitingFor::TapCreaturesForManaAbility {
+            player,
+            count,
+            creatures,
+            pending_mana_ability: Box::new(PendingManaAbility {
+                player,
+                source_id,
+                ability_index,
+                color_override,
+                resume,
+            }),
+        });
+    }
+
+    resolve_mana_ability(
+        state,
+        source_id,
+        player,
+        ability_def,
+        events,
+        color_override,
+    )?;
+    Ok(resume_waiting_for(player, resume))
+}
+
+/// CR 118.3 / CR 605.3b: Complete the tapped-creature choice, then resolve the mana ability.
+pub fn handle_tap_creatures_for_mana_ability(
+    state: &mut GameState,
+    count: usize,
+    legal_creatures: &[ObjectId],
+    pending: &PendingManaAbility,
+    chosen: &[ObjectId],
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    if chosen.len() != count {
+        return Err(EngineError::InvalidAction(format!(
+            "Must tap exactly {} creature(s), got {}",
+            count,
+            chosen.len()
+        )));
+    }
+    for id in chosen {
+        if !legal_creatures.contains(id) {
+            return Err(EngineError::InvalidAction(
+                "Selected creature not eligible for mana ability cost".to_string(),
+            ));
+        }
+    }
+
+    let ability_def = state
+        .objects
+        .get(&pending.source_id)
+        .and_then(|obj| obj.abilities.get(pending.ability_index))
+        .cloned()
+        .ok_or_else(|| EngineError::InvalidAction("Mana ability no longer exists".to_string()))?;
+
+    resolve_mana_ability_with_tapped_creatures(
+        state,
+        pending.source_id,
+        pending.player,
+        &ability_def,
+        events,
+        pending.color_override,
+        chosen,
+    )?;
+
+    Ok(resume_waiting_for(pending.player, pending.resume.clone()))
+}
+
+pub fn can_activate_mana_ability_now(
+    state: &GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    ability_def: &AbilityDefinition,
+) -> bool {
+    if let Some((count, creatures)) =
+        tap_creature_cost_choice(state, player, source_id, &ability_def.cost)
+    {
+        return creatures.len() >= count;
+    }
+
+    let mut simulated = state.clone();
+    resolve_mana_ability(
+        &mut simulated,
+        source_id,
+        player,
+        ability_def,
+        &mut Vec::new(),
+        None,
+    )
+    .is_ok()
+}
+
 /// Pay the full cost of a mana ability. This is the single authority for mana ability
 /// cost resolution — callers dispatch activation, they never inspect individual cost
 /// components. Handles `Tap`, `Composite { Tap, Sacrifice }`, and future cost variants.
@@ -77,29 +191,124 @@ fn pay_mana_ability_cost(
     cost: &Option<AbilityCost>,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EngineError> {
-    match cost {
-        Some(AbilityCost::Tap) => {
-            tap_source(state, source_id, events)?;
+    pay_mana_ability_cost_with_choices(
+        state,
+        source_id,
+        player,
+        cost,
+        events,
+        &mut std::iter::empty(),
+    )
+}
+
+fn resolve_mana_ability_with_tapped_creatures(
+    state: &mut GameState,
+    source_id: ObjectId,
+    player: PlayerId,
+    ability_def: &AbilityDefinition,
+    events: &mut Vec<GameEvent>,
+    color_override: Option<ManaType>,
+    tapped_creatures: &[ObjectId],
+) -> Result<(), EngineError> {
+    let mut chosen = tapped_creatures.iter().copied();
+    pay_mana_ability_cost_with_choices(
+        state,
+        source_id,
+        player,
+        &ability_def.cost,
+        events,
+        &mut chosen,
+    )?;
+    if chosen.next().is_some() {
+        return Err(EngineError::InvalidAction(
+            "Too many creatures selected for mana ability cost".to_string(),
+        ));
+    }
+
+    let produced_mana = match &*ability_def.effect {
+        Effect::Mana { produced, .. } => {
+            let resolved = resolve_mana_types(produced, &*state, player, source_id);
+            match color_override {
+                Some(color) => vec![color; resolved.len()],
+                None => resolved,
+            }
         }
-        Some(AbilityCost::PayLife { amount }) => {
-            pay_life_cost(state, player, *amount, events)?;
+        _ => Vec::new(),
+    };
+
+    let tapped = mana_sources::has_tap_component(&ability_def.cost);
+    for mana_type in produced_mana {
+        mana_payment::produce_mana(state, source_id, mana_type, player, tapped, events);
+    }
+
+    Ok(())
+}
+
+fn pay_mana_ability_cost_with_choices<I>(
+    state: &mut GameState,
+    source_id: ObjectId,
+    player: PlayerId,
+    cost: &Option<AbilityCost>,
+    events: &mut Vec<GameEvent>,
+    chosen_tappers: &mut I,
+) -> Result<(), EngineError>
+where
+    I: Iterator<Item = ObjectId>,
+{
+    match cost {
+        Some(AbilityCost::Tap) => tap_source(state, source_id, events)?,
+        Some(AbilityCost::PayLife { amount }) => pay_life_cost(state, player, *amount, events)?,
+        Some(AbilityCost::TapCreatures { count, filter }) => {
+            for _ in 0..*count {
+                let chosen_id = chosen_tappers.next().ok_or_else(|| {
+                    EngineError::InvalidAction(
+                        "Missing tapped creature selection for mana ability".to_string(),
+                    )
+                })?;
+                tap_selected_creature_for_mana_cost(
+                    state,
+                    source_id,
+                    player,
+                    chosen_id,
+                    filter,
+                    cost_has_source_tap_component(cost),
+                    events,
+                )?;
+            }
         }
         Some(AbilityCost::Composite { costs }) => {
+            let exclude_source = costs
+                .iter()
+                .any(|sub_cost| matches!(sub_cost, AbilityCost::Tap));
             for sub_cost in costs {
                 match sub_cost {
-                    AbilityCost::Tap => {
-                        tap_source(state, source_id, events)?;
-                    }
+                    AbilityCost::Tap => tap_source(state, source_id, events)?,
                     AbilityCost::PayLife { amount } => {
-                        pay_life_cost(state, player, *amount, events)?;
+                        pay_life_cost(state, player, *amount, events)?
+                    }
+                    AbilityCost::TapCreatures { count, filter } => {
+                        for _ in 0..*count {
+                            let chosen_id = chosen_tappers.next().ok_or_else(|| {
+                                EngineError::InvalidAction(
+                                    "Missing tapped creature selection for mana ability"
+                                        .to_string(),
+                                )
+                            })?;
+                            tap_selected_creature_for_mana_cost(
+                                state,
+                                source_id,
+                                player,
+                                chosen_id,
+                                filter,
+                                exclude_source,
+                                events,
+                            )?;
+                        }
                     }
                     AbilityCost::Sacrifice {
                         target: TargetFilter::SelfRef,
                         ..
                     } => {
-                        // CR 605.3b: Sacrifice as part of mana ability cost resolves immediately.
-                        // NeedsReplacementChoice is extremely rare during cost payment;
-                        // proceed with default sacrifice per casting_costs.rs convention.
                         let _ = sacrifice::sacrifice_permanent(state, source_id, player, events)?;
                     }
                     other => {
@@ -110,13 +319,14 @@ fn pay_mana_ability_cost(
                 }
             }
         }
-        Some(_) => {
-            return Err(EngineError::InvalidAction(
-                "Unsupported mana ability cost".to_string(),
-            ));
+        Some(other) => {
+            return Err(EngineError::InvalidAction(format!(
+                "Unsupported mana ability cost: {other:?}"
+            )));
         }
         None => {}
     }
+
     Ok(())
 }
 
@@ -164,6 +374,109 @@ fn tap_source(
         caused_by: None,
     });
     Ok(())
+}
+
+fn tap_creature_cost_choice(
+    state: &GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    cost: &Option<AbilityCost>,
+) -> Option<(usize, Vec<ObjectId>)> {
+    let (count, filter) = find_tap_creatures_cost(cost.as_ref()?)?;
+    let creatures = state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|&id| {
+            if cost_has_source_tap_component(cost) && id == source_id {
+                return false;
+            }
+            let Some(obj) = state.objects.get(&id) else {
+                return false;
+            };
+            if obj.zone != Zone::Battlefield || obj.controller != player || obj.tapped {
+                return false;
+            }
+            matches_target_filter(state, id, filter, source_id)
+        })
+        .collect();
+    Some((count as usize, creatures))
+}
+
+fn find_tap_creatures_cost(cost: &AbilityCost) -> Option<(u32, &TargetFilter)> {
+    match cost {
+        AbilityCost::TapCreatures { count, filter } => Some((*count, filter)),
+        AbilityCost::Composite { costs } => costs.iter().find_map(find_tap_creatures_cost),
+        _ => None,
+    }
+}
+
+fn tap_selected_creature_for_mana_cost(
+    state: &mut GameState,
+    source_id: ObjectId,
+    player: PlayerId,
+    chosen_id: ObjectId,
+    filter: &TargetFilter,
+    exclude_source: bool,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EngineError> {
+    if exclude_source && chosen_id == source_id {
+        return Err(EngineError::ActionNotAllowed(
+            "Source cannot satisfy both tap costs".to_string(),
+        ));
+    }
+
+    let obj = state
+        .objects
+        .get(&chosen_id)
+        .ok_or_else(|| EngineError::InvalidAction("Selected creature not found".to_string()))?;
+    if obj.zone != Zone::Battlefield || obj.controller != player || obj.tapped {
+        return Err(EngineError::ActionNotAllowed(
+            "Selected creature is not an untapped creature you control".to_string(),
+        ));
+    }
+    if !matches_target_filter(state, chosen_id, filter, source_id) {
+        return Err(EngineError::ActionNotAllowed(
+            "Selected creature does not satisfy mana ability cost".to_string(),
+        ));
+    }
+
+    state.objects.get_mut(&chosen_id).unwrap().tapped = true;
+    events.push(GameEvent::PermanentTapped {
+        object_id: chosen_id,
+        caused_by: None,
+    });
+    Ok(())
+}
+
+fn cost_has_source_tap_component(cost: &Option<AbilityCost>) -> bool {
+    match cost {
+        Some(AbilityCost::Tap) => true,
+        Some(AbilityCost::Composite { costs }) => {
+            costs.iter().any(|cost| matches!(cost, AbilityCost::Tap))
+        }
+        _ => false,
+    }
+}
+
+fn resume_waiting_for(player: PlayerId, resume: ManaAbilityResume) -> WaitingFor {
+    match resume {
+        ManaAbilityResume::Priority => WaitingFor::Priority { player },
+        ManaAbilityResume::ManaPayment { convoke_mode } => WaitingFor::ManaPayment {
+            player,
+            convoke_mode,
+        },
+        ManaAbilityResume::UnlessPayment {
+            cost,
+            pending_effect,
+            effect_description,
+        } => WaitingFor::UnlessPayment {
+            player,
+            cost,
+            pending_effect,
+            effect_description,
+        },
+    }
 }
 
 #[cfg(test)]

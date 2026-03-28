@@ -21,13 +21,34 @@ use crate::types::statics::StaticMode;
 pub fn derive_display_state(state: &mut GameState) {
     let turn = state.turn_number;
 
-    for obj in state.objects.values_mut() {
-        obj.unimplemented_mechanics = unimplemented_mechanics(obj);
-        obj.has_summoning_sickness = has_summoning_sickness(obj, turn);
-        let mana_idx = obj
-            .abilities
-            .iter()
-            .position(mana_abilities::is_mana_ability);
+    let object_ids: Vec<_> = state.objects.keys().copied().collect();
+    for id in object_ids {
+        let (unimplemented, summoning_sickness, mana_idx) = {
+            let obj = state.objects.get(&id).expect("object exists");
+            let mana_idx = obj
+                .abilities
+                .iter()
+                .enumerate()
+                .find(|(_, ability)| {
+                    mana_abilities::is_mana_ability(ability)
+                        && mana_abilities::can_activate_mana_ability_now(
+                            state,
+                            obj.controller,
+                            obj.id,
+                            ability,
+                        )
+                })
+                .map(|(idx, _)| idx);
+            (
+                unimplemented_mechanics(obj),
+                has_summoning_sickness(obj, turn),
+                mana_idx,
+            )
+        };
+
+        let obj = state.objects.get_mut(&id).expect("object exists");
+        obj.unimplemented_mechanics = unimplemented;
+        obj.has_summoning_sickness = summoning_sickness;
         obj.has_mana_ability = mana_idx.is_some();
         obj.mana_ability_index = mana_idx;
         obj.available_mana_colors.clear();
