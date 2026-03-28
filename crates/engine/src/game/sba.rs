@@ -3,11 +3,13 @@ use std::collections::HashSet;
 use crate::game::game_object::CounterType;
 use crate::game::layers;
 use crate::game::replacement::{self, ReplacementResult};
+use crate::types::ability::{ControllerRef, TargetFilter, TypedFilter};
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::player::PlayerId;
 use crate::types::proposed_event::ProposedEvent;
+use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
 
 use super::zones;
@@ -127,13 +129,51 @@ pub fn check_state_based_actions(state: &mut GameState, events: &mut Vec<GameEve
     }
 }
 
+/// CR 104.3b + CR 810.8a: Check if a player has active CantLoseTheGame protection
+/// from any permanent on the battlefield. If so, SBAs that would cause that player
+/// to lose the game are skipped.
+fn player_has_cant_lose(state: &GameState, player_id: PlayerId) -> bool {
+    state.battlefield.iter().any(|&id| {
+        let obj = match state.objects.get(&id) {
+            Some(o) => o,
+            None => return false,
+        };
+        obj.static_definitions.iter().any(|def| {
+            def.mode == StaticMode::CantLoseTheGame
+                && static_affects_player(obj.controller, &def.affected, player_id)
+        })
+    })
+}
+
+/// Check if a static ability from `source_controller` with the given `affected` filter
+/// applies to `player_id`.
+fn static_affects_player(
+    source_controller: PlayerId,
+    affected: &Option<TargetFilter>,
+    player_id: PlayerId,
+) -> bool {
+    match affected {
+        Some(TargetFilter::Typed(TypedFilter { controller, .. })) => match controller {
+            Some(ControllerRef::You) => source_controller == player_id,
+            Some(ControllerRef::Opponent) => source_controller != player_id,
+            None => true,
+        },
+        Some(TargetFilter::Player) => true,
+        Some(TargetFilter::Any) => true,
+        None => true,
+        _ => false,
+    }
+}
+
 /// CR 704.5a: A player with 0 or less life loses the game.
 fn check_player_life(state: &mut GameState, events: &mut Vec<GameEvent>, any_performed: &mut bool) {
     // Collect all players who should be eliminated (check all, not just first)
+    // CR 104.3b: Skip players protected by CantLoseTheGame.
     let to_eliminate: Vec<PlayerId> = state
         .players
         .iter()
         .filter(|p| !p.is_eliminated && p.life <= 0)
+        .filter(|p| !player_has_cant_lose(state, p.id))
         .map(|p| p.id)
         .collect();
 
@@ -150,10 +190,12 @@ fn check_draw_from_empty(
     events: &mut Vec<GameEvent>,
     any_performed: &mut bool,
 ) {
+    // CR 104.3b: Skip players protected by CantLoseTheGame.
     let to_eliminate: Vec<PlayerId> = state
         .players
         .iter()
         .filter(|p| !p.is_eliminated && p.drew_from_empty_library)
+        .filter(|p| !player_has_cant_lose(state, p.id))
         .map(|p| p.id)
         .collect();
 
@@ -170,10 +212,12 @@ fn check_poison_counters(
     events: &mut Vec<GameEvent>,
     any_performed: &mut bool,
 ) {
+    // CR 104.3b: Skip players protected by CantLoseTheGame.
     let to_eliminate: Vec<PlayerId> = state
         .players
         .iter()
         .filter(|p| !p.is_eliminated && p.poison_counters >= 10)
+        .filter(|p| !player_has_cant_lose(state, p.id))
         .map(|p| p.id)
         .collect();
 
@@ -196,12 +240,14 @@ fn check_commander_damage(
     };
 
     // Collect players who should be eliminated
+    // CR 104.3b: Skip players protected by CantLoseTheGame.
     let to_eliminate: Vec<PlayerId> = state
         .commander_damage
         .iter()
         .filter(|entry| entry.damage >= threshold)
         .map(|entry| entry.player)
         .filter(|pid| !state.eliminated_players.contains(pid))
+        .filter(|pid| !player_has_cant_lose(state, *pid))
         .collect();
 
     for player_id in to_eliminate {
@@ -1492,6 +1538,99 @@ mod tests {
         assert!(
             state.objects.contains_key(&id),
             "Token on stack should survive SBA"
+        );
+    }
+
+    // --- CR 104.3b: CantLoseTheGame SBA prevention tests ---
+
+    /// Helper: add a permanent with CantLoseTheGame static affecting its controller.
+    fn add_cant_lose_permanent(state: &mut GameState, owner: PlayerId) -> ObjectId {
+        use crate::types::ability::StaticDefinition;
+        let id = create_object(
+            state,
+            CardId(100),
+            owner,
+            "Platinum Angel".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&id).unwrap().static_definitions.push(
+            StaticDefinition::new(StaticMode::CantLoseTheGame).affected(TargetFilter::Typed(
+                TypedFilter::default().controller(ControllerRef::You),
+            )),
+        );
+        id
+    }
+
+    #[test]
+    fn sba_cant_lose_prevents_life_elimination() {
+        let mut state = setup();
+        // Set player 0 to 0 life
+        state.players[0].life = 0;
+        // Add Platinum Angel for player 0
+        add_cant_lose_permanent(&mut state, PlayerId(0));
+
+        let mut events = Vec::new();
+        check_state_based_actions(&mut state, &mut events);
+
+        // Player 0 should NOT be eliminated
+        assert!(
+            !state.players[0].is_eliminated,
+            "Player with CantLoseTheGame at 0 life should not be eliminated"
+        );
+        assert!(!state.eliminated_players.contains(&PlayerId(0)));
+    }
+
+    #[test]
+    fn sba_cant_lose_prevents_draw_from_empty() {
+        let mut state = setup();
+        // Mark player 0 as having drawn from empty library
+        state.players[0].drew_from_empty_library = true;
+        // Add Platinum Angel for player 0
+        add_cant_lose_permanent(&mut state, PlayerId(0));
+
+        let mut events = Vec::new();
+        check_state_based_actions(&mut state, &mut events);
+
+        // Player 0 should NOT be eliminated
+        assert!(
+            !state.players[0].is_eliminated,
+            "Player with CantLoseTheGame who drew from empty should not be eliminated"
+        );
+    }
+
+    #[test]
+    fn sba_cant_lose_prevents_poison_elimination() {
+        let mut state = setup();
+        // Give player 0 ten poison counters
+        state.players[0].poison_counters = 10;
+        // Add Platinum Angel for player 0
+        add_cant_lose_permanent(&mut state, PlayerId(0));
+
+        let mut events = Vec::new();
+        check_state_based_actions(&mut state, &mut events);
+
+        // Player 0 should NOT be eliminated
+        assert!(
+            !state.players[0].is_eliminated,
+            "Player with CantLoseTheGame with 10 poison should not be eliminated"
+        );
+    }
+
+    #[test]
+    fn sba_cant_lose_does_not_affect_opponent() {
+        let mut state = setup();
+        // Set player 1 to 0 life
+        state.players[1].life = 0;
+        // Add Platinum Angel for player 0 — this should NOT protect player 1
+        add_cant_lose_permanent(&mut state, PlayerId(0));
+
+        let mut events = Vec::new();
+        check_state_based_actions(&mut state, &mut events);
+
+        // Player 1 SHOULD be eliminated (not protected)
+        assert!(
+            state.players[1].is_eliminated,
+            "Opponent of CantLoseTheGame controller should still be eliminated"
         );
     }
 }

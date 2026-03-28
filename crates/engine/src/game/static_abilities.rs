@@ -102,6 +102,12 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     registry.insert(StaticMode::CantAttackAlone, handle_rule_mod);
     registry.insert(StaticMode::CantBlockAlone, handle_rule_mod);
     registry.insert(StaticMode::MayLookAtTopOfLibrary, handle_rule_mod);
+    // CR 104.3b: CantLoseTheGame — player can't lose the game (Platinum Angel).
+    // Runtime enforcement is in sba.rs::player_has_cant_lose().
+    registry.insert(StaticMode::CantLoseTheGame, handle_rule_mod);
+    // CR 104.2a: CantWinTheGame — opponents can't win the game (Platinum Angel).
+    // TODO: Full enforcement at game-end determination (elimination.rs).
+    registry.insert(StaticMode::CantWinTheGame, handle_rule_mod);
 
     // CR 614.1d: Zone-based restriction handlers.
     // Enforcement happens in zones.rs (CantEnterBattlefieldFrom) and casting.rs (CantCastFrom),
