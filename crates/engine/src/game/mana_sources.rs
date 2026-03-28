@@ -21,6 +21,9 @@ pub struct ManaSourceOption {
     /// True for Treasure-style costs (`Composite { Tap, Sacrifice }`).
     /// Used by auto-tap to deprioritize sacrifice sources as last resort.
     pub requires_sacrifice: bool,
+    /// True for costs like `{T}, Pay 1 life`.
+    /// Used by auto-tap to prefer equivalent sources that do not spend life.
+    pub requires_life_payment: bool,
 }
 
 /// Check whether an ability cost includes a tap component.
@@ -47,6 +50,16 @@ fn cost_requires_sacrifice(cost: &Option<AbilityCost>) -> bool {
                 }
             )
         }),
+        _ => false,
+    }
+}
+
+fn cost_requires_life_payment(cost: &Option<AbilityCost>) -> bool {
+    match cost {
+        Some(AbilityCost::PayLife { .. }) => true,
+        Some(AbilityCost::Composite { costs }) => costs
+            .iter()
+            .any(|c| matches!(c, AbilityCost::PayLife { .. })),
         _ => false,
     }
 }
@@ -147,6 +160,7 @@ fn land_mana_options(
                 ability_index: None,
                 mana_type,
                 requires_sacrifice: false,
+                requires_life_payment: false,
             });
         }
     }
@@ -175,12 +189,14 @@ fn scan_mana_abilities(
         }
 
         let sacrifice = cost_requires_sacrifice(&ability.cost);
+        let life_payment = cost_requires_life_payment(&ability.cost);
         for mana_type in mana_options_from_ability(ability) {
             let option = ManaSourceOption {
                 object_id,
                 ability_index: Some(ability_index),
                 mana_type,
                 requires_sacrifice: sacrifice,
+                requires_life_payment: life_payment,
             };
             if !options.contains(&option) {
                 options.push(option);
@@ -273,7 +289,7 @@ pub fn mana_type_to_color(mana_type: ManaType) -> Option<ManaColor> {
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::{AbilityDefinition, AbilityKind};
+    use crate::types::ability::{AbilityDefinition, AbilityKind, QuantityExpr};
     use crate::types::identifiers::CardId;
 
     fn verge_ability(color: ManaColor) -> AbilityDefinition {
@@ -472,6 +488,7 @@ mod tests {
         assert_eq!(options.len(), 1);
         assert_eq!(options[0].mana_type, ManaType::Green);
         assert!(!options[0].requires_sacrifice);
+        assert!(!options[0].requires_life_payment);
     }
 
     #[test]
@@ -549,7 +566,55 @@ mod tests {
             options.iter().all(|o| o.requires_sacrifice),
             "all Treasure options should require sacrifice"
         );
+        assert!(
+            options.iter().all(|o| !o.requires_life_payment),
+            "Treasure options should not require life payment"
+        );
         // Should have 5 color options
         assert_eq!(options.len(), 5);
+    }
+
+    #[test]
+    fn life_payment_mana_source_marks_life_cost() {
+        let mut state = GameState::new_two_player(42);
+        let town = create_object(
+            &mut state,
+            CardId(303),
+            PlayerId(0),
+            "Starting Town".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&town).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Mana {
+                    produced: ManaProduction::AnyOneColor {
+                        count: QuantityExpr::Fixed { value: 1 },
+                        color_options: vec![ManaColor::White, ManaColor::Blue],
+                    },
+                    restrictions: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Composite {
+                costs: vec![AbilityCost::Tap, AbilityCost::PayLife { amount: 1 }],
+            }),
+        );
+
+        let options = activatable_land_mana_options(&state, town, PlayerId(0));
+        assert!(
+            !options.is_empty(),
+            "Starting Town should expose mana options"
+        );
+        assert!(
+            options.iter().all(|o| o.requires_life_payment),
+            "all colored Starting Town options should be marked as life-payment options"
+        );
+        assert!(
+            options.iter().all(|o| !o.requires_sacrifice),
+            "Starting Town should not be treated as a sacrifice source"
+        );
     }
 }

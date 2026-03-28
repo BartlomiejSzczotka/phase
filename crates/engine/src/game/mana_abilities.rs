@@ -81,11 +81,17 @@ fn pay_mana_ability_cost(
         Some(AbilityCost::Tap) => {
             tap_source(state, source_id, events)?;
         }
+        Some(AbilityCost::PayLife { amount }) => {
+            pay_life_cost(state, player, *amount, events)?;
+        }
         Some(AbilityCost::Composite { costs }) => {
             for sub_cost in costs {
                 match sub_cost {
                     AbilityCost::Tap => {
                         tap_source(state, source_id, events)?;
+                    }
+                    AbilityCost::PayLife { amount } => {
+                        pay_life_cost(state, player, *amount, events)?;
                     }
                     AbilityCost::Sacrifice {
                         target: TargetFilter::SelfRef,
@@ -111,6 +117,28 @@ fn pay_mana_ability_cost(
         }
         None => {}
     }
+    Ok(())
+}
+
+fn pay_life_cost(
+    state: &mut GameState,
+    player: PlayerId,
+    amount: u32,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EngineError> {
+    // CR 118.3 + CR 118.3b: A player can pay life as a cost only if they have enough life,
+    // and paying life subtracts that amount from their life total immediately.
+    let player_state = &mut state.players[player.0 as usize];
+    if player_state.life < amount as i32 {
+        return Err(EngineError::ActionNotAllowed(
+            "Not enough life to pay mana ability cost".to_string(),
+        ));
+    }
+    player_state.life -= amount as i32;
+    events.push(GameEvent::LifeChanged {
+        player_id: player,
+        amount: -(amount as i32),
+    });
     Ok(())
 }
 
@@ -357,6 +385,61 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, GameEvent::PermanentTapped { .. })));
+    }
+
+    #[test]
+    fn resolve_composite_cost_taps_pays_life_and_produces_mana() {
+        let mut state = GameState::new_two_player(42);
+        let obj_id = create_object(
+            &mut state,
+            CardId(12),
+            PlayerId(0),
+            "Starting Town".to_string(),
+            Zone::Battlefield,
+        );
+
+        let def = AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Mana {
+                produced: ManaProduction::AnyOneColor {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    color_options: vec![ManaColor::White, ManaColor::Blue],
+                },
+                restrictions: vec![],
+                expiry: None,
+            },
+        )
+        .cost(AbilityCost::Composite {
+            costs: vec![AbilityCost::Tap, AbilityCost::PayLife { amount: 1 }],
+        });
+
+        let mut events = Vec::new();
+        resolve_mana_ability(
+            &mut state,
+            obj_id,
+            PlayerId(0),
+            &def,
+            &mut events,
+            Some(ManaType::Blue),
+        )
+        .unwrap();
+
+        assert!(state.objects.get(&obj_id).unwrap().tapped);
+        assert_eq!(state.players[0].life, 19);
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Blue), 1);
+        assert!(events.iter().any(|e| matches!(
+            e,
+            GameEvent::LifeChanged {
+                player_id,
+                amount: -1,
+            } if *player_id == PlayerId(0)
+        )));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, GameEvent::PermanentTapped { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, GameEvent::ManaAdded { .. })));
     }
 
     #[test]

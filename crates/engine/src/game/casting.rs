@@ -2162,6 +2162,48 @@ mod tests {
         obj_id
     }
 
+    fn create_starting_town(state: &mut GameState, player: PlayerId, card_id: CardId) -> ObjectId {
+        let obj_id = create_object(
+            state,
+            card_id,
+            player,
+            "Starting Town".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Mana {
+                    produced: crate::types::ability::ManaProduction::Colorless {
+                        count: QuantityExpr::Fixed { value: 1 },
+                    },
+                    restrictions: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Tap),
+        );
+        obj.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Mana {
+                    produced: crate::types::ability::ManaProduction::AnyOneColor {
+                        count: QuantityExpr::Fixed { value: 1 },
+                        color_options: vec![ManaColor::White, ManaColor::Blue],
+                    },
+                    restrictions: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Composite {
+                costs: vec![AbilityCost::Tap, AbilityCost::PayLife { amount: 1 }],
+            }),
+        );
+        obj_id
+    }
+
     fn create_targeted_activated_permanent(state: &mut GameState, player: PlayerId) -> ObjectId {
         let obj_id = create_object(
             state,
@@ -3981,6 +4023,93 @@ mod tests {
                 GameAction::CastSpell { object_id, .. } if *object_id == elf
             )),
             "CastSpell should appear in legal_actions"
+        );
+    }
+
+    #[test]
+    fn counterspell_with_starting_town_mana_appears_in_legal_actions() {
+        use crate::ai_support::legal_actions;
+        use crate::game::derived::derive_display_state;
+        use crate::types::actions::GameAction;
+
+        let mut state = setup_game_at_main_phase();
+        state.active_player = PlayerId(1);
+        state.priority_player = PlayerId(0);
+        state.waiting_for = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+
+        create_starting_town(&mut state, PlayerId(0), CardId(121));
+        add_basic_land(&mut state, CardId(120), "Island", "Island");
+
+        let counterspell = create_object(
+            &mut state,
+            CardId(122),
+            PlayerId(0),
+            "Test Counterspell".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&counterspell).unwrap();
+            obj.card_types.core_types.push(CoreType::Instant);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Counter {
+                    target: TargetFilter::Typed(crate::types::ability::TypedFilter::card()),
+                    source_static: None,
+                    unless_payment: None,
+                },
+            ));
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 1,
+            };
+        }
+
+        let creature_spell = create_object(
+            &mut state,
+            CardId(123),
+            PlayerId(1),
+            "Opponent Creature".to_string(),
+            Zone::Stack,
+        );
+        {
+            let obj = state.objects.get_mut(&creature_spell).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+        }
+        state.stack.push(StackEntry {
+            id: creature_spell,
+            source_id: creature_spell,
+            controller: PlayerId(1),
+            kind: StackEntryKind::Spell {
+                card_id: CardId(123),
+                ability: ResolvedAbility::new(
+                    Effect::Unimplemented {
+                        name: "Creature".to_string(),
+                        description: None,
+                    },
+                    vec![],
+                    creature_spell,
+                    PlayerId(1),
+                ),
+                casting_variant: CastingVariant::Normal,
+            },
+        });
+
+        derive_display_state(&mut state);
+
+        assert!(
+            can_cast_object_now(&state, PlayerId(0), counterspell),
+            "Counterspell should be castable with Island plus Starting Town's life-payment mana"
+        );
+
+        let actions = legal_actions(&state);
+        assert!(
+            actions.iter().any(|action| matches!(
+                action,
+                GameAction::CastSpell { object_id, .. } if *object_id == counterspell
+            )),
+            "Counterspell should appear in legal_actions during the opponent's spell priority window"
         );
     }
 

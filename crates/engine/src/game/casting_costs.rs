@@ -1117,22 +1117,23 @@ pub(super) fn auto_tap_mana_sources(
     //            3 = deprioritized source, 4 = sacrifice-for-mana (Treasure — irreversible)
     available.sort_by_key(|option| {
         if option.requires_sacrifice {
-            return 4; // sacrifice is irreversible — always last
+            return (4, false); // sacrifice is irreversible — always last
         }
         if deprioritize_source == Some(option.object_id) {
-            return 3;
+            return (3, option.requires_life_payment);
         }
         let obj = state.objects.get(&option.object_id);
         let is_land = obj.is_some_and(|o| o.card_types.core_types.contains(&CoreType::Land));
         let is_creature =
             obj.is_some_and(|o| o.card_types.core_types.contains(&CoreType::Creature));
-        if is_land && is_creature {
+        let base_tier = if is_land && is_creature {
             2 // animated lands (e.g. Earthbender) — preserve for combat
         } else if is_land {
             0
         } else {
             1 // non-land mana dork (creature, artifact, etc.)
-        }
+        };
+        (base_tier, option.requires_life_payment)
     });
 
     let mut to_tap: Vec<ManaSourceOption> = Vec::new();
@@ -1244,10 +1245,12 @@ pub(super) fn auto_tap_mana_sources(
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::{AbilityKind, Effect, QuantityExpr};
+    use crate::types::ability::{
+        AbilityCost, AbilityDefinition, AbilityKind, Effect, QuantityExpr,
+    };
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::CardId;
-    use crate::types::mana::ManaCost;
+    use crate::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType};
 
     fn make_pending(source_id: ObjectId) -> PendingCast {
         PendingCast {
@@ -1268,6 +1271,94 @@ mod tests {
             casting_variant: CastingVariant::Normal,
             distribute: None,
         }
+    }
+
+    fn create_starting_town(state: &mut GameState, card_id: CardId) -> ObjectId {
+        let town = create_object(
+            state,
+            card_id,
+            PlayerId(0),
+            "Starting Town".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&town).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Mana {
+                    produced: crate::types::ability::ManaProduction::Colorless {
+                        count: QuantityExpr::Fixed { value: 1 },
+                    },
+                    restrictions: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Tap),
+        );
+        obj.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Mana {
+                    produced: crate::types::ability::ManaProduction::AnyOneColor {
+                        count: QuantityExpr::Fixed { value: 1 },
+                        color_options: vec![ManaColor::White, ManaColor::Blue],
+                    },
+                    restrictions: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Composite {
+                costs: vec![AbilityCost::Tap, AbilityCost::PayLife { amount: 1 }],
+            }),
+        );
+        town
+    }
+
+    #[test]
+    fn auto_tap_prefers_non_life_mana_sources_when_equivalent() {
+        let mut state = GameState::new_two_player(42);
+        create_starting_town(&mut state, CardId(10));
+        let island = create_object(
+            &mut state,
+            CardId(11),
+            PlayerId(0),
+            "Island".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&island).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.card_types.subtypes.push("Island".to_string());
+        }
+
+        let mut events = Vec::new();
+        auto_tap_mana_sources(
+            &mut state,
+            PlayerId(0),
+            &ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 1,
+            },
+            &mut events,
+            None,
+        );
+
+        assert_eq!(
+            state.players[0].life, 20,
+            "auto-pay should avoid paying life"
+        );
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Blue), 1);
+        assert_eq!(
+            state.players[0].mana_pool.count_color(ManaType::Colorless),
+            1
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, GameEvent::LifeChanged { amount: -1, .. })),
+            "auto-pay should not emit a life payment when an equivalent non-life line exists"
+        );
     }
 
     #[test]
