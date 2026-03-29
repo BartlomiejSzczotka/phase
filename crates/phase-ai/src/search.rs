@@ -336,10 +336,6 @@ fn deterministic_choice(
         return Some(GameAction::DecideOptionalCost { pay });
     }
 
-    if let WaitingFor::OptionalEffectChoice { .. } = &state.waiting_for {
-        return Some(GameAction::DecideOptionalEffect { accept: true });
-    }
-
     if let WaitingFor::DiscardToHandSize { cards, count, .. } = &state.waiting_for {
         let mut scored: Vec<_> = cards
             .iter()

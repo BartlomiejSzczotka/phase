@@ -1,7 +1,8 @@
 use engine::game::filter::matches_target_filter;
-use engine::types::ability::{Effect, QuantityExpr, TargetFilter, TargetRef};
+use engine::types::ability::{Effect, QuantityExpr, ReplacementMode, TargetFilter, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
+use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::{Keyword, WardCost};
 use engine::types::zones::Zone;
@@ -31,6 +32,10 @@ impl TacticalPolicy for AntiSelfHarmPolicy {
                 .iter()
                 .map(|target| score_target_ref(ctx, target))
                 .sum(),
+            // Penalise accepting an optional effect whose life cost would kill or nearly kill us.
+            GameAction::DecideOptionalEffect { accept: true } => {
+                score_optional_effect_accept(ctx)
+            }
             _ => 0.0,
         }
     }
@@ -101,6 +106,44 @@ fn score_pre_cast(ctx: &PolicyContext<'_>) -> f64 {
     }
 
     penalty
+}
+
+/// Penalise accepting an optional effect when the life cost would be lethal or near-lethal.
+/// Applies to ETB replacements like Multiversal Passage ("pay 2 life or enter tapped").
+fn score_optional_effect_accept(ctx: &PolicyContext<'_>) -> f64 {
+    let WaitingFor::OptionalEffectChoice { player, source_id, .. } = &ctx.state.waiting_for else {
+        return 0.0;
+    };
+    let life = ctx.state.players[player.0 as usize].life;
+    let Some(cost) = optional_effect_life_cost(ctx, *source_id) else {
+        return 0.0;
+    };
+    if life <= cost {
+        -100.0
+    } else {
+        0.0
+    }
+}
+
+/// Walk a source object's optional replacement definitions to find a fixed LoseLife cost.
+fn optional_effect_life_cost(ctx: &PolicyContext<'_>, source_id: ObjectId) -> Option<i32> {
+    let obj = ctx.state.objects.get(&source_id)?;
+    obj.replacement_definitions
+        .iter()
+        .filter(|r| matches!(r.mode, ReplacementMode::Optional { .. }))
+        .find_map(|r| {
+            let mut node = r.execute.as_deref();
+            while let Some(def) = node {
+                if let Effect::LoseLife {
+                    amount: QuantityExpr::Fixed { value },
+                } = &*def.effect
+                {
+                    return Some(*value);
+                }
+                node = def.sub_ability.as_deref();
+            }
+            None
+        })
 }
 
 fn has_opponent_bounce_target(ctx: &PolicyContext<'_>, effects: &[&Effect]) -> bool {
