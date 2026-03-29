@@ -44,6 +44,9 @@ client/src-tauri/Cargo.lock
 # Environment
 .env
 
+# Reports
+migration-report.json
+
 # OS
 .DS_Store
 Thumbs.db
