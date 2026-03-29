@@ -1,5 +1,6 @@
 ---
 source: crates/engine/tests/oracle_parser.rs
+assertion_line: 92
 expression: result
 ---
 {
@@ -29,7 +30,7 @@ expression: result
         "effect": {
           "type": "PutAtLibraryPosition",
           "target": {
-            "type": "Any"
+            "type": "ParentTarget"
           },
           "position": {
             "type": "Bottom"

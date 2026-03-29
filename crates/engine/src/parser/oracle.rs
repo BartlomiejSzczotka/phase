@@ -28,7 +28,7 @@ use super::oracle_modal::{
 };
 use super::oracle_replacement::parse_replacement_line;
 use super::oracle_saga::{is_saga_chapter, parse_saga_chapters};
-use super::oracle_static::parse_static_line;
+use super::oracle_static::{parse_static_line, parse_static_line_multi};
 use super::oracle_trigger::parse_trigger_line;
 use super::oracle_util::{
     normalize_card_name_refs, parse_mana_symbols, parse_subtype, strip_reminder_text, TextPair,
@@ -654,8 +654,11 @@ pub fn parse_oracle_text(
                     i += 1;
                     continue;
                 }
-                if let Some(static_def) = parse_static_line(&static_line) {
-                    result.statics.push(static_def);
+                // Use parse_static_line_multi to capture compound statics
+                // (e.g., "attacks or blocks each combat if able" → MustAttack + MustBlock).
+                let multi = parse_static_line_multi(&static_line);
+                if !multi.is_empty() {
+                    result.statics.extend(multi);
                     i += 1;
                     continue;
                 }

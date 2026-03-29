@@ -183,6 +183,14 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         }
     }
 
+    // CR 508.1d / CR 509.1c: Subject-scoped "attack/block each combat if able" patterns.
+    // These apply MustAttack/MustBlock to a class of creatures (not just self).
+    // Compound forms ("attacks or blocks") produce multiple statics; return the first here.
+    // Use `parse_static_line_multi()` for callers that need all results.
+    if let Some(defs) = try_parse_scoped_must_attack_block(&lower, &text) {
+        return defs.into_iter().next();
+    }
+
     // --- "Each creature you control [with condition] assigns combat damage equal to its toughness" ---
     // CR 510.1c: Doran-class effects that cause creatures to use toughness for combat damage.
     if let Some(def) = parse_assigns_damage_from_toughness(&lower, &text) {
@@ -804,6 +812,23 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     None
+}
+
+/// Like `parse_static_line`, but returns all `StaticDefinition`s produced by a line.
+///
+/// Most lines produce zero or one static. Compound forms like
+/// "All creatures attack or block each combat if able" produce two
+/// (one `MustAttack`, one `MustBlock`). Callers that push into a `Vec`
+/// should prefer this over `parse_static_line` to avoid silently dropping modes.
+pub fn parse_static_line_multi(text: &str) -> Vec<StaticDefinition> {
+    let stripped = strip_reminder_text(text);
+    let lower = stripped.to_lowercase();
+    // Check compound must-attack/block first — may return multiple.
+    if let Some(defs) = try_parse_scoped_must_attack_block(&lower, &stripped) {
+        return defs;
+    }
+    // Fall back to the single-return parser.
+    parse_static_line(text).into_iter().collect()
 }
 
 /// CR 205.3m: Try to parse a compound subtype descriptor like "Ninja and Rogue" or "Elf or Warrior"
@@ -3455,6 +3480,64 @@ fn extract_cant_untap_condition(lower: &str) -> Option<StaticCondition> {
             text: condition_text.to_string(),
         })
     })
+}
+
+/// CR 508.1d / CR 509.1c: Parse subject-scoped "attack/block each combat if able" patterns.
+///
+/// Handles "All creatures attack each combat if able", "Creatures you control attack each
+/// combat if able", "Creatures your opponents control attack each combat if able", and the
+/// combined "attacks or blocks each combat if able" variant.
+fn try_parse_scoped_must_attack_block(lower: &str, text: &str) -> Option<Vec<StaticDefinition>> {
+    // Strip trailing period for matching.
+    let clean = lower.trim_end_matches('.');
+
+    // Try to extract the verb phrase suffix and determine the mode(s).
+    let (subject, modes) = if let Some(subj) = clean.strip_suffix(" attack each combat if able") {
+        (subj, vec![StaticMode::MustAttack])
+    } else if let Some(subj) = clean.strip_suffix(" attacks each combat if able") {
+        (subj, vec![StaticMode::MustAttack])
+    } else if let Some(subj) = clean.strip_suffix(" attack each turn if able") {
+        (subj, vec![StaticMode::MustAttack])
+    } else if let Some(subj) = clean.strip_suffix(" block each combat if able") {
+        (subj, vec![StaticMode::MustBlock])
+    } else if let Some(subj) = clean.strip_suffix(" blocks each combat if able") {
+        (subj, vec![StaticMode::MustBlock])
+    } else if let Some(subj) = clean.strip_suffix(" block each turn if able") {
+        (subj, vec![StaticMode::MustBlock])
+    } else if let Some(subj) = clean.strip_suffix(" attacks or blocks each combat if able") {
+        (subj, vec![StaticMode::MustAttack, StaticMode::MustBlock])
+    } else if let Some(subj) = clean.strip_suffix(" attack or block each combat if able") {
+        (subj, vec![StaticMode::MustAttack, StaticMode::MustBlock])
+    } else {
+        return None;
+    };
+
+    // Determine the affected filter from the subject phrase.
+    let affected = match subject {
+        "all creatures" | "each creature" => TargetFilter::Typed(TypedFilter::creature()),
+        "creatures you control" => {
+            TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You))
+        }
+        "creatures your opponents control" => {
+            TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::Opponent))
+        }
+        // Self-ref: "this creature" / card name — handled by the existing
+        // RuleStaticPredicate path, so we skip here.
+        _ => return None,
+    };
+
+    // Emit one StaticDefinition per mode. For compound "attacks or blocks each
+    // combat if able", this produces both MustAttack and MustBlock statics.
+    Some(
+        modes
+            .into_iter()
+            .map(|mode| {
+                StaticDefinition::new(mode)
+                    .affected(affected.clone())
+                    .description(text.to_string())
+            })
+            .collect(),
+    )
 }
 
 #[cfg(test)]

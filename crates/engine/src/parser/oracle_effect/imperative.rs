@@ -1531,6 +1531,13 @@ pub(super) fn parse_imperative_family_ast(
         "amass" => try_parse_amass(text, lower).map(ImperativeFamilyAst::GainKeyword),
         // CR 701.37a: "monstrosity N"
         "monstrosity" => try_parse_monstrosity(lower).map(ImperativeFamilyAst::GainKeyword),
+        // CR 701.46a: "adapt N"
+        "adapt" => try_parse_adapt(lower).map(ImperativeFamilyAst::GainKeyword),
+        // CR 701.39a: "bolster N"
+        "bolster" => try_parse_bolster(lower).map(ImperativeFamilyAst::GainKeyword),
+        // CR 509.1b / CR 508.1d: "can't be blocked [this turn]", "can't attack", etc.
+        // These appear as subjectless clauses in compound effects (e.g., "gets +2/+0 and can't be blocked this turn").
+        "can't" | "cannot" => try_parse_subjectless_cant(lower),
         // CR 705: "flip a coin"
         "flip" | "flips" => {
             if lower == "flip a coin" || lower == "flips a coin" {
@@ -2129,6 +2136,55 @@ fn try_parse_monstrosity(lower: &str) -> Option<Effect> {
     let count = parse_count_expr(rest).map(|(q, _)| q)?;
 
     Some(Effect::Monstrosity { count })
+}
+
+/// CR 701.46a: Parse "adapt N" from Oracle text.
+///
+/// Used inside activated ability effect text (after the colon).
+fn try_parse_adapt(lower: &str) -> Option<Effect> {
+    let rest = lower.strip_prefix("adapt ")?.trim().trim_end_matches('.');
+
+    let count = parse_count_expr(rest).map(|(q, _)| q)?;
+
+    Some(Effect::Adapt { count })
+}
+
+/// CR 509.1b / CR 508.1d: Parse subjectless "can't" clauses that appear in compound effects.
+///
+/// Handles "can't be blocked [this turn]", "can't attack [this turn]", "can't block [this turn]",
+/// and compound forms like "can't attack or block". These delegate to the subject.rs
+/// static-granting machinery, wrapping the result in a `GenericEffect`.
+fn try_parse_subjectless_cant(lower: &str) -> Option<ImperativeFamilyAst> {
+    use crate::parser::oracle_effect::subject::parse_restriction_modes;
+
+    let trimmed = lower.trim_end_matches('.');
+
+    // Determine duration from the suffix: "this combat" → UntilEndOfCombat,
+    // "this turn" (or bare) → UntilEndOfTurn.
+    let (clean, duration) = if let Some(c) = trimmed.strip_suffix(" this combat") {
+        (c, Duration::UntilEndOfCombat)
+    } else if let Some(c) = trimmed.strip_suffix(" this turn") {
+        (c, Duration::UntilEndOfTurn)
+    } else {
+        (trimmed, Duration::UntilEndOfTurn)
+    };
+
+    let modes = parse_restriction_modes(clean)?;
+    let statics: Vec<StaticDefinition> = modes.into_iter().map(StaticDefinition::new).collect();
+    Some(ImperativeFamilyAst::GainKeyword(Effect::GenericEffect {
+        static_abilities: statics,
+        duration: Some(duration),
+        target: None,
+    }))
+}
+
+/// CR 701.39a: Parse "bolster N" from Oracle text.
+fn try_parse_bolster(lower: &str) -> Option<Effect> {
+    let rest = lower.strip_prefix("bolster ")?.trim().trim_end_matches('.');
+
+    let count = parse_count_expr(rest).map(|(q, _)| q)?;
+
+    Some(Effect::Bolster { count })
 }
 
 #[cfg(test)]

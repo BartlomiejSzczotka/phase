@@ -12,6 +12,7 @@ use crate::types::identifiers::{ObjectId, TrackedSetId};
 use crate::types::mana::ManaCost;
 use crate::types::player::PlayerId;
 
+pub mod adapt;
 pub mod add_restriction;
 pub mod additional_combat;
 pub mod amass;
@@ -19,6 +20,7 @@ pub mod animate;
 pub mod attach;
 pub mod become_copy;
 pub mod become_monarch;
+pub mod bolster;
 pub mod bounce;
 pub mod cast_from_zone;
 pub mod change_targets;
@@ -214,6 +216,8 @@ pub fn resolve_effect(
         Effect::ChangeTargets { .. } => change_targets::resolve(state, ability, events),
         Effect::Amass { .. } => amass::resolve(state, ability, events),
         Effect::Monstrosity { .. } => monstrosity::resolve(state, ability, events),
+        Effect::Adapt { .. } => adapt::resolve(state, ability, events),
+        Effect::Bolster { .. } => bolster::resolve(state, ability, events),
         Effect::ManifestDread => manifest_dread::resolve(state, ability, events),
         Effect::ExtraTurn { .. } => extra_turn::resolve(state, ability, events),
         Effect::Double { .. } => double::resolve(state, ability, events),

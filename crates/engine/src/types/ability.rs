@@ -2486,6 +2486,19 @@ pub enum Effect {
         /// Number of +1/+1 counters to place.
         count: QuantityExpr,
     },
+    /// CR 701.39a: Bolster N — choose creature you control with least toughness,
+    /// put N +1/+1 counters on it.
+    Bolster {
+        /// Number of +1/+1 counters to place.
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
+    },
+    /// CR 701.46a: Adapt N — if no +1/+1 counters, put N +1/+1 counters on this permanent.
+    Adapt {
+        /// Number of +1/+1 counters to place.
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
+    },
     /// CR 702.166a: Forage — exile three cards from your graveyard or sacrifice a Food.
     Forage,
     /// CR 702.163a: Collect evidence N — exile cards with total mana value N or more from graveyard.
@@ -2738,6 +2751,8 @@ impl Effect {
             | Effect::RingTemptsYou
             | Effect::Amass { .. }
             | Effect::Monstrosity { .. }
+            | Effect::Bolster { .. }
+            | Effect::Adapt { .. }
             | Effect::Forage
             | Effect::CollectEvidence { .. }
             | Effect::Endure { .. }
@@ -2845,6 +2860,8 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::ChangeTargets { .. } => "ChangeTargets",
         Effect::Amass { .. } => "Amass",
         Effect::Monstrosity { .. } => "Monstrosity",
+        Effect::Bolster { .. } => "Bolster",
+        Effect::Adapt { .. } => "Adapt",
         Effect::ManifestDread => "ManifestDread",
         Effect::ExtraTurn { .. } => "ExtraTurn",
         Effect::AdditionalCombatPhase { .. } => "AdditionalCombatPhase",
@@ -2963,6 +2980,8 @@ pub enum EffectKind {
     ChangeTargets,
     Amass,
     Monstrosity,
+    Bolster,
+    Adapt,
     ManifestDread,
     ExtraTurn,
     AdditionalCombatPhase,
@@ -3080,6 +3099,8 @@ impl From<&Effect> for EffectKind {
             Effect::ChangeTargets { .. } => EffectKind::ChangeTargets,
             Effect::Amass { .. } => EffectKind::Amass,
             Effect::Monstrosity { .. } => EffectKind::Monstrosity,
+            Effect::Bolster { .. } => EffectKind::Bolster,
+            Effect::Adapt { .. } => EffectKind::Adapt,
             Effect::ManifestDread => EffectKind::ManifestDread,
             Effect::ExtraTurn { .. } => EffectKind::ExtraTurn,
             Effect::AdditionalCombatPhase { .. } => EffectKind::AdditionalCombatPhase,

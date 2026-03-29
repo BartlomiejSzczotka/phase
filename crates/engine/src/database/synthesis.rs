@@ -5,9 +5,9 @@ use crate::game::printed_cards::derive_colors_from_mana_cost;
 use crate::parser::oracle::parse_oracle_text;
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost, ContinuousModification,
-    ControllerRef, Duration, Effect, ManaProduction, NinjutsuVariant, PtValue, QuantityExpr,
-    RuntimeHandler, StaticDefinition, TargetFilter, TriggerCondition, TriggerDefinition,
-    TypedFilter,
+    ControllerRef, Duration, Effect, FilterProp, ManaProduction, NinjutsuVariant, PtValue,
+    QuantityExpr, RuntimeHandler, StaticDefinition, TargetFilter, TriggerCondition,
+    TriggerDefinition, TypeFilter, TypedFilter,
 };
 use crate::types::card::{CardFace, CardLayout};
 use crate::types::card_type::{CardType, CoreType, Supertype};
@@ -15,6 +15,7 @@ use crate::types::keywords::{Keyword, PartnerType};
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::phase::Phase;
 use crate::types::triggers::TriggerMode;
+use crate::types::zones::Zone;
 
 // ---------------------------------------------------------------------------
 // Shared helpers for building card faces from MTGJSON data
@@ -385,6 +386,96 @@ pub fn compute_brawl_commander(mtgjson: &super::mtgjson::AtomicCard, face: &Card
     mtgjson_says || type_line_says
 }
 
+/// CR 702.29a/e: Synthesize Cycling and Typecycling keywords into activated abilities.
+///
+/// Cycling: "[Cost], Discard this card: Draw a card." (activated from hand)
+/// Typecycling: "[Cost], Discard this card: Search library for a [type] card,
+///   reveal it, put it into your hand. Then shuffle."
+pub fn synthesize_cycling(face: &mut CardFace) {
+    let cycling_abilities: Vec<AbilityDefinition> = face
+        .keywords
+        .iter()
+        .filter_map(|kw| match kw {
+            // CR 702.29a: Basic cycling — discard self, draw a card.
+            Keyword::Cycling(cost) => {
+                let composite_cost = AbilityCost::Composite {
+                    costs: vec![
+                        AbilityCost::Mana { cost: cost.clone() },
+                        // CR 702.29a: "Discard THIS card" — self_ref = true.
+                        AbilityCost::Discard {
+                            count: 1,
+                            filter: None,
+                            random: false,
+                            self_ref: true,
+                        },
+                    ],
+                };
+                let mut def = AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::Draw {
+                        count: QuantityExpr::Fixed { value: 1 },
+                    },
+                )
+                .cost(composite_cost);
+                def.activation_zone = Some(Zone::Hand);
+                Some(def)
+            }
+            // CR 702.29e: Typecycling — discard self, search library for [type] card.
+            Keyword::Typecycling { cost, subtype } => {
+                let composite_cost = AbilityCost::Composite {
+                    costs: vec![
+                        AbilityCost::Mana { cost: cost.clone() },
+                        AbilityCost::Discard {
+                            count: 1,
+                            filter: None,
+                            random: false,
+                            self_ref: true,
+                        },
+                    ],
+                };
+                let filter = typecycling_subtype_to_filter(subtype);
+                let shuffle_def = AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::Shuffle {
+                        target: TargetFilter::Controller,
+                    },
+                );
+                let mut def = AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::SearchLibrary {
+                        filter,
+                        count: 1,
+                        reveal: true,
+                    },
+                )
+                .cost(composite_cost);
+                def.activation_zone = Some(Zone::Hand);
+                def.sub_ability = Some(Box::new(shuffle_def));
+                Some(def)
+            }
+            _ => None,
+        })
+        .collect();
+
+    face.abilities.extend(cycling_abilities);
+}
+
+/// Convert a typecycling subtype string to a `TargetFilter` for library search.
+///
+/// Single subtypes (e.g., "Plains", "Forest") → subtype filter.
+/// "Basic Land" → supertype Basic + core type Land.
+fn typecycling_subtype_to_filter(subtype: &str) -> TargetFilter {
+    if subtype == "Basic Land" {
+        TargetFilter::Typed(TypedFilter::new(TypeFilter::Land).properties(vec![
+            FilterProp::HasSupertype {
+                value: Supertype::Basic,
+            },
+        ]))
+    } else {
+        TargetFilter::Typed(TypedFilter::card().subtype(subtype.to_string()))
+    }
+}
+
 /// Run all synthesis functions in canonical order on a card face.
 /// Both `oracle_loader.rs` and `oracle_gen.rs` call this to ensure the same
 /// complete set of synthesizers is applied.
@@ -399,6 +490,7 @@ pub fn synthesize_all(face: &mut CardFace) {
     // Warp: no synthesis needed — runtime handled by Keyword::Warp directly
     synthesize_mobilize(face);
     synthesize_level_up(face);
+    synthesize_cycling(face);
 }
 
 /// Build a `CardFace` from MTGJSON data, running the Oracle text parser and all synthesis.

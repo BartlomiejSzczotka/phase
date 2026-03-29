@@ -1134,6 +1134,8 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::CopyTokenOf { .. }
         | Effect::Amass { .. }
         | Effect::Monstrosity { .. }
+        | Effect::Adapt { .. }
+        | Effect::Bolster { .. }
         | Effect::Goad { .. }
         | Effect::ExchangeControl
         | Effect::ExtraTurn { .. }

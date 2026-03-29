@@ -569,10 +569,20 @@ pub fn validate_blockers(
             if !obj.card_types.core_types.contains(&CoreType::Creature) {
                 continue;
             }
+            // CR 509.1c: Check MustBlock — directly on this creature or from
+            // a cross-permanent static (e.g., "All creatures block each combat if able").
             let has_must_block = obj
                 .static_definitions
                 .iter()
-                .any(|sd| sd.mode == StaticMode::MustBlock);
+                .any(|sd| sd.mode == StaticMode::MustBlock)
+                || crate::game::static_abilities::check_static_ability(
+                    state,
+                    StaticMode::MustBlock,
+                    &crate::game::static_abilities::StaticCheckContext {
+                        target_id: Some(obj_id),
+                        ..Default::default()
+                    },
+                );
             if !has_must_block {
                 continue;
             }
@@ -633,10 +643,20 @@ pub fn declare_attackers(
         if !obj.card_types.core_types.contains(&CoreType::Creature) {
             continue;
         }
+        // CR 508.1d: Check for MustAttack — either directly on this creature
+        // or from a cross-permanent static (e.g., "All creatures attack each combat if able").
         let has_must_attack = obj
             .static_definitions
             .iter()
-            .any(|sd| sd.mode == StaticMode::MustAttack);
+            .any(|sd| sd.mode == StaticMode::MustAttack)
+            || crate::game::static_abilities::check_static_ability(
+                state,
+                StaticMode::MustAttack,
+                &crate::game::static_abilities::StaticCheckContext {
+                    target_id: Some(obj_id),
+                    ..Default::default()
+                },
+            );
         // CR 701.15b: Goaded creatures must attack each combat if able.
         let is_goaded = !obj.goaded_by.is_empty();
         if !has_must_attack && !is_goaded {

@@ -252,6 +252,19 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
         return Some(direct);
     }
 
+    // CR 702.29e: "basic landcycling {cost}" — multi-word typecycling variant.
+    // Must be checked before the single-word typecycling guard below.
+    if let Some(rest) = text.strip_prefix("basic landcycling") {
+        let cost_str = rest.trim();
+        if !cost_str.is_empty() {
+            let colon_form = format!("typecycling:Basic Land:{cost_str}");
+            let parsed: Keyword = colon_form.parse().unwrap();
+            if !matches!(parsed, Keyword::Unknown(_)) {
+                return Some(parsed);
+            }
+        }
+    }
+
     // CR 702.29: Typecycling — "{subtype}cycling {cost}" e.g. "plainscycling {2}"
     // Guard: subtype prefix must be a single word (no spaces) to avoid false positives.
     if let Some(cycling_pos) = text.find("cycling") {
@@ -524,6 +537,7 @@ pub fn keyword_display_name(keyword: &Keyword) -> String {
 pub(crate) fn is_keyword_cost_line(lower: &str) -> bool {
     let keyword_costs = [
         "cycling",
+        "basic landcycling",
         "flashback",
         "crew",
         "ward",

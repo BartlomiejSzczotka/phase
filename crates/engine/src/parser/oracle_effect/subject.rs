@@ -788,7 +788,7 @@ fn build_restriction_clause(
 
 /// Parse restriction predicates into one or more `StaticMode` variants.
 /// Handles simple ("can't block") and compound ("can't attack or block") patterns.
-fn parse_restriction_modes(lower: &str) -> Option<Vec<StaticMode>> {
+pub(crate) fn parse_restriction_modes(lower: &str) -> Option<Vec<StaticMode>> {
     // Simple restrictions
     if lower == "can't block" || lower == "cannot block" {
         return Some(vec![StaticMode::CantBlock]);
@@ -796,7 +796,11 @@ fn parse_restriction_modes(lower: &str) -> Option<Vec<StaticMode>> {
     if lower == "can't attack" || lower == "cannot attack" {
         return Some(vec![StaticMode::CantAttack]);
     }
-    if lower == "can't be blocked" || lower == "cannot be blocked" {
+    if lower == "can't be blocked"
+        || lower == "cannot be blocked"
+        || lower == "can't be blocked this turn"
+        || lower == "cannot be blocked this turn"
+    {
         return Some(vec![StaticMode::CantBeBlocked]);
     }
     // CR 508.1d + CR 509.1a: Compound "can't attack or block"
