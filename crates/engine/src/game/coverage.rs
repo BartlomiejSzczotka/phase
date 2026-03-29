@@ -2877,6 +2877,7 @@ fn condition_variant_name(cond: &AbilityCondition) -> &'static str {
         AbilityCondition::TargetHasKeywordInstead { .. } => "TargetHasKeywordInstead",
         AbilityCondition::TargetMatchesFilter { .. } => "TargetMatchesFilter",
         AbilityCondition::IsYourTurn { .. } => "IsYourTurn",
+        AbilityCondition::ZoneChangedThisWay { .. } => "ZoneChangedThisWay",
     }
 }
 

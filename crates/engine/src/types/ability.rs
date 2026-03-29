@@ -3577,6 +3577,12 @@ pub enum AbilityCondition {
         #[serde(default)]
         negated: bool,
     },
+    /// CR 608.2c: "If a [noun] was [verb]ed this way" — sub_ability executes only if
+    /// the parent effect produced a zone change involving an object matching the filter.
+    /// Evaluated by checking `state.last_zone_changed_ids` against the filter.
+    /// Handles both optional-targeting parents (empty targets → empty IDs → false)
+    /// and mandatory parents (type filter check on moved objects).
+    ZoneChangedThisWay { filter: TargetFilter },
 }
 
 /// Casting-time facts that flow with a spell from casting through resolution.

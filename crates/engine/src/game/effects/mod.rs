@@ -370,6 +370,7 @@ pub fn resolve_ability_chain(
     // across unrelated ability resolutions.
     if depth == 0 {
         state.last_revealed_ids.clear();
+        state.last_zone_changed_ids.clear();
     }
 
     // BeginGame abilities are handled at game-start setup, not during stack resolution
@@ -659,6 +660,16 @@ pub fn resolve_ability_chain(
         } // end shares_quality_failed else
     }
 
+    // CR 608.2c: Populate last_zone_changed_ids for ZoneChangedThisWay condition evaluation.
+    // Scans ZoneChanged events emitted by this effect, mirroring the forward_result pattern.
+    state.last_zone_changed_ids = events[events_before..]
+        .iter()
+        .filter_map(|e| match e {
+            GameEvent::ZoneChanged { object_id, .. } => Some(*object_id),
+            _ => None,
+        })
+        .collect();
+
     // CR 603.7: Record moved objects as a tracked set for delayed trigger pronouns.
     // Scans ZoneChanged events emitted by the just-resolved effect and stores the
     // affected object IDs so the downstream CreateDelayedTrigger can bind them.
@@ -908,16 +919,7 @@ fn evaluate_condition(
     match condition {
         AbilityCondition::AdditionalCostPaid => ability.context.additional_cost_paid,
         AbilityCondition::AdditionalCostNotPaid => !ability.context.additional_cost_paid,
-        AbilityCondition::IfYouDo => {
-            // CR 608.2c: Satisfied when the player performed the optional effect.
-            // For optional-targeting abilities ("up to one target"), resolved with ≥1 target
-            // is equivalent to "you chose to act on a target."
-            let optional_targeting_performed =
-                ability.optional_targeting && !ability.targets.is_empty();
-            (ability.context.optional_effect_performed || optional_targeting_performed)
-                && !state.cost_payment_failed_flag
-        }
-        AbilityCondition::IfAPlayerDoes => {
+        AbilityCondition::IfYouDo | AbilityCondition::IfAPlayerDoes => {
             ability.context.optional_effect_performed && !state.cost_payment_failed_flag
         }
         // CR 603.12: "When you do" — reflexive trigger that always fires.
@@ -1044,6 +1046,20 @@ fn evaluate_condition(
         // CR 608.2c: "If it's your turn" — check active player against controller.
         AbilityCondition::IsYourTurn { negated } => {
             (state.active_player == ability.controller) != *negated
+        }
+        // CR 608.2c: "If a [noun] was [verb]ed this way" — check if any zone-changed
+        // object matches the type filter. For optional-targeting parents with no targets
+        // chosen, last_zone_changed_ids is empty → returns false.
+        AbilityCondition::ZoneChangedThisWay { filter } => {
+            state.last_zone_changed_ids.iter().any(|&id| {
+                crate::game::filter::matches_target_filter_controlled(
+                    state,
+                    id,
+                    filter,
+                    ability.source_id,
+                    ability.controller,
+                )
+            })
         }
     }
 }

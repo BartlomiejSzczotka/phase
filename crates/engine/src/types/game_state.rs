@@ -1252,6 +1252,13 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub last_revealed_ids: Vec<ObjectId>,
 
+    /// ObjectIds of objects moved by the most recent zone-change effect.
+    /// Used by AbilityCondition::ZoneChangedThisWay to gate sub_abilities on
+    /// whether the parent effect moved an object matching a type filter.
+    /// Cleared at depth 0 in resolve_ability_chain.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub last_zone_changed_ids: Vec<ObjectId>,
+
     /// CR 722: The current monarch, if any. At the beginning of the monarch's end step,
     /// the monarch draws a card. When a creature deals combat damage to the monarch,
     /// the creature's controller becomes the monarch.
@@ -1427,6 +1434,7 @@ impl GameState {
             log_player_names: Vec::new(),
             last_created_token_ids: Vec::new(),
             last_revealed_ids: Vec::new(),
+            last_zone_changed_ids: Vec::new(),
             monarch: None,
             restrictions: Vec::new(),
             pending_damage_prevention: Vec::new(),
@@ -1563,6 +1571,7 @@ impl PartialEq for GameState {
             && self.pending_cast == other.pending_cast
             && self.last_named_choice == other.last_named_choice
             && self.last_revealed_ids == other.last_revealed_ids
+            && self.last_zone_changed_ids == other.last_zone_changed_ids
             && self.lki_cache == other.lki_cache
     }
 }
