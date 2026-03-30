@@ -298,8 +298,12 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
             choice_type,
             ..
         } => named_choice_actions(state, *player, options, choice_type),
-        WaitingFor::ModeChoice { player, modal, .. } => {
-            if modal.allow_repeat_modes {
+        WaitingFor::ModeChoice {
+            player,
+            modal,
+            pending_cast,
+        } => {
+            let actions = if modal.allow_repeat_modes {
                 // CR 700.2d: Use sequence generation that allows repeated indices.
                 crate::game::ability_utils::generate_modal_index_sequences(modal)
                     .into_iter()
@@ -318,6 +322,40 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
                     modal.min_choices,
                     modal.max_choices,
                 )
+            };
+            // CR 702.172b: For Spree spells, filter out mode combinations the player
+            // cannot afford. Each mode has an additional cost that sums with the base cost.
+            if modal.mode_costs.is_empty() {
+                actions
+            } else {
+                actions
+                    .into_iter()
+                    .filter(|ca| {
+                        let indices = match &ca.action {
+                            GameAction::SelectModes { indices } => indices,
+                            _ => return true,
+                        };
+                        let spree_total = indices.iter().fold(
+                            crate::types::mana::ManaCost::zero(),
+                            |acc, &idx| {
+                                crate::game::restrictions::add_mana_cost(
+                                    &acc,
+                                    &modal.mode_costs[idx],
+                                )
+                            },
+                        );
+                        let total = crate::game::restrictions::add_mana_cost(
+                            &pending_cast.cost,
+                            &spree_total,
+                        );
+                        casting::can_pay_cost_after_auto_tap(
+                            state,
+                            *player,
+                            pending_cast.object_id,
+                            &total,
+                        )
+                    })
+                    .collect()
             }
         }
         WaitingFor::AbilityModeChoice {
@@ -404,10 +442,7 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
                 if let Some(filter) = unless_filter {
                     for &card_id in cards {
                         if crate::game::filter::matches_target_filter(
-                            state,
-                            card_id,
-                            filter,
-                            *source_id,
+                            state, card_id, filter, *source_id,
                         ) {
                             actions.push(candidate(
                                 GameAction::SelectCards {

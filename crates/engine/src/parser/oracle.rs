@@ -5192,10 +5192,7 @@ mod tests {
                 assert_eq!(*count, QuantityExpr::Fixed { value: 2 });
                 assert!(unless_filter.is_some(), "Expected unless_filter, got None");
             }
-            other => panic!(
-                "Expected Discard, got {:?}",
-                std::mem::discriminant(other)
-            ),
+            other => panic!("Expected Discard, got {:?}", std::mem::discriminant(other)),
         }
     }
 }

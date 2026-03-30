@@ -2288,9 +2288,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             let unless_satisfied = unless_f.as_ref().is_some_and(|filter| {
                 chosen.len() == 1
                     && chosen.iter().all(|&card_id| {
-                        crate::game::filter::matches_target_filter(
-                            state, card_id, filter, src,
-                        )
+                        crate::game::filter::matches_target_filter(state, card_id, filter, src)
                     })
             });
 
