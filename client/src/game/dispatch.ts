@@ -53,6 +53,7 @@ interface PendingRemoteUpdate {
   state: GameState;
   events: GameEvent[];
   legalActions: GameAction[];
+  autoPassRecommended: boolean;
   resolve: () => void;
   reject: (err: unknown) => void;
 }
@@ -144,7 +145,7 @@ async function processAction(action: GameAction): Promise<void> {
   }
 
   // 8. Update game state (deferred after animations — state already fetched in step 3b)
-  const legalActions = await adapter.getLegalActions();
+  const legalResult = await adapter.getLegalActions();
 
   useGameStore.setState((prev) => {
     const newHistory = shouldSaveHistory
@@ -165,7 +166,8 @@ async function processAction(action: GameAction): Promise<void> {
       logHistory: [...prev.logHistory, ...newLogEntries].slice(-2000),
       nextLogSeq: seq,
       waitingFor: newState.waiting_for,
-      legalActions,
+      legalActions: legalResult.actions,
+      autoPassRecommended: legalResult.autoPassRecommended,
       stateHistory: newHistory,
     };
   });
@@ -191,7 +193,7 @@ async function processQueue(): Promise<void> {
       if (next.kind === "local") {
         await processAction(next.action);
       } else {
-        await processRemoteUpdateInner(next.state, next.events, next.legalActions);
+        await processRemoteUpdateInner(next.state, next.events, next.legalActions, next.autoPassRecommended);
       }
       next.resolve();
     } catch (err) {
@@ -244,6 +246,7 @@ async function processRemoteUpdateInner(
   state: GameState,
   events: GameEvent[],
   legalActions: GameAction[],
+  autoPassRecommended: boolean,
 ): Promise<void> {
   // 1. Capture snapshot before updating state (for position lookups during animation)
   const snapshot = useAnimationStore.getState().captureSnapshot();
@@ -298,6 +301,7 @@ async function processRemoteUpdateInner(
     eventHistory: [...prev.eventHistory, ...events].slice(-1000),
     waitingFor: state.waiting_for,
     legalActions,
+    autoPassRecommended,
   }));
 
   // 6. Play victory/defeat stinger on GameOver
@@ -322,16 +326,17 @@ export async function processRemoteUpdate(
   state: GameState,
   events: GameEvent[],
   legalActions: GameAction[],
+  autoPassRecommended = false,
 ): Promise<void> {
   if (isAnimating) {
     return new Promise<void>((resolve, reject) => {
-      pendingQueue.push({ kind: "remote", state, events, legalActions, resolve, reject });
+      pendingQueue.push({ kind: "remote", state, events, legalActions, autoPassRecommended, resolve, reject });
     });
   }
 
   isAnimating = true;
   try {
-    await processRemoteUpdateInner(state, events, legalActions);
+    await processRemoteUpdateInner(state, events, legalActions, autoPassRecommended);
   } finally {
     if (pendingQueue.length > 0) {
       processQueue().catch(() => { isAnimating = false; });
@@ -355,11 +360,12 @@ export async function restoreGameState(state: GameState): Promise<string | null>
     return err instanceof Error ? err.message : "Failed to restore state";
   }
 
-  const legalActions = await adapter.getLegalActions();
+  const legalResult = await adapter.getLegalActions();
   useGameStore.setState({
     gameState: state,
     waitingFor: state.waiting_for,
-    legalActions,
+    legalActions: legalResult.actions,
+    autoPassRecommended: legalResult.autoPassRecommended,
     events: [],
   });
 

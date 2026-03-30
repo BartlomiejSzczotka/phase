@@ -1,10 +1,13 @@
 use std::str::FromStr;
 
+use nom::Parser;
+
 use super::types::*;
 use crate::types::ability::{Effect, FilterProp, PtValue, QuantityExpr, QuantityRef, TargetFilter};
 use crate::types::keywords::Keyword;
 use crate::types::mana::ManaColor;
 
+use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_target::parse_target;
 use super::super::oracle_util::{parse_number, strip_reminder_text, TextPair};
 
@@ -327,19 +330,27 @@ fn parse_token_color_prefix(mut text: &str) -> (Vec<ManaColor>, &str) {
     (colors, text.trim_start())
 }
 
+/// Strip a lowercase color word from the start of text, returning the parsed
+/// color and remainder.
+///
+/// Delegates to `nom_primitives::parse_color` for the five MTG colors, with a
+/// manual "colorless" check (which maps to `None` since it's not a `ManaColor`).
+/// Note: only matches lowercase color words (matching the original behavior)
+/// since token descriptions preserve Oracle casing.
 fn strip_color_word(text: &str) -> Option<(Option<ManaColor>, &str)> {
-    for (word, color) in [
-        ("white", Some(ManaColor::White)),
-        ("blue", Some(ManaColor::Blue)),
-        ("black", Some(ManaColor::Black)),
-        ("red", Some(ManaColor::Red)),
-        ("green", Some(ManaColor::Green)),
-        ("colorless", None),
-    ] {
-        if let Some(rest) = text.strip_prefix(word) {
-            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
-                return Some((color, rest.trim_start()));
-            }
+    // "colorless" is not a ManaColor — handle before delegating to nom
+    if let Some(rest) = text.strip_prefix("colorless") {
+        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+            return Some((None, rest.trim_start()));
+        }
+    }
+    // Delegate the five named colors to nom combinator.
+    // nom's parse_color expects lowercase, and we match only lowercase here
+    // (Oracle text preserves original casing in token descriptions).
+    if let Ok((rest, color)) = nom_primitives::parse_color.parse(text) {
+        // Word boundary: color word must be followed by whitespace or end
+        if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+            return Some((Some(color), rest.trim_start()));
         }
     }
     None

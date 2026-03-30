@@ -1,5 +1,8 @@
 use std::str::FromStr;
 
+use nom::Parser;
+
+use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_util::split_around;
 use super::token::{
     map_token_keyword, push_unique_string, split_token_keyword_list, title_case_word,
@@ -119,6 +122,11 @@ pub(super) fn animation_modifications(
     modifications
 }
 
+/// Parse a color word prefix from animation text, handling "colorless" and
+/// the five MTG colors.
+///
+/// Delegates color word recognition to `nom_primitives::parse_color` for the
+/// five named colors, with manual handling for "colorless" (no `ManaColor`).
 fn parse_animation_color_prefix(text: &str) -> Option<(Vec<ManaColor>, &str)> {
     let mut rest = text.trim_start();
     let mut saw_color = false;
@@ -128,28 +136,23 @@ fn parse_animation_color_prefix(text: &str) -> Option<(Vec<ManaColor>, &str)> {
         if let Some(stripped) = strip_prefix_word(rest, "colorless") {
             saw_color = true;
             rest = stripped;
-        } else if let Some(stripped) = strip_prefix_word(rest, "white") {
-            saw_color = true;
-            colors.push(ManaColor::White);
-            rest = stripped;
-        } else if let Some(stripped) = strip_prefix_word(rest, "blue") {
-            saw_color = true;
-            colors.push(ManaColor::Blue);
-            rest = stripped;
-        } else if let Some(stripped) = strip_prefix_word(rest, "black") {
-            saw_color = true;
-            colors.push(ManaColor::Black);
-            rest = stripped;
-        } else if let Some(stripped) = strip_prefix_word(rest, "red") {
-            saw_color = true;
-            colors.push(ManaColor::Red);
-            rest = stripped;
-        } else if let Some(stripped) = strip_prefix_word(rest, "green") {
-            saw_color = true;
-            colors.push(ManaColor::Green);
-            rest = stripped;
         } else {
-            break;
+            // Delegate the five named colors to nom combinator
+            let lower = rest.to_lowercase();
+            if let Ok((rest_lower, color)) = nom_primitives::parse_color.parse(&lower) {
+                let consumed = lower.len() - rest_lower.len();
+                let after = &rest[consumed..];
+                // Word boundary: color word must be followed by whitespace or end
+                if after.is_empty() || after.starts_with(char::is_whitespace) {
+                    saw_color = true;
+                    colors.push(color);
+                    rest = after.trim_start();
+                } else {
+                    break;
+                }
+            } else {
+                break;
+            }
         }
 
         if let Some(stripped) = rest.strip_prefix("and ") {

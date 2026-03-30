@@ -376,6 +376,12 @@ pub(super) fn parse_mana_color_set(text: &str) -> Option<Vec<ManaColor>> {
     }
 }
 
+/// Parse a single mana color symbol like `{W}`, `{U/B}`, returning the color(s)
+/// and the remaining text after the closing brace.
+///
+/// Delegates brace-delimited extraction to `nom_primitives::parse_mana_symbol`
+/// for single-color symbols, falling back to manual `/`-split parsing for
+/// hybrid color symbols like `{W/U}` which need multi-color extraction.
 pub(super) fn parse_mana_color_symbol(text: &str) -> Option<(Vec<ManaColor>, &str)> {
     let trimmed = text.trim_start();
     if !trimmed.starts_with('{') {

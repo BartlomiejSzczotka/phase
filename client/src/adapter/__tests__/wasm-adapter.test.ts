@@ -24,7 +24,7 @@ const mockWorkerClient = {
     ],
     priority_player: 0,
   } as unknown as GameState),
-  getLegalActions: vi.fn().mockResolvedValue([]),
+  getLegalActions: vi.fn().mockResolvedValue({ actions: [], autoPassRecommended: false }),
   getAiAction: vi.fn().mockResolvedValue(null),
   exportState: vi.fn().mockResolvedValue("{}"),
   restoreState: vi.fn().mockResolvedValue(undefined),

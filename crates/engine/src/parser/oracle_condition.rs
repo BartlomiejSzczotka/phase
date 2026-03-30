@@ -1,7 +1,9 @@
 use std::str::FromStr;
 
+use nom::Parser;
+
+use super::oracle_nom::primitives as nom_primitives;
 use crate::game::game_object::{parse_counter_type, CounterType};
-use crate::parser::oracle_util::parse_number;
 use crate::types::ability::{
     Comparator, ControllerRef, ParsedCondition, PlayerFilter, QuantityRef, TargetFilter,
     TypedFilter,
@@ -421,12 +423,18 @@ fn parse_numeric_threshold(text: &str, prefix: &str, suffix: &str) -> Option<usi
     parse_count_word(middle)
 }
 
+/// Parse a count word using nom combinator for digit/English number matching.
 fn parse_count_word(text: &str) -> Option<usize> {
     let trimmed = text.trim();
     if trimmed == "zero" {
         return Some(0);
     }
-    parse_number(trimmed).and_then(|(count, rest)| rest.is_empty().then_some(count as usize))
+    // Delegate to nom combinator for number parsing (handles digits and English words).
+    let lower = trimmed.to_lowercase();
+    nom_primitives::parse_number
+        .parse(&lower)
+        .ok()
+        .and_then(|(rest, n)| rest.is_empty().then_some(n as usize))
 }
 
 fn parse_core_type_word(text: &str) -> Option<CoreType> {

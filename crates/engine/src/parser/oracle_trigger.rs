@@ -1,6 +1,10 @@
 use std::str::FromStr;
 
+use nom::Parser;
+
 use super::oracle_effect::{parse_effect_chain_with_context, ParseContext};
+use super::oracle_nom::primitives as nom_primitives;
+use super::oracle_nom::quantity as nom_quantity;
 use super::oracle_target::parse_type_phrase;
 use super::oracle_util::{
     canonicalize_subtype_name, merge_or_filters, normalize_card_name_refs, parse_number,
@@ -117,13 +121,14 @@ fn parse_trigger_constraint(lower: &str) -> Option<TriggerConstraint> {
         return Some(TriggerConstraint::OnlyDuringYourTurn);
     }
     // CR 603.4: "this ability triggers only the first N times each turn"
+    // Delegates to nom_primitives::parse_number for the count (input already lowercase).
     if let Some(rest) = lower
         .find("triggers only the first ")
         .map(|pos| &lower[pos + "triggers only the first ".len()..])
     {
         if let Some(times_pos) = rest.find(" time") {
             let n_text = &rest[..times_pos];
-            if let Some((n, _)) = parse_number(n_text) {
+            if let Ok((_rem, n)) = nom_primitives::parse_number.parse(n_text) {
                 return Some(TriggerConstraint::MaxTimesPerTurn { max: n });
             }
         }
@@ -248,12 +253,19 @@ fn extract_unless_pay_modifier(text: &str) -> (String, Option<UnlessPayModifier>
 }
 
 /// Parse "where X is ~'s power" / "where X is this creature's power" etc.
+/// Delegates to `nom_quantity::parse_quantity_ref` for the value reference after
+/// stripping the "where X is" prefix.
 fn parse_where_x_is_trigger(text: &str) -> Option<QuantityExpr> {
     let trimmed = text.trim().trim_start_matches(',').trim();
     let rest = trimmed
         .strip_prefix("where x is ")
         .or_else(|| trimmed.strip_prefix("where X is "))?;
     let rest_lower = rest.to_lowercase();
+    // Try nom quantity ref combinator first for common patterns
+    if let Ok((_rem, qty)) = nom_quantity::parse_quantity_ref.parse(&rest_lower) {
+        return Some(QuantityExpr::Ref { qty });
+    }
+    // Fall through to keyword-based matching for less common patterns
     if rest_lower.contains("power") {
         Some(QuantityExpr::Ref {
             qty: QuantityRef::SelfPower,
@@ -685,10 +697,12 @@ fn strip_condition_clause(text: &str, clause_start: usize, clause_len: usize) ->
 
 /// Parse "if you control N or more [type]" → (condition, end_byte_offset).
 /// Generalized: uses `parse_type_phrase` to handle any permanent type, not just creatures.
+/// Delegates to `nom_primitives::parse_number` for the count (input already lowercase).
 fn parse_control_count_condition(lower: &str) -> Option<(TriggerCondition, usize)> {
     let start = lower.find("if you control ")?;
     let after_prefix = &lower[start + "if you control ".len()..];
-    let (n, rest) = parse_number(after_prefix)?;
+    let (nom_rest, n) = nom_primitives::parse_number.parse(after_prefix).ok()?;
+    let rest = nom_rest.trim_start();
     let or_more = rest.strip_prefix("or more ")?;
     let (filter, leftover) = parse_type_phrase(or_more);
     if filter == TargetFilter::Any {
@@ -707,17 +721,18 @@ fn parse_control_count_condition(lower: &str) -> Option<(TriggerCondition, usize
 /// Parse "N or more life this turn" → (minimum, bytes_consumed).
 /// `bytes_consumed` is measured from the start of `text` (including leading whitespace)
 /// so the caller can compute the exact clause length for stripping.
+///
+/// Delegates to `nom_primitives::parse_number` for the leading number.
 fn parse_life_threshold(text: &str) -> Option<(u32, usize)> {
     let leading = text.len() - text.trim_start().len();
     let trimmed = text.trim_start();
-    // "3 or more life this turn"
-    let space = trimmed.find(' ')?;
-    let n = trimmed[..space].parse::<u32>().ok()?;
-    let after_num = &trimmed[space..];
+    // Use nom combinator for number parsing (input already lowercase from caller)
+    let (after_num, n) = nom_primitives::parse_number.parse(trimmed).ok()?;
+    let consumed_num = trimmed.len() - after_num.len();
     // Match the full tail: " or more life this turn"
     let tail = " or more life this turn";
     if after_num.starts_with(tail) {
-        Some((n, leading + space + tail.len()))
+        Some((n, leading + consumed_num + tail.len()))
     } else {
         // Fallback: just the number was recognizable but no standard tail
         None
@@ -1088,6 +1103,8 @@ fn try_parse_event(
     {
         if after_and.contains("attack") {
             // Parse N from "two other creatures attack" / "one other creature attacks"
+            // Uses oracle_util::parse_number (not nom directly) because the word-boundary
+            // guard prevents "another" from false-matching as "a" + "nother".
             if let Some((n, _rest_after_n)) = parse_number(after_and) {
                 let mut def = make_base();
                 def.mode = TriggerMode::Attacks;
@@ -1942,9 +1959,10 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
     }
 
     // CR 700.14: "whenever you expend N" — cumulative mana spent on spells this turn
+    // CR 700.14: Delegate number parsing to nom combinator (input already lowercase)
     for prefix in ["whenever you expend ", "when you expend "] {
         if let Some(rest) = lower.strip_prefix(prefix) {
-            if let Some((n, _)) = parse_number(rest) {
+            if let Ok((_rem, n)) = nom_primitives::parse_number.parse(rest) {
                 let mut def = make_base();
                 def.mode = TriggerMode::ManaExpend;
                 def.expend_threshold = Some(n);

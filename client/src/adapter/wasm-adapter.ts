@@ -3,6 +3,7 @@ import type {
   FormatConfig,
   GameAction,
   GameState,
+  LegalActionsResult,
   MatchConfig,
   SubmitResult,
 } from "./types";
@@ -85,7 +86,7 @@ export class WasmAdapter implements EngineAdapter {
     return this.fallback!.getState();
   }
 
-  async getLegalActions(): Promise<GameAction[]> {
+  async getLegalActions(): Promise<LegalActionsResult> {
     this.assertInitialized();
     if (this.engine) {
       return this.engine.getLegalActions();
@@ -256,7 +257,7 @@ interface MainThreadFallback {
   ensureCardDatabase(): Promise<number>;
   submitAction(action: GameAction): Promise<SubmitResult>;
   getState(): Promise<GameState>;
-  getLegalActions(): Promise<GameAction[]>;
+  getLegalActions(): Promise<LegalActionsResult>;
   getAiAction(difficulty: string, playerId: number): Promise<GameAction | null>;
   restoreState(stateJson: string): void;
   ping(): string;
@@ -303,8 +304,8 @@ async function createMainThreadFallback(): Promise<MainThreadFallback> {
 
     getLegalActions: () =>
       enqueue(() => {
-        const a = wasm.get_legal_actions_js();
-        return (a === null ? [] : a) as GameAction[];
+        const r = wasm.get_legal_actions_js();
+        return (r === null ? { actions: [], autoPassRecommended: false } : r) as LegalActionsResult;
       }),
 
     getAiAction: (difficulty: string, playerId: number) =>

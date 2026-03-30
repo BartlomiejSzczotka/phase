@@ -169,8 +169,8 @@ self.onmessage = async (e: MessageEvent<EngineRequest>) => {
       }
 
       case "getLegalActions": {
-        const actions = get_legal_actions_js();
-        result(msg.id, actions === null ? [] : actions);
+        const r = get_legal_actions_js();
+        result(msg.id, r === null ? { actions: [], autoPassRecommended: false } : r);
         break;
       }
 

@@ -35,7 +35,7 @@ function createMockAdapter(state: GameState): EngineAdapter {
     initializeGame: vi.fn().mockResolvedValue({ events: [] }),
     submitAction: vi.fn().mockResolvedValue({ events: [] }),
     getState: vi.fn().mockResolvedValue(state),
-    getLegalActions: vi.fn().mockResolvedValue([]),
+    getLegalActions: vi.fn().mockResolvedValue({ actions: [], autoPassRecommended: false }),
     restoreState: vi.fn(),
     getAiAction: vi.fn().mockReturnValue(null),
     dispose: vi.fn(),

@@ -1,8 +1,10 @@
-use crate::parser::oracle_condition::parse_restriction_condition;
-use crate::types::ability::{AbilityCost, AdditionalCost, CastingRestriction, SpellCastingOption};
+use nom::Parser;
 
 use super::oracle_cost::parse_oracle_cost;
+use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_util::{parse_mana_symbols, strip_after, TextPair};
+use crate::parser::oracle_condition::parse_restriction_condition;
+use crate::types::ability::{AbilityCost, AdditionalCost, CastingRestriction, SpellCastingOption};
 
 /// Parse "As an additional cost to cast this spell, ..." into an `AdditionalCost`.
 ///
@@ -343,10 +345,11 @@ fn strip_casting_condition_suffixes(text: &str) -> &str {
 }
 
 /// Extract the blight count (N) from text starting after "blight ".
+/// Parse a blight count using nom digit combinator.
 fn parse_blight_count(text: &str) -> u32 {
-    text.split(|c: char| !c.is_ascii_digit())
-        .next()
-        .and_then(|s| s.parse::<u32>().ok())
+    nom_primitives::parse_number
+        .parse(text)
+        .map(|(_, n)| n)
         .unwrap_or(1)
 }
 

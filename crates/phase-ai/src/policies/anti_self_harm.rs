@@ -5,6 +5,7 @@ use engine::types::card_type::CoreType;
 use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::{Keyword, WardCost};
+use engine::types::phase::Phase;
 use engine::types::zones::Zone;
 
 use crate::eval::{evaluate_creature, threat_level};
@@ -80,9 +81,15 @@ fn score_pre_cast(ctx: &PolicyContext<'_>) -> f64 {
             o.controller == ctx.ai_player && o.card_types.core_types.contains(&CoreType::Creature)
         })
     });
-    let has_opponent_creature = ctx.state.battlefield.iter().any(|&id| {
+    // CR 702.11b: Hexproof prevents targeting by opponents' spells/abilities.
+    // CR 702.18a: Shroud prevents targeting by any spell/ability.
+    // TODO: HexproofFrom — requires source color check for accurate filtering
+    let has_targetable_opponent_creature = ctx.state.battlefield.iter().any(|&id| {
         ctx.state.objects.get(&id).is_some_and(|o| {
-            o.controller != ctx.ai_player && o.card_types.core_types.contains(&CoreType::Creature)
+            o.controller != ctx.ai_player
+                && o.card_types.core_types.contains(&CoreType::Creature)
+                && !o.has_keyword(&Keyword::Hexproof)
+                && !o.has_keyword(&Keyword::Shroud)
         })
     });
 
@@ -93,8 +100,8 @@ fn score_pre_cast(ctx: &PolicyContext<'_>) -> f64 {
         penalty -= 8.0;
     }
 
-    // Harmful creature-only spell (e.g. Murder) but no opponent creatures to hit.
-    if has_harmful_creature_only_target && !has_opponent_creature {
+    // Harmful creature-only spell (e.g. Murder) but no targetable opponent creatures.
+    if has_harmful_creature_only_target && !has_targetable_opponent_creature {
         penalty -= 8.0;
     }
 
@@ -185,6 +192,17 @@ fn score_target_ref(ctx: &PolicyContext<'_>, target: &TargetRef) -> f64 {
     match target {
         TargetRef::Player(player_id) => {
             let is_self = *player_id == ctx.ai_player;
+
+            // Lethal burn check: if damage would kill opponent, overwhelm all other targeting
+            if !is_self && !beneficial {
+                if let Some(damage) = extract_damage_amount(&ctx.effects()) {
+                    let opponent_life = ctx.state.players[player_id.0 as usize].life;
+                    if damage >= opponent_life {
+                        return ctx.penalties().lethal_burn_bonus;
+                    }
+                }
+            }
+
             let player_impact = targeted_player_impact(ctx, *player_id)
                 .unwrap_or_else(|| aggregate_player_impact(ctx));
             let prefers_self = if player_impact > 0.25 {
@@ -290,6 +308,24 @@ fn score_target_object(ctx: &PolicyContext<'_>, object_id: ObjectId, beneficial:
                 if spell_mv >= 4 && target_value < 4.0 {
                     score += ctx.penalties().removal_quality_mismatch
                         * (1.0 - target_value / 4.0).max(0.0);
+                }
+            }
+        }
+
+        // Penalize pumping own tapped creatures — they can't attack or block,
+        // so the +N/+N expires at cleanup with no combat impact.
+        if beneficial && object.tapped && object.controller == ctx.ai_player {
+            let has_pump = effects
+                .iter()
+                .any(|e| matches!(e, Effect::Pump { .. } | Effect::DoublePT { .. }));
+            if has_pump {
+                // Only discount during combat phases where it might still block
+                let in_combat = matches!(
+                    ctx.state.phase,
+                    Phase::DeclareBlockers | Phase::CombatDamage
+                );
+                if !in_combat {
+                    score -= 6.0;
                 }
             }
         }

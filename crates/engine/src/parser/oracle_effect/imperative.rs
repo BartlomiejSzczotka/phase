@@ -1,8 +1,11 @@
+use nom::Parser;
+
 use super::counter::{try_parse_double_effect, try_parse_put_counter, try_parse_remove_counter};
 use super::mana::{try_parse_activate_only_condition, try_parse_add_mana_effect};
 use super::token::try_parse_token;
 use super::types::*;
 use super::{resolve_it_pronoun, ParseContext};
+use crate::parser::oracle_nom::primitives as nom_primitives;
 use crate::parser::oracle_static::parse_continuous_modifications;
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, ContinuousModification, ControllerRef, Duration, Effect,
@@ -16,7 +19,7 @@ use crate::types::zones::Zone;
 use super::super::oracle_target::parse_target;
 use super::super::oracle_util::{
     contains_object_pronoun, contains_possessive, parse_count_expr, parse_mana_symbols,
-    parse_number, parse_ordinal, split_around, starts_with_possessive, strip_after, TextPair,
+    parse_ordinal, split_around, starts_with_possessive, strip_after, TextPair,
 };
 
 /// Earthbend keyword action default target: "target land you control".
@@ -34,9 +37,10 @@ pub(super) fn default_earthbend_target() -> TargetFilter {
 /// Shared by both the single-imperative parser (`parse_targeted_action_ast`)
 /// and the sequence-level parser (`try_parse_verb_and_target` in `mod.rs`).
 pub(super) fn parse_earthbend_params(text: &str, lower_rest: &str) -> (TargetFilter, i32, i32) {
-    let parsed_number = parse_number(lower_rest);
+    // Delegate to nom combinator (input already lowercase from lower_rest parameter).
+    let parsed_number = nom_primitives::parse_number.parse(lower_rest).ok();
     let (pt, target_text) = parsed_number
-        .map(|(n, rem)| (n as i32, rem.trim_start()))
+        .map(|(rem, n)| (n as i32, rem.trim_start()))
         .unwrap_or((0, lower_rest));
     // Default to "target land you control" when no explicit target remains.
     // Handles: no text, punctuation-only, sequence connectors (", then ..."),
@@ -494,8 +498,12 @@ pub(super) fn parse_search_and_creation_ast(
             reveal: details.reveal,
         });
     }
-    if lower.starts_with("look at the top ") {
-        let count = parse_number(&text[16..]).map(|(n, _)| n).unwrap_or(1);
+    if let Some(after_top) = lower.strip_prefix("look at the top ") {
+        // Delegate to nom combinator (input already lowercase from lower).
+        let count = nom_primitives::parse_number
+            .parse(after_top)
+            .map(|(_, n)| n)
+            .unwrap_or(1);
         return Some(SearchCreationImperativeAst::Dig { count });
     }
     if lower.starts_with("create ") {
@@ -623,9 +631,13 @@ pub(super) fn parse_hand_reveal_ast(text: &str, lower: &str) -> Option<HandRevea
     // "hand" check — text like "reveals the top card...then puts it into their hand"
     // contains "hand" as a destination, not as the reveal source.
     if lower.contains("the top ") && lower.contains("librar") {
+        // Delegate to nom combinator (input already lowercase from lower).
         let count = if let Some(pos) = lower.find("the top ") {
             let after_top = &lower[pos + 8..];
-            parse_number(after_top).map(|(n, _)| n).unwrap_or(1)
+            nom_primitives::parse_number
+                .parse(after_top)
+                .map(|(_, n)| n)
+                .unwrap_or(1)
         } else {
             1
         };
@@ -637,9 +649,13 @@ pub(super) fn parse_hand_reveal_ast(text: &str, lower: &str) -> Option<HandRevea
     }
 
     // Fallback: reveal from top of library without explicit "library" mention
+    // Delegate to nom combinator (input already lowercase from lower).
     let count = if let Some(pos) = lower.find("the top ") {
         let after_top = &lower[pos + 8..];
-        parse_number(after_top).map(|(n, _)| n).unwrap_or(1)
+        nom_primitives::parse_number
+            .parse(after_top)
+            .map(|(_, n)| n)
+            .unwrap_or(1)
     } else {
         1
     };
@@ -803,14 +819,21 @@ fn parse_prevent_effect(text: &str) -> Effect {
     };
 
     // Determine amount: "all damage" vs "the next N damage"
+    // Delegate to nom combinator (input already lowercase from text.to_lowercase()).
     let amount = if rest.starts_with("all ") {
         PreventionAmount::All
     } else if let Some(after_next) = rest.strip_prefix("the next ") {
-        let n = parse_number(after_next).map(|(n, _)| n).unwrap_or(1);
+        let n = nom_primitives::parse_number
+            .parse(after_next)
+            .map(|(_, n)| n)
+            .unwrap_or(1);
         PreventionAmount::Next(n)
     } else {
         // Fallback: try to extract a number
-        let n = parse_number(rest).map(|(n, _)| n).unwrap_or(1);
+        let n = nom_primitives::parse_number
+            .parse(rest)
+            .map(|(_, n)| n)
+            .unwrap_or(1);
         PreventionAmount::Next(n)
     };
 
@@ -891,9 +914,15 @@ pub(super) fn parse_put_ast(text: &str, lower: &str) -> Option<PutImperativeAst>
         return None;
     }
 
-    if lower.starts_with("put the top ") && lower.contains("graveyard") {
-        let after = &lower[12..];
-        let count = parse_number(after).map(|(n, _)| n).unwrap_or(1);
+    if let Some(after) = lower
+        .strip_prefix("put the top ")
+        .filter(|_| lower.contains("graveyard"))
+    {
+        // Delegate to nom combinator (input already lowercase from lower).
+        let count = nom_primitives::parse_number
+            .parse(after)
+            .map(|(_, n)| n)
+            .unwrap_or(1);
         return Some(PutImperativeAst::Mill { count });
     }
 
@@ -1229,7 +1258,11 @@ pub(super) fn parse_destroy_ast(text: &str, lower: &str) -> Option<ZoneCounterIm
 
 pub(super) fn parse_exile_ast(text: &str, lower: &str) -> Option<ZoneCounterImperativeAst> {
     if let Some(rest) = lower.strip_prefix("exile the top ") {
-        let (count, remainder) = parse_number(rest).unwrap_or((1, rest));
+        // Delegate to nom combinator (input already lowercase from lower).
+        let (count, remainder) = nom_primitives::parse_number
+            .parse(rest)
+            .map(|(rem, n)| (n, rem.trim_start()))
+            .unwrap_or((1, rest));
         // Only handles "your library" (TargetFilter::Controller). Opponent/any-player
         // targeting ("target player's library") falls through to ChangeZone handling.
         if remainder.starts_with("card of your library")
@@ -1347,7 +1380,8 @@ pub(super) fn parse_cost_resource_ast(
     if let Some(rest) = lower.strip_prefix("pay ") {
         // "pay N life" → PaymentCost::Life (CR 118.2)
         if let Some(life_rest) = rest.strip_suffix(" life") {
-            if let Some((n, _)) = parse_number(life_rest) {
+            // Delegate to nom combinator (input already lowercase from lower).
+            if let Ok((_, n)) = nom_primitives::parse_number.parse(life_rest) {
                 return Some(CostResourceImperativeAst::Pay {
                     cost: PaymentCost::Life { amount: n },
                 });
@@ -1564,8 +1598,10 @@ pub(super) fn parse_imperative_family_ast(
             let rest = lower
                 .strip_prefix("blight ")
                 .unwrap_or(lower.strip_prefix("blight").unwrap_or(""));
-            let count = super::super::oracle_util::parse_number(rest.trim())
-                .map(|(n, _)| n)
+            // Delegate to nom combinator (input already lowercase from lower).
+            let count = nom_primitives::parse_number
+                .parse(rest.trim())
+                .map(|(_, n)| n)
                 .unwrap_or(1);
             Some(ImperativeFamilyAst::GainKeyword(Effect::BlightEffect {
                 count,
@@ -1577,8 +1613,10 @@ pub(super) fn parse_imperative_family_ast(
         // Collect evidence N keyword action (CR 702.163a)
         "collect" => {
             if let Some(rest) = lower.strip_prefix("collect evidence ") {
-                let count = super::super::oracle_util::parse_number(rest.trim())
-                    .map(|(n, _)| n)
+                // Delegate to nom combinator (input already lowercase from lower).
+                let count = nom_primitives::parse_number
+                    .parse(rest.trim())
+                    .map(|(_, n)| n)
                     .unwrap_or(1);
                 Some(ImperativeFamilyAst::GainKeyword(Effect::CollectEvidence {
                     amount: count,
@@ -1593,8 +1631,10 @@ pub(super) fn parse_imperative_family_ast(
                 .strip_prefix("endure ")
                 .or_else(|| lower.strip_prefix("endures "))
                 .unwrap_or("");
-            let count = super::super::oracle_util::parse_number(rest.trim())
-                .map(|(n, _)| n)
+            // Delegate to nom combinator (input already lowercase from lower).
+            let count = nom_primitives::parse_number
+                .parse(rest.trim())
+                .map(|(_, n)| n)
                 .unwrap_or(1);
             Some(ImperativeFamilyAst::GainKeyword(Effect::Endure {
                 amount: count,
@@ -1840,7 +1880,8 @@ fn try_parse_player_counter(lower: &str) -> Option<ImperativeFamilyAst> {
         (1u32, kind.trim())
     } else if let Some(kind) = before_counter.strip_prefix("an ") {
         (1u32, kind.trim())
-    } else if let Some((n, rest)) = parse_number(before_counter) {
+    // Delegate to nom combinator (input already lowercase from lower parameter).
+    } else if let Ok((rest, n)) = nom_primitives::parse_number.parse(before_counter) {
         (n, rest.trim())
     } else {
         return None;

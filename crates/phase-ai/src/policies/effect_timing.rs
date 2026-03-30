@@ -1,14 +1,16 @@
 use engine::game::players;
-use engine::types::ability::Effect;
+use engine::types::ability::{Effect, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
-use engine::types::game_state::WaitingFor;
+use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::phase::Phase;
+use engine::types::player::PlayerId;
 
 use crate::eval::{evaluate_creature, threat_level, StrategicIntent};
 
-use super::context::PolicyContext;
+use super::context::{collect_ability_effects, PolicyContext};
 use super::registry::TacticalPolicy;
+use super::stack_awareness::assess_spell_impact;
 
 pub struct EffectTimingPolicy;
 
@@ -81,7 +83,21 @@ fn removal_score(ctx: &PolicyContext<'_>) -> f64 {
         0.0
     };
 
-    0.3 + (max_threat / 25.0).min(0.8) + stabilize_bonus
+    // Incentivize casting removal now when opponent has pump spells on the stack —
+    // killing the pumped creature wastes both the creature and the pump (2-for-1).
+    let pump_response = if !ctx.state.stack.is_empty()
+        && ctx.state.stack.iter().any(|entry| {
+            entry.controller != ctx.ai_player
+                && collect_ability_effects(entry.ability())
+                    .iter()
+                    .any(|e| matches!(e, Effect::Pump { .. } | Effect::DoublePT { .. }))
+        }) {
+        0.5
+    } else {
+        0.0
+    };
+
+    0.3 + (max_threat / 25.0).min(0.8) + stabilize_bonus + pump_response
 }
 
 fn burn_score(ctx: &PolicyContext<'_>) -> f64 {
@@ -108,15 +124,54 @@ fn counterspell_score(ctx: &PolicyContext<'_>) -> f64 {
         (0.8 * patience) + intent_bonus
     };
 
+    // Boost incentive to cast a counter when opponent is countering one of our spells
+    let protect_bonus =
+        threatened_own_spell_value(ctx.state, ctx.ai_player) * ctx.penalties().protect_spell_bonus_mult;
+
     if matches!(ctx.decision.waiting_for, WaitingFor::Priority { .. }) {
         if !is_own_turn && stack_pressure > 0.0 {
-            stack_pressure
+            stack_pressure + protect_bonus
+        } else if protect_bonus > 0.0 {
+            // Even on own turn, protect a threatened spell
+            protect_bonus
         } else {
             -0.6 * patience
         }
     } else {
-        stack_pressure
+        stack_pressure + protect_bonus
     }
+}
+
+/// Check if any opponent counter spell on the stack threatens one of the AI's spells.
+/// Returns the impact value of the most valuable threatened spell, or 0.0 if none.
+fn threatened_own_spell_value(state: &GameState, ai_player: PlayerId) -> f64 {
+    let mut max_value = 0.0_f64;
+
+    for entry in state.stack.iter() {
+        if entry.controller == ai_player {
+            continue;
+        }
+        let ability = entry.ability();
+        let has_counter = collect_ability_effects(ability)
+            .iter()
+            .any(|e| matches!(e, Effect::Counter { .. }));
+        if !has_counter {
+            continue;
+        }
+        // Find which AI spell this counter targets
+        for target in &ability.targets {
+            let TargetRef::Object(target_id) = target else {
+                continue;
+            };
+            if let Some(threatened) = state.stack.iter().find(|e| e.id == *target_id) {
+                if threatened.controller == ai_player {
+                    max_value = max_value.max(assess_spell_impact(state, threatened));
+                }
+            }
+        }
+    }
+
+    max_value
 }
 
 fn combat_trick_score(ctx: &PolicyContext<'_>) -> f64 {

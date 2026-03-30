@@ -1,6 +1,9 @@
+use nom::Parser;
+
 use crate::types::ability::{DoublePTMode, DoubleTarget, Effect, MultiTargetSpec, TargetFilter};
 use crate::types::mana::ManaColor;
 
+use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_target::{parse_target, parse_type_phrase};
 use super::super::oracle_util::{parse_count_expr, parse_number};
 use super::{resolve_it_pronoun, ParseContext};
@@ -315,14 +318,10 @@ pub(super) fn try_parse_double_effect(lower: &str, ctx: &ParseContext) -> Option
 }
 
 /// Parse a mana color name from text like "red mana in your mana pool".
+///
+/// Delegates to `nom_primitives::parse_color` for color word recognition.
 fn parse_mana_color_from_text(text: &str) -> Option<ManaColor> {
-    let first_word = text.split_whitespace().next()?;
-    match first_word {
-        "white" => Some(ManaColor::White),
-        "blue" => Some(ManaColor::Blue),
-        "black" => Some(ManaColor::Black),
-        "red" => Some(ManaColor::Red),
-        "green" => Some(ManaColor::Green),
-        _ => None, // "each type of mana" → None means all
-    }
+    let lower = text.split_whitespace().next()?.to_lowercase();
+    let (_rest, color) = nom_primitives::parse_color.parse(&lower).ok()?;
+    Some(color)
 }

@@ -4,6 +4,7 @@ use crate::types::ability::{
 
 use super::oracle::find_activated_colon;
 use super::oracle_effect::parse_effect_chain;
+use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_util::{parse_mana_symbols, strip_reminder_text};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -358,9 +359,9 @@ pub(crate) fn parse_modal_choose_count(lower: &str) -> (usize, usize) {
     if lower.contains("one or more") || lower.contains("any number") {
         return (1, usize::MAX);
     }
-    // Extract the number word after "choose "
+    // Extract the number word after "choose " using the shared nom combinator.
     if let Some(rest) = lower.strip_prefix("choose ") {
-        if let Some((n, _)) = super::oracle_util::parse_number(rest) {
+        if let Ok((_, n)) = nom_primitives::parse_number(rest) {
             return (n as usize, n as usize);
         }
     }

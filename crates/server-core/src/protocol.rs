@@ -117,6 +117,8 @@ pub enum ServerMessage {
         player_names: Vec<String>,
         #[serde(default)]
         legal_actions: Vec<GameAction>,
+        #[serde(default)]
+        auto_pass_recommended: bool,
         /// Included for joiners so they can persist the token for reconnection.
         /// Omitted (None) for hosts (who get it via GameCreated) and reconnects.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -127,6 +129,8 @@ pub enum ServerMessage {
         events: Vec<GameEvent>,
         #[serde(default)]
         legal_actions: Vec<GameAction>,
+        #[serde(default)]
+        auto_pass_recommended: bool,
         #[serde(default)]
         eliminated_players: Vec<PlayerId>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -424,6 +428,7 @@ mod tests {
             opponent_name: Some("Opponent".to_string()),
             player_names: vec!["Me".to_string(), "Opponent".to_string()],
             legal_actions: vec![GameAction::PassPriority],
+            auto_pass_recommended: false,
             player_token: None,
         };
         let json = serde_json::to_string(&msg).unwrap();
@@ -454,6 +459,7 @@ mod tests {
             opponent_name: None,
             player_names: vec![],
             legal_actions: vec![],
+            auto_pass_recommended: false,
             player_token: None,
         };
         let json = serde_json::to_string(&msg).unwrap();

@@ -1,4 +1,7 @@
+use nom::Parser;
+
 use super::oracle_effect::{parse_effect_chain, try_parse_named_choice};
+use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_quantity::capitalize_first;
 use super::oracle_target::parse_type_phrase;
 use super::oracle_util::{
@@ -420,11 +423,13 @@ fn parse_check_condition(norm_lower: &str) -> Option<ReplacementCondition> {
 
 /// Extract fast land condition: "unless you control N or fewer other [type]"
 /// CR 305.7 + CR 614.1c — fast lands (Spirebluff Canal, Blackcleave Cliffs, etc.).
+/// Delegates to `nom_primitives::parse_number` for the count (input already lowercase).
 fn parse_fast_condition(norm_lower: &str) -> Option<ReplacementCondition> {
     let rest = strip_after(norm_lower, "unless you control ")?;
 
     // Parse "two or fewer other lands." → count=2, remainder="or fewer other lands."
-    let (count, after_number) = parse_number(rest)?;
+    let (nom_rest, count) = nom_primitives::parse_number.parse(rest).ok()?;
+    let after_number = nom_rest.trim_start();
     let after_or_fewer = after_number.trim_start().strip_prefix("or fewer ")?;
     let type_text = after_or_fewer.trim_end_matches('.');
 
@@ -497,9 +502,10 @@ fn parse_controls_typed_condition(norm_lower: &str) -> Option<ReplacementConditi
 
 /// Try to parse "N or more " quantity prefix before a type phrase.
 /// Returns (minimum, remainder) if matched.
+/// Delegates to `nom_primitives::parse_number` for the count (input already lowercase).
 fn try_parse_quantity_prefix(text: &str) -> Option<(u32, &str)> {
-    let (n, rest) = parse_number(text)?;
-    let type_text = rest.strip_prefix("or more ")?;
+    let (nom_rest, n) = nom_primitives::parse_number.parse(text).ok()?;
+    let type_text = nom_rest.trim_start().strip_prefix("or more ")?;
     Some((n, type_text))
 }
 
@@ -543,6 +549,8 @@ fn parse_enters_with_counters(
         .strip_prefix("an additional ")
         .or_else(|| after_with.strip_prefix("additional "))
         .unwrap_or(after_with);
+    // Uses oracle_util::parse_number (not nom directly) because it handles "X" → 0
+    // for X-cost cards like Endless One, Walking Ballista, Hangarback Walker, etc.
     let (count, rest) = parse_number(after_additional).unwrap_or((1, after_additional));
     // Next word(s) before "counter" are the counter type
     let counter_pos = rest.find("counter")?;
@@ -711,10 +719,11 @@ fn parse_damage_modification_replacement(
     {
         DamageModification::Triple
     } else if let Some(rest) = strip_after(norm_lower, "that much damage plus ") {
-        let (value, _) = parse_number(rest)?;
+        // Delegate to nom_primitives::parse_number (input already lowercase)
+        let (_rem, value) = nom_primitives::parse_number.parse(rest).ok()?;
         DamageModification::Plus { value }
     } else if let Some(rest) = strip_after(norm_lower, "that much damage minus ") {
-        let (value, _) = parse_number(rest)?;
+        let (_rem, value) = nom_primitives::parse_number.parse(rest).ok()?;
         DamageModification::Minus { value }
     } else if norm_lower.contains("damage equal to ~'s power instead")
         || norm_lower.contains("deals damage equal to ~'s power")
@@ -924,10 +933,11 @@ fn parse_counter_replacement(lower: &str, original_text: &str) -> Option<Replace
         QuantityModification::Double
     } else if let Some(rest) = strip_after(lower, "that many plus ") {
         // "that many plus one ... counters are put on it instead"
-        let (value, _) = parse_number(rest)?;
+        // Delegate to nom_primitives::parse_number (input already lowercase)
+        let (_rem, value) = nom_primitives::parse_number.parse(rest).ok()?;
         QuantityModification::Plus { value }
     } else if let Some(rest) = strip_after(lower, "that many minus ") {
-        let (value, _) = parse_number(rest)?;
+        let (_rem, value) = nom_primitives::parse_number.parse(rest).ok()?;
         QuantityModification::Minus { value }
     } else {
         return None;
@@ -1032,6 +1042,8 @@ fn parse_damage_prevention_replacement(
     let amount = if norm_lower.contains("prevent all") {
         PreventionAmount::All
     } else if let Some(rest) = strip_after(norm_lower, "prevent the next ") {
+        // Uses oracle_util::parse_number (not nom directly) because it handles "X" → 0
+        // for cards like Temper, Acolyte's Reward, etc.
         let (n, _) = parse_number(rest)?;
         PreventionAmount::Next(n)
     } else if norm_lower.contains("prevent that damage") {
@@ -1148,7 +1160,9 @@ fn parse_mana_replacement(norm_lower: &str, original_text: &str) -> Option<Repla
 fn parse_player_life_condition(norm_lower: &str) -> Option<ReplacementCondition> {
     let rest = strip_after(norm_lower, "unless a player has ")?;
     // "13 or less life" → extract amount
-    let (amount, remainder) = parse_number(rest)?;
+    // Delegate to nom_primitives::parse_number (input already lowercase)
+    let (nom_rest, amount) = nom_primitives::parse_number.parse(rest).ok()?;
+    let remainder = nom_rest.trim_start();
     if !remainder.trim().starts_with("or less life")
         && !remainder.trim().starts_with("or fewer life")
     {

@@ -4,6 +4,7 @@ import type {
   GameEvent,
   GameObject,
   GameState,
+  LegalActionsResult,
   MatchConfig,
   PlayerId,
   SubmitResult,
@@ -23,7 +24,7 @@ export type P2PAdapterEvent =
   | { type: "opponentDisconnected"; reason: string }
   | { type: "gameOver"; winner: PlayerId | null; reason: string }
   | { type: "error"; message: string }
-  | { type: "stateChanged"; state: GameState; events: GameEvent[]; legalActions: GameAction[] };
+  | { type: "stateChanged"; state: GameState; events: GameEvent[]; legalActions: GameAction[]; autoPassRecommended: boolean };
 
 type P2PAdapterEventListener = (event: P2PAdapterEvent) => void;
 
@@ -163,7 +164,7 @@ export class P2PHostAdapter implements EngineAdapter {
 
     const result = await this.wasm.initializeGame(deckPayload, undefined, 2, matchConfig);
     const state = await this.wasm.getState();
-    const legalActions = await this.wasm.getLegalActions();
+    const legalResult = await this.wasm.getLegalActions();
 
     // Host is player 0
     useMultiplayerStore.getState().setActivePlayerId(0);
@@ -174,7 +175,8 @@ export class P2PHostAdapter implements EngineAdapter {
       type: "game_setup",
       state: filteredState,
       events: result.events,
-      legalActions,
+      legalActions: legalResult.actions,
+      autoPassRecommended: legalResult.autoPassRecommended,
     });
 
     return result;
@@ -183,7 +185,7 @@ export class P2PHostAdapter implements EngineAdapter {
   async submitAction(action: GameAction): Promise<SubmitResult> {
     const result = await this.wasm.submitAction(action);
     const state = await this.wasm.getState();
-    const legalActions = await this.wasm.getLegalActions();
+    const legalResult = await this.wasm.getLegalActions();
 
     // Send filtered state update to guest with legal actions
     const filteredState = filterStateForGuest(state);
@@ -191,7 +193,8 @@ export class P2PHostAdapter implements EngineAdapter {
       type: "state_update",
       state: filteredState,
       events: result.events,
-      legalActions,
+      legalActions: legalResult.actions,
+      autoPassRecommended: legalResult.autoPassRecommended,
     });
 
     return result;
@@ -201,7 +204,7 @@ export class P2PHostAdapter implements EngineAdapter {
     return this.wasm.getState();
   }
 
-  async getLegalActions(): Promise<GameAction[]> {
+  async getLegalActions(): Promise<LegalActionsResult> {
     return this.wasm.getLegalActions();
   }
 
@@ -232,7 +235,7 @@ export class P2PHostAdapter implements EngineAdapter {
         try {
           const result = await this.wasm.submitAction(msg.action);
           const state = await this.wasm.getState();
-          const legalActions = await this.wasm.getLegalActions();
+          const legalResult = await this.wasm.getLegalActions();
 
           // Send filtered state back to guest with legal actions
           const filteredState = filterStateForGuest(state);
@@ -240,11 +243,12 @@ export class P2PHostAdapter implements EngineAdapter {
             type: "state_update",
             state: filteredState,
             events: result.events,
-            legalActions,
+            legalActions: legalResult.actions,
+            autoPassRecommended: legalResult.autoPassRecommended,
           });
 
           // Emit state update locally so host UI updates for opponent actions
-          this.emit({ type: "stateChanged", state, events: result.events, legalActions });
+          this.emit({ type: "stateChanged", state, events: result.events, legalActions: legalResult.actions, autoPassRecommended: legalResult.autoPassRecommended });
         } catch (err) {
           const reason = err instanceof Error ? err.message : String(err);
           this.session.send({ type: "action_rejected", reason });
@@ -268,7 +272,7 @@ export class P2PHostAdapter implements EngineAdapter {
  */
 export class P2PGuestAdapter implements EngineAdapter {
   private gameState: GameState | null = null;
-  private legalActions: GameAction[] = [];
+  private legalActions: LegalActionsResult = { actions: [], autoPassRecommended: false };
   private listeners: P2PAdapterEventListener[] = [];
   private pendingResolve: ((result: SubmitResult) => void) | null = null;
   private pendingReject: ((error: Error) => void) | null = null;
@@ -345,7 +349,7 @@ export class P2PGuestAdapter implements EngineAdapter {
     return this.gameState;
   }
 
-  async getLegalActions(): Promise<GameAction[]> {
+  async getLegalActions(): Promise<LegalActionsResult> {
     return this.legalActions;
   }
 
@@ -362,7 +366,7 @@ export class P2PGuestAdapter implements EngineAdapter {
     if (this.disconnectUnsub) this.disconnectUnsub();
     this.session.close();
     this.gameState = null;
-    this.legalActions = [];
+    this.legalActions = { actions: [], autoPassRecommended: false };
     this.pendingResolve = null;
     this.pendingReject = null;
     this.listeners = [];
@@ -372,21 +376,21 @@ export class P2PGuestAdapter implements EngineAdapter {
     switch (msg.type) {
       case "game_setup": {
         this.gameState = msg.state;
-        this.legalActions = msg.legalActions;
+        this.legalActions = { actions: msg.legalActions, autoPassRecommended: msg.autoPassRecommended ?? false };
         this.gameSetupResolve({ events: msg.events });
         break;
       }
 
       case "state_update": {
         this.gameState = msg.state;
-        this.legalActions = msg.legalActions;
+        this.legalActions = { actions: msg.legalActions, autoPassRecommended: msg.autoPassRecommended ?? false };
         if (this.pendingResolve) {
           this.pendingResolve({ events: msg.events });
           this.pendingResolve = null;
           this.pendingReject = null;
         } else {
           // Unsolicited update (opponent's action result)
-          this.emit({ type: "stateChanged", state: msg.state, events: msg.events, legalActions: msg.legalActions });
+          this.emit({ type: "stateChanged", state: msg.state, events: msg.events, legalActions: msg.legalActions, autoPassRecommended: msg.autoPassRecommended ?? false });
         }
         break;
       }

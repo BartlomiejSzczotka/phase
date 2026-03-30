@@ -140,6 +140,13 @@ pub struct PolicyPenalties {
     pub indestructible_destroy_penalty: f64,
     /// Base penalty for targeting a creature with ward (scaled by cost severity).
     pub ward_cost_penalty_base: f64,
+
+    /// Bonus for removal targeting a creature being pumped by opponent on the stack.
+    pub pump_response_bonus: f64,
+    /// Bonus for burn that would be lethal to opponent.
+    pub lethal_burn_bonus: f64,
+    /// Multiplier for protect-own-spell counter incentive (× threatened spell value).
+    pub protect_spell_bonus_mult: f64,
 }
 
 impl Default for PolicyPenalties {
@@ -159,6 +166,9 @@ impl Default for PolicyPenalties {
             bounce_expensive_bonus_per_mv: 0.3,
             indestructible_destroy_penalty: -8.0,
             ward_cost_penalty_base: -2.0,
+            pump_response_bonus: 2.5,
+            lethal_burn_bonus: 15.0,
+            protect_spell_bonus_mult: 0.75,
         }
     }
 }

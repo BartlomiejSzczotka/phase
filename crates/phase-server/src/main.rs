@@ -13,7 +13,7 @@ use axum::response::IntoResponse;
 use axum::routing::get;
 use axum::Router;
 use clap::Parser;
-use engine::ai_support::legal_actions as engine_legal_actions;
+use engine::ai_support::{auto_pass_recommended as engine_auto_pass, legal_actions as engine_legal_actions};
 use engine::database::CardDatabase;
 use engine::game::{validate_deck_for_format, DeckCompatibilityRequest};
 use engine::types::game_state::GameState;
@@ -699,11 +699,13 @@ async fn handle_client_message(
                     // Only send GameStarted when the game is full (all seats claimed)
                     if session.is_full() {
                         let legal_actions = engine_legal_actions(&session.state);
+                        let auto_pass = engine_auto_pass(&session.state, &legal_actions);
                         let actor = server_core::acting_player(&session.state.waiting_for);
                         let player_names = session.display_names.clone();
 
                         // Send GameStarted to the joiner
-                        let joiner_legals = if actor == Some(joiner) {
+                        let is_joiner_actor = actor == Some(joiner);
+                        let joiner_legals = if is_joiner_actor {
                             legal_actions.clone()
                         } else {
                             vec![]
@@ -714,6 +716,7 @@ async fn handle_client_message(
                             opponent_name: None,
                             player_names: player_names.clone(),
                             legal_actions: joiner_legals,
+                            auto_pass_recommended: if is_joiner_actor { auto_pass } else { false },
                             player_token: Some(player_token.clone()),
                         };
                         if let Ok(json) = serde_json::to_string(&msg) {
@@ -725,7 +728,8 @@ async fn handle_client_message(
                             if pid != joiner {
                                 let p_state =
                                     server_core::filter_state_for_player(&session.state, pid);
-                                let p_legals = if actor == Some(pid) {
+                                let is_actor = actor == Some(pid);
+                                let p_legals = if is_actor {
                                     legal_actions.clone()
                                 } else {
                                     vec![]
@@ -736,6 +740,7 @@ async fn handle_client_message(
                                     opponent_name: None,
                                     player_names: player_names.clone(),
                                     legal_actions: p_legals,
+                                    auto_pass_recommended: if is_actor { auto_pass } else { false },
                                     player_token: None,
                                 });
                             }
@@ -828,7 +833,7 @@ async fn handle_client_message(
 
             match action_result {
                 Ok((
-                    (raw_state, events, legal_actions, log_entries),
+                    (raw_state, events, legal_actions, log_entries, auto_pass_rec),
                     ai_results,
                     actor,
                     eliminated,
@@ -855,10 +860,12 @@ async fn handle_client_message(
                                             // AI will act next — don't send legal actions yet
                                             vec![]
                                         };
+                                    let p_auto_pass = if ai_results.is_empty() && actor == Some(*pid) { auto_pass_rec } else { false };
                                     let _ = s.send(ServerMessage::StateUpdate {
                                         state: pstate.clone(),
                                         events: events.clone(),
                                         legal_actions: player_legals,
+                                        auto_pass_recommended: p_auto_pass,
                                         eliminated_players: eliminated.clone(),
                                         log_entries: log_entries.clone(),
                                     });
@@ -870,7 +877,7 @@ async fn handle_client_message(
                     // Broadcast AI follow-up results with delays
                     for (i, result) in ai_results.iter().enumerate() {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        let (ai_raw_state, ai_events, ai_legal, ai_log_entries) = result;
+                        let (ai_raw_state, ai_events, ai_legal, ai_log_entries, ai_auto_pass) = result;
                         let is_last = i == ai_results.len() - 1;
 
                         // Filter AI state per-player outside the lock
@@ -890,10 +897,12 @@ async fn handle_client_message(
                                     } else {
                                         vec![]
                                     };
+                                    let p_auto_pass = if is_last && actor == Some(*pid) { *ai_auto_pass } else { false };
                                     let _ = s.send(ServerMessage::StateUpdate {
                                         state: pstate.clone(),
                                         events: ai_events.clone(),
                                         legal_actions: player_legals,
+                                        auto_pass_recommended: p_auto_pass,
                                         eliminated_players: eliminated.clone(),
                                         log_entries: ai_log_entries.clone(),
                                     });
@@ -982,8 +991,10 @@ async fn handle_client_message(
                                     });
 
                             let legal_actions_all = engine_legal_actions(&session.state);
+                            let auto_pass = engine_auto_pass(&session.state, &legal_actions_all);
                             let actor = server_core::acting_player(&session.state.waiting_for);
-                            let player_legals = if actor == Some(player) {
+                            let is_actor = actor == Some(player);
+                            let player_legals = if is_actor {
                                 legal_actions_all
                             } else {
                                 vec![]
@@ -995,6 +1006,7 @@ async fn handle_client_message(
                                 opponent_name,
                                 player_names,
                                 legal_actions: player_legals,
+                                auto_pass_recommended: if is_actor { auto_pass } else { false },
                                 player_token: None,
                             };
 
@@ -1072,14 +1084,15 @@ async fn handle_client_message(
                     // Broadcast AI follow-up results with delays (filter outside lock)
                     for result in ai_results {
                         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                        let (raw_state, events, legal_actions, log_entries) = result;
+                        let (raw_state, events, legal_actions, log_entries, auto_pass) = result;
                         let actor = {
                             let mgr = state.lock().await;
                             let session = mgr.sessions.get(&game_code).unwrap();
                             server_core::acting_player(&session.state.waiting_for)
                         };
                         let filtered = server_core::filter_state_for_player(&raw_state, player);
-                        let player_legals = if actor == Some(player) {
+                        let is_actor = actor == Some(player);
+                        let player_legals = if is_actor {
                             legal_actions
                         } else {
                             vec![]
@@ -1088,6 +1101,7 @@ async fn handle_client_message(
                             state: filtered,
                             events,
                             legal_actions: player_legals,
+                            auto_pass_recommended: if is_actor { auto_pass } else { false },
                             eliminated_players: vec![],
                             log_entries,
                         });
@@ -1240,10 +1254,12 @@ async fn handle_client_message(
 
                     let session = mgr.sessions.get_mut(&game_code).unwrap();
                     let legal_actions = engine_legal_actions(&session.state);
+                    let auto_pass = engine_auto_pass(&session.state, &legal_actions);
                     let actor = server_core::acting_player(&session.state.waiting_for);
                     let player_names = session.display_names.clone();
 
-                    let host_legals = if actor == Some(PlayerId(0)) {
+                    let is_actor = actor == Some(PlayerId(0));
+                    let host_legals = if is_actor {
                         legal_actions
                     } else {
                         vec![]
@@ -1257,6 +1273,7 @@ async fn handle_client_message(
                         opponent_name: Some(session.display_names[1].clone()),
                         player_names,
                         legal_actions: host_legals,
+                        auto_pass_recommended: if is_actor { auto_pass } else { false },
                         player_token: None,
                     };
 
@@ -1294,7 +1311,7 @@ async fn handle_client_message(
                 // Filter outside the lock for each AI result
                 for result in ai_results {
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-                    let (raw_state, events, legal_actions, log_entries) = result;
+                    let (raw_state, events, legal_actions, log_entries, auto_pass) = result;
                     let actor = {
                         let mgr = state.lock().await;
                         let session = mgr.sessions.get(&game_code).unwrap();
@@ -1302,7 +1319,8 @@ async fn handle_client_message(
                     };
                     let filtered = server_core::filter_state_for_player(&raw_state, PlayerId(0));
                     {
-                        let player_legals = if actor == Some(PlayerId(0)) {
+                        let is_actor = actor == Some(PlayerId(0));
+                        let player_legals = if is_actor {
                             legal_actions
                         } else {
                             vec![]
@@ -1311,6 +1329,7 @@ async fn handle_client_message(
                             state: filtered,
                             events,
                             legal_actions: player_legals,
+                            auto_pass_recommended: if is_actor { auto_pass } else { false },
                             eliminated_players: vec![],
                             log_entries,
                         });
@@ -1466,6 +1485,7 @@ async fn handle_client_message(
                     // Only send GameStarted when the game is full
                     if is_full {
                         let legal_actions = engine_legal_actions(&session.state);
+                        let auto_pass = engine_auto_pass(&session.state, &legal_actions);
                         let actor = server_core::acting_player(&session.state.waiting_for);
 
                         // Find first opponent name for backward compat
@@ -1481,7 +1501,8 @@ async fn handle_client_message(
                                     }
                                 });
 
-                        let joiner_legals = if actor == Some(joiner) {
+                        let is_joiner_actor = actor == Some(joiner);
+                        let joiner_legals = if is_joiner_actor {
                             legal_actions.clone()
                         } else {
                             vec![]
@@ -1492,6 +1513,7 @@ async fn handle_client_message(
                             opponent_name: joiner_opp_name,
                             player_names: player_names.clone(),
                             legal_actions: joiner_legals,
+                            auto_pass_recommended: if is_joiner_actor { auto_pass } else { false },
                             player_token: Some(player_token.clone()),
                         };
                         if let Ok(json) = serde_json::to_string(&msg) {
@@ -1514,7 +1536,8 @@ async fn handle_client_message(
                                                 Some(name.clone())
                                             }
                                         });
-                                let p_legals = if actor == Some(pid) {
+                                let is_actor = actor == Some(pid);
+                                let p_legals = if is_actor {
                                     legal_actions.clone()
                                 } else {
                                     vec![]
@@ -1525,6 +1548,7 @@ async fn handle_client_message(
                                     opponent_name: opp_name,
                                     player_names: player_names.clone(),
                                     legal_actions: p_legals,
+                                    auto_pass_recommended: if is_actor { auto_pass } else { false },
                                     player_token: None,
                                 });
                             }

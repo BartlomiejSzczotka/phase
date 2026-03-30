@@ -228,7 +228,7 @@ export function GameProvider({
 
             p2pUnsubscribe = adapter.onEvent((event) => {
               if (event.type === "stateChanged") {
-                processRemoteUpdate(event.state, event.events, event.legalActions);
+                processRemoteUpdate(event.state, event.events, event.legalActions, event.autoPassRecommended);
               }
               onP2PEventRef.current?.(event);
             });
@@ -250,7 +250,7 @@ export function GameProvider({
 
             p2pUnsubscribe = adapter.onEvent((event) => {
               if (event.type === "stateChanged") {
-                processRemoteUpdate(event.state, event.events, event.legalActions);
+                processRemoteUpdate(event.state, event.events, event.legalActions, event.autoPassRecommended);
               }
               onP2PEventRef.current?.(event);
             });
@@ -320,7 +320,7 @@ export function GameProvider({
             if (needAdapter) {
               useGameStore.setState({ adapter: wsAdapter });
             }
-            processRemoteUpdate(event.state, event.events, event.legalActions);
+            processRemoteUpdate(event.state, event.events, event.legalActions, event.autoPassRecommended);
             useMultiplayerStore.getState().setConnectionStatus("connected");
             if (
               event.state.match_phase === "Completed"

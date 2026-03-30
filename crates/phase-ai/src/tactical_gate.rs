@@ -5,6 +5,7 @@ use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
 use engine::types::game_state::GameState;
 use engine::types::identifiers::ObjectId;
+use engine::types::keywords::Keyword;
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 
@@ -155,7 +156,12 @@ fn assess_pre_cast(ctx: &PolicyContext<'_>) -> GateDecision {
     if effects
         .iter()
         .any(|effect| matches!(effect, Effect::Counter { .. }))
-        && ctx.state.stack.is_empty()
+        && (ctx.state.stack.is_empty()
+            || ctx
+                .state
+                .stack
+                .iter()
+                .all(|entry| entry.controller == ctx.ai_player))
     {
         return GateDecision::Reject;
     }
@@ -216,6 +222,9 @@ fn is_redundant_creature_only_removal(ctx: &PolicyContext<'_>, effects: &[&Effec
         object.controller != ctx.ai_player
             && object.card_types.core_types.contains(&CoreType::Creature)
             && !will_target_die_from_stack(ctx.state, object_id)
+            // CR 702.11b + CR 702.18a: Hexproof/Shroud prevent targeting.
+            && !object.has_keyword(&Keyword::Hexproof)
+            && !object.has_keyword(&Keyword::Shroud)
     })
 }
 

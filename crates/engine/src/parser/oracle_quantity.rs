@@ -8,6 +8,9 @@
 
 use std::str::FromStr;
 
+use nom::Parser;
+
+use super::oracle_nom::quantity as nom_quantity;
 use crate::parser::oracle_effect::counter::normalize_counter_type;
 use crate::parser::oracle_target::{parse_target, parse_type_phrase};
 use crate::parser::oracle_util::parse_number;
@@ -18,40 +21,38 @@ use crate::types::ability::{
 use crate::types::mana::ManaColor;
 
 /// Map a quantity phrase to a dynamic QuantityRef.
+///
+/// Delegates to `oracle_nom::quantity::parse_quantity_ref` for simple exact-match
+/// patterns (life total, hand size, graveyard size, self P/T, life lost/gained,
+/// starting life total), then falls through to complex patterns (counters,
+/// aggregates, object counts, devotion, etc.) that nom doesn't yet cover.
 pub(crate) fn parse_quantity_ref(text: &str) -> Option<QuantityRef> {
     let trimmed = text.trim().trim_end_matches('.');
+
+    // Try nom combinator first for simple exact-match patterns.
+    if let Ok((rest, qty)) = nom_quantity::parse_quantity_ref.parse(trimmed) {
+        if rest.is_empty() {
+            return Some(qty);
+        }
+    }
+
+    // Patterns not covered by nom combinator — complex strip_prefix chains.
     match trimmed {
-        "cards in your hand" => Some(QuantityRef::HandSize),
-        "your life total" => Some(QuantityRef::LifeTotal),
+        // Speed is not in nom combinator yet
         "your speed" => Some(QuantityRef::Speed),
-        // Duration stripping may remove "this turn" suffix, so handle both forms
-        "the life you've lost this turn"
-        | "the life you lost this turn"
-        | "life you've lost this turn"
-        | "life you lost this turn"
-        | "the life you've lost"
+        // Duration-stripped forms not in nom combinator
+        "the life you've lost"
         | "the life you lost"
         | "life you've lost"
         | "life you lost"
         | "total life you lost this turn"
         | "total life you've lost this turn" => Some(QuantityRef::LifeLostThisTurn),
-        "the life you've gained this turn"
-        | "the life you gained this turn"
-        | "life you've gained this turn"
-        | "life you gained this turn"
-        | "the life you've gained"
+        "the life you've gained"
         | "the life you gained"
         | "life you've gained"
         | "life you gained"
         | "total life you gained this turn"
         | "total life you've gained this turn" => Some(QuantityRef::LifeGainedThisTurn),
-        "your starting life total" => Some(QuantityRef::StartingLifeTotal),
-        "cards in your graveyard" => Some(QuantityRef::GraveyardSize),
-        // CR 208.3: Self-referential P/T lookups.
-        "~'s power" | "its power" | "this creature's power" => Some(QuantityRef::SelfPower),
-        "~'s toughness" | "its toughness" | "this creature's toughness" => {
-            Some(QuantityRef::SelfToughness)
-        }
         _ => {
             // "[counter type] counters on ~" / "[counter type] counters on it"
             if let Some(rest) = trimmed

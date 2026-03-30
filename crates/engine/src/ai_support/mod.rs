@@ -6,6 +6,7 @@ use crate::game::mana_abilities;
 use crate::game::mana_sources;
 use crate::types::ability::AbilityKind;
 use crate::types::actions::GameAction;
+use crate::types::card_type::CoreType;
 use crate::types::game_state::{GameState, WaitingFor};
 
 pub use candidates::{candidate_actions, ActionMetadata, CandidateAction, TacticalClass};
@@ -28,6 +29,57 @@ pub fn validated_candidate_actions(state: &GameState) -> Vec<CandidateAction> {
 /// artifacts) are included so the frontend auto-pass system knows meaningful
 /// actions exist. The AI uses `candidate_actions()` which excludes mana abilities
 /// from priority candidates to keep the search tree clean.
+/// Determines whether the frontend should auto-pass the current priority window.
+///
+/// Returns `true` when auto-passing is recommended:
+/// - Only `PassPriority` is available (no spells, abilities, or lands to play)
+/// - Player's own spell/ability is on top of the stack (MTGA-style: let your
+///   own spells resolve without pausing)
+///
+/// This centralizes the "meaningful action" classification in the engine so
+/// frontends don't need to inspect game objects or card types.
+pub fn auto_pass_recommended(state: &GameState, actions: &[GameAction]) -> bool {
+    let player = match &state.waiting_for {
+        WaitingFor::Priority { player } => *player,
+        _ => return false,
+    };
+
+    // Meaningful = any action that directly affects the game beyond passing.
+    // Land mana abilities (ActivateAbility on a Land) are NOT meaningful on their
+    // own — they only matter if the mana enables casting a spell, in which case
+    // CastSpell will also be present in `actions` (the engine's can_pay_cost_after_auto_tap
+    // already simulates tapping those lands when checking spell castability).
+    let has_meaningful = actions.iter().any(|a| {
+        match a {
+            GameAction::PassPriority => false,
+            GameAction::ActivateAbility { source_id, .. } => {
+                // Non-land activated abilities (creatures, artifacts) are meaningful.
+                // Land activated abilities are only present as mana-producing fallbacks
+                // and are not meaningful on their own.
+                state
+                    .objects
+                    .get(source_id)
+                    .is_some_and(|obj| !obj.card_types.core_types.contains(&CoreType::Land))
+            }
+            _ => true,
+        }
+    });
+    if !has_meaningful {
+        return true;
+    }
+
+    // MTGA-style: auto-pass when own spell/ability is on top of the stack.
+    // The player almost never wants to respond to their own spell — let it resolve.
+    // Full control mode (checked by the frontend) overrides this.
+    if let Some(top) = state.stack.last() {
+        if top.controller == player {
+            return true;
+        }
+    }
+
+    false
+}
+
 pub fn legal_actions(state: &GameState) -> Vec<GameAction> {
     let mut actions: Vec<GameAction> = validated_candidate_actions(state)
         .into_iter()

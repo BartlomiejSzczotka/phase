@@ -36,6 +36,7 @@ interface GameStoreState {
   adapter: EngineAdapter | null;
   waitingFor: WaitingFor | null;
   legalActions: GameAction[];
+  autoPassRecommended: boolean;
   stateHistory: GameState[];
   turnCheckpoints: GameState[];
 }
@@ -71,6 +72,7 @@ const initialState: GameStoreState = {
   adapter: null,
   waitingFor: null,
   legalActions: [],
+  autoPassRecommended: false,
   stateHistory: [],
   turnCheckpoints: [],
 };
@@ -83,7 +85,7 @@ export const useGameStore = create<GameStore>()(
       await adapter.initialize();
       const initResult = await adapter.initializeGame(deckData, formatConfig, playerCount, matchConfig);
       const state = await adapter.getState();
-      const legalActions = await adapter.getLegalActions();
+      const legalResult = await adapter.getLegalActions();
       const initLogEntries = (initResult.log_entries ?? []).map((entry, i) => ({
         ...entry,
         seq: i,
@@ -93,7 +95,8 @@ export const useGameStore = create<GameStore>()(
         adapter,
         gameState: state,
         waitingFor: state.waiting_for,
-        legalActions,
+        legalActions: legalResult.actions,
+        autoPassRecommended: legalResult.autoPassRecommended,
         events: [],
         eventHistory: [],
         logHistory: initLogEntries,
@@ -108,14 +111,15 @@ export const useGameStore = create<GameStore>()(
       await adapter.initialize();
       adapter.restoreState(savedState);
       const state = await adapter.getState();
-      const legalActions = await adapter.getLegalActions();
+      const legalResult = await adapter.getLegalActions();
       const savedCheckpoints = await loadCheckpoints(gameId);
       set({
         gameId,
         adapter,
         gameState: state,
         waitingFor: state.waiting_for,
-        legalActions,
+        legalActions: legalResult.actions,
+        autoPassRecommended: legalResult.autoPassRecommended,
         events: [],
         eventHistory: [],
         logHistory: [],
@@ -136,7 +140,7 @@ export const useGameStore = create<GameStore>()(
 
       const result = await adapter.submitAction(action);
       const newState = await adapter.getState();
-      const legalActions = await adapter.getLegalActions();
+      const legalResult = await adapter.getLegalActions();
 
       set((prev) => {
         const newHistory = shouldSaveHistory
@@ -157,7 +161,8 @@ export const useGameStore = create<GameStore>()(
           logHistory: [...prev.logHistory, ...newLogEntries].slice(-2000),
           nextLogSeq: seq,
           waitingFor: newState.waiting_for,
-          legalActions,
+          legalActions: legalResult.actions,
+          autoPassRecommended: legalResult.autoPassRecommended,
           stateHistory: newHistory,
         };
       });
@@ -175,12 +180,13 @@ export const useGameStore = create<GameStore>()(
 
       // Sync WASM engine state with the restored client state
       adapter.restoreState(previous);
-      const legalActions = await adapter.getLegalActions();
+      const legalResult = await adapter.getLegalActions();
 
       set({
         gameState: previous,
         waitingFor: previous.waiting_for,
-        legalActions,
+        legalActions: legalResult.actions,
+        autoPassRecommended: legalResult.autoPassRecommended,
         events: [],
         stateHistory: stateHistory.slice(0, -1),
       });

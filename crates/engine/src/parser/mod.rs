@@ -7,6 +7,7 @@ pub mod oracle_effect;
 pub(crate) mod oracle_keyword;
 pub(crate) mod oracle_level;
 pub(crate) mod oracle_modal;
+pub mod oracle_nom;
 pub(crate) mod oracle_quantity;
 pub mod oracle_replacement;
 pub(crate) mod oracle_saga;

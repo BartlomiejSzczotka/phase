@@ -1,12 +1,15 @@
+use nom::Parser;
+
+use super::super::oracle_nom::primitives as nom_primitives;
 use super::super::oracle_target::parse_target;
-use super::super::oracle_util::{contains_possessive, parse_number};
+use super::super::oracle_util::contains_possessive;
 use super::types::*;
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, Chooser, Effect, StaticDefinition, TargetFilter,
 };
 use crate::types::zones::Zone;
 
-/// Parse count from "choose one/two/three/N of them/those" text using `parse_number`.
+/// Parse count from "choose one/two/three/N of them/those" text using nom combinator.
 /// Handles all chooser prefix forms: "choose ", "you choose ", "an opponent chooses ",
 /// "target opponent chooses ".
 fn parse_choose_count_from_text(lower: &str) -> u32 {
@@ -19,7 +22,11 @@ fn parse_choose_count_from_text(lower: &str) -> u32 {
                 .or(s.strip_prefix("chooses "))
                 .unwrap_or(s)
         });
-    parse_number(rest).map(|(n, _)| n).unwrap_or(1)
+    // Delegate to nom combinator (input already lowercase from lower parameter).
+    nom_primitives::parse_number
+        .parse(rest)
+        .map(|(_, n)| n)
+        .unwrap_or(1)
 }
 
 pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
@@ -645,9 +652,12 @@ fn parse_dig_from_among(lower: &str, _original: &str) -> Option<ContinuationAst>
             .or_else(|| before_of.strip_prefix("put "))
             .unwrap_or(before_of);
 
+        // Delegate to nom combinator (input already lowercase from lower).
         let (count, up_to) = if let Some(rest) = after_put.strip_prefix("up to ") {
-            parse_number(rest).map_or((1, true), |(n, _)| (n, true))
-        } else if let Some((n, _)) = parse_number(after_put) {
+            nom_primitives::parse_number
+                .parse(rest)
+                .map_or((1, true), |(_, n)| (n, true))
+        } else if let Ok((_, n)) = nom_primitives::parse_number.parse(after_put) {
             (n, false)
         } else {
             // "a/an" or unrecognized → treat as up_to 1
@@ -679,8 +689,9 @@ fn parse_dig_from_among(lower: &str, _original: &str) -> Option<ContinuationAst>
         .unwrap_or(before_from);
 
     // Parse "up to N" or "a/an" or just a number
+    // Delegate to nom combinator (input already lowercase from lower).
     let (count, up_to, filter_text) = if let Some(rest) = after_put.strip_prefix("up to ") {
-        if let Some((n, remainder)) = parse_number(rest) {
+        if let Ok((remainder, n)) = nom_primitives::parse_number.parse(rest) {
             (n, true, remainder.trim())
         } else {
             (1, true, rest)
@@ -695,7 +706,7 @@ fn parse_dig_from_among(lower: &str, _original: &str) -> Option<ContinuationAst>
             .or_else(|| after_put.strip_prefix("an "))
             .unwrap_or(after_put);
         (1, true, rest)
-    } else if let Some((n, remainder)) = parse_number(after_put) {
+    } else if let Ok((remainder, n)) = nom_primitives::parse_number.parse(after_put) {
         // Explicit numeric count: "two creature cards" → exactly 2
         (n, false, remainder.trim())
     } else {

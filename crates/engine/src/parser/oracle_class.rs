@@ -14,6 +14,7 @@ use super::oracle_cost::parse_oracle_cost;
 use super::oracle_effect::parse_effect_chain;
 use super::oracle_keyword::extract_keyword_line;
 use super::oracle_modal::strip_ability_word;
+use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_replacement::parse_replacement_line;
 use super::oracle_static::parse_static_line;
 use super::oracle_trigger::parse_trigger_line;
@@ -27,9 +28,9 @@ pub(crate) fn parse_class_level_line(line: &str) -> Option<(u8, String)> {
     let effect_text = line[colon_pos + 1..].trim();
     let lower_effect = effect_text.to_lowercase();
 
-    // Check if the effect portion is "Level N"
+    // Check if the effect portion is "Level N" using the shared nom combinator.
     let rest = lower_effect.strip_prefix("level ")?;
-    let (n, remainder) = super::oracle_util::parse_number(rest)?;
+    let (remainder, n) = nom_primitives::parse_number(rest).ok()?;
     // Must be exactly "Level N" with nothing else
     if !remainder.trim().is_empty() {
         return None;
@@ -241,9 +242,9 @@ fn parse_class_level_trigger(line: &str, card_name: &str, level: u8) -> Option<T
     let tp = TextPair::new(line, &lower);
     let after_becomes = tp.strip_after("becomes level ")?.original;
 
-    // Parse the level number
+    // Parse the level number using the shared nom combinator.
     let after_lower = after_becomes.to_lowercase();
-    let (_, rest) = super::oracle_util::parse_number(&after_lower)?;
+    let (rest, _) = nom_primitives::parse_number(&after_lower).ok()?;
 
     // The effect follows after ", " or just the rest of the text
     let effect_text = rest.trim().strip_prefix(',').unwrap_or(rest.trim()).trim();

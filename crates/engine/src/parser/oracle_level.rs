@@ -3,6 +3,7 @@ use crate::types::ability::{
 };
 
 use super::oracle_keyword::parse_keyword_from_oracle;
+use super::oracle_nom::primitives as nom_primitives;
 
 /// CR 710: Parse LEVEL block lines from a leveler creature's Oracle text.
 ///
@@ -144,17 +145,19 @@ enum LevelRange {
 }
 
 /// Parse "level N-M" or "level N+" from lowercase text.
+///
+/// Uses `nom_primitives::parse_number` for number recognition within level headers.
 fn parse_level_header(lower: &str) -> Option<LevelRange> {
     let rest = lower.strip_prefix("level ")?;
     let rest = rest.trim();
 
     if let Some(plus_rest) = rest.strip_suffix('+') {
-        let min: u32 = plus_rest.trim().parse().ok()?;
+        let (_, min) = nom_primitives::parse_number(plus_rest.trim()).ok()?;
         Some(LevelRange::Unbounded { min })
     } else if rest.contains('-') {
         let mut parts = rest.splitn(2, '-');
-        let min: u32 = parts.next()?.trim().parse().ok()?;
-        let max: u32 = parts.next()?.trim().parse().ok()?;
+        let (_, min) = nom_primitives::parse_number(parts.next()?.trim()).ok()?;
+        let (_, max) = nom_primitives::parse_number(parts.next()?.trim()).ok()?;
         Some(LevelRange::Bounded { min, max })
     } else {
         None

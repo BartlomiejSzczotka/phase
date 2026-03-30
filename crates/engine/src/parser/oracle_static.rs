@@ -1,8 +1,12 @@
 use std::borrow::Cow;
 use std::str::FromStr;
 
+use nom::Parser;
+
 use super::oracle_cost::parse_oracle_cost;
 use super::oracle_effect::parse_effect_chain;
+use super::oracle_nom::condition as nom_condition;
+use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_quantity::{capitalize_first, parse_cda_quantity, parse_quantity_ref};
 use super::oracle_target::{parse_combat_status_prefix, parse_counter_suffix, parse_type_phrase};
 use super::oracle_util::{
@@ -1350,6 +1354,14 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
 
+    // Try the shared nom condition combinator first for common patterns
+    // ("if it's your turn", "as long as ~ is tapped/untapped", etc.).
+    if let Ok((rest, condition)) = nom_condition::parse_condition(&lower) {
+        if rest.trim().is_empty() {
+            return Some(condition);
+        }
+    }
+
     // CR 113.6b: "~ is in your graveyard" / "this card is in your graveyard" / "~ is in your hand"
     if let Some(condition) = parse_source_in_zone_condition(tp.lower) {
         return Some(condition);
@@ -1513,17 +1525,11 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
 
     // "the chosen color is [color]"
     if let Some(color_name) = tp.lower.strip_prefix("the chosen color is ") {
-        use crate::types::mana::ManaColor;
-        let color = match color_name.trim().trim_end_matches('.') {
-            "white" => Some(ManaColor::White),
-            "blue" => Some(ManaColor::Blue),
-            "black" => Some(ManaColor::Black),
-            "red" => Some(ManaColor::Red),
-            "green" => Some(ManaColor::Green),
-            _ => None,
-        };
-        if let Some(c) = color {
-            return Some(StaticCondition::ChosenColorIs { color: c });
+        let trimmed = color_name.trim().trim_end_matches('.');
+        if let Ok((rest, color)) = nom_primitives::parse_color.parse(trimmed) {
+            if rest.is_empty() {
+                return Some(StaticCondition::ChosenColorIs { color });
+            }
         }
     }
 
@@ -1629,19 +1635,20 @@ fn parse_presence_filter(text: &str) -> Option<TypedFilter> {
 }
 
 /// Parse a color list like "white", "blue and red", "white, blue, and black".
+/// Parse a list of color names: "red", "white and blue", "red, white, and blue".
+///
+/// Delegates individual color word recognition to the shared nom color combinator.
 fn parse_color_list(text: &str) -> Option<Vec<crate::types::mana::ManaColor>> {
-    use crate::types::mana::ManaColor;
-
-    let color_from_name = |s: &str| -> Option<ManaColor> {
-        match s.trim() {
-            "white" => Some(ManaColor::White),
-            "blue" => Some(ManaColor::Blue),
-            "black" => Some(ManaColor::Black),
-            "red" => Some(ManaColor::Red),
-            "green" => Some(ManaColor::Green),
-            _ => None,
+    /// Parse a single color name using the nom combinator with case normalization.
+    fn color_from_name(s: &str) -> Option<crate::types::mana::ManaColor> {
+        let lower = s.trim().to_ascii_lowercase();
+        let (rest, color) = nom_primitives::parse_color.parse(&lower).ok()?;
+        if rest.is_empty() {
+            Some(color)
+        } else {
+            None
         }
-    };
+    }
 
     // Try single color first
     if let Some(c) = color_from_name(text) {
@@ -2364,14 +2371,17 @@ fn parse_zone_names_from_tp(tp: &TextPair) -> Vec<Zone> {
     zones
 }
 
+/// Parse a color name from Oracle text, delegating to the shared nom color combinator.
+///
+/// Accepts leading/trailing whitespace and requires complete consumption (no trailing text
+/// beyond whitespace). This preserves the original behavior of the match-based implementation.
 fn parse_named_color(text: &str) -> Option<ManaColor> {
-    match text.trim().to_ascii_lowercase().as_str() {
-        "white" => Some(ManaColor::White),
-        "blue" => Some(ManaColor::Blue),
-        "black" => Some(ManaColor::Black),
-        "red" => Some(ManaColor::Red),
-        "green" => Some(ManaColor::Green),
-        _ => None,
+    let lower = text.trim().to_ascii_lowercase();
+    let (rest, color) = nom_primitives::parse_color.parse(&lower).ok()?;
+    if rest.is_empty() {
+        Some(color)
+    } else {
+        None
     }
 }
 
@@ -2990,8 +3000,18 @@ fn extract_lose_keyword_clause(text: &str) -> Option<&str> {
     None
 }
 
+/// Parse a P/T modifier like "+2/+3", "-1/-1", "+3/-2" from Oracle text.
+///
+/// Delegates to the shared nom P/T combinator for signed P/T values.
+/// Falls back to manual parsing for unsigned values (e.g. "0/0") which the
+/// nom combinator doesn't handle (it requires explicit +/- signs).
 fn parse_pt_mod(text: &str) -> Option<(i32, i32)> {
     let text = text.trim();
+    // Try the nom combinator first — handles +N/+M, -N/-M, +N/-M patterns.
+    if let Ok((_, (p, t))) = nom_primitives::parse_pt_modifier.parse(text) {
+        return Some((p, t));
+    }
+    // Fallback for unsigned values: "0/0", "1/1", etc. (used in base P/T contexts).
     let slash = text.find('/')?;
     let p_str = &text[..slash];
     let rest = &text[slash + 1..];

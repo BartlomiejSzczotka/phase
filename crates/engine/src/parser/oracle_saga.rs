@@ -7,32 +7,21 @@ use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
 
 use super::oracle_effect::parse_effect_chain;
+use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_util::strip_reminder_text;
 
 /// Parse a roman numeral to u32. Handles I(1) through XX(20).
+///
+/// Delegates to the shared `nom_primitives::parse_roman_numeral` combinator,
+/// but requires the entire input to be a roman numeral (no trailing non-roman text).
 pub(crate) fn parse_roman_numeral(s: &str) -> Option<u32> {
-    let upper = s.to_uppercase();
-    let mut total: u32 = 0;
-    let mut prev = 0u32;
-    for ch in upper.chars().rev() {
-        let val = match ch {
-            'I' => 1,
-            'V' => 5,
-            'X' => 10,
-            _ => return None,
-        };
-        if val < prev {
-            total = total.checked_sub(val)?;
-        } else {
-            total += val;
-        }
-        prev = val;
+    let (rest, val) = nom_primitives::parse_roman_numeral(s).ok()?;
+    // The original function required the entire string to be a roman numeral.
+    // The nom combinator consumes all roman chars, so verify nothing else remains.
+    if !rest.is_empty() {
+        return None;
     }
-    if total == 0 {
-        None
-    } else {
-        Some(total)
-    }
+    Some(val)
 }
 
 /// Parse a saga chapter line. Returns (chapter_numbers, effect_text).

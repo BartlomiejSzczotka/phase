@@ -9,13 +9,16 @@ mod types;
 
 use std::str::FromStr;
 
+use nom::Parser;
+
+use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_quantity::{parse_cda_quantity, parse_for_each_clause};
 use super::oracle_target::{
     parse_event_context_ref, parse_mana_value_suffix, parse_target, parse_type_phrase,
 };
 use super::oracle_util::{
     contains_possessive, has_unconsumed_conditional, parse_comparison_suffix, parse_mana_symbols,
-    parse_number, starts_with_possessive, strip_after, TextPair,
+    starts_with_possessive, strip_after, TextPair,
 };
 use crate::database::mtgjson::parse_mtgjson_mana_cost;
 use crate::types::ability::{
@@ -493,7 +496,8 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
         .strip_prefix("increase your speed by ")
         .map(str::trim)
     {
-        if let Some((amount, remainder)) = crate::parser::oracle_util::parse_number(amount_text) {
+        // Delegate to nom combinator (input already lowercase from tp.lower).
+        if let Ok((remainder, amount)) = nom_primitives::parse_number.parse(amount_text) {
             if remainder.trim().is_empty() {
                 return parsed_clause(Effect::IncreaseSpeed {
                     player_scope: PlayerFilter::Controller,
@@ -964,8 +968,9 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
             .strip_prefix("you gain ")
             .or_else(|| base_tp.lower.strip_prefix("gain "))
             .unwrap_or(base_tp.lower);
-        let amount = match parse_number(after_gain) {
-            Some((n, _)) if n > 1 => QuantityExpr::Multiply {
+        // Delegate to nom combinator (input already lowercase from base_tp.lower).
+        let amount = match nom_primitives::parse_number.parse(after_gain) {
+            Ok((_, n)) if n > 1 => QuantityExpr::Multiply {
                 factor: n as i32,
                 inner: Box::new(quantity),
             },
@@ -986,8 +991,9 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
             .strip_prefix("you lose ")
             .or_else(|| base_tp.lower.strip_prefix("lose "))
             .unwrap_or(base_tp.lower);
-        let amount = match parse_number(after_lose) {
-            Some((n, _)) if n > 1 => QuantityExpr::Multiply {
+        // Delegate to nom combinator (input already lowercase from base_tp.lower).
+        let amount = match nom_primitives::parse_number.parse(after_lose) {
+            Ok((_, n)) if n > 1 => QuantityExpr::Multiply {
                 factor: n as i32,
                 inner: Box::new(quantity),
             },
@@ -1823,9 +1829,11 @@ fn lower_subject_predicate_ast(
                 && pred_lower.contains("top")
                 && pred_lower.contains("library")
             {
+                // Delegate to nom combinator (input already lowercase from pred_lower).
                 let count = if let Some(after_top) = strip_after(&pred_lower, "top ") {
-                    super::oracle_util::parse_number(after_top)
-                        .map(|(n, _)| n)
+                    nom_primitives::parse_number
+                        .parse(after_top)
+                        .map(|(_, n)| n)
                         .unwrap_or(1)
                 } else {
                     1
@@ -2830,8 +2838,9 @@ fn parse_search_library_details(lower: &str) -> SearchLibraryDetails {
 
     // Extract count from "up to N" (must be done before filter extraction since
     // "for up to five creature cards" needs to skip the count to find the type).
+    // Delegate to nom combinator (input already lowercase).
     let (count, count_end_in_for) = if let Some(after_up_to) = strip_after(lower, "up to ") {
-        if let Some((n, rest)) = parse_number(after_up_to) {
+        if let Ok((rest, n)) = nom_primitives::parse_number.parse(after_up_to) {
             // Calculate the byte offset where the type text begins after "up to N "
             let type_start = lower.len() - rest.len();
             (n, Some(type_start))
@@ -2884,7 +2893,9 @@ fn parse_seek_details(lower: &str) -> types::SeekDetails {
     };
 
     // Extract count: "two nonland cards" → (2, "nonland cards")
-    let (count, remaining) = if let Some((n, rest)) = parse_number(filter_text) {
+    // Delegate to nom combinator (input already lowercase).
+    let (count, remaining) = if let Ok((rest, n)) = nom_primitives::parse_number.parse(filter_text)
+    {
         (QuantityExpr::Fixed { value: n as i32 }, rest.trim_start())
     } else if let Some(rest) = filter_text.strip_prefix("x ") {
         (
@@ -3700,8 +3711,9 @@ fn parse_counter_threshold(text: &str) -> Option<(Comparator, i32, String, usize
     }
 
     // "N or more/fewer [type] counters on it"
-    let (n, rest) = parse_number(text)?;
-    // parse_number trims trailing whitespace, so remainder starts with "or more "
+    // Delegate to nom combinator (input already lowercase).
+    let (rest, n) = nom_primitives::parse_number.parse(text).ok()?;
+    let rest = rest.trim_start();
     let (comparator, rest) = if let Some(r) = rest.strip_prefix("or more ") {
         (Comparator::GE, r)
     } else if let Some(r) = rest.strip_prefix("or fewer ") {
@@ -3950,8 +3962,9 @@ fn try_parse_generic_instead_clause(text: &str, kind: AbilityKind) -> Option<Abi
 fn parse_control_count_as_ability_condition(text: &str) -> Option<AbilityCondition> {
     let text = text.trim();
     let rest = text.strip_prefix("you control ")?;
-    let (n, after_n) = parse_number(rest)?;
-    let or_more = after_n.strip_prefix("or more ")?;
+    // Delegate to nom combinator (input already lowercase).
+    let (after_n, n) = nom_primitives::parse_number.parse(rest).ok()?;
+    let or_more = after_n.trim_start().strip_prefix("or more ")?;
     let (mut filter, leftover) = parse_type_phrase(or_more);
     if filter == TargetFilter::Any || !leftover.trim().is_empty() {
         return None;
@@ -4294,7 +4307,8 @@ fn extract_put_counter_multi_target(text: &str) -> Option<MultiTargetSpec> {
     ]
     .into_iter()
     .find_map(|marker| strip_after(&lower, marker))?;
-    let (n, _) = super::oracle_util::parse_number(after)?;
+    // Delegate to nom combinator (input already lowercase).
+    let (_, n) = nom_primitives::parse_number.parse(after).ok()?;
     Some(MultiTargetSpec {
         min: 0,
         max: Some(n as usize),
@@ -4343,7 +4357,8 @@ pub(super) fn strip_optional_target_prefix(text: &str) -> (&str, Option<MultiTar
     let Some(after_up_to) = lower.strip_prefix("up to ") else {
         return (text, None);
     };
-    let Some((n, remainder)) = parse_number(after_up_to) else {
+    // Delegate to nom combinator (input already lowercase).
+    let Ok((remainder, n)) = nom_primitives::parse_number.parse(after_up_to) else {
         return (text, None);
     };
     let consumed = lower.len() - remainder.len();
@@ -4384,7 +4399,8 @@ fn strip_any_number_quantifier(text: &str) -> (String, Option<MultiTargetSpec>) 
         }
     }
     if let Some(after_up_to) = after_verb_tp.strip_prefix("up to ") {
-        if let Some((n, remainder)) = parse_number(after_up_to.lower) {
+        // Delegate to nom combinator (input already lowercase from TextPair.lower).
+        if let Ok((remainder, n)) = nom_primitives::parse_number.parse(after_up_to.lower) {
             let consumed_len = after_up_to.lower.len() - remainder.len();
             let (_, rest) = after_up_to.split_at(consumed_len);
             let rebuilt = format!("{}{}", verb_tp.original, rest.original.trim_start());

@@ -1,5 +1,8 @@
 use std::borrow::Cow;
 
+use nom::Parser;
+
+use super::oracle_nom::primitives as nom_primitives;
 use crate::types::keywords::{Keyword, WardCost};
 
 /// CR 702.16 + CR 702.11f: Expand compound "X from A and from B" keyword lines.
@@ -290,9 +293,12 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
     }
 
     // CR 702.74a: "hideaway N" — parameterized keyword.
+    // Delegates to nom combinator for number parsing.
     if let Some(rest) = text.strip_prefix("hideaway ") {
-        if let Ok(n) = rest.trim().parse::<u32>() {
-            return Some(Keyword::Hideaway(n));
+        if let Ok((rem, n)) = nom_primitives::parse_number.parse(rest.trim()) {
+            if rem.is_empty() {
+                return Some(Keyword::Hideaway(n));
+            }
         }
     }
 
@@ -306,9 +312,12 @@ pub(crate) fn parse_keyword_from_oracle(text: &str) -> Option<Keyword> {
     }
 
     // CR 701.57a: "discover N"
+    // Delegates to nom combinator for number parsing.
     if let Some(rest) = text.strip_prefix("discover ") {
-        if let Ok(n) = rest.trim().parse::<u32>() {
-            return Some(Keyword::Discover(n));
+        if let Ok((rem, n)) = nom_primitives::parse_number.parse(rest.trim()) {
+            if rem.is_empty() {
+                return Some(Keyword::Discover(n));
+            }
         }
     }
 

@@ -485,13 +485,13 @@ fn should_attack_given_objective(
     objective: CombatObjective,
     free_damage: bool,
     favorable_trade: bool,
-    profile: &AiProfile,
+    _profile: &AiProfile,
 ) -> bool {
     match objective {
         CombatObjective::PushLethal => true,
-        CombatObjective::Stabilize => free_damage && profile.risk_tolerance < 0.8,
+        CombatObjective::Stabilize => free_damage,
         CombatObjective::PreserveAdvantage => free_damage || favorable_trade,
-        CombatObjective::Race => free_damage || favorable_trade || profile.risk_tolerance > 0.75,
+        CombatObjective::Race => free_damage || favorable_trade,
     }
 }
 

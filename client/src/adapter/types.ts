@@ -668,6 +668,12 @@ export interface SubmitResult {
   log_entries?: GameLogEntry[];
 }
 
+/** Bundles legal actions with the engine's auto-pass recommendation. */
+export interface LegalActionsResult {
+  actions: GameAction[];
+  autoPassRecommended: boolean;
+}
+
 export interface EngineAdapter {
   initialize(): Promise<void>;
   initializeGame(
@@ -678,7 +684,7 @@ export interface EngineAdapter {
   ): Promise<SubmitResult> | SubmitResult;
   submitAction(action: GameAction): Promise<SubmitResult>;
   getState(): Promise<GameState>;
-  getLegalActions(): Promise<GameAction[]>;
+  getLegalActions(): Promise<LegalActionsResult>;
   getAiAction(difficulty: string, playerId?: number): Promise<GameAction | null> | GameAction | null;
   restoreState(state: GameState): void;
   dispose(): void;

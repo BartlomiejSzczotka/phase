@@ -5,7 +5,7 @@ use rand_chacha::ChaCha20Rng;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-use engine::ai_support::legal_actions;
+use engine::ai_support::{auto_pass_recommended, legal_actions};
 use engine::database::CardDatabase;
 use engine::game::derived::derive_display_state;
 use engine::game::engine::apply;
@@ -17,6 +17,15 @@ use engine::game::{
 use engine::types::format::FormatConfig;
 use engine::types::match_config::MatchConfig;
 use engine::types::{GameAction, GameState, PlayerId};
+
+/// Result of `get_legal_actions_js` — bundles actions with the engine's auto-pass
+/// recommendation so frontends don't need to classify action meaningfulness.
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LegalActionsResult {
+    actions: Vec<GameAction>,
+    auto_pass_recommended: bool,
+}
 
 /// Serialize a Rust value to a JS object via JSON.
 ///
@@ -236,13 +245,17 @@ pub fn get_game_state() -> JsValue {
     }
 }
 
-/// Get the legal actions for the current game state.
-/// Returns a JS array of GameAction values.
+/// Get the legal actions and auto-pass recommendation for the current game state.
+/// Returns `{ actions: GameAction[], autoPassRecommended: boolean }`.
 #[wasm_bindgen]
 pub fn get_legal_actions_js() -> JsValue {
     match with_state(|state| {
         let actions = legal_actions(state);
-        to_js(&actions)
+        let auto_pass = auto_pass_recommended(state, &actions);
+        to_js(&LegalActionsResult {
+            actions,
+            auto_pass_recommended: auto_pass,
+        })
     }) {
         Ok(val) => val,
         Err(_) => JsValue::NULL,

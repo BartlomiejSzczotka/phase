@@ -4,6 +4,7 @@ import type {
   GameEvent,
   GameLogEntry,
   GameState,
+  LegalActionsResult,
   PlayerId,
   SubmitResult,
 } from "./types";
@@ -35,7 +36,7 @@ export type WsAdapterEvent =
   | { type: "reconnecting"; attempt: number; maxAttempts: number }
   | { type: "reconnected" }
   | { type: "reconnectFailed" }
-  | { type: "stateChanged"; state: GameState; events: GameEvent[]; legalActions: GameAction[] }
+  | { type: "stateChanged"; state: GameState; events: GameEvent[]; legalActions: GameAction[]; autoPassRecommended: boolean }
   | { type: "emoteReceived"; fromPlayer: PlayerId; emote: string }
   | { type: "conceded"; player: PlayerId }
   | { type: "timerUpdate"; player: PlayerId; remainingSeconds: number };
@@ -65,7 +66,7 @@ export class WebSocketAdapter implements EngineAdapter {
   private ws: WebSocket | null = null;
   private gameState: GameState | null = null;
   private _playerId: PlayerId | null = null;
-  private _legalActions: GameAction[] = [];
+  private _legalActions: LegalActionsResult = { actions: [], autoPassRecommended: false };
   private playerToken: string | null = null;
   private _gameCode: string | null = null;
   private pendingResolve: ((result: SubmitResult) => void) | null = null;
@@ -223,7 +224,7 @@ export class WebSocketAdapter implements EngineAdapter {
     return null;
   }
 
-  async getLegalActions(): Promise<GameAction[]> {
+  async getLegalActions(): Promise<LegalActionsResult> {
     return this._legalActions;
   }
 
@@ -379,10 +380,13 @@ export class WebSocketAdapter implements EngineAdapter {
       }
 
       case "GameStarted": {
-        const data = msg.data as { state: GameState; your_player: PlayerId; opponent_name?: string; legal_actions?: GameAction[]; player_token?: string };
+        const data = msg.data as { state: GameState; your_player: PlayerId; opponent_name?: string; legal_actions?: GameAction[]; auto_pass_recommended?: boolean; player_token?: string };
         this.gameState = data.state;
         this._playerId = data.your_player;
-        this._legalActions = data.legal_actions ?? [];
+        this._legalActions = {
+          actions: data.legal_actions ?? [],
+          autoPassRecommended: data.auto_pass_recommended ?? false,
+        };
         // Joiners receive their player_token here (hosts get it via GameCreated).
         // Set _gameCode from joinGameCode if not already set (host sets it via GameCreated).
         if (data.player_token) {
@@ -401,22 +405,25 @@ export class WebSocketAdapter implements EngineAdapter {
         } else {
           // Reconnect path — no initResolve pending, so emit state change
           // so GameProvider's event listener populates the store.
-          this.emit({ type: "stateChanged", state: data.state, events: [], legalActions: this._legalActions });
+          this.emit({ type: "stateChanged", state: data.state, events: [], legalActions: this._legalActions.actions, autoPassRecommended: this._legalActions.autoPassRecommended });
         }
         break;
       }
 
       case "StateUpdate": {
-        const data = msg.data as { state: GameState; events: GameEvent[]; legal_actions?: GameAction[]; log_entries?: GameLogEntry[] };
+        const data = msg.data as { state: GameState; events: GameEvent[]; legal_actions?: GameAction[]; auto_pass_recommended?: boolean; log_entries?: GameLogEntry[] };
         this.gameState = data.state;
-        this._legalActions = data.legal_actions ?? [];
+        this._legalActions = {
+          actions: data.legal_actions ?? [],
+          autoPassRecommended: data.auto_pass_recommended ?? false,
+        };
         if (this.pendingResolve) {
           useMultiplayerStore.getState().setActionPending(false);
           this.pendingResolve({ events: data.events, log_entries: data.log_entries });
           this.pendingResolve = null;
           this.pendingReject = null;
         } else {
-          this.emit({ type: "stateChanged", state: data.state, events: data.events, legalActions: this._legalActions });
+          this.emit({ type: "stateChanged", state: data.state, events: data.events, legalActions: this._legalActions.actions, autoPassRecommended: this._legalActions.autoPassRecommended });
         }
         break;
       }

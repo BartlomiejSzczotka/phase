@@ -8,6 +8,7 @@ import type {
   FormatConfig,
   GameAction,
   GameState,
+  LegalActionsResult,
   MatchConfig,
   SubmitResult,
 } from "./types";
@@ -123,8 +124,8 @@ export class EngineWorkerClient {
     return this.request<GameState>({ type: "getState" });
   }
 
-  async getLegalActions(): Promise<GameAction[]> {
-    return this.request<GameAction[]>({ type: "getLegalActions" });
+  async getLegalActions(): Promise<LegalActionsResult> {
+    return this.request<LegalActionsResult>({ type: "getLegalActions" });
   }
 
   async getAiAction(

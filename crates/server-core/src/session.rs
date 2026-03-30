@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use engine::ai_support::legal_actions as engine_legal_actions;
+use engine::ai_support::{auto_pass_recommended, legal_actions as engine_legal_actions};
 use engine::game::deck_loading::{load_deck_into_state, DeckPayload, PlayerDeckPayload};
 use engine::game::engine::{apply, start_game};
 use engine::types::actions::GameAction;
@@ -27,6 +27,7 @@ pub type ActionResult = (
     Vec<GameEvent>,
     Vec<GameAction>,
     Vec<GameLogEntry>,
+    bool, // auto_pass_recommended
 );
 
 /// Returns the player who must act for the given WaitingFor, or None if the game is over.
@@ -130,7 +131,8 @@ impl GameSession {
             .into_iter()
             .map(|r| {
                 let legal = engine_legal_actions(&self.state);
-                (self.state.clone(), r.events, legal, r.log_entries)
+                let auto_pass = auto_pass_recommended(&self.state, &legal);
+                (self.state.clone(), r.events, legal, r.log_entries, auto_pass)
             })
             .collect()
     }
@@ -479,7 +481,8 @@ impl SessionManager {
         if matches!(action, GameAction::CancelAutoPass) {
             session.state.auto_pass.remove(&player);
             let new_legal_actions = engine_legal_actions(&session.state);
-            return Ok((session.state.clone(), vec![], new_legal_actions, vec![]));
+            let auto_pass = auto_pass_recommended(&session.state, &new_legal_actions);
+            return Ok((session.state.clone(), vec![], new_legal_actions, vec![], auto_pass));
         }
 
         // Validate it's this player's turn to act
@@ -528,12 +531,14 @@ impl SessionManager {
         );
 
         let new_legal_actions = engine_legal_actions(&session.state);
+        let auto_pass = auto_pass_recommended(&session.state, &new_legal_actions);
 
         Ok((
             session.state.clone(),
             result.events,
             new_legal_actions,
             result.log_entries,
+            auto_pass,
         ))
     }
 

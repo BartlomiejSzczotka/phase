@@ -3,6 +3,7 @@ import type {
   EngineAdapter,
   GameAction,
   GameState,
+  LegalActionsResult,
   MatchConfig,
   SubmitResult,
 } from "./types";
@@ -73,13 +74,13 @@ export class TauriAdapter implements EngineAdapter {
     }
   }
 
-  async getLegalActions(): Promise<GameAction[]> {
+  async getLegalActions(): Promise<LegalActionsResult> {
     this.assertInitialized();
     try {
-      const actions = await this.invoke!("get_legal_actions");
-      return actions as GameAction[];
+      const result = await this.invoke!("get_legal_actions");
+      return result as LegalActionsResult;
     } catch {
-      return [];
+      return { actions: [], autoPassRecommended: false };
     }
   }
 

@@ -10,6 +10,9 @@ use crate::types::keywords::Keyword;
 use crate::types::mana::ManaColor;
 use crate::types::zones::Zone;
 
+use super::oracle_nom::filter as nom_filter;
+use super::oracle_nom::primitives as nom_primitives;
+use super::oracle_nom::target as nom_target;
 use super::oracle_quantity::capitalize_first;
 use super::oracle_util::{
     merge_or_filters, parse_subtype, starts_with_possessive, strip_possessive, TextPair,
@@ -913,6 +916,9 @@ fn distribute_controller_to_or(filter: TargetFilter) -> TargetFilter {
 }
 
 fn parse_core_type(text: &str) -> (Option<TypeFilter>, Option<String>, usize) {
+    // Longest-match-first: plural forms before singular to avoid "creatures" matching
+    // only "creature" and leaving "s". The nom combinator `nom_target::parse_type_filter_word`
+    // handles singular forms; here we need the full plural/alias table for correct consumption.
     let types: &[(&str, TypeFilter)] = &[
         ("creatures", TypeFilter::Creature),
         ("creature", TypeFilter::Creature),
@@ -950,22 +956,21 @@ fn parse_core_type(text: &str) -> (Option<TypeFilter>, Option<String>, usize) {
 
 /// Parse a controller suffix like " you control", " an opponent controls", " your opponents control".
 /// Returns `(ControllerRef, bytes_consumed)` where consumed includes leading whitespace.
+///
+/// Delegates to `nom_target::parse_controller_suffix` for the common patterns
+/// ("you control", "an opponent controls", "your opponents control"), then
+/// handles additional patterns not in the shared combinator.
 fn parse_controller_suffix(text: &str) -> Option<(ControllerRef, usize)> {
     let trimmed = text.trim_start();
     let leading_ws = text.len() - trimmed.len();
-    if trimmed.starts_with("you control") {
-        Some((ControllerRef::You, leading_ws + "you control".len()))
-    } else if trimmed.starts_with("your opponents control") {
-        Some((
-            ControllerRef::Opponent,
-            leading_ws + "your opponents control".len(),
-        ))
-    } else if trimmed.starts_with("an opponent controls") {
-        Some((
-            ControllerRef::Opponent,
-            leading_ws + "an opponent controls".len(),
-        ))
-    } else if trimmed.starts_with("you don't control") {
+
+    // Try the shared nom combinator first — handles the three most common patterns.
+    if let Ok((rest, ctrl)) = nom_target::parse_controller_suffix(trimmed) {
+        return Some((ctrl, leading_ws + trimmed.len() - rest.len()));
+    }
+
+    // Additional patterns not in the shared nom combinator.
+    if trimmed.starts_with("you don't control") {
         Some((
             ControllerRef::Opponent,
             leading_ws + "you don't control".len(),
@@ -1004,38 +1009,43 @@ fn parse_token_suffix(text: &str) -> Option<usize> {
 
 /// Parse a color adjective prefix: "white ", "blue ", "black ", "red ", "green ".
 /// Returns (FilterProp::HasColor, bytes consumed including trailing space).
+///
+/// Delegates to `nom_primitives::parse_color` for color word recognition,
+/// then verifies a trailing space exists (color as adjective, not standalone).
 fn parse_color_prefix(text: &str) -> Option<(FilterProp, usize)> {
-    let colors = [
-        ("white ", ManaColor::White),
-        ("blue ", ManaColor::Blue),
-        ("black ", ManaColor::Black),
-        ("red ", ManaColor::Red),
-        ("green ", ManaColor::Green),
-    ];
-    for (prefix, color) in &colors {
-        if text.starts_with(prefix) {
-            return Some((FilterProp::HasColor { color: *color }, prefix.len()));
-        }
-    }
-    None
+    let (rest, color) = nom_primitives::parse_color(text).ok()?;
+    // Must be followed by a space (color adjective prefix, not standalone color word).
+    let rest = rest.strip_prefix(' ')?;
+    let consumed = text.len() - rest.len();
+    Some((FilterProp::HasColor { color }, consumed))
 }
 
 /// CR 509.1h / CR 302.6: Parse status prefixes from type phrases.
 /// Called in a loop to consume multiple prefixes (e.g. "unblocked attacking ").
 /// Handles combat status (attacking, unblocked) and tap status (tapped, untapped).
+///
+/// Delegates to `nom_filter::parse_property_filter` for the common property keywords,
+/// then handles "face-down " (hyphenated variant not in the nom combinator).
 pub(crate) fn parse_combat_status_prefix(text: &str) -> Option<(FilterProp, usize)> {
-    for (prefix, prop) in [
-        ("unblocked ", FilterProp::Unblocked),
-        ("attacking ", FilterProp::Attacking),
-        // CR 302.6 / CR 110.5: Tapped/untapped status as targeting qualifier.
-        ("tapped ", FilterProp::Tapped),
-        ("untapped ", FilterProp::Untapped),
-        // CR 707.2: Face-down status prefix for trigger subjects.
-        ("face-down ", FilterProp::FaceDown),
-    ] {
-        if text.starts_with(prefix) {
-            return Some((prop, prefix.len()));
+    // Try the shared nom property filter combinator for combat/tap status keywords.
+    // Filter to only the status properties relevant as type phrase prefixes.
+    if let Ok((rest, prop)) = nom_filter::parse_property_filter(text) {
+        if matches!(
+            prop,
+            FilterProp::Unblocked
+                | FilterProp::Attacking
+                | FilterProp::Tapped
+                | FilterProp::Untapped
+                | FilterProp::FaceDown
+        ) && rest.starts_with(' ')
+        {
+            return Some((prop, text.len() - rest.len() + 1));
         }
+    }
+
+    // Handle "face-down " (hyphenated variant not in the nom combinator).
+    if text.starts_with("face-down ") {
+        return Some((FilterProp::FaceDown, "face-down ".len()));
     }
 
     None

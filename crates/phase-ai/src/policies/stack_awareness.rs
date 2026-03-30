@@ -1,9 +1,11 @@
 use engine::types::ability::{Effect, QuantityExpr, TargetRef};
 use engine::types::actions::GameAction;
-use engine::types::game_state::GameState;
+use engine::types::game_state::{GameState, StackEntry, StackEntryKind};
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
 use engine::types::zones::Zone;
+
+use crate::eval::evaluate_creature;
 
 use super::context::{collect_ability_effects, PolicyContext};
 use super::effect_classify::{effect_polarity, is_spell_beneficial, EffectPolarity};
@@ -16,17 +18,23 @@ impl TacticalPolicy for StackAwarenessPolicy {
         match &ctx.candidate.action {
             GameAction::ChooseTarget {
                 target: Some(TargetRef::Object(id)),
-            } => score_target_redundancy(ctx, *id),
+            } => score_target(ctx, *id),
             GameAction::SelectTargets { targets } => targets
                 .iter()
                 .map(|t| match t {
-                    TargetRef::Object(id) => score_target_redundancy(ctx, *id),
+                    TargetRef::Object(id) => score_target(ctx, *id),
                     _ => 0.0,
                 })
                 .sum(),
             _ => 0.0,
         }
     }
+}
+
+fn score_target(ctx: &PolicyContext<'_>, target_id: ObjectId) -> f64 {
+    score_target_redundancy(ctx, target_id)
+        + score_counter_target_value(ctx, target_id)
+        + score_pump_response(ctx, target_id)
 }
 
 fn score_target_redundancy(ctx: &PolicyContext<'_>, target_id: ObjectId) -> f64 {
@@ -43,6 +51,111 @@ fn score_target_redundancy(ctx: &PolicyContext<'_>, target_id: ObjectId) -> f64 
     } else {
         // Pending removal that might not kill — still penalize but less
         ctx.penalties().redundant_damage_penalty * 0.5
+    }
+}
+
+/// When the AI is casting a counter spell, score the target stack entry by its
+/// impact. Higher-value spells (by mana value, creature stats, effects) should be
+/// preferred counter targets. Returns 0.0 if the pending spell is not a counter.
+fn score_counter_target_value(ctx: &PolicyContext<'_>, target_id: ObjectId) -> f64 {
+    // Only applies when the AI's pending spell has a Counter effect
+    let is_counter = ctx
+        .effects()
+        .iter()
+        .any(|e| matches!(e, Effect::Counter { .. }));
+    if !is_counter {
+        return 0.0;
+    }
+
+    // Find the stack entry being targeted
+    let Some(entry) = ctx.state.stack.iter().find(|e| e.id == target_id) else {
+        return 0.0;
+    };
+
+    // Only counter opponent spells — countering your own spell is almost always wrong
+    if entry.controller == ctx.ai_player {
+        return -10.0;
+    }
+
+    assess_spell_impact(ctx.state, entry)
+}
+
+/// When the AI's pending spell is harmful, boost targeting a creature that an
+/// opponent is currently pumping on the stack — removing it wastes both the
+/// creature and the pump spell (2-for-1).
+fn score_pump_response(ctx: &PolicyContext<'_>, target_id: ObjectId) -> f64 {
+    if is_spell_beneficial(ctx) {
+        return 0.0;
+    }
+
+    // Skip if target is already dying — redundancy penalty handles that case
+    if will_target_die_from_stack(ctx.state, target_id) {
+        return 0.0;
+    }
+
+    let has_opponent_pump = ctx.state.stack.iter().any(|entry| {
+        entry.controller != ctx.ai_player && {
+            let ability = entry.ability();
+            let targets_this = ability
+                .targets
+                .iter()
+                .any(|t| matches!(t, TargetRef::Object(id) if *id == target_id));
+            targets_this
+                && collect_ability_effects(ability)
+                    .iter()
+                    .any(|e| matches!(e, Effect::Pump { .. } | Effect::DoublePT { .. }))
+        }
+    });
+
+    if has_opponent_pump {
+        ctx.penalties().pump_response_bonus
+    } else {
+        0.0
+    }
+}
+
+/// Estimate the game impact of a stack entry based on its effects.
+/// Used for counter-target valuation and protect-my-spell incentives.
+pub(crate) fn assess_spell_impact(state: &GameState, entry: &StackEntry) -> f64 {
+    match &entry.kind {
+        StackEntryKind::Spell { .. } => {
+            let mv = state
+                .objects
+                .get(&entry.source_id)
+                .map(|o| o.mana_cost.mana_value())
+                .unwrap_or(0) as f64;
+
+            let mut score = mv * 0.3;
+
+            for effect in collect_ability_effects(entry.ability()) {
+                score += match effect {
+                    Effect::ExtraTurn { .. } => 5.0,
+                    Effect::DestroyAll { .. }
+                    | Effect::DamageAll { .. }
+                    | Effect::ChangeZoneAll { .. } => 4.0,
+                    Effect::GainControl { .. } => 2.5,
+                    Effect::Destroy { .. } | Effect::Fight { .. } => 1.5,
+                    Effect::Counter { .. } => 1.5,
+                    Effect::Draw {
+                        count: QuantityExpr::Fixed { value },
+                    } => *value as f64 * 1.5,
+                    Effect::DealDamage { .. } => 1.0,
+                    Effect::SearchLibrary { .. } => 1.0,
+                    Effect::Token { .. } => 0.5,
+                    _ => 0.0,
+                };
+            }
+
+            // Creature spells: factor in the creature's board value
+            let creature_value = evaluate_creature(state, entry.source_id);
+            if creature_value > 0.0 {
+                score += creature_value * 0.3;
+            }
+
+            score.min(8.0)
+        }
+        // Activated/triggered abilities: moderate value — they're free to re-trigger
+        StackEntryKind::ActivatedAbility { .. } | StackEntryKind::TriggeredAbility { .. } => 0.5,
     }
 }
 
@@ -64,7 +177,7 @@ pub(crate) fn has_pending_removal(state: &GameState, target_id: ObjectId) -> boo
     })
 }
 
-/// Estimate whether pending stack effects will remove this creature from the battlefield.
+/// Estimate whether pending stack effects will remove this object (creature or spell).
 pub(crate) fn will_target_die_from_stack(state: &GameState, target_id: ObjectId) -> bool {
     let Some(object) = state.objects.get(&target_id) else {
         return false;
@@ -88,6 +201,8 @@ pub(crate) fn will_target_die_from_stack(state: &GameState, target_id: ObjectId)
                 Effect::Destroy { .. } if !object.has_keyword(&Keyword::Indestructible) => {
                     return true;
                 }
+                // Counter removes the spell from the stack
+                Effect::Counter { .. } => return true,
                 // Bounce removes from battlefield
                 Effect::Bounce { .. } => return true,
                 // ChangeZone to non-battlefield removes from battlefield

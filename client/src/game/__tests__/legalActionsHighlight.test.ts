@@ -176,7 +176,7 @@ function createMockAdapter(state: GameState, legalActions: GameAction[]) {
     initializeGame: vi.fn().mockResolvedValue({ events: [] }),
     submitAction: vi.fn().mockResolvedValue({ events: [] }),
     getState: vi.fn().mockResolvedValue(state),
-    getLegalActions: vi.fn().mockResolvedValue(legalActions),
+    getLegalActions: vi.fn().mockResolvedValue({ actions: legalActions, autoPassRecommended: false }),
     restoreState: vi.fn(),
     getAiAction: vi.fn().mockReturnValue(null),
     dispose: vi.fn(),
@@ -231,8 +231,8 @@ describe("legal actions → card highlighting pipeline", () => {
     ];
     const adapter = createMockAdapter(state, initialActions);
     adapter.getLegalActions
-      .mockResolvedValueOnce(initialActions)
-      .mockResolvedValueOnce(postDispatchActions);
+      .mockResolvedValueOnce({ actions: initialActions, autoPassRecommended: false })
+      .mockResolvedValueOnce({ actions: postDispatchActions, autoPassRecommended: false });
 
     await act(() => useGameStore.getState().initGame("test-id", adapter));
     expect(useGameStore.getState().legalActions).toEqual(initialActions);

@@ -1,4 +1,7 @@
+use nom::Parser;
+
 use super::oracle_modal::split_short_label_prefix;
+use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_quantity::parse_for_each_clause;
 use super::oracle_target::{parse_target, parse_type_phrase};
 use super::oracle_util::parse_mana_symbols;
@@ -401,9 +404,10 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
         return cost;
     }
 
-    // Mana cost: {N}{W}{U} etc.
+    // Mana cost: {N}{W}{U} etc. — delegate to nom combinator for uppercase input.
     if text.starts_with('{') {
-        if let Some((cost, rest)) = parse_mana_symbols(text) {
+        let upper = text.to_ascii_uppercase();
+        if let Ok((rest, cost)) = nom_primitives::parse_mana_cost.parse(&upper) {
             if rest.trim().is_empty() {
                 return AbilityCost::Mana { cost };
             }

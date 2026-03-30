@@ -1,6 +1,9 @@
+use nom::Parser;
+
+use super::oracle_nom::primitives as nom_primitives;
 use crate::types::ability::{Comparator, QuantityExpr, QuantityRef, RoundingMode, TargetFilter};
 use crate::types::card_type::CoreType;
-use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
+use crate::types::mana::{ManaColor, ManaCost};
 
 /// A borrowed pair of `(original, lowercase)` slices kept in lockstep.
 ///
@@ -225,52 +228,32 @@ pub fn self_ref(text: &str, card_name: &str) -> String {
 /// Returns (value, remaining_text) or None.
 pub fn parse_number(text: &str) -> Option<(u32, &str)> {
     let text = text.trim_start();
-    // Try digit(s) first
-    let digit_end = text
-        .find(|c: char| !c.is_ascii_digit())
-        .unwrap_or(text.len());
-    if digit_end > 0 {
-        if let Ok(n) = text[..digit_end].parse::<u32>() {
-            return Some((n, text[digit_end..].trim_start()));
-        }
-    }
-    // English words
-    let words: &[(&str, u32)] = &[
-        ("twenty", 20),
-        ("nineteen", 19),
-        ("eighteen", 18),
-        ("seventeen", 17),
-        ("sixteen", 16),
-        ("fifteen", 15),
-        ("fourteen", 14),
-        ("thirteen", 13),
-        ("twelve", 12),
-        ("eleven", 11),
-        ("ten", 10),
-        ("nine", 9),
-        ("eight", 8),
-        ("seven", 7),
-        ("six", 6),
-        ("five", 5),
-        ("four", 4),
-        ("three", 3),
-        ("two", 2),
-        ("one", 1),
-        ("an", 1),
-        ("a", 1),
-    ];
+
+    // Delegate digit and English-word parsing to nom combinator.
+    // The nom combinator expects lowercase input for English words, so we lowercase
+    // first, attempt the parse, then compute the remainder from the original text.
     let lower = text.to_lowercase();
-    for &(word, val) in words {
-        if lower.starts_with(word) {
-            let rest = &text[word.len()..];
-            // "a" and "an" must be followed by space or end
-            if word.len() <= 2 && !rest.starts_with(|c: char| c.is_whitespace()) && !rest.is_empty()
-            {
-                continue;
-            }
-            return Some((val, rest.trim_start()));
+    if let Ok((rest_lower, n)) = nom_primitives::parse_number.parse(&lower) {
+        let consumed = lower.len() - rest_lower.len();
+        let rest = &text[consumed..];
+        // "a" and "an" must be followed by space or end (nom tag doesn't enforce this).
+        // Only apply this guard for English words, not digits — check that the matched
+        // text starts with a letter to distinguish "a"/"an" from "1"/"2".
+        let matched_english = text[..consumed]
+            .chars()
+            .next()
+            .is_some_and(|c| c.is_alphabetic());
+        if matched_english
+            && consumed <= 2
+            && !rest.starts_with(|c: char| c.is_whitespace())
+            && !rest.is_empty()
+        {
+            // Fall through to X check below
+        } else {
+            return Some((n, rest.trim_start()));
         }
     }
+
     // "X" → 0 for callers that genuinely want numeric-only (P/T, costs, counters).
     // For effect quantities, use `parse_count_expr` which returns Variable("X") instead.
     if lower.starts_with('x') {
@@ -373,73 +356,25 @@ pub fn parse_ordinal(text: &str) -> Option<(u32, &str)> {
 
 /// Parse mana symbols like `{2}{W}{U}` at the start of text.
 /// Returns (ManaCost, remaining_text) or None.
+///
+/// Delegates to `oracle_nom::primitives::parse_mana_cost` internally.
+/// Handles case-insensitive symbols by uppercasing before parsing.
 pub fn parse_mana_symbols(text: &str) -> Option<(ManaCost, &str)> {
     let text = text.trim_start();
     if !text.starts_with('{') {
         return None;
     }
 
-    let mut generic: u32 = 0;
-    let mut shards = Vec::new();
-    let mut pos = 0;
-    let mut parsed_any = false;
-
-    while pos < text.len() && text[pos..].starts_with('{') {
-        let end = text[pos..].find('}')? + pos;
-        let symbol = &text[pos + 1..end];
-        pos = end + 1;
-        parsed_any = true;
-
-        // Case-insensitive matching: the trigger parser may lowercase mana symbols
-        // (e.g., "{g}" instead of "{G}"), so normalize before matching.
-        let symbol_upper = symbol.to_ascii_uppercase();
-        match symbol_upper.as_str() {
-            "W" => shards.push(ManaCostShard::White),
-            "U" => shards.push(ManaCostShard::Blue),
-            "B" => shards.push(ManaCostShard::Black),
-            "R" => shards.push(ManaCostShard::Red),
-            "G" => shards.push(ManaCostShard::Green),
-            "C" => shards.push(ManaCostShard::Colorless),
-            "S" => shards.push(ManaCostShard::Snow),
-            "X" => shards.push(ManaCostShard::X),
-            "W/U" => shards.push(ManaCostShard::WhiteBlue),
-            "W/B" => shards.push(ManaCostShard::WhiteBlack),
-            "U/B" => shards.push(ManaCostShard::BlueBlack),
-            "U/R" => shards.push(ManaCostShard::BlueRed),
-            "B/R" => shards.push(ManaCostShard::BlackRed),
-            "B/G" => shards.push(ManaCostShard::BlackGreen),
-            "R/W" => shards.push(ManaCostShard::RedWhite),
-            "R/G" => shards.push(ManaCostShard::RedGreen),
-            "G/W" => shards.push(ManaCostShard::GreenWhite),
-            "G/U" => shards.push(ManaCostShard::GreenBlue),
-            "2/W" => shards.push(ManaCostShard::TwoWhite),
-            "2/U" => shards.push(ManaCostShard::TwoBlue),
-            "2/B" => shards.push(ManaCostShard::TwoBlack),
-            "2/R" => shards.push(ManaCostShard::TwoRed),
-            "2/G" => shards.push(ManaCostShard::TwoGreen),
-            "W/P" => shards.push(ManaCostShard::PhyrexianWhite),
-            "U/P" => shards.push(ManaCostShard::PhyrexianBlue),
-            "B/P" => shards.push(ManaCostShard::PhyrexianBlack),
-            "R/P" => shards.push(ManaCostShard::PhyrexianRed),
-            "G/P" => shards.push(ManaCostShard::PhyrexianGreen),
-            other => {
-                if let Ok(n) = other.parse::<u32>() {
-                    generic += n;
-                } else {
-                    // Unknown symbol — stop parsing
-                    pos = pos - symbol.len() - 2; // rewind
-                    break;
-                }
-            }
+    // The nom combinator expects uppercase symbols. Uppercase the braced portions
+    // for matching, then compute the remainder from the original text.
+    let upper = text.to_ascii_uppercase();
+    match nom_primitives::parse_mana_cost.parse(&upper) {
+        Ok((rest_upper, cost)) => {
+            let consumed = upper.len() - rest_upper.len();
+            Some((cost, &text[consumed..]))
         }
+        Err(_) => None,
     }
-
-    if !parsed_any {
-        return None;
-    }
-
-    let cost = ManaCost::Cost { shards, generic };
-    Some((cost, &text[pos..]))
 }
 
 /// Possessive variants used in MTG Oracle text ("your library", "their hand", etc.).
@@ -1364,6 +1299,7 @@ pub(crate) fn parse_comparison_suffix(text: &str) -> Option<(Comparator, i32)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::mana::ManaCostShard;
 
     // --- normalize_card_name_refs tests ---
 

@@ -9,7 +9,10 @@ use engine::database::mtgjson::{load_atomic_cards, AtomicCard};
 use engine::database::synthesis::{
     build_oracle_face, build_oracle_face_multi, layout_faces, map_layout, LayoutKind,
 };
-use engine::game::coverage::card_face_has_unimplemented_parts;
+use engine::database::CardDatabase;
+use engine::game::coverage::{
+    audit_semantic, card_face_has_unimplemented_parts, format_semantic_audit_markdown,
+};
 use engine::types::card::{CardFace, CardLayout};
 
 #[derive(Debug, Clone, Serialize)]
@@ -44,6 +47,12 @@ fn build_export_layout(
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+
+    // Check for semantic-audit subcommand before normal parsing
+    if args.get(1).map(|s| s.as_str()) == Some("semantic-audit") {
+        run_semantic_audit(&args[2..]);
+        return;
+    }
 
     let mut data_dir: Option<PathBuf> = None;
     let mut mtgjson_override: Option<PathBuf> = None;
@@ -262,6 +271,75 @@ fn main() {
             0.0
         };
         eprintln!("Fully implemented: {implemented}/{total_cards} ({pct:.1}%)");
+    }
+}
+
+fn run_semantic_audit(remaining_args: &[String]) {
+    // Parse optional data dir from remaining args
+    let card_data_path = if let Some(dir) = remaining_args.first() {
+        PathBuf::from(dir).join("card-data.json")
+    } else {
+        // Default: try PHASE_DATA_DIR, then client/public/card-data.json
+        std::env::var("PHASE_CARDS_PATH")
+            .map(|p| PathBuf::from(p).join("card-data.json"))
+            .or_else(|_| {
+                std::env::var("PHASE_DATA_DIR").map(|d| PathBuf::from(d).join("card-data.json"))
+            })
+            .unwrap_or_else(|_| PathBuf::from("client/public/card-data.json"))
+    };
+
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| "oracle_gen=info,engine=info".parse().unwrap()),
+        )
+        .init();
+
+    if !card_data_path.exists() {
+        eprintln!(
+            "Error: card-data.json not found at {}",
+            card_data_path.display()
+        );
+        eprintln!("Run ./scripts/gen-card-data.sh first, or pass a data directory.");
+        process::exit(1);
+    }
+
+    eprintln!("Loading card database from {}...", card_data_path.display());
+    let card_db = match CardDatabase::from_export(&card_data_path) {
+        Ok(db) => db,
+        Err(e) => {
+            eprintln!("Error loading card database: {e}");
+            process::exit(1);
+        }
+    };
+
+    eprintln!("Running semantic audit...");
+    let summary = audit_semantic(&card_db);
+
+    eprintln!(
+        "Audit complete: {} cards audited, {} with findings",
+        summary.total_supported_audited, summary.cards_with_findings
+    );
+
+    // Write JSON output
+    let json_path = PathBuf::from("data/semantic-audit.json");
+    let json_str =
+        serde_json::to_string_pretty(&summary).expect("Failed to serialize audit summary");
+    std::fs::write(&json_path, &json_str)
+        .unwrap_or_else(|e| panic!("Failed to write {}: {e}", json_path.display()));
+    eprintln!("JSON written to {}", json_path.display());
+
+    // Write markdown output
+    let md_path = PathBuf::from("data/semantic-audit.md");
+    let md_str = format_semantic_audit_markdown(&summary);
+    std::fs::write(&md_path, &md_str)
+        .unwrap_or_else(|e| panic!("Failed to write {}: {e}", md_path.display()));
+    eprintln!("Markdown written to {}", md_path.display());
+
+    // Print summary to stdout
+    for (category, count) in &summary.finding_counts {
+        eprintln!("  {category}: {count}");
     }
 }
 

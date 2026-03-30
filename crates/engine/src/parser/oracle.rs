@@ -26,6 +26,7 @@ use super::oracle_level::parse_level_blocks;
 use super::oracle_modal::{
     lower_oracle_block, parse_oracle_block, strip_ability_word, strip_ability_word_with_name,
 };
+use super::oracle_nom::error::parse_or_unimplemented;
 use super::oracle_replacement::parse_replacement_line;
 use super::oracle_saga::{is_saga_chapter, parse_saga_chapters};
 use super::oracle_static::{parse_static_line, parse_static_line_multi};
@@ -963,8 +964,12 @@ pub fn parse_oracle_text(
             }
         }
 
-        // Priority 15: Fallback
-        result.abilities.push(make_unimplemented(&line));
+        // Priority 15: Fallback — attempt all major branch parsers via nom alt()
+        // to collect error trace (D-12) before falling back to Unimplemented.
+        let fallback_effect = dispatch_line_nom(&line, &static_line, card_name);
+        result
+            .abilities
+            .push(make_unimplemented_with_effect(&line, fallback_effect));
         i += 1;
     }
 
@@ -1626,6 +1631,117 @@ pub(super) fn is_replacement_pattern(lower: &str) -> bool {
         || lower.contains("enter as a copy of")
         // CR 614.1a: Mana production replacement ("tapped for mana" without "would")
         || (lower.contains("tapped for mana") && lower.contains("instead"))
+}
+
+/// Attempt lightweight nom dispatch on a line that failed all priority checks.
+///
+/// Uses `parse_or_unimplemented` (D-12/D-13) to produce diagnostic traces.
+/// Rather than re-running expensive sub-parsers (which already failed in the
+/// priority chain above), this classifies the line's structural pattern and
+/// produces an informative error trace showing which parser categories were
+/// considered and why none matched.
+fn dispatch_line_nom(line: &str, _static_line: &str, _card_name: &str) -> Effect {
+    use nom::branch::alt;
+    use nom::bytes::complete::tag_no_case;
+    use nom::combinator::fail;
+    use nom::Parser;
+
+    use super::oracle_nom::error::OracleResult;
+
+    // Structural recognizers: each attempts to match the line prefix to
+    // classify it into a parser category. These are lightweight prefix-only
+    // checks that build the nom VerboseError trace — not full parsing.
+    fn try_trigger_prefix(input: &str) -> OracleResult<'_, Effect> {
+        alt((
+            tag_no_case("when "),
+            tag_no_case("whenever "),
+            tag_no_case("at "),
+        ))
+        .map(|_: &str| Effect::Unimplemented {
+            name: "trigger_structure".into(),
+            description: Some(format!(
+                "Trigger prefix matched but line failed trigger parser: {input}"
+            )),
+        })
+        .parse(input)
+    }
+
+    fn try_static_prefix(input: &str) -> OracleResult<'_, Effect> {
+        let lower = input.to_lowercase();
+        if is_static_pattern(&lower) {
+            Ok((
+                "",
+                Effect::Unimplemented {
+                    name: "static_structure".into(),
+                    description: Some(format!(
+                        "Static pattern matched but line failed static parser: {input}"
+                    )),
+                },
+            ))
+        } else {
+            fail::<_, Effect, _>().parse(input)
+        }
+    }
+
+    fn try_replacement_prefix(input: &str) -> OracleResult<'_, Effect> {
+        let lower = input.to_lowercase();
+        if is_replacement_pattern(&lower) {
+            Ok((
+                "",
+                Effect::Unimplemented {
+                    name: "replacement_structure".into(),
+                    description: Some(format!(
+                        "Replacement pattern matched but line failed replacement parser: {input}"
+                    )),
+                },
+            ))
+        } else {
+            fail::<_, Effect, _>().parse(input)
+        }
+    }
+
+    fn try_effect_prefix(input: &str) -> OracleResult<'_, Effect> {
+        let lower = input.to_lowercase();
+        if is_effect_sentence_candidate(&lower) {
+            Ok((
+                "",
+                Effect::Unimplemented {
+                    name: "effect_structure".into(),
+                    description: Some(format!(
+                        "Effect sentence candidate but line failed effect parser: {input}"
+                    )),
+                },
+            ))
+        } else {
+            fail::<_, Effect, _>().parse(input)
+        }
+    }
+
+    parse_or_unimplemented(line, |input| {
+        alt((
+            try_trigger_prefix,
+            try_static_prefix,
+            try_replacement_prefix,
+            try_effect_prefix,
+        ))
+        .parse(input)
+    })
+}
+
+/// Create an Unimplemented fallback ability with a nom-provided diagnostic effect.
+///
+/// If `dispatch_line_nom` succeeded in parsing the line (found a match in one of
+/// the nom branches), this wraps the effect in an AbilityDefinition. Otherwise
+/// it creates an Unimplemented with the error trace from the nom dispatch.
+fn make_unimplemented_with_effect(line: &str, effect: Effect) -> AbilityDefinition {
+    if !matches!(effect, Effect::Unimplemented { .. }) {
+        // Nom dispatch found a match — use the effect directly.
+        // This shouldn't normally happen (priority checks above should have caught it),
+        // but handles edge cases where the nom fallback finds something.
+        return AbilityDefinition::new(AbilityKind::Spell, effect).description(line.to_string());
+    }
+    tracing::warn!(oracle_text = line, "unimplemented ability line");
+    AbilityDefinition::new(AbilityKind::Spell, effect).description(line.to_string())
 }
 
 /// Create an Unimplemented fallback ability.
