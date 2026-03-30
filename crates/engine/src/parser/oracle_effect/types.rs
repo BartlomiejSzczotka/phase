@@ -263,8 +263,10 @@ pub(super) enum TargetedImperativeAst {
     },
     Discard {
         count: QuantityExpr,
-        /// CR 701.8a: When true, the discard is random.
+        /// CR 701.9a: When true, the discard is random.
         random: bool,
+        /// CR 701.9b: When true, the player may discard 0..=count cards.
+        up_to: bool,
         /// CR 608.2c: "discard N unless you discard a [type]" — type filter for
         /// the alternative 1-card discard.
         unless_filter: Option<TargetFilter>,

@@ -8,9 +8,9 @@ use super::oracle_util::{
     SELF_REF_PARSE_ONLY_PHRASES,
 };
 use crate::types::ability::{
-    AbilityKind, Comparator, ControllerRef, DamageKindFilter, FilterProp, NinjutsuVariant,
-    QuantityExpr, QuantityRef, TargetFilter, TriggerCondition, TriggerConstraint,
-    TriggerDefinition, TypeFilter, TypedFilter, UnlessCost, UnlessPayModifier,
+    AbilityKind, Comparator, ControllerRef, CountScope, DamageKindFilter, FilterProp,
+    NinjutsuVariant, QuantityExpr, QuantityRef, TargetFilter, TriggerCondition, TriggerConstraint,
+    TriggerDefinition, TypeFilter, TypedFilter, UnlessCost, UnlessPayModifier, ZoneRef,
 };
 use crate::types::card_type::CoreType;
 use crate::types::events::PlayerActionKind;
@@ -353,6 +353,53 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
                 strip_condition_clause(text, pos, "if you cast it".len()),
                 Some(TriggerCondition::WasCast),
             );
+        }
+    }
+
+    // CR 603.4: "if there are N or more cards in your graveyard" — graveyard threshold.
+    // Also handles "N or more card types among cards in your graveyard" (delirium).
+    // Composes QuantityComparison + ZoneCardCount/CardTypesInGraveyards (no new types needed).
+    if let Some(rest) = lower.strip_prefix("if there are ") {
+        if let Some((n, after_n)) = parse_number(rest) {
+            // parse_number consumes trailing whitespace, so after_n starts without a leading space.
+            let maybe = after_n
+                .strip_prefix("or more card types among cards in your graveyard")
+                .map(|rem| {
+                    (
+                        rem,
+                        QuantityRef::CardTypesInGraveyards {
+                            scope: CountScope::Controller,
+                        },
+                    )
+                })
+                .or_else(|| {
+                    after_n
+                        .strip_prefix("or more cards in your graveyard")
+                        .map(|rem| {
+                            (
+                                rem,
+                                QuantityRef::ZoneCardCount {
+                                    zone: ZoneRef::Graveyard,
+                                    card_types: vec![],
+                                    scope: CountScope::Controller,
+                                },
+                            )
+                        })
+                });
+            if let Some((suffix, lhs_qty)) = maybe {
+                let condition = TriggerCondition::QuantityComparison {
+                    lhs: QuantityExpr::Ref { qty: lhs_qty },
+                    comparator: Comparator::GE,
+                    rhs: QuantityExpr::Fixed { value: n as i32 },
+                };
+                let prefix = "if there are ";
+                let clause_len = prefix.len() + rest.len() - suffix.len();
+                let start = tp.find(prefix).unwrap();
+                return (
+                    strip_condition_clause(text, start, clause_len),
+                    Some(condition),
+                );
+            }
         }
     }
 
@@ -3252,6 +3299,39 @@ mod tests {
             })
         );
         assert!(def.execute.is_some());
+    }
+
+    #[test]
+    fn extract_if_graveyard_threshold() {
+        let (cleaned, cond) = extract_if_condition(
+            "if there are seven or more cards in your graveyard, exile a card at random from your graveyard.",
+        );
+        assert!(
+            matches!(cond, Some(TriggerCondition::QuantityComparison { .. })),
+            "Expected QuantityComparison, got {:?}",
+            cond
+        );
+        assert!(
+            cleaned.contains("exile"),
+            "Effect text should remain: {cleaned}"
+        );
+    }
+
+    #[test]
+    fn trigger_graveyard_threshold_tersa() {
+        let def = parse_trigger_line(
+            "Whenever ~ attacks, if there are seven or more cards in your graveyard, exile a card at random from your graveyard. You may play that card this turn.",
+            "Tersa Lightshatter",
+        );
+        assert_eq!(def.mode, TriggerMode::Attacks);
+        assert!(
+            matches!(
+                def.condition,
+                Some(TriggerCondition::QuantityComparison { .. })
+            ),
+            "Expected graveyard threshold condition, got {:?}",
+            def.condition
+        );
     }
 
     // --- Counter placement with "you put" pattern ---

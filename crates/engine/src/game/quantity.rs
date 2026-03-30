@@ -292,10 +292,13 @@ fn resolve_ref(
             .map(|(_, ids)| ids.len() as i32)
             .unwrap_or(0),
         // CR 603.7c: Numeric value from the triggering event.
+        // Falls back to last_effect_count for sub_ability continuations where
+        // current_trigger_event has no amount (e.g., "discard up to N, then draw that many").
         QuantityRef::EventContextAmount => state
             .current_trigger_event
             .as_ref()
             .and_then(crate::game::targeting::extract_amount_from_event)
+            .or(state.last_effect_count)
             .unwrap_or(0),
         // CR 603.7c: Power of the source object from the triggering event.
         // CR 400.7: Falls back to LKI cache for objects that have left their zone.

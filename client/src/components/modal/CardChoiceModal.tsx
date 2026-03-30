@@ -83,7 +83,7 @@ export function CardChoiceModal() {
       return <DiscardModal data={waitingFor.data} title={`Connive \u2014 Discard ${waitingFor.data.count === 1 ? "a card" : `${waitingFor.data.count} cards`}`} />;
     case "DiscardChoice":
       if (waitingFor.data.player !== playerId) return null;
-      return <DiscardModal data={waitingFor.data} title={`Discard ${waitingFor.data.count === 1 ? "a card" : `${waitingFor.data.count} cards`}`} />;
+      return <DiscardModal data={waitingFor.data} title={waitingFor.data.up_to ? `Discard up to ${waitingFor.data.count} cards` : `Discard ${waitingFor.data.count === 1 ? "a card" : `${waitingFor.data.count} cards`}`} />;
     case "WardDiscardChoice":
       if (waitingFor.data.player !== playerId) return null;
       return <DiscardModal data={{ ...waitingFor.data, count: 1 }} title="Ward \u2014 Discard a card" />;
@@ -847,12 +847,13 @@ function ExileFromGraveyardModal({ data }: { data: ExileFromGraveyardForCost["da
 
 // ── Discard to Hand Size Modal ───────────────────────────────────────────────
 
-function DiscardModal({ data, title = "Discard" }: { data: DiscardToHandSize["data"] & { unless_filter?: TargetFilter }; title?: string }) {
+function DiscardModal({ data, title = "Discard" }: { data: DiscardToHandSize["data"] & { up_to?: boolean; unless_filter?: TargetFilter }; title?: string }) {
   const dispatch = useGameDispatch();
   const objects = useGameStore((s) => s.gameState?.objects);
   const inspectObject = useUiStore((s) => s.inspectObject);
   const [selected, setSelected] = useState<Set<ObjectId>>(new Set());
   const hasUnlessOption = data.unless_filter != null;
+  const isUpTo = data.up_to === true;
 
   const toggleSelect = useCallback(
     (id: ObjectId) => {
@@ -878,14 +879,22 @@ function DiscardModal({ data, title = "Discard" }: { data: DiscardToHandSize["da
 
   if (!objects) return null;
 
+  // CR 701.9b: "up to N" allows 0..=count; exact requires precisely count.
   // CR 608.2c: "discard N unless you discard a [type]" — accept 1 card OR count cards.
-  // Engine validates the filter match; frontend just allows submission.
-  const isReady = selected.size === data.count || (hasUnlessOption && selected.size === 1);
+  const isReady = isUpTo
+    ? selected.size <= data.count
+    : selected.size === data.count || (hasUnlessOption && selected.size === 1);
+
+  const subtitle = isUpTo
+    ? `Choose up to ${data.count} card${data.count > 1 ? "s" : ""} to discard`
+    : hasUnlessOption
+      ? `Choose ${data.count} cards or 1 matching card to discard`
+      : `Choose ${data.count} card${data.count > 1 ? "s" : ""} to discard`;
 
   return (
     <ChoiceOverlay
       title={title}
-      subtitle={hasUnlessOption ? `Choose ${data.count} cards or 1 matching card to discard` : `Choose ${data.count} card${data.count > 1 ? "s" : ""} to discard`}
+      subtitle={subtitle}
       footer={<ConfirmButton onClick={handleConfirm} disabled={!isReady} label={`Discard (${selected.size}/${data.count})`} />}
     >
       <ScrollableCardStrip>

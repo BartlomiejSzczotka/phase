@@ -55,6 +55,10 @@ pub enum EngineError {
 }
 
 pub fn apply(state: &mut GameState, action: GameAction) -> Result<ActionResult, EngineError> {
+    // Clear transient inter-effect state at the start of each player action.
+    // last_effect_count is set by interactive handlers (e.g., DiscardChoice) and
+    // consumed by sub_ability continuations via EventContextAmount fallback.
+    state.last_effect_count = None;
     let mut result = apply_action(state, action)?;
     sync_waiting_for(state, &result.waiting_for);
     run_auto_pass_loop(state, &mut result);
@@ -2272,12 +2276,14 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 cards: legal_cards,
                 source_id,
                 effect_kind,
+                up_to,
                 unless_filter,
             },
             GameAction::SelectCards { cards: chosen },
         ) => {
             let p = *player;
             let expected = *count;
+            let is_up_to = *up_to;
             let legal = legal_cards.clone();
             let src = *source_id;
             let kind = *effect_kind;
@@ -2292,12 +2298,23 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     })
             });
 
-            if !unless_satisfied && chosen.len() != expected {
-                return Err(EngineError::InvalidAction(format!(
-                    "Must discard exactly {} card(s), got {}",
-                    expected,
-                    chosen.len()
-                )));
+            // CR 701.9b: Validate discard count — up_to allows 0..=count,
+            // exact requires precisely `count`.
+            if !unless_satisfied {
+                if is_up_to && chosen.len() > expected {
+                    return Err(EngineError::InvalidAction(format!(
+                        "Must discard at most {} card(s), got {}",
+                        expected,
+                        chosen.len()
+                    )));
+                }
+                if !is_up_to && chosen.len() != expected {
+                    return Err(EngineError::InvalidAction(format!(
+                        "Must discard exactly {} card(s), got {}",
+                        expected,
+                        chosen.len()
+                    )));
+                }
             }
 
             let current_hand: std::collections::HashSet<ObjectId> = state
@@ -2334,6 +2351,10 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     });
                 }
             }
+
+            // Store the actual discard count for sub_ability continuations
+            // (e.g., "discard up to two, then draw that many").
+            state.last_effect_count = Some(chosen.len() as i32);
 
             events.push(GameEvent::EffectResolved {
                 kind,

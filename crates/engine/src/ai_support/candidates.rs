@@ -421,24 +421,39 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
             player,
             count,
             cards,
+            up_to,
             unless_filter,
             source_id,
             ..
         } => {
-            let mut actions: Vec<_> = combinations(cards, *count)
-                .into_iter()
-                .map(|combo| {
-                    candidate(
-                        GameAction::SelectCards { cards: combo },
-                        TacticalClass::Selection,
-                        Some(*player),
-                    )
-                })
-                .collect();
+            // CR 701.9b: When up_to, generate combinations for all valid sizes 0..=count.
+            let mut actions: Vec<_> = if *up_to {
+                (0..=*count)
+                    .flat_map(|size| combinations(cards, size))
+                    .map(|combo| {
+                        candidate(
+                            GameAction::SelectCards { cards: combo },
+                            TacticalClass::Selection,
+                            Some(*player),
+                        )
+                    })
+                    .collect()
+            } else {
+                combinations(cards, *count)
+                    .into_iter()
+                    .map(|combo| {
+                        candidate(
+                            GameAction::SelectCards { cards: combo },
+                            TacticalClass::Selection,
+                            Some(*player),
+                        )
+                    })
+                    .collect()
+            };
             // CR 608.2c: "discard N unless you discard a [type]" — also generate
             // single-card selections for cards matching the unless filter.
             // Guard: skip when count == 1, since combinations already covers all singles.
-            if *count > 1 {
+            if *count > 1 && !*up_to {
                 if let Some(filter) = unless_filter {
                     for &card_id in cards {
                         if crate::game::filter::matches_target_filter(

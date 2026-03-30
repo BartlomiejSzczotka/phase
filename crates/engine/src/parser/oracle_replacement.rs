@@ -716,6 +716,12 @@ fn parse_damage_modification_replacement(
     } else if let Some(rest) = strip_after(norm_lower, "that much damage minus ") {
         let (value, _) = parse_number(rest)?;
         DamageModification::Minus { value }
+    } else if norm_lower.contains("damage equal to ~'s power instead")
+        || norm_lower.contains("deals damage equal to ~'s power")
+    {
+        // CR 614.1a: Conditional — "deals damage equal to ~'s power instead."
+        // The "less than ~'s power" condition is checked at application time.
+        DamageModification::SetToSourcePower
     } else {
         return None; // Exotic pattern — fall through to stub
     };
@@ -724,9 +730,12 @@ fn parse_damage_modification_replacement(
     let source_filter = parse_damage_source_filter(norm_lower);
 
     // --- 3. Extract combat scope ---
-    let combat_scope = if norm_lower.contains("would deal noncombat damage") {
+    // Check for "noncombat damage" / "combat damage" anywhere — some patterns insert
+    // additional words between "would deal" and the scope (e.g., "an amount of noncombat damage").
+    // "noncombat" checked first since "combat damage" is a substring of "noncombat damage".
+    let combat_scope = if norm_lower.contains("noncombat damage") {
         Some(CombatDamageScope::NoncombatOnly)
-    } else if norm_lower.contains("would deal combat damage") {
+    } else if norm_lower.contains("combat damage") {
         Some(CombatDamageScope::CombatOnly)
     } else {
         None
@@ -839,6 +848,11 @@ fn parse_damage_target_filter(norm_lower: &str) -> Option<DamageTargetFilter> {
     }
     if norm_lower.contains("to a creature") || norm_lower.contains("to that creature") {
         return Some(DamageTargetFilter::CreatureOnly);
+    }
+    // "to an opponent" (without "or a permanent") — opponent-only, not including permanents.
+    // Must be checked before PlayerOnly to avoid matching the broader pattern.
+    if norm_lower.contains("to an opponent") && !norm_lower.contains("permanent") {
+        return Some(DamageTargetFilter::OpponentOnly);
     }
     if (norm_lower.contains("to a player") || norm_lower.contains("to that player"))
         && !norm_lower.contains("permanent")

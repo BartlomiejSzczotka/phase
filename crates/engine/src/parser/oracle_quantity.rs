@@ -249,7 +249,35 @@ pub(crate) fn parse_cda_quantity(text: &str) -> Option<QuantityExpr> {
         });
     }
 
-    // "the number of cards in your graveyard"
+    // "the number of {type} cards in your graveyard" — MUST be checked before the
+    // untyped "cards in your graveyard" pattern to avoid matching "instant and sorcery
+    // cards in your graveyard" as untyped.
+    if let Some(rest) = text.strip_prefix("the number of ") {
+        if let Some(type_text) = rest.strip_suffix(" cards in your graveyard") {
+            if let Some(card_types) = parse_cda_type_filters(type_text) {
+                return Some(QuantityExpr::Ref {
+                    qty: QuantityRef::ZoneCardCount {
+                        zone: ZoneRef::Graveyard,
+                        card_types,
+                        scope: CountScope::Controller,
+                    },
+                });
+            }
+        }
+        if let Some(type_text) = rest.strip_suffix(" cards in all graveyards") {
+            if let Some(card_types) = parse_cda_type_filters(type_text) {
+                return Some(QuantityExpr::Ref {
+                    qty: QuantityRef::ZoneCardCount {
+                        zone: ZoneRef::Graveyard,
+                        card_types,
+                        scope: CountScope::All,
+                    },
+                });
+            }
+        }
+    }
+
+    // "the number of cards in your graveyard" (untyped — all cards)
     if text == "the number of cards in your graveyard" || text.contains("cards in your graveyard") {
         return Some(QuantityExpr::Ref {
             qty: QuantityRef::ZoneCardCount {
@@ -271,32 +299,6 @@ pub(crate) fn parse_cda_quantity(text: &str) -> Option<QuantityExpr> {
                 scope: CountScope::Opponents,
             },
         });
-    }
-
-    // "the number of {type} cards in your graveyard"
-    if let Some(rest) = text.strip_prefix("the number of ") {
-        if let Some(type_text) = rest.strip_suffix(" cards in your graveyard") {
-            if let Some(tf) = parse_cda_type_filter(type_text) {
-                return Some(QuantityExpr::Ref {
-                    qty: QuantityRef::ZoneCardCount {
-                        zone: ZoneRef::Graveyard,
-                        card_types: vec![tf],
-                        scope: CountScope::Controller,
-                    },
-                });
-            }
-        }
-        if let Some(type_text) = rest.strip_suffix(" cards in all graveyards") {
-            if let Some(tf) = parse_cda_type_filter(type_text) {
-                return Some(QuantityExpr::Ref {
-                    qty: QuantityRef::ZoneCardCount {
-                        zone: ZoneRef::Graveyard,
-                        card_types: vec![tf],
-                        scope: CountScope::All,
-                    },
-                });
-            }
-        }
     }
 
     // "the number of noncreature spells they've cast this turn"
@@ -345,17 +347,20 @@ pub(crate) fn parse_cda_quantity(text: &str) -> Option<QuantityExpr> {
     None
 }
 
-/// Map a type word to a `TypeFilter` for CDA zone card counting.
-fn parse_cda_type_filter(text: &str) -> Option<TypeFilter> {
+/// Map a type phrase to one or more `TypeFilter` entries for CDA zone card counting.
+/// Returns a Vec to support combined types like "instant and sorcery".
+fn parse_cda_type_filters(text: &str) -> Option<Vec<TypeFilter>> {
     match text.trim() {
-        "creature" => Some(TypeFilter::Creature),
-        "instant" => Some(TypeFilter::Instant),
-        "sorcery" => Some(TypeFilter::Sorcery),
-        "land" => Some(TypeFilter::Land),
-        "artifact" => Some(TypeFilter::Artifact),
-        "enchantment" => Some(TypeFilter::Enchantment),
-        "planeswalker" => Some(TypeFilter::Planeswalker),
-        "instant and sorcery" | "instant or sorcery" => None, // Needs Vec, handled separately
+        "creature" => Some(vec![TypeFilter::Creature]),
+        "instant" => Some(vec![TypeFilter::Instant]),
+        "sorcery" => Some(vec![TypeFilter::Sorcery]),
+        "land" => Some(vec![TypeFilter::Land]),
+        "artifact" => Some(vec![TypeFilter::Artifact]),
+        "enchantment" => Some(vec![TypeFilter::Enchantment]),
+        "planeswalker" => Some(vec![TypeFilter::Planeswalker]),
+        "instant and sorcery" | "instant or sorcery" => {
+            Some(vec![TypeFilter::Instant, TypeFilter::Sorcery])
+        }
         _ => None,
     }
 }
@@ -947,5 +952,50 @@ mod tests {
             parse_quantity_ref("life you've lost"),
             Some(QuantityRef::LifeLostThisTurn)
         );
+    }
+
+    #[test]
+    fn cda_instant_and_sorcery_graveyard_count() {
+        let result =
+            parse_cda_quantity("the number of instant and sorcery cards in your graveyard");
+        let qty = result.expect("Should parse instant and sorcery CDA");
+        match qty {
+            QuantityExpr::Ref {
+                qty:
+                    QuantityRef::ZoneCardCount {
+                        zone,
+                        card_types,
+                        scope,
+                    },
+            } => {
+                assert_eq!(zone, ZoneRef::Graveyard);
+                assert_eq!(card_types.len(), 2, "Should have both Instant and Sorcery");
+                assert!(card_types.contains(&TypeFilter::Instant));
+                assert!(card_types.contains(&TypeFilter::Sorcery));
+                assert_eq!(scope, CountScope::Controller);
+            }
+            other => panic!("Expected ZoneCardCount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cda_untyped_graveyard_count_still_works() {
+        let result = parse_cda_quantity("the number of cards in your graveyard");
+        let qty = result.expect("Should parse untyped graveyard count");
+        match qty {
+            QuantityExpr::Ref {
+                qty:
+                    QuantityRef::ZoneCardCount {
+                        card_types, zone, ..
+                    },
+            } => {
+                assert_eq!(zone, ZoneRef::Graveyard);
+                assert!(
+                    card_types.is_empty(),
+                    "Untyped should have empty card_types"
+                );
+            }
+            other => panic!("Expected ZoneCardCount, got {other:?}"),
+        }
     }
 }

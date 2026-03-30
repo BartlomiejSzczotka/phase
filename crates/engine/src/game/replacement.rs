@@ -159,6 +159,21 @@ fn damage_done_applier(
                 DamageModification::Triple => amount.saturating_mul(3),
                 DamageModification::Plus { value } => amount.saturating_add(value),
                 DamageModification::Minus { value } => amount.saturating_sub(value),
+                // CR 614.1a: Conditional — if amount < source's power, set to power.
+                // References the replacement source's (rid.source) post-layer power.
+                DamageModification::SetToSourcePower => {
+                    let source_power = state
+                        .objects
+                        .get(&rid.source)
+                        .and_then(|obj| obj.power)
+                        .unwrap_or(0)
+                        .max(0) as u32;
+                    if amount < source_power {
+                        source_power
+                    } else {
+                        amount
+                    }
+                }
             };
             return ApplyResult::Modified(ProposedEvent::Damage {
                 source_id,
@@ -1018,6 +1033,9 @@ fn matches_damage_target_filter(
                 .is_some_and(|obj| obj.card_types.core_types.contains(&CoreType::Creature)),
         },
         DamageTargetFilter::PlayerOnly => matches!(target, TargetRef::Player(_)),
+        DamageTargetFilter::OpponentOnly => {
+            matches!(target, TargetRef::Player(pid) if *pid != repl_controller)
+        }
     }
 }
 
@@ -2992,6 +3010,106 @@ mod tests {
         assert!(
             !evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state),
             "Should be suppressed (untapped) with no turn requirement"
+        );
+    }
+
+    #[test]
+    fn damage_applier_set_to_source_power_replaces_when_less() {
+        let repl = damage_repl(DamageModification::SetToSourcePower);
+        let mut state = test_state_with_damage_repl(ObjectId(10), PlayerId(0), vec![repl]);
+        // Set replacement source's power to 4
+        state.objects.get_mut(&ObjectId(10)).unwrap().power = Some(4);
+        let mut events = Vec::new();
+        let rid = ReplacementId {
+            source: ObjectId(10),
+            index: 0,
+        };
+        // Damage amount 2 < power 4 → should be replaced to 4
+        let result = damage_done_applier(damage_event(2), rid, &mut state, &mut events);
+        match result {
+            ApplyResult::Modified(ProposedEvent::Damage { amount, .. }) => {
+                assert_eq!(amount, 4, "Damage should be set to source power");
+            }
+            other => panic!("Expected Modified Damage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn damage_applier_set_to_source_power_no_change_when_greater() {
+        let repl = damage_repl(DamageModification::SetToSourcePower);
+        let mut state = test_state_with_damage_repl(ObjectId(10), PlayerId(0), vec![repl]);
+        state.objects.get_mut(&ObjectId(10)).unwrap().power = Some(4);
+        let mut events = Vec::new();
+        let rid = ReplacementId {
+            source: ObjectId(10),
+            index: 0,
+        };
+        // Damage amount 5 >= power 4 → should NOT be replaced
+        let result = damage_done_applier(damage_event(5), rid, &mut state, &mut events);
+        match result {
+            ApplyResult::Modified(ProposedEvent::Damage { amount, .. }) => {
+                assert_eq!(amount, 5, "Damage should pass through unchanged");
+            }
+            other => panic!("Expected Modified Damage, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn damage_target_filter_opponent_only() {
+        let repl = damage_repl(DamageModification::Plus { value: 1 })
+            .damage_target_filter(DamageTargetFilter::OpponentOnly);
+        let state = test_state_with_damage_repl(ObjectId(10), PlayerId(0), vec![repl]);
+
+        // Damage to opponent (P1) — should match
+        let proposed_opp = ProposedEvent::Damage {
+            source_id: ObjectId(50),
+            target: TargetRef::Player(PlayerId(1)),
+            amount: 3,
+            is_combat: false,
+            applied: HashSet::new(),
+        };
+        let registry = build_replacement_registry();
+        assert!(
+            !find_applicable_replacements(&state, &proposed_opp, &registry).is_empty(),
+            "Should match damage to opponent"
+        );
+
+        // Damage to self (P0) — should NOT match
+        let proposed_self = ProposedEvent::Damage {
+            source_id: ObjectId(50),
+            target: TargetRef::Player(PlayerId(0)),
+            amount: 3,
+            is_combat: false,
+            applied: HashSet::new(),
+        };
+        assert!(
+            find_applicable_replacements(&state, &proposed_self, &registry).is_empty(),
+            "Should not match damage to self"
+        );
+
+        // Damage to a creature — should NOT match (OpponentOnly is player-only)
+        let mut state2 = state.clone();
+        let mut creature = GameObject::new(
+            ObjectId(60),
+            CardId(3),
+            PlayerId(1),
+            "Opp Creature".to_string(),
+            Zone::Battlefield,
+        );
+        creature.card_types.core_types.push(CoreType::Creature);
+        state2.objects.insert(ObjectId(60), creature);
+        state2.battlefield.push(ObjectId(60));
+
+        let proposed_creature = ProposedEvent::Damage {
+            source_id: ObjectId(50),
+            target: TargetRef::Object(ObjectId(60)),
+            amount: 3,
+            is_combat: false,
+            applied: HashSet::new(),
+        };
+        assert!(
+            find_applicable_replacements(&state2, &proposed_creature, &registry).is_empty(),
+            "OpponentOnly should not match damage to creatures"
         );
     }
 }

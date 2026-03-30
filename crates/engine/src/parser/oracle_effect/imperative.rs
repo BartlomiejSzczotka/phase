@@ -287,8 +287,13 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
         return Some(TargetedImperativeAst::Sacrifice { target });
     }
     if let Some(after_discard) = lower.strip_prefix("discard ") {
-        // CR 701.8a: Detect "at random" suffix for random discard effects.
+        // CR 701.9a: Detect "at random" suffix for random discard effects.
         let random = after_discard.contains(" at random");
+        // CR 701.9b: Detect "up to" prefix for optional partial discard.
+        let (after_discard, up_to) = match after_discard.strip_prefix("up to ") {
+            Some(rest) => (rest, true),
+            None => (after_discard, false),
+        };
         // Strip "all the cards in " / "all cards in " prefix compositionally for
         // patterns like "discard all the cards in your hand" / "discards all cards in their hand".
         let after_discard = after_discard
@@ -306,6 +311,7 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
                     qty: QuantityRef::HandSize,
                 },
                 random,
+                up_to,
                 unless_filter: None,
             });
         }
@@ -322,6 +328,7 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
         return Some(TargetedImperativeAst::Discard {
             count,
             random,
+            up_to,
             unless_filter,
         });
     }
@@ -395,13 +402,15 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
         TargetedImperativeAst::Discard {
             count,
             random,
+            up_to,
             unless_filter,
         } => Effect::Discard {
             count,
-            // CR 701.8a: "Discard" with no subject defaults to the controller.
+            // CR 701.9a: "Discard" with no subject defaults to the controller.
             // Subject injection overrides this for "target player discards" patterns.
             target: TargetFilter::Controller,
             random,
+            up_to,
             unless_filter,
         },
         TargetedImperativeAst::Return { target } => Effect::Bounce {

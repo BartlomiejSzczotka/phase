@@ -439,6 +439,9 @@ pub enum WaitingFor {
         cards: Vec<ObjectId>,
         source_id: ObjectId,
         effect_kind: crate::types::ability::EffectKind,
+        /// CR 701.9b: When true, the player may discard 0..=count cards ("discard up to N").
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        up_to: bool,
         /// CR 608.2c: "discard N unless you discard a [type]" — when set,
         /// the player may discard 1 card matching this filter instead of `count`.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1263,6 +1266,13 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub last_zone_changed_ids: Vec<ObjectId>,
 
+    /// Count from the most recent interactive effect resolution (e.g., number of cards
+    /// actually discarded in a DiscardChoice). Used as fallback for EventContextAmount
+    /// in sub_ability continuations where current_trigger_event has no amount.
+    /// Cleared at the top of apply() (once per player action).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_effect_count: Option<i32>,
+
     /// CR 722: The current monarch, if any. At the beginning of the monarch's end step,
     /// the monarch draws a card. When a creature deals combat damage to the monarch,
     /// the creature's controller becomes the monarch.
@@ -1439,6 +1449,7 @@ impl GameState {
             last_created_token_ids: Vec::new(),
             last_revealed_ids: Vec::new(),
             last_zone_changed_ids: Vec::new(),
+            last_effect_count: None,
             monarch: None,
             restrictions: Vec::new(),
             pending_damage_prevention: Vec::new(),
@@ -1576,6 +1587,7 @@ impl PartialEq for GameState {
             && self.last_named_choice == other.last_named_choice
             && self.last_revealed_ids == other.last_revealed_ids
             && self.last_zone_changed_ids == other.last_zone_changed_ids
+            && self.last_effect_count == other.last_effect_count
             && self.lki_cache == other.lki_cache
     }
 }
@@ -1856,6 +1868,7 @@ mod tests {
             cards: vec![ObjectId(1)],
             source_id: ObjectId(100),
             effect_kind: crate::types::ability::EffectKind::Discard,
+            up_to: false,
             unless_filter: None,
         }));
         variants.push(Box::new(WaitingFor::DefilerPayment {

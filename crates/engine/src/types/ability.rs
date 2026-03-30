@@ -2196,9 +2196,12 @@ pub enum Effect {
         count: QuantityExpr,
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
-        /// CR 701.8a: When true, the discard is random (e.g., "discard a card at random").
+        /// CR 701.9a: When true, the discard is random (e.g., "discard a card at random").
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         random: bool,
+        /// CR 701.9b: When true, the player may discard 0..=count cards ("discard up to N").
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        up_to: bool,
         /// CR 608.2c: "discard N cards unless you discard a [type] card" — when set,
         /// the player may discard 1 card matching this filter instead of `count` cards.
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -4090,6 +4093,10 @@ pub enum DamageModification {
     Plus { value: u32 },
     /// amount.saturating_sub(value) (e.g. Benevolent Unicorn, -1)
     Minus { value: u32 },
+    /// CR 614.1a: Conditional — if amount < source's power, set amount = source's power.
+    /// References the replacement source's (not the damage source's) current post-layer power.
+    /// Used by Ojer Axonil: "deals damage equal to ~'s power instead."
+    SetToSourcePower,
 }
 
 /// CR 614.1a: Quantity modification for replacement effects (tokens, counters).
@@ -4115,6 +4122,8 @@ pub enum DamageTargetFilter {
     CreatureOnly,
     /// "to a player" / "to that player"
     PlayerOnly,
+    /// "to an opponent" — player-only AND opponent-only.
+    OpponentOnly,
 }
 
 /// CR 614.1a: Restricts whether a damage replacement applies to combat, noncombat, or all damage.

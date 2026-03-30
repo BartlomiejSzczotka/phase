@@ -27,17 +27,19 @@ pub fn resolve(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let (num_cards, unless_filter) = match &ability.effect {
-        Effect::DiscardCard { count, .. } => (*count, None),
+    let (num_cards, up_to, unless_filter) = match &ability.effect {
+        Effect::DiscardCard { count, .. } => (*count, false, None),
         Effect::Discard {
             count,
+            up_to,
             unless_filter,
             ..
         } => (
             resolve_quantity(state, count, ability.controller, ability.source_id) as u32,
+            *up_to,
             unless_filter.clone(),
         ),
-        _ => (1, None),
+        _ => (1, false, None),
     };
 
     // Check if targets specify specific cards to discard
@@ -124,10 +126,11 @@ pub fn resolve(
             .to_vec();
 
         let count = (num_cards as usize).min(hand_cards.len());
-        if count == 0 {
+        if count == 0 && !up_to {
             // Nothing to discard — skip.
-        } else if hand_cards.len() <= count {
+        } else if !up_to && hand_cards.len() <= count {
             // Forced discard — no choice needed, discard all eligible cards.
+            // When up_to=true, always present the choice (player may discard fewer).
             for obj_id in &hand_cards {
                 if let DiscardOutcome::NeedsReplacementChoice(player) =
                     discard_as_cost(state, *obj_id, discard_player, events)
@@ -139,7 +142,7 @@ pub fn resolve(
                     return Ok(());
                 }
             }
-        } else {
+        } else if count > 0 || up_to {
             // CR 701.9b: Player chooses — present interactive selection.
             state.waiting_for = crate::types::game_state::WaitingFor::DiscardChoice {
                 player: discard_player,
@@ -147,6 +150,7 @@ pub fn resolve(
                 cards: hand_cards,
                 source_id: ability.source_id,
                 effect_kind: EffectKind::from(&ability.effect),
+                up_to,
                 unless_filter,
             };
             // EffectResolved is emitted by the engine handler after the player chooses.
@@ -354,6 +358,7 @@ mod tests {
                 count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::Any,
                 random: false,
+                up_to: false,
                 unless_filter: None,
             },
             vec![],
@@ -395,6 +400,7 @@ mod tests {
                 count: QuantityExpr::Fixed { value: 2 },
                 target: TargetFilter::Any,
                 random: false,
+                up_to: false,
                 unless_filter: None,
             },
             vec![],
@@ -427,6 +433,7 @@ mod tests {
                 count: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::Any,
                 random: false,
+                up_to: false,
                 unless_filter: None,
             },
             vec![],
@@ -642,5 +649,90 @@ mod tests {
         assert!(matches!(outcome, DiscardOutcome::Complete));
         assert!(!state.players[0].hand.contains(&card));
         assert!(state.players[0].graveyard.contains(&card));
+    }
+
+    #[test]
+    fn up_to_discard_presents_choice_even_when_hand_small() {
+        use crate::types::ability::QuantityExpr;
+        use crate::types::game_state::WaitingFor;
+
+        let mut state = GameState::new_two_player(42);
+        // Only 1 card in hand, but "discard up to 2" should still present a choice
+        create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "A".to_string(),
+            Zone::Hand,
+        );
+
+        let ability = ResolvedAbility::new(
+            Effect::Discard {
+                count: QuantityExpr::Fixed { value: 2 },
+                target: TargetFilter::Any,
+                random: false,
+                up_to: true,
+                unless_filter: None,
+            },
+            vec![],
+            ObjectId(100),
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // CR 701.9b: up_to=true must present choice even when hand ≤ count
+        match &state.waiting_for {
+            WaitingFor::DiscardChoice {
+                up_to,
+                count,
+                cards,
+                ..
+            } => {
+                assert!(*up_to);
+                assert_eq!(*count, 1); // min(2, hand_size=1)
+                assert_eq!(cards.len(), 1);
+            }
+            other => panic!(
+                "Expected DiscardChoice with up_to, got {:?}",
+                std::mem::discriminant(other)
+            ),
+        }
+    }
+
+    #[test]
+    fn up_to_discard_allows_zero_selection() {
+        use crate::game::engine::apply;
+        use crate::types::actions::GameAction;
+        use crate::types::game_state::WaitingFor;
+
+        let mut state = GameState::new_two_player(42);
+        for i in 0..3 {
+            create_object(
+                &mut state,
+                CardId(i),
+                PlayerId(0),
+                format!("Card {i}"),
+                Zone::Hand,
+            );
+        }
+
+        // Set up a DiscardChoice with up_to=true
+        state.waiting_for = WaitingFor::DiscardChoice {
+            player: PlayerId(0),
+            count: 2,
+            cards: state.players[0].hand.to_vec(),
+            source_id: ObjectId(100),
+            effect_kind: crate::types::ability::EffectKind::Discard,
+            up_to: true,
+            unless_filter: None,
+        };
+
+        // Select zero cards — should succeed with up_to=true
+        let result = apply(&mut state, GameAction::SelectCards { cards: vec![] });
+        assert!(
+            result.is_ok(),
+            "Zero selection should succeed for up_to discard"
+        );
     }
 }

@@ -4,6 +4,11 @@ import type {
   ObjectId,
 } from "../adapter/types";
 
+// Guard against spurious mouseleave events that fire ~30ms after mouseenter
+// (caused by Framer Motion layout recalculations moving elements under the cursor).
+let lastInspectSetAt = 0;
+const INSPECT_DEBOUNCE_MS = 80;
+
 interface UiStoreState {
   selectedObjectId: ObjectId | null;
   hoveredObjectId: ObjectId | null;
@@ -73,12 +78,19 @@ export const useUiStore = create<UiStore>()((set) => ({
 
   selectObject: (id) => set({ selectedObjectId: id }),
   hoverObject: (id) => set({ hoveredObjectId: id }),
-  inspectObject: (id, faceIndex) => set({
-    inspectedObjectId: id,
-    inspectedFaceIndex: faceIndex ?? 0,
-    // Clearing inspection also clears sticky; setting it does not auto-stick
-    ...(id == null ? { previewSticky: false } : {}),
-  }),
+  inspectObject: (id, faceIndex) => {
+    if (id != null) {
+      lastInspectSetAt = Date.now();
+    } else if (Date.now() - lastInspectSetAt < INSPECT_DEBOUNCE_MS) {
+      // Ignore spurious clear within debounce window
+      return;
+    }
+    set({
+      inspectedObjectId: id,
+      inspectedFaceIndex: faceIndex ?? 0,
+      ...(id == null ? { previewSticky: false } : {}),
+    });
+  },
 
   addSelectedCard: (cardId) =>
     set((state) => ({
@@ -147,3 +159,8 @@ export const useUiStore = create<UiStore>()((set) => ({
   setPendingAbilityChoice: (choice) => set({ pendingAbilityChoice: choice }),
   toggleDebugPanel: () => set((state) => ({ debugPanelOpen: !state.debugPanelOpen })),
 }));
+
+// DEBUG: temporary — remove after fixing hover preview
+if (typeof window !== "undefined") {
+  (window as unknown as Record<string, unknown>).__uiStore = useUiStore;
+}

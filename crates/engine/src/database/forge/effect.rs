@@ -437,6 +437,8 @@ fn translate_discard(
         count,
         target,
         random,
+        up_to: false,
+        unless_filter: None,
     })
 }
 
