@@ -212,17 +212,19 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
 
   const handleClick = () => {
     if (longPressFired.current) { longPressFired.current = false; return; }
-    if (combatMode === "attackers") {
-      if (isValidAttacker) toggleAttacker(objectId);
-    } else if (combatMode === "blockers" && combatClickHandler) {
-      combatClickHandler(objectId);
-    } else if (isSelectableForManaCost && tapCreatureCostChoice) {
+    // TapCreaturesForManaAbility is mid-cost resolution — check before combat mode
+    // so clicks land even when DeclareAttackers combat mode is active.
+    if (isSelectableForManaCost && tapCreatureCostChoice) {
       if (
         isSelectedForManaCost
         || selectedCardIds.length < tapCreatureCostChoice.count
       ) {
         toggleSelectedCard(objectId);
       }
+    } else if (combatMode === "attackers") {
+      if (isValidAttacker) toggleAttacker(objectId);
+    } else if (combatMode === "blockers" && combatClickHandler) {
+      combatClickHandler(objectId);
     } else if (isValidTarget) {
       dispatchAction({ type: "ChooseTarget", data: { target: { Object: objectId } } });
     } else if (isActivatable) {
