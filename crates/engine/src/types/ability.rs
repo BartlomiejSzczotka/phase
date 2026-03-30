@@ -1509,6 +1509,12 @@ pub enum ParsedCondition {
     CardsLeftYourGraveyardThisTurnAtLeast {
         count: u32,
     },
+    /// CR 602.5b: Count of non-eliminated players matching `filter` is at least `minimum`.
+    /// e.g. "an opponent lost life this turn" → `filter: OpponentLostLife, minimum: 1`
+    PlayerCountAtLeast {
+        filter: PlayerFilter,
+        minimum: usize,
+    },
 }
 
 // ---------------------------------------------------------------------------

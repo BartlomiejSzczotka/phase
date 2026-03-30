@@ -2824,9 +2824,17 @@ fn parse_quoted_ability_modifications(text: &str) -> Vec<ContinuousModification>
                             trigger: Box::new(trigger),
                         });
                     } else {
-                        modifications.push(ContinuousModification::GrantAbility {
-                            definition: Box::new(parse_quoted_ability(ability_text)),
-                        });
+                        // CR 702: Quoted text that is a keyword (e.g. "Ward—Pay 2 life") should be
+                        // granted as AddKeyword, not wrapped in an AbilityDefinition.
+                        if let Some(keyword) =
+                            super::oracle_keyword::parse_keyword_from_oracle(&lower)
+                        {
+                            modifications.push(ContinuousModification::AddKeyword { keyword });
+                        } else {
+                            modifications.push(ContinuousModification::GrantAbility {
+                                definition: Box::new(parse_quoted_ability(ability_text)),
+                            });
+                        }
                     }
                 }
             } else {

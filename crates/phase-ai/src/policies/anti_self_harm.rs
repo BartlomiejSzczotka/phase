@@ -33,9 +33,7 @@ impl TacticalPolicy for AntiSelfHarmPolicy {
                 .map(|target| score_target_ref(ctx, target))
                 .sum(),
             // Penalise accepting an optional effect whose life cost would kill or nearly kill us.
-            GameAction::DecideOptionalEffect { accept: true } => {
-                score_optional_effect_accept(ctx)
-            }
+            GameAction::DecideOptionalEffect { accept: true } => score_optional_effect_accept(ctx),
             _ => 0.0,
         }
     }
@@ -111,7 +109,10 @@ fn score_pre_cast(ctx: &PolicyContext<'_>) -> f64 {
 /// Penalise accepting an optional effect when the life cost would be lethal or near-lethal.
 /// Applies to ETB replacements like Multiversal Passage ("pay 2 life or enter tapped").
 fn score_optional_effect_accept(ctx: &PolicyContext<'_>) -> f64 {
-    let WaitingFor::OptionalEffectChoice { player, source_id, .. } = &ctx.state.waiting_for else {
+    let WaitingFor::OptionalEffectChoice {
+        player, source_id, ..
+    } = &ctx.state.waiting_for
+    else {
         return 0.0;
     };
     let life = ctx.state.players[player.0 as usize].life;

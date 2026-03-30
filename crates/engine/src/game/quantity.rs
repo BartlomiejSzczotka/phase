@@ -459,7 +459,11 @@ fn type_filter_to_core_type(tf: &TypeFilter) -> Option<CoreType> {
 }
 
 /// Count players matching a PlayerFilter relative to the controller.
-fn resolve_player_count(state: &GameState, filter: &PlayerFilter, controller: PlayerId) -> i32 {
+pub(crate) fn resolve_player_count(
+    state: &GameState,
+    filter: &PlayerFilter,
+    controller: PlayerId,
+) -> i32 {
     state
         .players
         .iter()

@@ -1361,7 +1361,8 @@ fn strip_activated_constraints(text: &str) -> (String, ActivatedConstraintAst) {
 
         if let Some(idx) = tp.rfind("activate only if ") {
             if idx == 0 {
-                let condition_text = remaining["activate only if ".len()..].trim().to_string();
+                let mut condition_text = remaining["activate only if ".len()..].trim().to_string();
+                strip_once_per_turn_suffix(&mut condition_text, &mut constraints.restrictions);
                 remaining.clear();
                 constraints
                     .restrictions
@@ -1371,9 +1372,10 @@ fn strip_activated_constraints(text: &str) -> (String, ActivatedConstraintAst) {
                 break;
             }
             if lower[..idx].ends_with(". ") {
-                let condition_text = remaining[idx + "activate only if ".len()..]
+                let mut condition_text = remaining[idx + "activate only if ".len()..]
                     .trim()
                     .to_string();
+                strip_once_per_turn_suffix(&mut condition_text, &mut constraints.restrictions);
                 remaining = remaining[..idx]
                     .trim_end_matches(|c: char| c == '.' || c == ',' || c.is_whitespace())
                     .to_string();
@@ -1441,6 +1443,32 @@ fn strip_activated_constraints(text: &str) -> (String, ActivatedConstraintAst) {
     }
 
     (remaining, constraints)
+}
+
+/// Strip "and only once each turn" / "and only once" compound suffixes from a condition_text
+/// extracted from "activate only if [condition_text]", pushing the corresponding
+/// `OnlyOnceEachTurn`/`OnlyOnce` restriction.
+///
+/// Uses the `text.len() - suffix.len()` offset idiom (CR 602.5b): all suffixes are ASCII,
+/// so byte-length slicing is safe.
+fn strip_once_per_turn_suffix(
+    condition_text: &mut String,
+    restrictions: &mut Vec<ActivationRestriction>,
+) {
+    let lower = condition_text.to_lowercase();
+    if lower.ends_with(" and only once each turn") {
+        let stripped_len = condition_text.len() - " and only once each turn".len();
+        *condition_text = condition_text[..stripped_len]
+            .trim_end_matches(|c: char| c == ',' || c.is_whitespace())
+            .to_string();
+        restrictions.push(ActivationRestriction::OnlyOnceEachTurn);
+    } else if lower.ends_with(" and only once") {
+        let stripped_len = condition_text.len() - " and only once".len();
+        *condition_text = condition_text[..stripped_len]
+            .trim_end_matches(|c: char| c == ',' || c.is_whitespace())
+            .to_string();
+        restrictions.push(ActivationRestriction::OnlyOnce);
+    }
 }
 
 /// Check if a line looks like a static/continuous ability.
@@ -2617,6 +2645,39 @@ mod tests {
                 ActivationRestriction::AsSorcery,
                 ActivationRestriction::OnlyOnceEachTurn,
             ]
+        );
+    }
+
+    #[test]
+    fn parses_activate_only_if_condition_and_only_once_each_turn() {
+        // CR 602.5b: "Activate only if [condition] and only once each turn" must produce
+        // both a RequiresCondition restriction (with the condition) and OnlyOnceEachTurn.
+        // Tests the general pattern, not a single card.
+        use crate::types::ability::{ParsedCondition, PlayerFilter};
+        let r = parse(
+            "{1}{R}: Put a +1/+1 counter on this creature. Activate only if an opponent lost life this turn and only once each turn.",
+            "Test Card",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 1);
+        let restrictions = &r.abilities[0].activation_restrictions;
+        assert!(
+            restrictions.contains(&ActivationRestriction::OnlyOnceEachTurn),
+            "expected OnlyOnceEachTurn restriction"
+        );
+        assert!(
+            restrictions.iter().any(|r| matches!(
+                r,
+                ActivationRestriction::RequiresCondition {
+                    condition: Some(ParsedCondition::PlayerCountAtLeast {
+                        filter: PlayerFilter::OpponentLostLife,
+                        minimum: 1,
+                    })
+                }
+            )),
+            "expected RequiresCondition with OpponentLostLife"
         );
     }
 

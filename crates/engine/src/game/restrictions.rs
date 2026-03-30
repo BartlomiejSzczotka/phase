@@ -666,6 +666,10 @@ fn evaluate_condition(
                 .count() as u32
                 >= *count
         }
+        // CR 602.5b: "Activate only if [player condition]" — count matching non-eliminated players.
+        ParsedCondition::PlayerCountAtLeast { filter, minimum } => {
+            crate::game::quantity::resolve_player_count(state, filter, player) as usize >= *minimum
+        }
     }
 }
 

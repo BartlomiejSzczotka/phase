@@ -3,7 +3,8 @@ use std::str::FromStr;
 use crate::game::game_object::{parse_counter_type, CounterType};
 use crate::parser::oracle_util::parse_number;
 use crate::types::ability::{
-    Comparator, ControllerRef, ParsedCondition, QuantityRef, TargetFilter, TypedFilter,
+    Comparator, ControllerRef, ParsedCondition, PlayerFilter, QuantityRef, TargetFilter,
+    TypedFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::keywords::Keyword;
@@ -42,6 +43,22 @@ fn parse_condition_text(text: &str) -> Option<ParsedCondition> {
     }
     if text.contains("been attacked") && text.contains("this step") {
         return Some(ParsedCondition::BeenAttackedThisStep);
+    }
+    // "an opponent [action] this turn" — decompose via strip_prefix + verb phrase matching.
+    // CR 602.5b: Covers the full class of opponent-event-based activation conditions.
+    if let Some(verb_phrase) = text.strip_prefix("an opponent ") {
+        if verb_phrase == "lost life this turn" {
+            return Some(ParsedCondition::PlayerCountAtLeast {
+                filter: PlayerFilter::OpponentLostLife,
+                minimum: 1,
+            });
+        }
+        if verb_phrase == "gained life this turn" {
+            return Some(ParsedCondition::PlayerCountAtLeast {
+                filter: PlayerFilter::OpponentGainedLife,
+                minimum: 1,
+            });
+        }
     }
     if text.starts_with("an opponent") && text.contains("poison counters") {
         if let Some(count) =
@@ -623,6 +640,26 @@ mod tests {
         assert_eq!(
             parse_restriction_condition("a creature died this turn"),
             Some(ParsedCondition::CreatureDiedThisTurn),
+        );
+    }
+
+    #[test]
+    fn parses_opponent_event_conditions() {
+        // CR 602.5b: "an opponent [action] this turn" maps to PlayerCountAtLeast
+        // with the matching PlayerFilter. Tests cover the full class, not a single card.
+        assert_eq!(
+            parse_restriction_condition("an opponent lost life this turn"),
+            Some(ParsedCondition::PlayerCountAtLeast {
+                filter: PlayerFilter::OpponentLostLife,
+                minimum: 1,
+            }),
+        );
+        assert_eq!(
+            parse_restriction_condition("an opponent gained life this turn"),
+            Some(ParsedCondition::PlayerCountAtLeast {
+                filter: PlayerFilter::OpponentGainedLife,
+                minimum: 1,
+            }),
         );
     }
 
