@@ -968,7 +968,13 @@ pub fn handle_adventure_choice(
             resolved,
             prepared.mana_cost.clone(),
         );
-        pending_adv.casting_variant = prepared.casting_variant;
+        // CR 715.3a: Preserve Adventure casting variant so the spell resolves to exile.
+        // prepare_spell_cast always returns CastingVariant::Normal — override here.
+        pending_adv.casting_variant = if creature {
+            prepared.casting_variant
+        } else {
+            CastingVariant::Adventure
+        };
         pending_adv.distribute = prepared.ability_def.distribute.clone();
         return Ok(WaitingFor::TargetSelection {
             player,
