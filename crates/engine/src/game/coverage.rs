@@ -2363,8 +2363,10 @@ fn count_effective_oracle_lines(oracle_text: &str) -> usize {
 
         let lower = stripped.to_lowercase();
 
-        // Check if this is a "Choose one/two/..." header
-        if lower.starts_with("choose ") && lower.contains('—') {
+        // Check if this line contains a modal header ("choose one —", "choose two.", etc.)
+        // Handles standalone headers, triggered modals ("when enters, choose one —"),
+        // activated modals ("{cost}: choose one —"), and period-terminated ("choose three.")
+        if is_modal_header_line(&lower) {
             count += 1;
             in_modal = true;
             continue;
@@ -2385,6 +2387,48 @@ fn count_effective_oracle_lines(oracle_text: &str) -> usize {
     }
 
     count
+}
+
+/// Check if an ability chain contains an "unless" condition stored as an effect parameter
+/// (e.g., `Effect::Counter { unless_payment }` or similar).
+fn ability_chain_has_unless(def: &AbilityDefinition) -> bool {
+    let has_unless = matches!(
+        &*def.effect,
+        Effect::Counter {
+            unless_payment, ..
+        } if unless_payment.is_some()
+    );
+    if has_unless {
+        return true;
+    }
+    if let Some(ref sub) = def.sub_ability {
+        if ability_chain_has_unless(sub) {
+            return true;
+        }
+    }
+    for mode_ab in &def.mode_abilities {
+        if ability_chain_has_unless(mode_ab) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Check if a line contains a modal header pattern: "choose one", "choose two", etc.
+/// Matches standalone, triggered, activated, and period-terminated forms.
+fn is_modal_header_line(lower: &str) -> bool {
+    const CHOOSE_PHRASES: &[&str] = &[
+        "choose one",
+        "choose two",
+        "choose three",
+        "choose four",
+        "choose five",
+        "choose up to one",
+        "choose up to two",
+        "choose up to three",
+        "choose any number",
+    ];
+    CHOOSE_PHRASES.iter().any(|p| lower.contains(p))
 }
 
 /// Strip parenthesized reminder text from a line.
@@ -3288,9 +3332,16 @@ fn check_dropped_condition(
             continue;
         }
 
-        // Check if ANY parsed ability/trigger/static has a condition
-        let has_condition_on_ability = face.abilities.iter().any(|a| a.condition.is_some());
-        let has_condition_on_trigger = face.triggers.iter().any(|t| t.condition.is_some());
+        // Check if ANY parsed ability/trigger/static has a condition, recursing into mode_abilities
+        let has_condition_on_ability = face.abilities.iter().any(|a| {
+            a.condition.is_some() || a.mode_abilities.iter().any(|m| m.condition.is_some())
+        });
+        let has_condition_on_trigger = face.triggers.iter().any(|t| {
+            t.condition.is_some()
+                || t.execute.as_ref().is_some_and(|e| {
+                    e.condition.is_some() || e.mode_abilities.iter().any(|m| m.condition.is_some())
+                })
+        });
         let has_condition_on_static = face.static_abilities.iter().any(|s| s.condition.is_some());
         let has_condition_on_replacement = face.replacements.iter().any(|r| {
             if let Some(execute) = &r.execute {
@@ -3300,10 +3351,19 @@ fn check_dropped_condition(
             }
         });
 
+        // Check for "unless" conditions stored as effect parameters (e.g. Counter with unless_payment)
+        let has_unless_on_effect = label == "unless"
+            && face
+                .abilities
+                .iter()
+                .chain(face.triggers.iter().filter_map(|t| t.execute.as_deref()))
+                .any(ability_chain_has_unless);
+
         if !has_condition_on_ability
             && !has_condition_on_trigger
             && !has_condition_on_static
             && !has_condition_on_replacement
+            && !has_unless_on_effect
         {
             findings.push(SemanticFinding::DroppedCondition {
                 oracle_line: original.to_string(),
@@ -3605,6 +3665,10 @@ fn is_counter_reference(lower: &str) -> bool {
 /// Check if any parsed ability, trigger execution, or replacement has a PutCounter/PutCounterAll
 /// effect matching the given counter type (e.g., "+1/+1").
 fn has_matching_counter_effect(face: &CardFace, counter_type: &str) -> bool {
+    // Normalize Oracle text format ("+1/+1") to engine format ("P1P1")
+    let normalized = crate::parser::oracle_effect::counter::normalize_counter_type(counter_type);
+    let counter_type = &normalized;
+
     fn counter_in_chain(def: &AbilityDefinition, ct: &str) -> bool {
         match &*def.effect {
             Effect::PutCounter { counter_type, .. }
@@ -3652,26 +3716,54 @@ fn has_matching_counter_effect(face: &CardFace, counter_type: &str) -> bool {
 }
 
 /// Check if an ability definition has a pump effect matching the given P/T values.
+/// Checks both `Effect::Pump` and `Effect::GenericEffect` with `AddPower`/`AddToughness`
+/// continuous modifications (which is the representation used for static pump effects).
 fn pump_matches_oracle(
     def: &AbilityDefinition,
     expected_power: i32,
     expected_toughness: i32,
 ) -> bool {
-    if let Effect::Pump {
-        power, toughness, ..
-    } = &*def.effect
-    {
-        let p_match = match power {
-            PtValue::Fixed(v) => *v == expected_power,
-            _ => true, // Dynamic quantities can't be checked statically
-        };
-        let t_match = match toughness {
-            PtValue::Fixed(v) => *v == expected_toughness,
-            _ => true,
-        };
-        if p_match && t_match {
-            return true;
+    match &*def.effect {
+        Effect::Pump {
+            power, toughness, ..
+        } => {
+            let p_match = match power {
+                PtValue::Fixed(v) => *v == expected_power,
+                _ => true, // Dynamic quantities can't be checked statically
+            };
+            let t_match = match toughness {
+                PtValue::Fixed(v) => *v == expected_toughness,
+                _ => true,
+            };
+            if p_match && t_match {
+                return true;
+            }
         }
+        Effect::GenericEffect {
+            static_abilities, ..
+        } => {
+            for stat in static_abilities {
+                let mut power_match = expected_power == 0;
+                let mut tough_match = expected_toughness == 0;
+                for modif in &stat.modifications {
+                    match modif {
+                        ContinuousModification::AddPower { value } if *value == expected_power => {
+                            power_match = true;
+                        }
+                        ContinuousModification::AddToughness { value }
+                            if *value == expected_toughness =>
+                        {
+                            tough_match = true;
+                        }
+                        _ => {}
+                    }
+                }
+                if power_match && tough_match {
+                    return true;
+                }
+            }
+        }
+        _ => {}
     }
     false
 }
@@ -3732,12 +3824,33 @@ fn check_silent_drops_from_face(
         let described: Vec<String> = face
             .abilities
             .iter()
-            .filter_map(|a| a.description.clone())
-            .chain(
-                face.triggers
+            .flat_map(|a| {
+                std::iter::once(a.description.clone()).chain(
+                    a.mode_abilities
+                        .iter()
+                        .filter_map(|m| m.description.clone())
+                        .map(Some),
+                )
+            })
+            .flatten()
+            .chain(face.triggers.iter().flat_map(|t| {
+                // Include trigger description and execute description + mode_abilities
+                let trigger_desc = t.description.clone();
+                let exec_desc = t.execute.as_ref().and_then(|e| e.description.clone());
+                let mode_descs: Vec<_> = t
+                    .execute
                     .iter()
-                    .filter_map(|t| t.execute.as_ref().and_then(|e| e.description.clone())),
-            )
+                    .flat_map(|e| {
+                        e.mode_abilities
+                            .iter()
+                            .filter_map(|m| m.description.clone())
+                    })
+                    .collect();
+                std::iter::once(trigger_desc)
+                    .chain(std::iter::once(exec_desc))
+                    .flatten()
+                    .chain(mode_descs)
+            }))
             .map(|s| s.to_lowercase())
             .collect();
 

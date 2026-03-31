@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
-use engine::ai_support::{auto_pass_recommended, legal_actions_with_costs as engine_legal_actions_with_costs};
+use engine::ai_support::{
+    auto_pass_recommended, legal_actions_with_costs as engine_legal_actions_with_costs,
+};
 use engine::game::deck_loading::{load_deck_into_state, DeckPayload, PlayerDeckPayload};
 use engine::game::engine::{apply, start_game};
 use engine::types::actions::GameAction;

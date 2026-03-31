@@ -103,8 +103,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Sacrifice ~" / "Sacrifice a/an/N {filter}"
-    if let Some(((), rest)) =
-        nom_on_lower(text, &lower, |i| value((), tag("sacrifice ")).parse(i))
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("sacrifice ")).parse(i))
     {
         let rest = rest.trim();
         let rest_lower = rest.to_lowercase();
@@ -141,9 +140,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Pay N life" / "N life"
-    if let Some(((), rest)) =
-        nom_on_lower(text, &lower, |i| value((), tag("pay ")).parse(i))
-    {
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("pay ")).parse(i)) {
         let rest_lower = rest.to_lowercase();
         if rest_lower.contains("life") {
             if let Some((n, _)) = parse_number(&rest_lower) {
@@ -178,9 +175,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Discard a card" / "Discard N cards"
-    if let Some(((), rest)) =
-        nom_on_lower(text, &lower, |i| value((), tag("discard ")).parse(i))
-    {
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("discard ")).parse(i)) {
         let rest_lower = rest.to_lowercase();
         // CR 207.2c: "Discard this card" — Channel self-ref cost (ability word, not keyword).
         if rest_lower == "this card" {
@@ -215,9 +210,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
         };
     }
 
-    if let Some(((), rest)) =
-        nom_on_lower(text, &lower, |i| value((), tag("exile ")).parse(i))
-    {
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("exile ")).parse(i)) {
         let rest_lower = rest.to_lowercase();
         // CR 112.3: Self-exile costs — "Exile this card from your graveyard/hand"
         // or "Exile this artifact/creature/enchantment/land"
@@ -253,18 +246,14 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Blight N"
-    if let Some(((), rest)) =
-        nom_on_lower(text, &lower, |i| value((), tag("blight ")).parse(i))
-    {
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("blight ")).parse(i)) {
         let rest_lower = rest.to_lowercase();
         let count = parse_number(&rest_lower).map(|(n, _)| n).unwrap_or(1);
         return AbilityCost::Blight { count };
     }
 
     // "Remove N {type} counter(s) from ~"
-    if let Some(((), rest)) =
-        nom_on_lower(text, &lower, |i| value((), tag("remove ")).parse(i))
-    {
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("remove ")).parse(i)) {
         let rest_lower = rest.to_lowercase();
         if rest_lower.contains("counter") {
             if let Some((count, after_count)) = parse_number(&rest_lower) {
@@ -294,12 +283,14 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
 
     // "Tap an untapped creature you control" / "Tap two untapped creatures you control"
     // / "Tap another untapped creature you control"
-    if let Some(((), tap_rest)) =
-        nom_on_lower(text, &lower, |i| value((), tag("tap ")).parse(i))
-    {
+    if let Some(((), tap_rest)) = nom_on_lower(text, &lower, |i| value((), tag("tap ")).parse(i)) {
         let tap_lower = tap_rest.to_lowercase();
         let (count, filter_text) = if let Some(((), r)) = nom_on_lower(tap_rest, &tap_lower, |i| {
-            value((), alt((tag("another untapped "), tag("an untapped "), tag("an ")))).parse(i)
+            value(
+                (),
+                alt((tag("another untapped "), tag("an untapped "), tag("an "))),
+            )
+            .parse(i)
         }) {
             (1u32, r.to_lowercase())
         } else if let Some((n, r)) = super::oracle_util::parse_number(&tap_lower) {
@@ -325,9 +316,9 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Collect evidence N" — exile cards with total mana value N or more from graveyard (CR 701.59a)
-    if let Some(((), rest)) =
-        nom_on_lower(text, &lower, |i| value((), tag("collect evidence ")).parse(i))
-    {
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| {
+        value((), tag("collect evidence ")).parse(i)
+    }) {
         let rest_lower = rest.to_lowercase();
         if let Some((n, _)) = parse_number(rest_lower.trim()) {
             return AbilityCost::Exile {
@@ -353,9 +344,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Return a land you control to its owner's hand" — bounce cost
-    if let Some(((), rest)) =
-        nom_on_lower(text, &lower, |i| value((), tag("return ")).parse(i))
-    {
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("return ")).parse(i)) {
         let rest_lower = rest.to_lowercase();
         if let Some(filter_and_zone) = try_parse_return_to_hand_cost(&rest_lower, rest) {
             return filter_and_zone;
@@ -381,9 +370,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Mill a card" / "Mill N cards" — mill cost
-    if let Some(((), rest)) =
-        nom_on_lower(text, &lower, |i| value((), tag("mill ")).parse(i))
-    {
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("mill ")).parse(i)) {
         let rest_lower = rest.to_lowercase();
         if rest_lower == "a card" {
             return AbilityCost::Mill { count: 1 };
@@ -394,9 +381,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // "Pay {N}{W}" — mana cost with "pay" prefix
-    if let Some(((), rest)) =
-        nom_on_lower(text, &lower, |i| value((), tag("pay ")).parse(i))
-    {
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("pay ")).parse(i)) {
         let rest_lower = rest.to_lowercase();
         let mana_text = rest_lower.trim();
         if mana_text.starts_with('{') {
@@ -409,8 +394,7 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
     }
 
     // Waterbend {N}: tap-to-pay cost for Avatar waterbending abilities.
-    if let Some(((), rest)) =
-        nom_on_lower(text, &lower, |i| value((), tag("waterbend ")).parse(i))
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("waterbend ")).parse(i))
     {
         let rest_lower = rest.to_lowercase();
         if let Some((mana_cost, _)) = parse_mana_symbols(rest_lower.trim()) {
@@ -555,9 +539,7 @@ fn try_parse_self_exile_cost(rest: &str) -> Option<Option<Zone>> {
     }
     // "this artifact" / "this creature" / "this enchantment" / "this land" / "this permanent"
     // / "this card" / "this vehicle" (self-exile from battlefield)
-    if let Some(((), after_this)) =
-        nom_on_lower(rest, rest, |i| value((), tag("this ")).parse(i))
-    {
+    if let Some(((), after_this)) = nom_on_lower(rest, rest, |i| value((), tag("this ")).parse(i)) {
         let type_word = after_this.trim_end_matches('.');
         if matches!(
             type_word,
@@ -571,8 +553,7 @@ fn try_parse_self_exile_cost(rest: &str) -> Option<Option<Zone>> {
 
 /// Parse "the top card of your library" / "the top N cards of your library".
 fn try_parse_exile_top_library(rest: &str) -> Option<u32> {
-    let ((), after_top) =
-        nom_on_lower(rest, rest, |i| value((), tag("the top ")).parse(i))?;
+    let ((), after_top) = nom_on_lower(rest, rest, |i| value((), tag("the top ")).parse(i))?;
     let after_top = after_top.trim();
     if nom_on_lower(after_top, after_top, |i| {
         value((), tag("card of your library")).parse(i)

@@ -773,7 +773,7 @@ fn classify_negation(negated: &str) -> NegationResult {
 
 /// Guard: does text start with something `parse_type_phrase` would recognize?
 /// Used to prevent comma/and/or recursion on non-type text.
-fn starts_with_type_word(text: &str) -> bool {
+pub(crate) fn starts_with_type_word(text: &str) -> bool {
     // Core type: "creature", "artifact", "permanent", etc.
     if parse_core_type(text).0.is_some() {
         return true;

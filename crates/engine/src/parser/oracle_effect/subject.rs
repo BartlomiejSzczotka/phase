@@ -498,13 +498,24 @@ fn try_split_pump_compound(
     let (pump_tp, remainder_tp) = tp.split_around(" and ")?;
     let pump_part = pump_tp.original;
     let remainder = remainder_tp.original.trim();
-    let (remainder_without_duration, _) = super::strip_trailing_duration(remainder);
 
-    if !parse_continuous_modifications(remainder_without_duration).is_empty() {
-        return None;
+    // Parse the pump clause first to check whether it carries its own duration.
+    let (power, toughness, duration) = super::parse_pump_clause(pump_part)?;
+
+    // Guard: when the pump part has NO duration (e.g., "get +2/+2 and gain flying
+    // until end of turn"), the trailing duration is shared across both clauses.
+    // Splitting would lose the duration on the pump half, so reject the split and let
+    // the continuous-modification fallthrough in build_continuous_clause handle it.
+    // When the pump part HAS a duration (e.g., "get +2/+2 until end of turn and gain
+    // flying"), the " and " genuinely separates independent clauses, so the split is
+    // valid regardless of whether the remainder is a keyword grant.
+    if duration.is_none() {
+        let (remainder_without_duration, _) = super::strip_trailing_duration(remainder);
+        if !parse_continuous_modifications(remainder_without_duration).is_empty() {
+            return None;
+        }
     }
 
-    let (power, toughness, duration) = super::parse_pump_clause(pump_part)?;
     let effect = build_pump_effect(application, power, toughness);
 
     // Parse the remainder as an independent effect chain (sub_ability).

@@ -694,7 +694,11 @@ mod tests {
 
         // Verify zone_object_ids finds graveyard objects
         let gy_ids = crate::game::targeting::zone_object_ids(&state, Zone::Graveyard);
-        assert_eq!(gy_ids.len(), 4, "expected 4 objects in graveyard (3 spells + 1 creature)");
+        assert_eq!(
+            gy_ids.len(),
+            4,
+            "expected 4 objects in graveyard (3 spells + 1 creature)"
+        );
 
         let expr = QuantityExpr::Ref {
             qty: QuantityRef::ObjectCount { filter },

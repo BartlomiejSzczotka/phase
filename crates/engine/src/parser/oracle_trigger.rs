@@ -12,7 +12,7 @@ use super::oracle_nom::bridge::nom_on_lower;
 use super::oracle_nom::error::OracleResult;
 use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_nom::quantity as nom_quantity;
-use super::oracle_target::parse_type_phrase;
+use super::oracle_target::{parse_type_phrase, starts_with_type_word};
 use super::oracle_util::{
     canonicalize_subtype_name, merge_or_filters, normalize_card_name_refs, parse_number,
     parse_ordinal, parse_subtype, strip_after, strip_reminder_text, TextPair,
@@ -815,7 +815,22 @@ fn continues_player_action_list(after_comma: &str) -> bool {
         .next()
         .unwrap_or(trimmed)
         .trim();
-    parse_player_action_phrase(candidate).is_some()
+    if parse_player_action_phrase(candidate).is_some() {
+        return true;
+    }
+
+    // Recognize type-phrase continuations in comma-separated type lists.
+    // E.g. "a creature, planeswalker, or battle enters" — after ", " we see
+    // "planeswalker" (a bare type word) or "or battle enters" ("or" + type word).
+    // Strip optional "or "/"and " conjunction, then check if the next word is a type.
+    let after_conjunction = alt((
+        value((), tag::<_, _, VerboseError<&str>>("or ")),
+        value((), tag("and ")),
+    ))
+    .parse(trimmed)
+    .map(|(rest, _)| rest)
+    .unwrap_or(trimmed);
+    starts_with_type_word(after_conjunction)
 }
 
 fn make_base() -> TriggerDefinition {
@@ -1263,6 +1278,70 @@ fn try_parse_event(
     // CR 700.4: "is put into a graveyard from [zone]" / "is put into [possessive] graveyard [from zone]"
     if let Some(result) = try_parse_put_into_graveyard(subject, rest) {
         return Some(result);
+    }
+
+    // CR 701.13a: "is exiled" / "are exiled" — exile trigger
+    if alt((
+        value((), tag::<_, _, VerboseError<&str>>("is exiled")),
+        value((), tag("are exiled")),
+    ))
+    .parse(rest)
+    .is_ok()
+    {
+        let mut def = make_base();
+        def.mode = TriggerMode::Exiled;
+        def.valid_card = Some(subject.clone());
+        return Some((TriggerMode::Exiled, def));
+    }
+
+    // CR 701.21: "is sacrificed" / "are sacrificed" — sacrifice trigger
+    if alt((
+        value((), tag::<_, _, VerboseError<&str>>("is sacrificed")),
+        value((), tag("are sacrificed")),
+    ))
+    .parse(rest)
+    .is_ok()
+    {
+        let mut def = make_base();
+        def.mode = TriggerMode::Sacrificed;
+        def.valid_card = Some(subject.clone());
+        return Some((TriggerMode::Sacrificed, def));
+    }
+
+    // CR 701.8: "is destroyed" / "are destroyed" — destroy trigger
+    if alt((
+        value((), tag::<_, _, VerboseError<&str>>("is destroyed")),
+        value((), tag("are destroyed")),
+    ))
+    .parse(rest)
+    .is_ok()
+    {
+        let mut def = make_base();
+        def.mode = TriggerMode::Destroyed;
+        def.valid_card = Some(subject.clone());
+        return Some((TriggerMode::Destroyed, def));
+    }
+
+    // CR 701.14: "fights" / "fight" — fight trigger
+    // Guard against false-matching "fighting".
+    {
+        let fights_result = tag::<_, _, VerboseError<&str>>("fights")
+            .parse(rest)
+            .map(|(r, _)| r)
+            .ok()
+            .or_else(|| {
+                tag::<_, _, VerboseError<&str>>("fight")
+                    .parse(rest)
+                    .ok()
+                    .map(|(r, _)| r)
+                    .filter(|r| !r.starts_with("ing") && !r.starts_with("s"))
+            });
+        if let Some(_after) = fights_result {
+            let mut def = make_base();
+            def.mode = TriggerMode::Fight;
+            def.valid_card = Some(subject.clone());
+            return Some((TriggerMode::Fight, def));
+        }
     }
 
     // Simple event verbs using nom alt() — each maps to a single TriggerMode
@@ -5722,5 +5801,94 @@ mod tests {
             matches!(cond, Some(TriggerCondition::GainedLife { minimum: 1 })),
             "Expected GainedLife, got: {cond:?}"
         );
+    }
+
+    // --- Fix 1: find_effect_boundary comma splitter respects type-phrase lists ---
+
+    #[test]
+    fn split_trigger_compound_type_subject() {
+        // "a creature, planeswalker, or battle enters" — comma is part of the subject
+        let tp = TextPair::new(
+            "whenever a creature, planeswalker, or battle enters the battlefield, draw a card",
+            "whenever a creature, planeswalker, or battle enters the battlefield, draw a card",
+        );
+        let (condition, effect) = split_trigger(tp);
+        assert!(
+            condition.contains("enters"),
+            "Condition should contain 'enters', got: '{condition}'"
+        );
+        assert_eq!(effect, "draw a card");
+    }
+
+    #[test]
+    fn split_trigger_two_type_subject() {
+        // "a creature or enchantment" — no comma in subject but "artifact, creature, or enchantment" has
+        let tp = TextPair::new(
+            "whenever an artifact, creature, or enchantment enters the battlefield, you gain 1 life",
+            "whenever an artifact, creature, or enchantment enters the battlefield, you gain 1 life",
+        );
+        let (condition, effect) = split_trigger(tp);
+        assert!(
+            condition.contains("enchantment"),
+            "Condition should contain full type list, got: '{condition}'"
+        );
+        assert_eq!(effect, "you gain 1 life");
+    }
+
+    #[test]
+    fn continues_player_action_list_type_word() {
+        // Bare type word after comma: "planeswalker, or battle enters"
+        assert!(continues_player_action_list(
+            "planeswalker, or battle enters"
+        ));
+        assert!(continues_player_action_list("or battle enters"));
+        assert!(continues_player_action_list(
+            "creature, or enchantment enters"
+        ));
+        // Non-type word should not match
+        assert!(!continues_player_action_list("draw a card"));
+        assert!(!continues_player_action_list("you gain 1 life"));
+    }
+
+    // --- Fix 2: missing event verbs ---
+
+    #[test]
+    fn trigger_is_exiled() {
+        let def = parse_trigger_line(
+            "Whenever a creature you control is exiled, draw a card.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::Exiled);
+        assert!(def.valid_card.is_some());
+    }
+
+    #[test]
+    fn trigger_is_sacrificed() {
+        let def = parse_trigger_line(
+            "Whenever a creature is sacrificed, you gain 1 life.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::Sacrificed);
+        assert!(def.valid_card.is_some());
+    }
+
+    #[test]
+    fn trigger_is_destroyed() {
+        let def = parse_trigger_line(
+            "Whenever a permanent you control is destroyed, draw a card.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::Destroyed);
+        assert!(def.valid_card.is_some());
+    }
+
+    #[test]
+    fn trigger_fights() {
+        let def = parse_trigger_line(
+            "Whenever a creature you control fights, put a +1/+1 counter on it.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::Fight);
+        assert!(def.valid_card.is_some());
     }
 }

@@ -461,11 +461,9 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
             let (effective_predicate, suffix_condition) =
                 strip_suffix_turn_condition(&predicate_lower);
 
-            if let Some(mut def) = parse_continuous_gets_has(
-                &effective_predicate,
-                TargetFilter::SelfRef,
-                tp.original,
-            ) {
+            if let Some(mut def) =
+                parse_continuous_gets_has(&effective_predicate, TargetFilter::SelfRef, tp.original)
+            {
                 if let Some(cond) = suffix_condition {
                     def.condition = Some(cond);
                 }
@@ -4342,8 +4340,7 @@ mod tests {
     #[test]
     fn suffix_during_your_turn_has_first_strike() {
         // Razorkin Needlehead: "This creature has first strike during your turn."
-        let def =
-            parse_static_line("This creature has first strike during your turn.").unwrap();
+        let def = parse_static_line("This creature has first strike during your turn.").unwrap();
         assert_eq!(def.mode, StaticMode::Continuous);
         assert_eq!(def.affected, Some(TargetFilter::SelfRef));
         assert_eq!(def.condition, Some(StaticCondition::DuringYourTurn));

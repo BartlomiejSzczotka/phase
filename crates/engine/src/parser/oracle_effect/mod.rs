@@ -2563,6 +2563,15 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         }
 
         let (condition, text) = strip_additional_cost_conditional(normalized_text);
+        // CR 608.2c: General leading conditional — "if [condition], [effect]".
+        // Runs only when no dedicated leading stripper matched. Handles patterns like
+        // "if you control 3 or more creatures, draw a card".
+        let (leading_cond, text) = if condition.is_none() {
+            strip_leading_general_conditional(&text)
+        } else {
+            (None, text)
+        };
+        let condition = condition.or(leading_cond);
         let (if_you_do, text) = if condition.is_none() {
             strip_if_you_do_conditional(&text)
         } else {
@@ -3412,6 +3421,36 @@ fn split_leading_conditional(text: &str) -> Option<(String, String)> {
     None
 }
 
+/// CR 608.2c: Strip a general leading "if [condition], [effect]" clause and parse
+/// the condition into an `AbilityCondition`. Returns `(condition, body_text)`.
+///
+/// Delegates to `split_leading_conditional` for the structural split, then attempts
+/// to parse the condition fragment via `parse_condition_text` (quantity comparisons)
+/// and `parse_control_count_as_ability_condition` ("you control N or more [type]").
+///
+/// Returns `(None, original_text)` when either:
+/// - The text doesn't start with "if "
+/// - The condition fragment can't be parsed into a typed `AbilityCondition`
+fn strip_leading_general_conditional(text: &str) -> (Option<AbilityCondition>, String) {
+    if let Some((condition_fragment, body)) = split_leading_conditional(text) {
+        // Strip the leading "if " using nom_on_lower (case-insensitive, preserves original)
+        let cond_text = nom_on_lower(&condition_fragment, &condition_fragment, |i| {
+            value((), tag("if ")).parse(i)
+        })
+        .map(|((), rest)| rest)
+        .unwrap_or(&condition_fragment)
+        .trim();
+
+        if let Some(condition) = parse_condition_text(cond_text)
+            .or_else(|| parse_control_count_as_ability_condition(cond_text))
+            .or_else(|| try_nom_condition_as_ability_condition(cond_text))
+        {
+            return (Some(condition), body);
+        }
+    }
+    (None, text.to_string())
+}
+
 /// Detect "if this spell's additional cost was paid, {effect}" and return
 /// the condition + remaining effect text. Called at the sentence level in
 /// parse_effect_chain BEFORE parse_effect_clause, so the condition is preserved
@@ -3603,7 +3642,35 @@ fn strip_unless_entered_suffix(text: &str) -> (Option<AbilityCondition>, String)
             );
         }
     }
+    // General "unless [condition]" fallback — uses nom's parse_inner_condition
+    // wrapped in Not, then bridges to AbilityCondition.
+    if let Some((effect_part, condition_part)) = lower.rsplit_once(" unless ") {
+        let condition_text = condition_part.trim_end_matches('.');
+        if let Some(cond) = try_nom_condition_as_unless(condition_text) {
+            let effect_text = text[..effect_part.len()].trim().to_string();
+            return (Some(cond), effect_text);
+        }
+    }
     (None, text.to_string())
+}
+
+/// Parse an "unless [condition]" body and bridge to AbilityCondition.
+///
+/// "unless X" means "if NOT X", so we parse X via `parse_inner_condition`
+/// and then bridge the `Not(X)` form. This is semantically equivalent to
+/// `parse_unless_condition` in `oracle_nom/condition.rs` but returns
+/// `Option<AbilityCondition>` instead of `OracleResult<StaticCondition>`.
+fn try_nom_condition_as_unless(condition_text: &str) -> Option<AbilityCondition> {
+    use super::oracle_nom::condition::parse_inner_condition;
+
+    let (rest, inner) = parse_inner_condition(condition_text).ok()?;
+    if !rest.trim().is_empty() {
+        return None;
+    }
+    let negated = StaticCondition::Not {
+        condition: Box::new(inner),
+    };
+    static_condition_to_ability_condition(&negated)
 }
 
 /// CR 603.4: Strip "if you cast it from your hand" prefix.
@@ -4033,7 +4100,10 @@ fn strip_suffix_conditional(text: &str) -> (Option<AbilityCondition>, String) {
     }
 
     // Try to parse the condition text into a typed AbilityCondition.
-    if let Some(condition) = parse_condition_text(condition_text) {
+    if let Some(condition) = parse_condition_text(condition_text)
+        .or_else(|| parse_control_count_as_ability_condition(condition_text))
+        .or_else(|| try_nom_condition_as_ability_condition(condition_text))
+    {
         let effect_text = text[..if_pos].trim().to_string();
         return (Some(condition), effect_text);
     }
@@ -4109,9 +4179,10 @@ fn try_parse_generic_instead_clause(text: &str, kind: AbilityKind) -> Option<Abi
     let effect_text = effect_text.trim_end_matches('.').trim();
     let effect_text = effect_text.strip_suffix(" instead")?.trim();
 
-    // Try parsing condition as quantity comparison first, then control-count pattern
+    // Try parsing condition as quantity comparison first, then control-count, then nom bridge
     let condition = parse_condition_text(condition_text)
-        .or_else(|| parse_control_count_as_ability_condition(condition_text))?;
+        .or_else(|| parse_control_count_as_ability_condition(condition_text))
+        .or_else(|| try_nom_condition_as_ability_condition(condition_text))?;
 
     // Parse the replacement effect
     let instead_def = parse_effect_chain(effect_text, kind);
@@ -4120,23 +4191,89 @@ fn try_parse_generic_instead_clause(text: &str, kind: AbilityKind) -> Option<Abi
     Some(result)
 }
 
-/// Parse "you control N or more [type]" as an AbilityCondition::QuantityCheck.
-/// Converts the control-count pattern into a quantity comparison for resolution-time evaluation.
+/// Parse "you control ..." as an `AbilityCondition::QuantityCheck`.
+///
+/// Handles three grammatical forms:
+/// - "you control N or more [type]" → ObjectCount >= N
+/// - "you control a/an [type]" → ObjectCount >= 1 (existential)
+/// - "you control no [type]" → ObjectCount == 0 (absence)
+/// - "you control fewer [type] than an opponent" → ObjectCount < OpponentObjectCount
 fn parse_control_count_as_ability_condition(text: &str) -> Option<AbilityCondition> {
     let text = text.trim();
     let (rest, _) = tag::<_, _, VerboseError<&str>>("you control ")
         .parse(text)
         .ok()?;
-    // Delegate to nom combinator (input already lowercase).
-    let (after_n, n) = nom_primitives::parse_number.parse(rest).ok()?;
-    let (or_more, _) = tag::<_, _, VerboseError<&str>>("or more ")
-        .parse(after_n.trim_start())
-        .ok()?;
-    let (mut filter, leftover) = parse_type_phrase(or_more);
+
+    // Pattern 1: "N or more [type]"
+    if let Ok((after_n, n)) = nom_primitives::parse_number.parse(rest) {
+        if let Ok((type_text, _)) =
+            tag::<_, _, VerboseError<&str>>("or more ").parse(after_n.trim_start())
+        {
+            return build_control_quantity_check(type_text, Comparator::GE, n as i32);
+        }
+        // "N or fewer [type]"
+        if let Ok((type_text, _)) =
+            tag::<_, _, VerboseError<&str>>("or fewer ").parse(after_n.trim_start())
+        {
+            return build_control_quantity_check(type_text, Comparator::LE, n as i32);
+        }
+    }
+
+    // Pattern 2: "a/an [type]" → existential (>= 1)
+    if let Ok((type_text, _)) = alt((
+        tag::<_, _, VerboseError<&str>>("a "),
+        tag("an "),
+        tag("another "),
+    ))
+    .parse(rest)
+    {
+        return build_control_quantity_check(type_text, Comparator::GE, 1);
+    }
+
+    // Pattern 3: "no [type]" → absence (== 0)
+    if let Ok((type_text, _)) = tag::<_, _, VerboseError<&str>>("no ").parse(rest) {
+        return build_control_quantity_check(type_text, Comparator::EQ, 0);
+    }
+
+    // Pattern 4: "fewer [type] than an opponent"
+    if let Ok((type_rest, _)) = tag::<_, _, VerboseError<&str>>("fewer ").parse(rest) {
+        if let Some(pos) = type_rest.find(" than ") {
+            let type_text = &type_rest[..pos];
+            let (mut filter, leftover) = parse_type_phrase(type_text);
+            if filter != TargetFilter::Any && leftover.trim().is_empty() {
+                if let TargetFilter::Typed(ref mut tf) = filter {
+                    tf.controller = Some(ControllerRef::You);
+                }
+                let mut opp_filter = filter.clone();
+                if let TargetFilter::Typed(ref mut tf) = opp_filter {
+                    tf.controller = Some(ControllerRef::Opponent);
+                }
+                return Some(AbilityCondition::QuantityCheck {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { filter },
+                    },
+                    comparator: Comparator::LT,
+                    rhs: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { filter: opp_filter },
+                    },
+                });
+            }
+        }
+    }
+
+    None
+}
+
+/// Build a QuantityCheck for "you control [comparator] [value] [type]" patterns.
+fn build_control_quantity_check(
+    type_text: &str,
+    comparator: Comparator,
+    value: i32,
+) -> Option<AbilityCondition> {
+    let (mut filter, leftover) = parse_type_phrase(type_text);
     if filter == TargetFilter::Any || !leftover.trim().is_empty() {
         return None;
     }
-    // Ensure controller=You is set on the filter for ObjectCount evaluation
     if let TargetFilter::Typed(ref mut tf) = filter {
         tf.controller = Some(ControllerRef::You);
     }
@@ -4144,9 +4281,112 @@ fn parse_control_count_as_ability_condition(text: &str) -> Option<AbilityConditi
         lhs: QuantityExpr::Ref {
             qty: QuantityRef::ObjectCount { filter },
         },
-        comparator: Comparator::GE,
-        rhs: QuantityExpr::Fixed { value: n as i32 },
+        comparator,
+        rhs: QuantityExpr::Fixed { value },
     })
+}
+
+/// Bridge a `StaticCondition` (nom-parsed) to an `AbilityCondition` (effect-time).
+///
+/// Maps the rich `StaticCondition` enum (used by static abilities, parsed by
+/// `oracle_nom/condition.rs`) into `AbilityCondition` (used by one-shot effect
+/// conditions). Returns `None` for variants that have no `AbilityCondition`
+/// equivalent (e.g., `DevotionGE`, `ClassLevelGE`).
+fn static_condition_to_ability_condition(sc: &StaticCondition) -> Option<AbilityCondition> {
+    match sc {
+        // CR 608.2c: Turn-based condition.
+        StaticCondition::DuringYourTurn => Some(AbilityCondition::IsYourTurn { negated: false }),
+
+        // CR 608.2c: Quantity comparisons map directly.
+        StaticCondition::QuantityComparison {
+            lhs,
+            comparator,
+            rhs,
+        } => Some(AbilityCondition::QuantityCheck {
+            lhs: lhs.clone(),
+            comparator: *comparator,
+            rhs: rhs.clone(),
+        }),
+
+        StaticCondition::HasMaxSpeed => Some(AbilityCondition::HasMaxSpeed),
+
+        // CR 400.7: "unless ~ entered this turn" → negated SourceEnteredThisTurn.
+        StaticCondition::SourceEnteredThisTurn => None, // no positive AbilityCondition variant
+
+        // IsPresent with filter → QuantityCheck(ObjectCount >= 1)
+        StaticCondition::IsPresent { filter } => {
+            let f = filter.clone().unwrap_or(TargetFilter::Any);
+            Some(AbilityCondition::QuantityCheck {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::ObjectCount { filter: f },
+                },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+            })
+        }
+
+        // Not combinator — handle common negation patterns.
+        StaticCondition::Not { condition } => match condition.as_ref() {
+            StaticCondition::DuringYourTurn => Some(AbilityCondition::IsYourTurn { negated: true }),
+            StaticCondition::SourceEnteredThisTurn => {
+                Some(AbilityCondition::SourceDidNotEnterThisTurn)
+            }
+            // Negate a quantity comparison by flipping the comparator.
+            StaticCondition::QuantityComparison {
+                lhs,
+                comparator,
+                rhs,
+            } => Some(AbilityCondition::QuantityCheck {
+                lhs: lhs.clone(),
+                comparator: comparator.negate(),
+                rhs: rhs.clone(),
+            }),
+            // Negate an IsPresent → ObjectCount == 0
+            StaticCondition::IsPresent { filter } => {
+                let f = filter.clone().unwrap_or(TargetFilter::Any);
+                Some(AbilityCondition::QuantityCheck {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { filter: f },
+                    },
+                    comparator: Comparator::EQ,
+                    rhs: QuantityExpr::Fixed { value: 0 },
+                })
+            }
+            _ => None,
+        },
+
+        // Variants with no AbilityCondition equivalent.
+        StaticCondition::DevotionGE { .. }
+        | StaticCondition::ChosenColorIs { .. }
+        | StaticCondition::SpeedGE { .. }
+        | StaticCondition::HasCounters { .. }
+        | StaticCondition::ClassLevelGE { .. }
+        | StaticCondition::IsRingBearer
+        | StaticCondition::SourceIsTapped
+        | StaticCondition::SourceInZone { .. }
+        | StaticCondition::Unrecognized { .. }
+        | StaticCondition::And { .. }
+        | StaticCondition::Or { .. }
+        | StaticCondition::RingLevelAtLeast { .. }
+        | StaticCondition::None => None,
+    }
+}
+
+/// Try to parse condition text via the nom `parse_inner_condition` combinator
+/// and bridge the result to an `AbilityCondition`.
+///
+/// This is the bridge between the rich nom-based `StaticCondition` parser and
+/// the effect-time `AbilityCondition` system. It runs the nom parser on the
+/// input text, and if successful with no remaining input, converts the result.
+fn try_nom_condition_as_ability_condition(text: &str) -> Option<AbilityCondition> {
+    use super::oracle_nom::condition::parse_inner_condition;
+
+    let lower = text.to_lowercase();
+    let (rest, sc) = parse_inner_condition(&lower).ok()?;
+    if !rest.trim().is_empty() {
+        return None;
+    }
+    static_condition_to_ability_condition(&sc)
 }
 
 /// Strip "you may " prefix, returning whether the effect is optional.
@@ -8221,6 +8461,38 @@ mod tests {
     }
 
     #[test]
+    fn strip_unless_general_your_turn() {
+        // "unless it's your turn" → Not(DuringYourTurn) → IsYourTurn { negated: true }
+        let (cond, text) = strip_unless_entered_suffix("draw a card unless it's your turn");
+        assert_eq!(cond, Some(AbilityCondition::IsYourTurn { negated: true }),);
+        assert_eq!(text, "draw a card");
+    }
+
+    #[test]
+    fn strip_unless_you_control_a_creature() {
+        // "unless you control a creature" → Not(IsPresent) → ObjectCount EQ 0
+        let (cond, text) =
+            strip_unless_entered_suffix("sacrifice this enchantment unless you control a creature");
+        match cond {
+            Some(AbilityCondition::QuantityCheck {
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+                ..
+            }) => {}
+            other => panic!("expected ObjectCount EQ 0, got {:?}", other),
+        }
+        assert_eq!(text, "sacrifice this enchantment");
+    }
+
+    #[test]
+    fn strip_unless_unrecognized_returns_none() {
+        let (cond, text) =
+            strip_unless_entered_suffix("sacrifice it unless something weird happens");
+        assert!(cond.is_none());
+        assert_eq!(text, "sacrifice it unless something weird happens");
+    }
+
+    #[test]
     fn strip_numeric_target_prefix_two() {
         let result = strip_numeric_target_prefix("two target creatures");
         assert_eq!(result, Some((2, "target creatures")));
@@ -9143,11 +9415,107 @@ mod tests {
     }
 
     #[test]
-    fn strip_suffix_conditional_unparseable_returns_none() {
+    fn strip_suffix_conditional_parses_control_condition() {
         let (cond, text) =
             strip_suffix_conditional("sacrifice a creature if you control a creature");
+        assert!(
+            cond.is_some(),
+            "should now parse 'you control a creature' via nom bridge"
+        );
+        assert_eq!(text, "sacrifice a creature");
+        // Verify it produces QuantityCheck(ObjectCount >= 1)
+        match cond.unwrap() {
+            AbilityCondition::QuantityCheck {
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+                ..
+            } => {}
+            other => panic!("expected QuantityCheck(GE, 1), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn strip_suffix_conditional_unparseable_returns_none() {
+        // A condition the bridge cannot handle returns None.
+        let (cond, text) = strip_suffix_conditional("draw a card if the moon is full");
         assert!(cond.is_none());
-        assert_eq!(text, "sacrifice a creature if you control a creature");
+        assert_eq!(text, "draw a card if the moon is full");
+    }
+
+    // --- StaticCondition → AbilityCondition bridge tests ---
+
+    #[test]
+    fn bridge_during_your_turn() {
+        let result = try_nom_condition_as_ability_condition("it's your turn");
+        assert_eq!(
+            result,
+            Some(AbilityCondition::IsYourTurn { negated: false })
+        );
+    }
+
+    #[test]
+    fn bridge_not_your_turn() {
+        let result = try_nom_condition_as_ability_condition("it's not your turn");
+        assert_eq!(result, Some(AbilityCondition::IsYourTurn { negated: true }));
+    }
+
+    #[test]
+    fn bridge_life_total_comparison() {
+        let result = try_nom_condition_as_ability_condition("your life total is 5 or less");
+        match result {
+            Some(AbilityCondition::QuantityCheck {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::LifeTotal,
+                    },
+                comparator: Comparator::LE,
+                rhs: QuantityExpr::Fixed { value: 5 },
+            }) => {}
+            other => panic!("expected LifeTotal LE 5, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bridge_hand_size_zero() {
+        let result = try_nom_condition_as_ability_condition("you have no cards in hand");
+        match result {
+            Some(AbilityCondition::QuantityCheck {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::HandSize,
+                    },
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+            }) => {}
+            other => panic!("expected HandSize EQ 0, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bridge_you_control_artifact() {
+        let result = try_nom_condition_as_ability_condition("you control an artifact");
+        match result {
+            Some(AbilityCondition::QuantityCheck {
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+                ..
+            }) => {}
+            other => panic!("expected ObjectCount GE 1, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn bridge_unmapped_returns_none() {
+        // SourceIsTapped has no AbilityCondition equivalent.
+        let result = try_nom_condition_as_ability_condition("~ is tapped");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn bridge_partial_input_returns_none() {
+        // Partial match with leftover text should return None.
+        let result = try_nom_condition_as_ability_condition("it's your turn and stuff");
+        assert!(result.is_none());
     }
 
     #[test]

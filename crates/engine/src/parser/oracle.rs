@@ -1902,7 +1902,7 @@ const EFFECT_IMPERATIVE_PREFIXES: &[&str] = &[
 
 /// Prefix patterns for subject-led effect sentences.
 const EFFECT_SUBJECT_PREFIXES: &[&str] = &[
-    "all ", "if ", "it ", "target ", "that ", "they ", "this ", "those ", "you ",
+    "all ", "if ", "it ", "target ", "that ", "they ", "this ", "those ", "you ", "~ ",
 ];
 
 pub(super) fn is_effect_sentence_candidate(lower: &str) -> bool {

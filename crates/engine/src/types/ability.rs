@@ -1260,6 +1260,7 @@ pub enum Comparator {
     GE,
     LE,
     EQ,
+    NE,
 }
 
 impl Comparator {
@@ -1270,6 +1271,20 @@ impl Comparator {
             Comparator::GE => lhs >= rhs,
             Comparator::LE => lhs <= rhs,
             Comparator::EQ => lhs == rhs,
+            Comparator::NE => lhs != rhs,
+        }
+    }
+
+    /// Return the logical negation of this comparator.
+    /// Used when bridging `Not(QuantityComparison)` to `AbilityCondition::QuantityCheck`.
+    pub fn negate(self) -> Self {
+        match self {
+            Comparator::GT => Comparator::LE,
+            Comparator::LT => Comparator::GE,
+            Comparator::GE => Comparator::LT,
+            Comparator::LE => Comparator::GT,
+            Comparator::EQ => Comparator::NE,
+            Comparator::NE => Comparator::EQ,
         }
     }
 }

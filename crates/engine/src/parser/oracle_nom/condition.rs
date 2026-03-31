@@ -116,41 +116,70 @@ fn parse_cards_in_hand_ge(input: &str) -> OracleResult<'_, StaticCondition> {
 fn parse_control_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
     alt((
         // "you control a [type]" → IsPresent with filter
+        parse_you_control_a_type,
+        map(tag("you don't control a creature"), |_| {
+            StaticCondition::Not {
+                condition: Box::new(StaticCondition::IsPresent {
+                    filter: Some(you_control_typed(
+                        crate::types::ability::TypeFilter::Creature,
+                    )),
+                }),
+            }
+        }),
+    ))
+    .parse(input)
+}
+
+/// Parse "you control a/an [type]" patterns.
+fn parse_you_control_a_type(input: &str) -> OracleResult<'_, StaticCondition> {
+    use crate::types::ability::TypeFilter;
+    alt((
         map(tag("you control a creature"), |_| {
             StaticCondition::IsPresent {
-                filter: Some(crate::types::ability::TargetFilter::Typed(
-                    crate::types::ability::TypedFilter {
-                        type_filters: vec![crate::types::ability::TypeFilter::Creature],
-                        controller: Some(crate::types::ability::ControllerRef::You),
-                        properties: Vec::new(),
-                    },
-                )),
+                filter: Some(you_control_typed(TypeFilter::Creature)),
             }
         }),
         map(tag("you control an artifact"), |_| {
             StaticCondition::IsPresent {
-                filter: Some(crate::types::ability::TargetFilter::Typed(
-                    crate::types::ability::TypedFilter {
-                        type_filters: vec![crate::types::ability::TypeFilter::Artifact],
-                        controller: Some(crate::types::ability::ControllerRef::You),
-                        properties: Vec::new(),
-                    },
-                )),
+                filter: Some(you_control_typed(TypeFilter::Artifact)),
             }
         }),
         map(tag("you control an enchantment"), |_| {
             StaticCondition::IsPresent {
+                filter: Some(you_control_typed(TypeFilter::Enchantment)),
+            }
+        }),
+        map(tag("you control a planeswalker"), |_| {
+            StaticCondition::IsPresent {
+                filter: Some(you_control_typed(TypeFilter::Planeswalker)),
+            }
+        }),
+        map(tag("you control a legendary creature"), |_| {
+            StaticCondition::IsPresent {
                 filter: Some(crate::types::ability::TargetFilter::Typed(
                     crate::types::ability::TypedFilter {
-                        type_filters: vec![crate::types::ability::TypeFilter::Enchantment],
+                        type_filters: vec![TypeFilter::Creature],
                         controller: Some(crate::types::ability::ControllerRef::You),
-                        properties: Vec::new(),
+                        properties: vec![crate::types::ability::FilterProp::HasSupertype {
+                            value: crate::types::card_type::Supertype::Legendary,
+                        }],
                     },
                 )),
             }
         }),
     ))
     .parse(input)
+}
+
+/// Helper: build a TargetFilter for "you control a [type]".
+fn you_control_typed(
+    type_filter: crate::types::ability::TypeFilter,
+) -> crate::types::ability::TargetFilter {
+    crate::types::ability::TargetFilter::Typed(crate::types::ability::TypedFilter {
+        type_filters: vec![type_filter],
+        controller: Some(crate::types::ability::ControllerRef::You),
+        properties: Vec::new(),
+    })
 }
 
 /// Parse life-related conditions.
