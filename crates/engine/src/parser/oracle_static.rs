@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 use std::str::FromStr;
 
+use nom::bytes::complete::tag;
 use nom::Parser;
 
 use super::oracle_cost::parse_oracle_cost;
@@ -24,6 +25,28 @@ use crate::types::keywords::Keyword;
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::statics::{CastingProhibitionCondition, CastingProhibitionScope, StaticMode};
 use crate::types::zones::Zone;
+
+/// Try matching a nom `tag()` against the lowercase text, returning the remaining original-case
+/// text on success. This bridges nom's exact-match combinators with the TextPair dual-string
+/// pattern used throughout the parser.
+fn nom_tag_lower<'a>(text: &'a str, lower: &str, prefix: &str) -> Option<&'a str> {
+    tag::<_, _, nom_language::error::VerboseError<&str>>(prefix)
+        .parse(lower)
+        .ok()
+        .map(|(_, matched)| &text[matched.len()..])
+}
+
+/// Like `nom_tag_lower`, but operates on a `TextPair` and returns a new `TextPair`
+/// with both original and lowercase remainders advanced past the matched prefix.
+fn nom_tag_tp<'a>(tp: &TextPair<'a>, prefix: &str) -> Option<TextPair<'a>> {
+    tag::<_, _, nom_language::error::VerboseError<&str>>(prefix)
+        .parse(tp.lower)
+        .ok()
+        .map(|(rest_lower, matched)| {
+            let rest_original = &tp.original[matched.len()..];
+            TextPair::new(rest_original, rest_lower)
+        })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuleStaticPredicate {
@@ -62,7 +85,9 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         return Some(result);
     }
 
-    if tp.starts_with("you may choose not to untap ") && tp.contains(" during your untap step") {
+    if nom_tag_tp(&tp, "you may choose not to untap ").is_some()
+        && tp.lower.contains(" during your untap step")
+    {
         return Some(
             StaticDefinition::new(StaticMode::MayChooseNotToUntap)
                 .affected(TargetFilter::SelfRef)
@@ -72,14 +97,15 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- "Play with the top card of your library revealed" ---
     // CR 400.2: Continuous effect making top card public information.
-    if tp.contains("play with the top card") {
+    if tp.lower.contains("play with the top card") {
         if has_unconsumed_conditional(tp.lower) {
             tracing::warn!(
                 text = text,
                 "Unconsumed conditional in 'play with the top card' catch-all — parser may need extension"
             );
         } else {
-            let all_players = tp.contains("their libraries") || tp.contains("each player");
+            let all_players =
+                tp.lower.contains("their libraries") || tp.lower.contains("each player");
             return Some(
                 StaticDefinition::new(StaticMode::RevealTopOfLibrary { all_players })
                     .affected(TargetFilter::SelfRef)
@@ -90,11 +116,11 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- "You control enchanted creature/permanent/land/artifact" (Control Magic pattern) ---
     // CR 303.4e + CR 613.2: Aura-based continuous control-changing effects.
-    if let Some(type_word) = tp
-        .lower
-        .trim_end_matches('.')
-        .strip_prefix("you control enchanted ")
-    {
+    if let Some(type_word) = nom_tag_lower(
+        tp.lower.trim_end_matches('.'),
+        tp.lower.trim_end_matches('.'),
+        "you control enchanted ",
+    ) {
         let (type_filter, remainder) = parse_type_phrase(type_word);
         if remainder.is_empty() {
             if let TargetFilter::Typed(mut tf) = type_filter {
@@ -110,25 +136,25 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "Enchanted creature gets +N/+M" or "has {keyword}" ---
-    if tp.starts_with("enchanted creature ") {
+    if let Some(rest) = nom_tag_tp(&tp, "enchanted creature ") {
         let filter =
             TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::EnchantedBy]));
-        if let Some(def) = parse_enchanted_equipped_predicate(&text[19..], filter, &text) {
+        if let Some(def) = parse_enchanted_equipped_predicate(rest.original, filter, &text) {
             return Some(def);
         }
     }
 
     // --- "Enchanted permanent gets/has ..." ---
-    if tp.starts_with("enchanted permanent ") {
+    if let Some(rest) = nom_tag_tp(&tp, "enchanted permanent ") {
         let filter =
             TargetFilter::Typed(TypedFilter::permanent().properties(vec![FilterProp::EnchantedBy]));
-        if let Some(def) = parse_enchanted_equipped_predicate(&text[20..], filter, &text) {
+        if let Some(def) = parse_enchanted_equipped_predicate(rest.original, filter, &text) {
             return Some(def);
         }
     }
 
     // CR 305.7: "Enchanted land is a [type]" — must be before general "enchanted land" handler.
-    if let Some(rest) = tp.strip_prefix("enchanted land is a ") {
+    if let Some(rest) = nom_tag_tp(&tp, "enchanted land is a ") {
         let rest = rest.trim_end_matches('.');
         // "in addition to its other types" → AddSubtype (not replacement)
         if let Some(land_name) = rest.strip_suffix(" in addition to its other types") {
@@ -160,27 +186,27 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         }
     }
 
-    if tp.starts_with("enchanted land ") {
+    if let Some(rest) = nom_tag_tp(&tp, "enchanted land ") {
         let filter =
             TargetFilter::Typed(TypedFilter::land().properties(vec![FilterProp::EnchantedBy]));
-        if let Some(def) = parse_enchanted_equipped_predicate(&text[15..], filter, &text) {
+        if let Some(def) = parse_enchanted_equipped_predicate(rest.original, filter, &text) {
             return Some(def);
         }
     }
 
     // --- "Equipped creature gets +N/+M" ---
-    if tp.starts_with("equipped creature ") {
+    if let Some(rest) = nom_tag_tp(&tp, "equipped creature ") {
         let filter =
             TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::EquippedBy]));
-        if let Some(def) = parse_enchanted_equipped_predicate(&text[18..], filter, &text) {
+        if let Some(def) = parse_enchanted_equipped_predicate(rest.original, filter, &text) {
             return Some(def);
         }
     }
 
     // --- "All creatures get/have ..." ---
-    if tp.starts_with("all creatures ") {
+    if let Some(rest) = nom_tag_tp(&tp, "all creatures ") {
         if let Some(def) = parse_continuous_gets_has(
-            &text[14..],
+            rest.original,
             TargetFilter::Typed(TypedFilter::creature()),
             &text,
         ) {
@@ -205,8 +231,8 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     // --- "Creatures you control [with counter condition] get/have ..." ---
     // Must come BEFORE parse_typed_you_control to prevent core type words like
     // "Creatures" from falling through to the subtype path (A1 fix: 162+ cards).
-    if tp.starts_with("creatures you control ") {
-        let after_prefix = &text[22..];
+    if let Some(rest_tp) = nom_tag_tp(&tp, "creatures you control ") {
+        let after_prefix = rest_tp.original;
         let (filter, predicate_text) =
             if let Some((prop, rest)) = strip_counter_condition_prefix(after_prefix) {
                 (
@@ -230,8 +256,8 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- "Other creatures you control [with counter condition] get/have ..." ---
     // CR 613.7: "Other" excludes the source permanent itself via FilterProp::Another.
-    if tp.starts_with("other creatures you control ") {
-        let after_prefix = &text[28..];
+    if let Some(rest_tp) = nom_tag_tp(&tp, "other creatures you control ") {
+        let after_prefix = rest_tp.original;
         let (filter, predicate_text) =
             if let Some((prop, rest)) = strip_counter_condition_prefix(after_prefix) {
                 (
@@ -259,8 +285,8 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- "Other [Subtype] creatures you control get/have..." ---
     // e.g. "Other Zombies you control get +1/+1"
-    if let Some(rest) = tp.lower.strip_prefix("other ") {
-        if let Some(result) = parse_typed_you_control(&tp.original[6..], rest, true) {
+    if let Some(rest_tp) = nom_tag_tp(&tp, "other ") {
+        if let Some(result) = parse_typed_you_control(rest_tp.original, rest_tp.lower, true) {
             return Some(result);
         }
     }
@@ -268,7 +294,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     // --- "[Subtype] creatures you control get/have..." ---
     // e.g. "Elf creatures you control get +1/+1"
     // Skip for "other" prefix — already handled above with is_other=true.
-    if !tp.starts_with("other ") {
+    if nom_tag_tp(&tp, "other ").is_none() {
         if let Some(result) = parse_typed_you_control(tp.original, tp.lower, false) {
             return Some(result);
         }
@@ -286,8 +312,9 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "Lands you control have '[type]'" ---
-    if tp.starts_with("lands you control have ") {
-        let rest = text[23..]
+    if let Some(rest_tp) = nom_tag_tp(&tp, "lands you control have ") {
+        let rest_cleaned = rest_tp
+            .original
             .trim()
             .trim_end_matches('.')
             .trim_matches(|c: char| c == '\'' || c == '"');
@@ -297,7 +324,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
                     TypedFilter::land().controller(ControllerRef::You),
                 ))
                 .modifications(vec![ContinuousModification::AddSubtype {
-                    subtype: rest.to_string(),
+                    subtype: rest_cleaned.to_string(),
                 }])
                 .description(text.to_string()),
         );
@@ -311,12 +338,12 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- "During your turn, [subject] has/gets ..." ---
     // --- "During turns other than yours, [subject] has/gets ..." ---
-    let (turn_rest, turn_condition) =
-        if let Some(rest) = tp.lower.strip_prefix("during your turn, ") {
-            (Some(rest), Some(StaticCondition::DuringYourTurn))
-        } else if let Some(rest) = tp.lower.strip_prefix("during turns other than yours, ") {
+    let (turn_rest_tp, turn_condition) =
+        if let Some(rest_tp) = nom_tag_tp(&tp, "during your turn, ") {
+            (Some(rest_tp), Some(StaticCondition::DuringYourTurn))
+        } else if let Some(rest_tp) = nom_tag_tp(&tp, "during turns other than yours, ") {
             (
-                Some(rest),
+                Some(rest_tp),
                 Some(StaticCondition::Not {
                     condition: Box::new(StaticCondition::DuringYourTurn),
                 }),
@@ -324,12 +351,10 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         } else {
             (None, None)
         };
-    if let (Some(rest), Some(condition)) = (turn_rest, turn_condition) {
-        let prefix_len = tp.lower.len() - rest.len();
-        let original_rest = &text[prefix_len..];
-        if let Some(subject_end) = find_continuous_predicate_start(rest) {
-            let subject = original_rest[..subject_end].trim();
-            let predicate = original_rest[subject_end + 1..].trim();
+    if let (Some(rest_tp), Some(condition)) = (turn_rest_tp, turn_condition) {
+        if let Some(subject_end) = find_continuous_predicate_start(rest_tp.lower) {
+            let subject = rest_tp.original[..subject_end].trim();
+            let predicate = rest_tp.original[subject_end + 1..].trim();
             if let Some(affected) = parse_continuous_subject_filter(subject) {
                 let modifications = parse_continuous_modifications(predicate);
                 if !modifications.is_empty() {
@@ -351,8 +376,10 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- "~ is the chosen type in addition to its other types" ---
     // Distinguish creature type (Metallic Mimic) vs basic land type (Multiversal Passage)
-    if tp.contains("is the chosen type") {
-        let kind = if tp.starts_with("this creature") || tp.contains("creature is the chosen") {
+    if tp.lower.contains("is the chosen type") {
+        let kind = if nom_tag_tp(&tp, "this creature").is_some()
+            || tp.lower.contains("creature is the chosen")
+        {
             ChosenSubtypeKind::CreatureType
         } else {
             ChosenSubtypeKind::BasicLandType
@@ -409,32 +436,25 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         .or_else(|| tp.find(" gets "))
         .or_else(|| tp.find(" get "))
     {
-        let verb_len = if tp.lower[pos..].starts_with(" has ") {
-            5
-        } else if tp.lower[pos..].starts_with(" gets ") {
-            6
+        let verb_slice = &tp.lower[pos..];
+        let (verb_len, verb_prefix) = if nom_tag_lower(verb_slice, verb_slice, " has ").is_some() {
+            (5, "has ")
+        } else if nom_tag_lower(verb_slice, verb_slice, " gets ").is_some() {
+            (6, "gets ")
         } else {
-            5 // " get "
+            (5, "gets ") // " get " maps to "gets " for continuous parsing
         };
         let subject = &tp.lower[..pos];
         // Only match if the subject doesn't look like a known prefix we handle elsewhere
         if !subject.contains("creature")
             && !subject.contains("permanent")
             && !subject.contains("land")
-            && !subject.starts_with("all ")
-            && !subject.starts_with("other ")
+            && nom_tag_lower(subject, subject, "all ").is_none()
+            && nom_tag_lower(subject, subject, "other ").is_none()
         {
             let after = &tp.original[pos + verb_len..];
             return parse_continuous_gets_has(
-                &format!(
-                    "{}{}",
-                    if tp.lower[pos..].starts_with(" has ") {
-                        "has "
-                    } else {
-                        "gets "
-                    },
-                    after
-                ),
+                &format!("{}{}", verb_prefix, after),
                 TargetFilter::SelfRef,
                 tp.original,
             );
@@ -465,7 +485,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "~ can't be blocked" ---
-    if tp.contains("can't be blocked") {
+    if tp.lower.contains("can't be blocked") {
         // Guard: "can't be blocked except by..." requires a more specific handler
         if has_unconsumed_conditional(tp.lower) || tp.lower.contains("except by") {
             tracing::warn!(
@@ -483,7 +503,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "~ can't block" ---
-    if tp.contains("can't block") && !tp.contains("can't be blocked") {
+    if tp.lower.contains("can't block") && !tp.lower.contains("can't be blocked") {
         let mut def = StaticDefinition::new(StaticMode::CantBlock)
             .affected(TargetFilter::SelfRef)
             .description(text.to_string());
@@ -494,8 +514,8 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "~ can't attack" ---
-    if tp.contains("can't attack") {
-        let mode = if tp.contains("can't attack or block") {
+    if tp.lower.contains("can't attack") {
+        let mode = if tp.lower.contains("can't attack or block") {
             StaticMode::CantAttackOrBlock
         } else {
             StaticMode::CantAttack
@@ -511,7 +531,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- "can't be countered" ---
     // CR 101.2: "Can't" effects override "can" effects.
-    if tp.contains("can't be countered") {
+    if tp.lower.contains("can't be countered") {
         if has_unconsumed_conditional(tp.lower) {
             tracing::warn!(
                 text = text,
@@ -528,7 +548,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "~ can't be the target" or "~ can't be targeted" ---
-    if tp.contains("can't be the target") || tp.contains("can't be targeted") {
+    if tp.lower.contains("can't be the target") || tp.lower.contains("can't be targeted") {
         return Some(
             StaticDefinition::new(StaticMode::CantBeTargeted)
                 .affected(TargetFilter::SelfRef)
@@ -537,7 +557,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "~ can't be sacrificed" ---
-    if tp.contains("can't be sacrificed") {
+    if tp.lower.contains("can't be sacrificed") {
         return Some(
             StaticDefinition::continuous()
                 .affected(TargetFilter::SelfRef)
@@ -547,7 +567,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- CR 604.3: "[type] cards in [zones] can't enter the battlefield" ---
     // e.g., Grafdigger's Cage: "Creature cards in graveyards and libraries can't enter the battlefield."
-    if tp.contains("can't enter the battlefield") {
+    if tp.lower.contains("can't enter the battlefield") {
         let affected = parse_cant_enter_battlefield_subject(&tp);
         return Some(
             StaticDefinition::new(StaticMode::CantEnterBattlefieldFrom)
@@ -571,7 +591,8 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     // and BEFORE the generic CantCastDuring block (which matches "can't cast spells during").
     // Guard: exclude compound lines containing "each turn" — those are split at the oracle.rs level
     // so both CantCastDuring and PerTurnCastLimit are emitted independently.
-    if tp.contains("can cast spells only during your turn") && !tp.contains("each turn") {
+    if tp.lower.contains("can cast spells only during your turn") && !tp.lower.contains("each turn")
+    {
         let who = strip_casting_prohibition_subject(tp.lower)
             .map(|(scope, _)| scope)
             .unwrap_or(CastingProhibitionScope::Controller);
@@ -588,13 +609,13 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     // e.g., Teferi, Time Raveler: "Your opponents can't cast spells during your turn."
     // e.g., "Players can't cast spells during combat."
     // Must be checked before CantCastFrom to avoid false matches on "can't cast spells".
-    if tp.contains("can't cast spells during") {
+    if tp.lower.contains("can't cast spells during") {
         let who = strip_casting_prohibition_subject(tp.lower)
             .map(|(scope, _)| scope)
             .unwrap_or(CastingProhibitionScope::AllPlayers);
-        let when = if tp.contains("during your turn") {
+        let when = if tp.lower.contains("during your turn") {
             CastingProhibitionCondition::DuringYourTurn
-        } else if tp.contains("during combat") {
+        } else if tp.lower.contains("during combat") {
             CastingProhibitionCondition::DuringCombat
         } else {
             // Fallback: treat unknown conditions as combat-scoped
@@ -608,7 +629,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- CR 604.3: "Players can't cast spells from [zones]" ---
     // e.g., Grafdigger's Cage: "Players can't cast spells from graveyards or libraries."
-    if tp.contains("can't cast spells from") {
+    if tp.lower.contains("can't cast spells from") {
         let zones = parse_zone_names_from_tp(&tp);
         let affected = if zones.is_empty() {
             TargetFilter::Any
@@ -627,7 +648,8 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- "~ doesn't untap during your untap step [as long as / if condition]" ---
     // CR 502.3: Effects can keep permanents from untapping during the untap step.
-    if tp.contains("doesn't untap during") || tp.contains("doesn\u{2019}t untap during") {
+    if tp.lower.contains("doesn't untap during") || tp.lower.contains("doesn\u{2019}t untap during")
+    {
         // Check for trailing condition after the untap-step phrase
         let condition = extract_cant_untap_condition(tp.lower);
         let mut def = StaticDefinition::new(StaticMode::CantUntap)
@@ -640,7 +662,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "You may look at the top card of your library any time." ---
-    if tp.starts_with("you may look at the top card of your library") {
+    if nom_tag_tp(&tp, "you may look at the top card of your library").is_some() {
         return Some(
             StaticDefinition::new(StaticMode::MayLookAtTopOfLibrary)
                 .affected(TargetFilter::Typed(
@@ -655,7 +677,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- "{Ability} abilities you activate cost {N} less to activate" ---
     // CR 601.2f: Ability-type-specific cost reduction (e.g., Silver-Fur Master, Fluctuator).
-    if tp.contains("abilities you activate cost") && tp.contains("less to activate") {
+    if tp.lower.contains("abilities you activate cost") && tp.lower.contains("less to activate") {
         // Extract keyword name: text before " abilities you activate"
         let keyword = tp
             .lower
@@ -688,14 +710,17 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     // --- CR 601.2f: Cost modification statics ---
     // Patterns: "[Type] spells [you/your opponents] cast cost {N} less/more to cast"
     // Also: "Noncreature spells cost {1} more to cast" (Thalia, no "you cast")
-    if tp.contains("cost") && tp.contains("spell") && (tp.contains("less") || tp.contains("more")) {
+    if tp.lower.contains("cost")
+        && tp.lower.contains("spell")
+        && (tp.lower.contains("less") || tp.lower.contains("more"))
+    {
         if let Some(def) = try_parse_cost_modification(&text, &lower) {
             return Some(def);
         }
     }
 
     // --- "must be blocked if able" (CR 509.1b) ---
-    if tp.contains("must be blocked") {
+    if tp.lower.contains("must be blocked") {
         return Some(
             StaticDefinition::new(StaticMode::MustBeBlocked)
                 .affected(TargetFilter::SelfRef)
@@ -704,15 +729,8 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "can't gain life" (CR 119.7) ---
-    if tp.contains("can't gain life") {
-        let affected = if tp.contains("your opponents") || tp.starts_with("opponents") {
-            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent))
-        } else if tp.starts_with("you ") || tp.contains("you can't") {
-            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You))
-        } else {
-            // "Players can't gain life" — affects all
-            TargetFilter::Typed(TypedFilter::default())
-        };
+    if tp.lower.contains("can't gain life") {
+        let affected = parse_player_scope_filter(&tp);
         return Some(
             StaticDefinition::new(StaticMode::CantGainLife)
                 .affected(affected)
@@ -721,28 +739,16 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "can't win the game" / "can't lose the game" (CR 104.3a/b) ---
-    if tp.contains("can't win the game") {
-        let affected = if tp.contains("your opponents") || tp.starts_with("opponents") {
-            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent))
-        } else if tp.starts_with("you ") || tp.contains("you can't") {
-            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You))
-        } else {
-            TargetFilter::Typed(TypedFilter::default())
-        };
+    if tp.lower.contains("can't win the game") {
+        let affected = parse_player_scope_filter(&tp);
         return Some(
             StaticDefinition::new(StaticMode::CantWinTheGame)
                 .affected(affected)
                 .description(text.to_string()),
         );
     }
-    if tp.contains("can't lose the game") {
-        let affected = if tp.contains("your opponents") || tp.starts_with("opponents") {
-            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent))
-        } else if tp.starts_with("you ") || tp.contains("you can't") {
-            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You))
-        } else {
-            TargetFilter::Typed(TypedFilter::default())
-        };
+    if tp.lower.contains("can't lose the game") {
+        let affected = parse_player_scope_filter(&tp);
         return Some(
             StaticDefinition::new(StaticMode::CantLoseTheGame)
                 .affected(affected)
@@ -751,21 +757,22 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "as though it/they had flash" (CR 702.8d) ---
-    if tp.contains("as though it had flash") || tp.contains("as though they had flash") {
+    if tp.lower.contains("as though it had flash") || tp.lower.contains("as though they had flash")
+    {
         return Some(
             StaticDefinition::new(StaticMode::CastWithFlash).description(text.to_string()),
         );
     }
 
     // --- "can block an additional creature" / "can block any number" (CR 509.1b) ---
-    if tp.contains("can block any number") {
+    if tp.lower.contains("can block any number") {
         return Some(
             StaticDefinition::new(StaticMode::ExtraBlockers { count: None })
                 .affected(TargetFilter::SelfRef)
                 .description(text.to_string()),
         );
     }
-    if tp.contains("can block an additional") {
+    if tp.lower.contains("can block an additional") {
         return Some(
             StaticDefinition::new(StaticMode::ExtraBlockers { count: Some(1) })
                 .affected(TargetFilter::SelfRef)
@@ -775,13 +782,13 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
 
     // --- "play an additional land" / "play two additional lands" ---
     // CR 305.2: Determine the count at parse time and carry it as typed data.
-    if tp.contains("play two additional lands") {
+    if tp.lower.contains("play two additional lands") {
         return Some(
             StaticDefinition::new(StaticMode::AdditionalLandDrop { count: 2 })
                 .description(text.to_string()),
         );
     }
-    if tp.contains("play an additional land") {
+    if tp.lower.contains("play an additional land") {
         return Some(
             StaticDefinition::new(StaticMode::AdditionalLandDrop { count: 1 })
                 .description(text.to_string()),
@@ -789,12 +796,8 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     }
 
     // --- "As long as ..." (generic conditional static, no comma separator) ---
-    if tp.starts_with("as long as ") {
-        let condition_text = tp
-            .original
-            .strip_prefix("As long as ")
-            .unwrap_or(tp.original)
-            .trim_end_matches('.');
+    if let Some(rest_tp) = nom_tag_tp(&tp, "as long as ") {
+        let condition_text = rest_tp.original.trim_end_matches('.');
         return Some(
             StaticDefinition::continuous()
                 .affected(TargetFilter::SelfRef)
@@ -810,7 +813,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     //   of a permanent you control to trigger, that ability triggers an additional time."
     // Roaming Throne: "If a triggered ability of another creature you control of the chosen
     //   type triggers, it triggers an additional time."
-    if tp.contains("triggers an additional time") {
+    if tp.lower.contains("triggers an additional time") {
         return Some(
             StaticDefinition::new(StaticMode::Panharmonicon).description(text.to_string()),
         );
@@ -1049,7 +1052,7 @@ fn parse_typed_you_control(text: &str, lower: &str, is_other: bool) -> Option<St
 /// - "each creature you control with defender assigns combat damage equal to its toughness..."
 /// - "each creature you control with toughness greater than its power assigns combat damage..."
 fn parse_assigns_damage_from_toughness(lower: &str, text: &str) -> Option<StaticDefinition> {
-    let rest = lower.strip_prefix("each creature you control ")?;
+    let rest = nom_tag_lower(lower, lower, "each creature you control ")?;
 
     let suffix = "assigns combat damage equal to its toughness rather than its power";
     let suffix_alt = "assign combat damage equal to their toughness rather than their power";
@@ -1068,7 +1071,7 @@ fn parse_assigns_damage_from_toughness(lower: &str, text: &str) -> Option<Static
 
     if !condition_text.is_empty() {
         // Parse "with [condition]" clause
-        let with_clause = condition_text.strip_prefix("with ")?;
+        let with_clause = nom_tag_lower(condition_text, condition_text, "with ")?;
         let with_clause = with_clause.trim();
 
         if with_clause == "toughness greater than its power" {
@@ -1144,14 +1147,16 @@ fn parse_subject_continuous_static(text: &str) -> Option<StaticDefinition> {
 /// Produces `StaticCondition::And { DuringYourTurn, HasCounters { .. } }` with
 /// `ContinuousModification` list for type/subtype/P-T/keyword changes.
 fn parse_compound_turn_counter_animation(lower: &str, text: &str) -> Option<StaticDefinition> {
-    // Strip "during your turn, " prefix
-    let rest = lower.strip_prefix("during your turn, ")?;
+    // Strip "during your turn, " prefix via nom tag
+    let (rest, _) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("during your turn, ")(lower).ok()?;
 
     // Strip "as long as " prefix from the remainder
-    let rest = rest.strip_prefix("as long as ")?;
+    let (rest, _) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("as long as ")(rest).ok()?;
 
     // Parse "~ has one or more [type] counters on [pronoun], "
-    let rest = rest.strip_prefix("~ has ")?;
+    let (rest, _) = tag::<_, _, nom_language::error::VerboseError<&str>>("~ has ")(rest).ok()?;
 
     // Parse the counter count requirement: "one or more" / "N or more" / "a"
     let (minimum, rest) = parse_counter_minimum(rest)?;
@@ -1191,16 +1196,16 @@ fn parse_compound_turn_counter_animation(lower: &str, text: &str) -> Option<Stat
 /// Parse "one or more" / "N or more" / "a" into a counter minimum count.
 /// Returns (minimum, remaining text).
 fn parse_counter_minimum(text: &str) -> Option<(u32, &str)> {
-    if let Some(rest) = text.strip_prefix("one or more ") {
+    if let Some(rest) = nom_tag_lower(text, text, "one or more ") {
         return Some((1, rest));
     }
-    if let Some(rest) = text.strip_prefix("a ") {
+    if let Some(rest) = nom_tag_lower(text, text, "a ") {
         return Some((1, rest));
     }
     // "N or more" pattern
     if let Some((n, rest)) = parse_number(text) {
         let rest = rest.trim_start();
-        if let Some(rest) = rest.strip_prefix("or more ") {
+        if let Some(rest) = nom_tag_lower(rest, rest, "or more ") {
             return Some((n, rest));
         }
     }
@@ -1217,12 +1222,11 @@ fn parse_animation_modifications(text: &str) -> Vec<ContinuousModification> {
     let tp = TextPair::new(text, &lower);
     let mut modifications = Vec::new();
 
-    // Strip pronoun prefix: "he's a", "she's a", "it's a", "~'s a"
-    let body = tp
-        .strip_prefix("he's a ")
-        .or_else(|| tp.strip_prefix("she's a "))
-        .or_else(|| tp.strip_prefix("it's a "))
-        .or_else(|| tp.strip_prefix("~'s a "));
+    // Strip pronoun prefix via nom tag: "he's a", "she's a", "it's a", "~'s a"
+    let body = nom_tag_lower(tp.original, tp.lower, "he's a ")
+        .or_else(|| nom_tag_lower(tp.original, tp.lower, "she's a "))
+        .or_else(|| nom_tag_lower(tp.original, tp.lower, "it's a "))
+        .or_else(|| nom_tag_lower(tp.original, tp.lower, "~'s a "));
 
     let body = match body {
         Some(b) => b.trim_start(),
@@ -1230,12 +1234,13 @@ fn parse_animation_modifications(text: &str) -> Vec<ContinuousModification> {
     };
 
     // Split on " and has " or " with " to separate type/PT from keywords
-    let (type_pt_part, keyword_part) = if let Some(pos) = body.find(" and has ") {
-        (&body.original[..pos], Some(&body.original[pos + 9..]))
-    } else if let Some(pos) = body.find(" with ") {
-        (&body.original[..pos], Some(&body.original[pos + 6..]))
+    let body_lower = body.to_lowercase();
+    let (type_pt_part, keyword_part) = if let Some(pos) = body_lower.find(" and has ") {
+        (&body[..pos], Some(&body[pos + 9..]))
+    } else if let Some(pos) = body_lower.find(" with ") {
+        (&body[..pos], Some(&body[pos + 6..]))
     } else {
-        (body.original, None)
+        (body, None)
     };
 
     // Parse P/T from the beginning: "3/4 ninja creature"
@@ -1306,10 +1311,9 @@ fn parse_conditional_static(text: &str) -> Option<StaticDefinition> {
 /// CR 113.6b: Parse "~ is in your graveyard" / "this card is in your graveyard" /
 /// "~ is in your hand" → `SourceInZone { zone }`.
 fn parse_source_in_zone_condition(lower: &str) -> Option<StaticCondition> {
-    // Strip self-reference prefix: "~ is in your " or "this card is in your "
-    let after = lower
-        .strip_prefix("~ is in your ")
-        .or_else(|| lower.strip_prefix("this card is in your "))?;
+    // Strip self-reference prefix via nom tag: "~ is in your " or "this card is in your "
+    let after = nom_tag_lower(lower, lower, "~ is in your ")
+        .or_else(|| nom_tag_lower(lower, lower, "this card is in your "))?;
 
     let zone = match after.trim_end_matches('.').trim() {
         "graveyard" => Zone::Graveyard,
@@ -1375,9 +1379,7 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
     }
 
     // "you have at least N life more than your starting life total"
-    if let Some(amount_text) = tp
-        .lower
-        .strip_prefix("you have at least ")
+    if let Some(amount_text) = nom_tag_lower(tp.lower, tp.lower, "you have at least ")
         .and_then(|s| s.strip_suffix(" life more than your starting life total"))
     {
         let (amount, rest) = parse_number(amount_text)?;
@@ -1407,7 +1409,7 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
             condition: Box::new(StaticCondition::HasMaxSpeed),
         });
     }
-    if let Some(speed_text) = tp.lower.strip_prefix("your speed is ") {
+    if let Some(speed_text) = nom_tag_lower(tp.lower, tp.lower, "your speed is ") {
         if let Some(number_text) = speed_text.strip_suffix(" or higher") {
             if let Some((threshold, remainder)) = parse_number(number_text) {
                 if remainder.trim().is_empty() {
@@ -1451,7 +1453,7 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
     }
 
     // CR 400.7: "this aura/permanent entered this turn" → SourceEnteredThisTurn
-    if let Some(rest) = tp.lower.strip_prefix("this ") {
+    if let Some(rest) = nom_tag_lower(tp.lower, tp.lower, "this ") {
         if rest.ends_with(" entered this turn") || rest == "entered this turn" {
             return Some(StaticCondition::SourceEnteredThisTurn);
         }
@@ -1488,7 +1490,7 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
     }
 
     // "you have N or more life" → QuantityComparison(LifeTotal >= N)
-    if let Some(rest) = tp.lower.strip_prefix("you have ") {
+    if let Some(rest) = nom_tag_lower(tp.lower, tp.lower, "you have ") {
         if let Some(life_text) = rest.strip_suffix(" or more life") {
             if let Some((n, remainder)) = parse_number(life_text) {
                 if remainder.trim().is_empty() {
@@ -1508,7 +1510,8 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
     // Also handles "this creature is untapped", "this permanent is untapped"
     {
         let is_untapped_self_ref = tp.lower.ends_with("is untapped")
-            && (tp.lower.starts_with("~ ") || tp.lower.contains(" is untapped"));
+            && (nom_tag_lower(tp.lower, tp.lower, "~ ").is_some()
+                || tp.lower.contains(" is untapped"));
         if is_untapped_self_ref {
             return Some(StaticCondition::Not {
                 condition: Box::new(StaticCondition::SourceIsTapped),
@@ -1518,13 +1521,13 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
 
     // CR 611.2b: "~ is tapped" → SourceIsTapped (direct, no negation needed)
     if tp.lower.ends_with("is tapped")
-        && (tp.lower.starts_with("~ ") || tp.lower.contains(" is tapped"))
+        && (nom_tag_lower(tp.lower, tp.lower, "~ ").is_some() || tp.lower.contains(" is tapped"))
     {
         return Some(StaticCondition::SourceIsTapped);
     }
 
     // "the chosen color is [color]"
-    if let Some(color_name) = tp.lower.strip_prefix("the chosen color is ") {
+    if let Some(color_name) = nom_tag_lower(tp.lower, tp.lower, "the chosen color is ") {
         let trimmed = color_name.trim().trim_end_matches('.');
         if let Ok((rest, color)) = nom_primitives::parse_color.parse(trimmed) {
             if rest.is_empty() {
@@ -1543,7 +1546,7 @@ fn parse_unless_static_condition(tp: &TextPair<'_>) -> Option<StaticCondition> {
 
 /// Parse "your devotion to [color(s)] is less than N" or "is N or greater".
 fn parse_devotion_condition(lower: &str) -> Option<StaticCondition> {
-    let rest = lower.strip_prefix("your devotion to ")?;
+    let rest = nom_tag_lower(lower, lower, "your devotion to ")?;
 
     // Split at " is " to get colors and comparison
     let (color_text, comparison) = rest.split_once(" is ")?;
@@ -1553,7 +1556,7 @@ fn parse_devotion_condition(lower: &str) -> Option<StaticCondition> {
 
     // Parse comparison: "less than N" or "N or greater"
     // CR 110.4b: "less than N" means NOT (devotion >= N), "N or greater" means devotion >= N.
-    if let Some(n_text) = comparison.strip_prefix("less than ") {
+    if let Some(n_text) = nom_tag_lower(comparison, comparison, "less than ") {
         let threshold = parse_number(n_text.trim())?.0;
         return Some(StaticCondition::Not {
             condition: Box::new(StaticCondition::DevotionGE { colors, threshold }),
@@ -1570,9 +1573,8 @@ fn parse_devotion_condition(lower: &str) -> Option<StaticCondition> {
 
 /// Parse "you control a/an [type/subtype]" into IsPresent.
 fn parse_control_presence_condition(lower: &str) -> Option<StaticCondition> {
-    let rest = lower
-        .strip_prefix("you control a ")
-        .or_else(|| lower.strip_prefix("you control an "))?;
+    let rest = nom_tag_lower(lower, lower, "you control a ")
+        .or_else(|| nom_tag_lower(lower, lower, "you control an "))?;
 
     // Try to parse the rest as a type phrase
     let filter = parse_presence_filter(rest)?;
@@ -1599,7 +1601,7 @@ fn parse_presence_filter(text: &str) -> Option<TypedFilter> {
 
     // "creature with power N or greater/less/more"
     // Reuses parse_number so both digits and words ("four") are handled.
-    if let Some(rest) = trimmed.strip_prefix("creature with power ") {
+    if let Some(rest) = nom_tag_lower(trimmed, trimmed, "creature with power ") {
         let (n, remainder) = parse_number(rest)?;
         let prop = match remainder.trim() {
             "or greater" | "or more" => FilterProp::PowerGE { value: n as i32 },
@@ -1671,7 +1673,7 @@ fn parse_color_list(text: &str) -> Option<Vec<crate::types::mana::ManaColor>> {
 
 /// Parse "the number of [quantity] is [comparator] [quantity]" into a QuantityComparison.
 fn parse_quantity_comparison(lower: &str) -> Option<StaticCondition> {
-    let rest = lower.strip_prefix("the number of ")?;
+    let rest = nom_tag_lower(lower, lower, "the number of ")?;
     let (lhs_text, comparison) = rest.split_once(" is ")?;
     let lhs = parse_quantity_ref(lhs_text)?;
     let (comparator, rhs_text) = parse_comparator_prefix(comparison)?;
@@ -1687,7 +1689,7 @@ fn parse_quantity_comparison(lower: &str) -> Option<StaticCondition> {
 /// Covers: threshold ("seven or more cards"), delirium ("four or more card types"),
 /// and "permanent cards in your graveyard".
 fn parse_graveyard_threshold_condition(lower: &str) -> Option<StaticCondition> {
-    let rest = lower.strip_prefix("there are ")?;
+    let rest = nom_tag_lower(lower, lower, "there are ")?;
     // "four or more card types among cards in your graveyard" (delirium)
     if rest.contains("card types among cards in your graveyard") {
         let (n, _) = parse_number(rest)?;
@@ -1717,10 +1719,10 @@ fn parse_graveyard_threshold_condition(lower: &str) -> Option<StaticCondition> {
 
 /// Parse "you control N or more [type]" → QuantityComparison(ObjectCount >= N).
 fn parse_controls_n_or_more_condition(lower: &str) -> Option<StaticCondition> {
-    let rest = lower.strip_prefix("you control ")?;
+    let rest = nom_tag_lower(lower, lower, "you control ")?;
     let (n, after_n) = parse_number(rest)?;
     let after_n = after_n.trim();
-    let type_text = after_n.strip_prefix("or more ")?;
+    let type_text = nom_tag_lower(after_n, after_n, "or more ")?;
     let type_text = type_text.trim_end_matches('.');
     let (filter, remainder) = parse_type_phrase(type_text);
     if !remainder.trim().is_empty() || matches!(filter, TargetFilter::Any) {
@@ -1745,7 +1747,7 @@ fn parse_entered_this_turn_condition(lower: &str) -> Option<StaticCondition> {
     // "[two/three/N] or more [nonland permanents/creatures/etc.] entered the battlefield under your control this turn"
     let (n, after_n) = parse_number(lower)?;
     let rest = after_n.trim();
-    let rest = rest.strip_prefix("or more ")?;
+    let rest = nom_tag_lower(rest, rest, "or more ")?;
     if rest.contains("entered the battlefield under your control this turn") {
         let type_text = rest.split(" entered the battlefield").next()?.trim();
         let (filter, _) = parse_type_phrase(type_text);
@@ -1766,9 +1768,7 @@ fn parse_entered_this_turn_condition(lower: &str) -> Option<StaticCondition> {
 
 /// Parse "an [type] entered the battlefield under your control this turn".
 fn parse_single_entered_this_turn_condition(lower: &str) -> Option<StaticCondition> {
-    let rest = lower
-        .strip_prefix("a ")
-        .or_else(|| lower.strip_prefix("an "))?;
+    let rest = nom_tag_lower(lower, lower, "a ").or_else(|| nom_tag_lower(lower, lower, "an "))?;
     if !rest.contains("entered the battlefield under your control this turn") {
         return None;
     }
@@ -1789,9 +1789,9 @@ fn parse_single_entered_this_turn_condition(lower: &str) -> Option<StaticConditi
 
 /// Parse "you've committed a crime this turn" / "you've gained life this turn".
 fn parse_youve_this_turn_condition(lower: &str) -> Option<StaticCondition> {
-    let rest = lower.strip_prefix("you've ")?;
+    let rest = nom_tag_lower(lower, lower, "you've ")?;
     // "committed a crime this turn"
-    if rest.starts_with("committed a crime this turn") {
+    if nom_tag_lower(rest, rest, "committed a crime this turn").is_some() {
         return Some(StaticCondition::QuantityComparison {
             lhs: QuantityExpr::Ref {
                 qty: QuantityRef::CrimesCommittedThisTurn,
@@ -1801,7 +1801,7 @@ fn parse_youve_this_turn_condition(lower: &str) -> Option<StaticCondition> {
         });
     }
     // "gained life this turn"
-    if rest.starts_with("gained life this turn") {
+    if nom_tag_lower(rest, rest, "gained life this turn").is_some() {
         return Some(StaticCondition::QuantityComparison {
             lhs: QuantityExpr::Ref {
                 qty: QuantityRef::LifeGainedThisTurn,
@@ -1829,13 +1829,12 @@ fn parse_continuous_subject_filter(subject: &str) -> Option<TargetFilter> {
 
     // Strip "Each " prefix — "Each creature you control" is semantically identical to
     // "Creatures you control" for filter purposes.
-    if tp.starts_with("each ") {
-        return parse_continuous_subject_filter(tp.original[5..].trim());
+    if let Some(rest_tp) = nom_tag_tp(&tp, "each ") {
+        return parse_continuous_subject_filter(rest_tp.original.trim());
     }
 
-    if tp.starts_with("other ") {
-        let original_rest = tp.original[6..].trim();
-        return parse_continuous_subject_filter(original_rest).map(add_another_filter);
+    if let Some(rest_tp) = nom_tag_tp(&tp, "other ") {
+        return parse_continuous_subject_filter(rest_tp.original.trim()).map(add_another_filter);
     }
 
     if let Some(filter) = parse_modified_creature_subject_filter(trimmed) {
@@ -1854,9 +1853,7 @@ fn parse_continuous_subject_filter(subject: &str) -> Option<TargetFilter> {
 /// CR 613.1 + CR 613.7: Used to parse conditional static keyword grants in layer 6.
 fn strip_counter_condition_prefix(text: &str) -> Option<(FilterProp, &str)> {
     let lower = text.to_lowercase();
-    if !lower.starts_with("with ") {
-        return None;
-    }
+    nom_tag_lower(&lower, &lower, "with ")?;
     // parse_counter_suffix expects optional leading whitespace before "with"
     let (prop, consumed) = parse_counter_suffix(&lower)?;
     Some((prop, text[consumed..].trim_start()))
@@ -2057,10 +2054,10 @@ fn parse_rule_static_predicate(text: &str) -> Option<RuleStaticPredicate> {
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
 
-    if tp.starts_with("doesn't untap during")
-        || tp.starts_with("doesn\u{2019}t untap during")
-        || tp.starts_with("don't untap during")
-        || tp.starts_with("don\u{2019}t untap during")
+    if nom_tag_tp(&tp, "doesn't untap during").is_some()
+        || nom_tag_tp(&tp, "doesn\u{2019}t untap during").is_some()
+        || nom_tag_tp(&tp, "don't untap during").is_some()
+        || nom_tag_tp(&tp, "don\u{2019}t untap during").is_some()
     {
         return Some(RuleStaticPredicate::CantUntap);
     }
@@ -2109,7 +2106,7 @@ fn parse_rule_static_predicate(text: &str) -> Option<RuleStaticPredicate> {
         return Some(RuleStaticPredicate::Shroud);
     }
 
-    if tp.starts_with("may look at the top card of your library") {
+    if nom_tag_tp(&tp, "may look at the top card of your library").is_some() {
         return Some(RuleStaticPredicate::MayLookAtTopOfLibrary);
     }
 
@@ -2133,8 +2130,8 @@ fn parse_rule_static_predicate(text: &str) -> Option<RuleStaticPredicate> {
         return Some(RuleStaticPredicate::NoMaximumHandSize);
     }
 
-    if tp.starts_with("may play an additional land")
-        || (tp.starts_with("may play up to ") && tp.contains("additional land"))
+    if nom_tag_tp(&tp, "may play an additional land").is_some()
+        || (nom_tag_tp(&tp, "may play up to ").is_some() && tp.lower.contains("additional land"))
     {
         return Some(RuleStaticPredicate::MayPlayAdditionalLand);
     }
@@ -2184,6 +2181,18 @@ fn lower_rule_static(
                 .affected(affected)
                 .description(description.to_string())
         }
+    }
+}
+
+/// Determine player scope for "can't [verb]" patterns based on subject phrasing.
+/// Handles "your opponents can't ...", "you can't ...", and "players can't ..." subjects.
+fn parse_player_scope_filter(tp: &TextPair<'_>) -> TargetFilter {
+    if tp.lower.contains("your opponents") || nom_tag_tp(tp, "opponents").is_some() {
+        TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent))
+    } else if nom_tag_tp(tp, "you ").is_some() || tp.lower.contains("you can't") {
+        TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::You))
+    } else {
+        TargetFilter::Typed(TypedFilter::default())
     }
 }
 
@@ -2249,16 +2258,15 @@ fn parse_cant_be_countered_subject(tp: &TextPair) -> TargetFilter {
 /// Returns `(scope, remaining_predicate)` or `None` if no known subject prefix matches.
 /// Shared by all casting prohibition parsers (CantCastDuring, PerTurnCastLimit, etc.).
 fn strip_casting_prohibition_subject(tp: &str) -> Option<(CastingProhibitionScope, &str)> {
-    tp.strip_prefix("each opponent ")
-        .or_else(|| tp.strip_prefix("your opponents "))
+    nom_tag_lower(tp, tp, "each opponent ")
+        .or_else(|| nom_tag_lower(tp, tp, "your opponents "))
         .map(|rest| (CastingProhibitionScope::Opponents, rest))
         .or_else(|| {
-            tp.strip_prefix("you ")
-                .map(|rest| (CastingProhibitionScope::Controller, rest))
+            nom_tag_lower(tp, tp, "you ").map(|rest| (CastingProhibitionScope::Controller, rest))
         })
         .or_else(|| {
-            tp.strip_prefix("each player ")
-                .or_else(|| tp.strip_prefix("players "))
+            nom_tag_lower(tp, tp, "each player ")
+                .or_else(|| nom_tag_lower(tp, tp, "players "))
                 .map(|rest| (CastingProhibitionScope::AllPlayers, rest))
         })
 }
@@ -2274,15 +2282,14 @@ fn parse_per_turn_cast_limit(tp: &str, text: &str) -> Option<StaticDefinition> {
     // If the predicate doesn't start with the limit phrase, check for compound
     // "and" clauses (e.g., "can cast spells only during your turn and you can
     // cast no more than two spells each turn") — re-parse the second clause.
-    let after_more_than = predicate
-        .strip_prefix("can't cast more than ")
-        .or_else(|| predicate.strip_prefix("can cast no more than "))
+    let after_more_than = nom_tag_lower(predicate, predicate, "can't cast more than ")
+        .or_else(|| nom_tag_lower(predicate, predicate, "can cast no more than "))
         .or_else(|| {
             // Compound clause: look for " and " joining two restrictions
             predicate.split_once(" and ").and_then(|(_, second)| {
                 let (_, rest) = strip_casting_prohibition_subject(second)?;
-                rest.strip_prefix("can't cast more than ")
-                    .or_else(|| rest.strip_prefix("can cast no more than "))
+                nom_tag_lower(rest, rest, "can't cast more than ")
+                    .or_else(|| nom_tag_lower(rest, rest, "can cast no more than "))
             })
         })?;
 
@@ -2442,9 +2449,9 @@ fn parse_enchanted_equipped_predicate(
     }
 
     // CR 509.1b: "can't be blocked" on enchanted/equipped creature
-    if pred_lower.starts_with("can't be blocked") {
+    if nom_tag_lower(&pred_lower, &pred_lower, "can't be blocked").is_some() {
         // "can't be blocked except by" → CantBeBlockedExceptBy
-        if let Some(rest) = pred_lower.strip_prefix("can't be blocked except by ") {
+        if let Some(rest) = nom_tag_lower(&pred_lower, &pred_lower, "can't be blocked except by ") {
             let filter_text = rest.trim_end_matches('.');
             return Some(
                 StaticDefinition::new(StaticMode::CantBeBlockedExceptBy {
@@ -2517,9 +2524,8 @@ fn parse_continuous_gets_has(
         let for_each_clause = after_for_each.lower.trim_end_matches('.');
 
         let pt_lower = pt_text.to_lowercase();
-        let pt_source = pt_lower
-            .strip_prefix("gets ")
-            .or_else(|| pt_lower.strip_prefix("get "))
+        let pt_source = nom_tag_lower(&pt_lower, &pt_lower, "gets ")
+            .or_else(|| nom_tag_lower(&pt_lower, &pt_lower, "get "))
             .unwrap_or(&pt_lower);
 
         if let Some((p, t)) = parse_pt_mod(pt_source) {
@@ -2614,13 +2620,12 @@ pub(crate) fn parse_continuous_modifications(text: &str) -> Vec<ContinuousModifi
     let lower = tp.lower;
     let mut modifications = Vec::new();
 
-    if tp.contains("lose all abilities") {
+    if tp.lower.contains("lose all abilities") {
         modifications.push(ContinuousModification::RemoveAllAbilities);
     }
 
-    if tp.starts_with("gets ") || tp.starts_with("get ") {
-        let offset = if tp.starts_with("gets ") { 5 } else { 4 };
-        let after = &tp.original[offset..].trim();
+    if let Some(rest_tp) = nom_tag_tp(&tp, "gets ").or_else(|| nom_tag_tp(&tp, "get ")) {
+        let after = rest_tp.original.trim();
         if let Some((p, t)) = parse_pt_mod(after) {
             modifications.push(ContinuousModification::AddPower { value: p });
             modifications.push(ContinuousModification::AddToughness { value: t });
@@ -2722,9 +2727,8 @@ fn parse_dynamic_pt_in_text(
 
     // Check if the pattern is +X/+X (symmetric) or asymmetric
     let pt_text = &lower[pt_pos..];
-    let after_get = pt_text
-        .strip_prefix("gets ")
-        .or_else(|| pt_text.strip_prefix("get "))?;
+    let after_get = nom_tag_lower(pt_text, pt_text, "gets ")
+        .or_else(|| nom_tag_lower(pt_text, pt_text, "get "))?;
 
     // Parse the P/T pattern
     let slash = after_get.find('/')?;
@@ -2781,7 +2785,7 @@ fn parse_base_pt_mod(text: &str) -> Option<(i32, i32)> {
 fn parse_base_power_mod(text: &str) -> Option<i32> {
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
-    if tp.contains("base power and toughness ") {
+    if tp.lower.contains("base power and toughness ") {
         return None;
     }
     let power_text = tp.strip_after("base power ")?.original.trim();
@@ -2791,7 +2795,7 @@ fn parse_base_power_mod(text: &str) -> Option<i32> {
 fn parse_base_toughness_mod(text: &str) -> Option<i32> {
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
-    if tp.contains("base power and toughness ") {
+    if tp.lower.contains("base power and toughness ") {
         return None;
     }
     let toughness_text = tp.strip_after("base toughness ")?.original.trim();
@@ -2824,10 +2828,10 @@ fn parse_quoted_ability_modifications(text: &str) -> Vec<ContinuousModification>
                 if !ability_text.is_empty() {
                     let lower = ability_text.to_lowercase();
                     // CR 603.1: Detect trigger prefixes to route to GrantTrigger.
-                    if lower.starts_with("when ")
-                        || lower.starts_with("whenever ")
-                        || lower.starts_with("at the beginning of ")
-                        || lower.starts_with("at the end of ")
+                    if nom_tag_lower(&lower, &lower, "when ").is_some()
+                        || nom_tag_lower(&lower, &lower, "whenever ").is_some()
+                        || nom_tag_lower(&lower, &lower, "at the beginning of ").is_some()
+                        || nom_tag_lower(&lower, &lower, "at the end of ").is_some()
                     {
                         let trigger = super::oracle_trigger::parse_trigger_line(ability_text, "~");
                         modifications.push(ContinuousModification::GrantTrigger {
@@ -2869,10 +2873,10 @@ fn parse_quoted_ability(text: &str) -> AbilityDefinition {
     // triggered ability, not a spell-like effect chain. Extract the trigger's execute
     // chain as the granted AbilityDefinition (trigger metadata like mode/condition is
     // handled by the GrantTrigger path if available, but the effect chain is always useful).
-    if lower.starts_with("when ")
-        || lower.starts_with("whenever ")
-        || lower.starts_with("at the beginning of ")
-        || lower.starts_with("at the end of ")
+    if nom_tag_lower(&lower, &lower, "when ").is_some()
+        || nom_tag_lower(&lower, &lower, "whenever ").is_some()
+        || nom_tag_lower(&lower, &lower, "at the beginning of ").is_some()
+        || nom_tag_lower(&lower, &lower, "at the end of ").is_some()
     {
         let trigger = super::oracle_trigger::parse_trigger_line(text, "~");
         if let Some(execute) = trigger.execute {
@@ -2909,10 +2913,11 @@ fn find_cost_separator(text: &str) -> Option<usize> {
         if ch == ':' && idx > 0 {
             let prefix = &text[..idx];
             // Must have cost-like content before the colon
+            let trimmed_prefix = prefix.trim();
             let has_cost = prefix.contains('{')
-                || prefix.trim().parse::<i32>().is_ok()
-                || prefix.trim().starts_with('+')
-                || prefix.trim().starts_with('\u{2212}'); // minus sign for loyalty
+                || trimmed_prefix.parse::<i32>().is_ok()
+                || trimmed_prefix.strip_prefix('+').is_some()
+                || trimmed_prefix.strip_prefix('\u{2212}').is_some(); // minus sign for loyalty
             if has_cost {
                 return Some(idx);
             }
@@ -2964,7 +2969,7 @@ fn extract_keyword_clause(text: &str) -> Option<&str> {
     }
 
     for prefix in ["gains ", "gain ", "has ", "have "] {
-        if lower.starts_with(prefix) {
+        if nom_tag_lower(&lower, &lower, prefix).is_some() {
             return Some(&text[prefix.len()..]);
         }
     }
@@ -2989,7 +2994,7 @@ fn extract_lose_keyword_clause(text: &str) -> Option<&str> {
     }
 
     for prefix in ["loses ", "lose "] {
-        if let Some(rest) = lower.strip_prefix(prefix) {
+        if let Some(rest) = nom_tag_lower(&lower, &lower, prefix) {
             let after = &text[prefix.len()..];
             // Stop before "and gains"/"and gain" to avoid consuming the gain clause
             let end = rest.find(" and gain").unwrap_or(after.len());
@@ -3143,29 +3148,31 @@ fn parse_cda_pt_equality(lower: &str, text: &str) -> Option<StaticDefinition> {
 /// 3. "You may cast [filter] from your graveyard." (Conduit of Worlds)
 fn try_parse_graveyard_cast_permission(text: &str, lower: &str) -> Option<StaticDefinition> {
     // Determine pattern and extract the rest after the prefix
-    let (rest, once_per_turn, play_mode) =
-        if let Some(r) = lower.strip_prefix("once during each of your turns, you may cast ") {
-            (r, true, CardPlayMode::Cast)
-        } else if let Some(r) = lower.strip_prefix("you may play ") {
-            (r, false, CardPlayMode::Play)
-        } else if let Some(r) = lower.strip_prefix("you may cast ") {
-            // Only match if "from your graveyard" follows — avoid catching other "you may cast" statics
-            if r.contains("from your graveyard") {
-                (r, false, CardPlayMode::Cast)
-            } else {
-                return None;
-            }
+    let (rest, once_per_turn, play_mode) = if let Some(r) = nom_tag_lower(
+        lower,
+        lower,
+        "once during each of your turns, you may cast ",
+    ) {
+        (r, true, CardPlayMode::Cast)
+    } else if let Some(r) = nom_tag_lower(lower, lower, "you may play ") {
+        (r, false, CardPlayMode::Play)
+    } else if let Some(r) = nom_tag_lower(lower, lower, "you may cast ") {
+        // Only match if "from your graveyard" follows — avoid catching other "you may cast" statics
+        if r.contains("from your graveyard") {
+            (r, false, CardPlayMode::Cast)
         } else {
             return None;
-        };
+        }
+    } else {
+        return None;
+    };
 
     let gy_idx = rest.find(" from your graveyard")?;
     let filter_text = &rest[..gy_idx];
 
-    // Strip leading article ("a ", "an ")
-    let filter_text = filter_text
-        .strip_prefix("a ")
-        .or_else(|| filter_text.strip_prefix("an "))
+    // Strip leading article via nom tag ("a ", "an ")
+    let filter_text = nom_tag_lower(filter_text, filter_text, "a ")
+        .or_else(|| nom_tag_lower(filter_text, filter_text, "an "))
         .unwrap_or(filter_text);
 
     // Remove " spell"/" spells" — parse_type_phrase expects bare type words.
@@ -3191,7 +3198,7 @@ fn try_parse_graveyard_cast_permission(text: &str, lower: &str) -> Option<Static
 }
 
 fn parse_first_qualified_spell_filter(lower: &str) -> Option<TargetFilter> {
-    let after_prefix = lower.strip_prefix("the first ")?;
+    let after_prefix = nom_tag_lower(lower, lower, "the first ")?;
     let qualifier = after_prefix
         .split_once(" you cast during each of your turns cost")
         .or_else(|| after_prefix.split_once(" you cast during each of your turns costs"))?
@@ -3407,7 +3414,9 @@ fn parse_land_type_change(tp: &TextPair<'_>, text: &str) -> Option<StaticDefinit
     let lower_rest = rest.to_lowercase();
 
     // "every basic land type in addition to their other types"
-    if lower_rest.starts_with("every basic land type") && lower_rest.contains("in addition to") {
+    if nom_tag_lower(&lower_rest, &lower_rest, "every basic land type").is_some()
+        && lower_rest.contains("in addition to")
+    {
         return Some(
             StaticDefinition::continuous()
                 .affected(affected)
@@ -3495,9 +3504,8 @@ fn extract_cant_untap_condition(lower: &str) -> Option<StaticCondition> {
         return None;
     }
     // Strip "as long as" or "if" prefix
-    let condition_text = remaining
-        .strip_prefix("as long as ")
-        .or_else(|| remaining.strip_prefix("if "))?;
+    let condition_text = nom_tag_lower(remaining, remaining, "as long as ")
+        .or_else(|| nom_tag_lower(remaining, remaining, "if "))?;
     parse_static_condition(condition_text).or_else(|| {
         Some(StaticCondition::Unrecognized {
             text: condition_text.to_string(),
