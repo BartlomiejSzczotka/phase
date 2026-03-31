@@ -111,7 +111,7 @@ export function StackEntry({ entry, index, isTop, isPending, cardSize, style, on
           />
         )}
         {isSpell && sourceObj?.mana_cost && (
-          <ManaCostPips cost={sourceObj.mana_cost} size="sm" className="absolute right-[4%] top-[2%] z-10" />
+          <ManaCostPips cost={sourceObj.mana_cost} size="sm" className="absolute right-[5%] top-[2.5%]" />
         )}
       </div>
 
