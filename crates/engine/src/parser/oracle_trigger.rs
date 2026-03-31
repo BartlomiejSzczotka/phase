@@ -26,7 +26,7 @@ use crate::types::ability::{
 use crate::types::card_type::CoreType;
 use crate::types::events::PlayerActionKind;
 use crate::types::phase::Phase;
-use crate::types::triggers::TriggerMode;
+use crate::types::triggers::{AttackTargetFilter, TriggerMode};
 use crate::types::zones::Zone;
 
 /// Parse a full trigger line into a TriggerDefinition.
@@ -1215,7 +1215,6 @@ fn try_parse_event(
         });
     if let Some(after) = attacks_result {
         // CR 508.3a: Detect attack target qualifier ("attacks a planeswalker" etc.)
-        use crate::types::triggers::AttackTargetFilter;
         fn parse_attack_target(input: &str) -> OracleResult<'_, AttackTargetFilter> {
             alt((
                 value(AttackTargetFilter::Planeswalker, tag(" a planeswalker")),

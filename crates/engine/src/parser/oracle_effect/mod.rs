@@ -9,8 +9,13 @@ mod types;
 
 use std::str::FromStr;
 
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::combinator::{opt, value};
 use nom::Parser;
+use nom_language::error::VerboseError;
 
+use super::oracle_nom::bridge::nom_on_lower;
 use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_quantity::{parse_cda_quantity, parse_for_each_clause};
 use super::oracle_target::{
@@ -23,10 +28,11 @@ use super::oracle_util::{
 use crate::database::mtgjson::parse_mtgjson_mana_cost;
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, AbilityKind, CardPlayMode, CastingPermission, ChoiceType,
-    Comparator, ControllerRef, DamageSource, DelayedTriggerCondition, Duration, Effect, FilterProp,
-    GainLifePlayer, GameRestriction, MultiTargetSpec, NinjutsuVariant, PlayerFilter, PtValue,
-    QuantityExpr, QuantityRef, RestrictionExpiry, RestrictionPlayerScope, StaticCondition,
-    StaticDefinition, TargetFilter, TypeFilter, TypedFilter, UnlessCost,
+    Comparator, ContinuousModification, ControllerRef, DamageSource, DelayedTriggerCondition,
+    Duration, Effect, FilterProp, GainLifePlayer, GameRestriction, MultiTargetSpec,
+    NinjutsuVariant, PlayerFilter, PtValue, QuantityExpr, QuantityRef, RestrictionExpiry,
+    RestrictionPlayerScope, StaticCondition, StaticDefinition, TargetFilter, TypeFilter,
+    TypedFilter, UnlessCost,
 };
 use crate::types::card_type::CoreType;
 use crate::types::game_state::{DistributionUnit, RetargetScope};
@@ -89,7 +95,10 @@ pub fn parse_effect(text: &str) -> Effect {
 /// These create multi-fire delayed triggers that persist until end of turn.
 /// Example: "whenever a creature you control deals combat damage to a player this turn, draw a card"
 fn try_parse_whenever_this_turn(tp: TextPair) -> Option<ParsedEffectClause> {
-    if !tp.starts_with("whenever ") {
+    if tag::<_, _, VerboseError<&str>>("whenever ")
+        .parse(tp.lower)
+        .is_err()
+    {
         return None;
     }
     // Must contain "this turn" to distinguish from regular triggers.
@@ -127,13 +136,16 @@ fn try_parse_whenever_this_turn(tp: TextPair) -> Option<ParsedEffectClause> {
 /// CR 603.7c: Parse inline delayed triggers like "when that creature dies, draw a card".
 /// Returns a `CreateDelayedTrigger` wrapping the parsed inner effect.
 fn try_parse_inline_delayed_trigger(tp: TextPair) -> Option<ParsedEffectClause> {
-    if !tp.starts_with("when ") {
+    if tag::<_, _, VerboseError<&str>>("when ")
+        .parse(tp.lower)
+        .is_err()
+    {
         return None;
     }
 
     // Find the comma separator between condition and effect
     let comma = tp.find(", ")?;
-    let condition_text = &tp.lower[5..comma];
+    let condition_text = &tp.lower["when ".len()..comma];
     let effect_text = &tp.original[comma + 2..];
 
     let condition = if condition_text.contains("dies") || condition_text.contains("die") {
@@ -206,7 +218,9 @@ fn parse_delayed_subject_filter(condition_text: &str) -> TargetFilter {
     {
         TargetFilter::ParentTarget
     } else if condition_text.contains("it ")
-        || condition_text.starts_with("it")
+        || tag::<_, _, VerboseError<&str>>("it")
+            .parse(condition_text)
+            .is_ok()
         || condition_text.contains("this creature")
         || condition_text.contains("this permanent")
         || condition_text.contains("this artifact")
@@ -265,12 +279,6 @@ fn try_parse_damage_prevention_disabled(tp: TextPair) -> Option<ParsedEffectClau
 }
 
 fn try_parse_cast_only_from_zones_restriction(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-    use nom::combinator::value;
-
-    use super::oracle_nom::bridge::nom_on_lower;
-
     let (scope_tp, expiry, duration) = if let Some(((expiry, duration), rest)) =
         nom_on_lower(tp.original, tp.lower, |input| {
             alt((
@@ -299,12 +307,17 @@ fn try_parse_cast_only_from_zones_restriction(tp: TextPair<'_>) -> Option<Parsed
         return None;
     }
 
-    let affected_players =
-        if scope_tp.starts_with("your opponents") || scope_tp.starts_with("opponents") {
-            RestrictionPlayerScope::OpponentsOfSourceController
-        } else {
-            RestrictionPlayerScope::AllPlayers
-        };
+    let affected_players = if alt((
+        tag::<_, _, VerboseError<&str>>("your opponents"),
+        tag("opponents"),
+    ))
+    .parse(scope_tp.lower)
+    .is_ok()
+    {
+        RestrictionPlayerScope::OpponentsOfSourceController
+    } else {
+        RestrictionPlayerScope::AllPlayers
+    };
 
     Some(ParsedEffectClause {
         effect: Effect::AddRestriction {
@@ -323,12 +336,9 @@ fn try_parse_cast_only_from_zones_restriction(tp: TextPair<'_>) -> Option<Parsed
 }
 
 fn try_parse_self_name_exile(tp: TextPair<'_>, ctx: &ParseContext) -> Option<ParsedEffectClause> {
-    use super::oracle_nom::bridge::nom_on_lower;
-
     let card_name = ctx.card_name.as_deref()?;
-    let (_, rest_orig) = nom_on_lower(tp.original, tp.lower, |i| {
-        nom::combinator::value((), nom::bytes::complete::tag("exile ")).parse(i)
-    })?;
+    let (_, rest_orig) =
+        nom_on_lower(tp.original, tp.lower, |i| value((), tag("exile ")).parse(i))?;
     let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
     let rest = TextPair::new(rest_orig, rest_lower);
     if rest.original.trim().eq_ignore_ascii_case(card_name) {
@@ -347,10 +357,8 @@ fn try_parse_self_name_exile(tp: TextPair<'_>, ctx: &ParseContext) -> Option<Par
 }
 
 fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
-    use super::oracle_nom::bridge::nom_on_lower;
-
     let (_, rest_orig) = nom_on_lower(tp.original, tp.lower, |i| {
-        nom::combinator::value((), nom::bytes::complete::tag("airbend ")).parse(i)
+        value((), tag("airbend ")).parse(i)
     })?;
     let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
     let rest = TextPair::new(rest_orig, rest_lower);
@@ -363,7 +371,9 @@ fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
             shards: vec![],
         });
     let lower_rest = rest.lower.trim_start();
-    let is_mass = lower_rest.starts_with("all ") || lower_rest.starts_with("each ");
+    let is_mass = alt((tag::<_, _, VerboseError<&str>>("all "), tag("each ")))
+        .parse(lower_rest)
+        .is_ok();
 
     let effect = if is_mass {
         let mass_target = match target {
@@ -427,21 +437,16 @@ fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
 /// Used by "any opponent may" effects where the opponent causes the source or controller
 /// to perform an action (e.g., "have it deal 4 damage to them").
 fn try_parse_have_causative(tp: TextPair<'_>, ctx: &ParseContext) -> Option<ParsedEffectClause> {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-
-    use super::oracle_nom::bridge::nom_on_lower;
-
     // Pattern A: "have it deal N damage to them" / "have ~ deal N damage to them"
     let after_have = nom_on_lower(tp.original, tp.lower, |input| {
-        nom::combinator::value((), alt((tag("have it "), tag("have ~ ")))).parse(input)
+        value((), alt((tag("have it "), tag("have ~ ")))).parse(input)
     });
     if let Some((_, rest_orig)) = after_have {
         let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
         let rest = TextPair::new(rest_orig, rest_lower);
         // "deal N damage to them" / "deal N damage to that player"
         if let Some(after_deal) = nom_on_lower(rest.original, rest.lower, |i| {
-            nom::combinator::value((), tag("deal ")).parse(i)
+            value((), tag("deal ")).parse(i)
         })
         .map(|(_, r)| TextPair::new(r, &rest.lower[rest.lower.len() - r.len()..]))
         {
@@ -460,7 +465,7 @@ fn try_parse_have_causative(tp: TextPair<'_>, ctx: &ParseContext) -> Option<Pars
 
     // Pattern B: "have you [verb]" — controller performs an action directed by opponent
     if let Some((_, rest_orig)) = nom_on_lower(tp.original, tp.lower, |i| {
-        nom::combinator::value((), tag("have you ")).parse(i)
+        value((), tag("have you ")).parse(i)
     }) {
         let clause = parse_effect_clause(rest_orig, ctx);
         return Some(clause);
@@ -492,7 +497,11 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
     }
 
     // CR 122.1: "you get {E}{E}" — gain energy counters.
-    if tp.contains("{e}") && (tp.starts_with("you get ") || tp.starts_with("get ")) {
+    if tp.contains("{e}")
+        && alt((tag::<_, _, VerboseError<&str>>("you get "), tag("get ")))
+            .parse(tp.lower)
+            .is_ok()
+    {
         let amount = super::oracle_util::count_energy_symbols(tp.lower);
         if amount > 0 {
             return parsed_clause(Effect::GainEnergy { amount });
@@ -529,10 +538,7 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
         });
     }
 
-    if let Some(amount_text) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>(
-            "increase your speed by ",
-        )
+    if let Some(amount_text) = tag::<_, _, VerboseError<&str>>("increase your speed by ")
         .parse(tp.lower)
         .ok()
         .map(|(rest, _)| rest.trim())
@@ -629,7 +635,12 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
 
     // CR 601.2d: "distribute N [type] counters among [targets]" →
     // PutCounter with distribute: Some(Counters(type)).
-    if lower.starts_with("distribute ") && lower.contains("counter") && lower.contains("among") {
+    if tag::<_, _, VerboseError<&str>>("distribute ")
+        .parse(lower.as_str())
+        .is_ok()
+        && lower.contains("counter")
+        && lower.contains("among")
+    {
         if let Some(clause) = try_parse_distribute_counters(&lower, text) {
             return clause;
         }
@@ -673,7 +684,7 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
     // CR 701.57a: "discover N" — effect variant
     if let Some((_, rest_orig)) =
         super::oracle_nom::bridge::nom_on_lower(tp.original, tp.lower, |i| {
-            nom::combinator::value((), nom::bytes::complete::tag("discover ")).parse(i)
+            value((), tag("discover ")).parse(i)
         })
     {
         let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
@@ -720,10 +731,9 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
 /// imperative "have" starts the clause; static "have" follows a subject.
 fn try_parse_have_redirection(text: &str, ctx: &ParseContext) -> Option<ParsedEffectClause> {
     let lower = text.to_lowercase();
-    let (after_have, _) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("have ")
-            .parse(lower.as_str())
-            .ok()?;
+    let (after_have, _) = tag::<_, _, VerboseError<&str>>("have ")
+        .parse(lower.as_str())
+        .ok()?;
 
     // Guard: don't intercept if what follows "have" is not a recognizable subject reference.
     // Subject references start with: "target", "it", "that", "each", "all", "them",
@@ -783,16 +793,8 @@ fn try_parse_have_redirection(text: &str, ctx: &ParseContext) -> Option<ParsedEf
 /// - "all creatures able to block ~ do so"
 /// - "all creatures able to block ~ this turn do so"
 fn try_parse_mass_forced_block(tp: TextPair) -> Option<ParsedEffectClause> {
-    use crate::types::ability::ContinuousModification;
-
-    use super::oracle_nom::bridge::nom_on_lower;
-
     let (_, rest_orig) = nom_on_lower(tp.original, tp.lower, |i| {
-        nom::combinator::value(
-            (),
-            nom::bytes::complete::tag("all creatures able to block "),
-        )
-        .parse(i)
+        value((), tag("all creatures able to block ")).parse(i)
     })?;
     let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
     let rest = TextPair::new(rest_orig, rest_lower);
@@ -833,21 +835,13 @@ fn try_parse_mass_forced_block(tp: TextPair) -> Option<ParsedEffectClause> {
 }
 
 fn try_parse_still_a_type(tp: TextPair) -> Option<ParsedEffectClause> {
-    use crate::types::ability::ContinuousModification;
-    use crate::types::card_type::CoreType;
-
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-
-    use super::oracle_nom::bridge::nom_on_lower;
-
     // Match "it's still a/an [type]" or "that's still a/an [type]"
     let ((), rest_orig) = nom_on_lower(tp.original, tp.lower, |input| {
-        nom::combinator::value((), alt((tag("it's still "), tag("that's still ")))).parse(input)
+        value((), alt((tag("it's still "), tag("that's still ")))).parse(input)
     })?;
     let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
     let ((), type_name_orig) = nom_on_lower(rest_orig, rest_lower, |input| {
-        nom::combinator::value((), alt((tag("a "), tag("an ")))).parse(input)
+        value((), alt((tag("a "), tag("an ")))).parse(input)
     })?;
     let type_name_lower = &rest_lower[rest_lower.len() - type_name_orig.len()..];
     let core_type = CoreType::from_str(&capitalize(type_name_lower)).ok()?;
@@ -872,12 +866,6 @@ fn try_parse_still_a_type(tp: TextPair) -> Option<ParsedEffectClause> {
 ///
 /// Handles verbs whose count field is `QuantityExpr` (mill, draw).
 fn try_parse_equal_to_quantity_effect(tp: TextPair) -> Option<ParsedEffectClause> {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-    use nom::combinator::value;
-
-    use super::oracle_nom::bridge::nom_on_lower;
-
     // Try matching "mill cards equal to " or "draw cards equal to " using nom.
     let (verb, rest_orig) = nom_on_lower(tp.original, tp.lower, |input| {
         alt((
@@ -929,7 +917,7 @@ fn try_parse_put_on_top_or_bottom(tp: TextPair) -> Option<ParsedEffectClause> {
     // Pattern 2: "the owner of target nonland permanent puts it ..."
     if let Some((_, rest_orig)) =
         super::oracle_nom::bridge::nom_on_lower(tp.original, tp.lower, |i| {
-            nom::combinator::value((), nom::bytes::complete::tag("the owner of ")).parse(i)
+            value((), tag("the owner of ")).parse(i)
         })
     {
         let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
@@ -945,15 +933,11 @@ fn try_parse_put_on_top_or_bottom(tp: TextPair) -> Option<ParsedEffectClause> {
 }
 
 fn try_parse_exile_from_top_until(tp: TextPair) -> Option<ParsedEffectClause> {
-    use super::oracle_nom::bridge::nom_on_lower;
-
     // Match: "exile cards from the top of your library until you exile a {filter} card"
     let (_, rest_orig) = nom_on_lower(tp.original, tp.lower, |i| {
-        nom::combinator::value(
+        value(
             (),
-            nom::bytes::complete::tag(
-                "exile cards from the top of your library until you exile a ",
-            ),
+            tag("exile cards from the top of your library until you exile a "),
         )
         .parse(i)
     })?;
@@ -981,15 +965,8 @@ fn try_parse_play_from_exile(tp: TextPair) -> Option<ParsedEffectClause> {
 
     // Try full forms first: "you may play/cast that card/it/those cards ..."
     // Then bare forms (after "you may" has been stripped): "play that card ..."
-    let full_rest = super::oracle_nom::bridge::nom_on_lower(tp.original, tp.lower, |input| {
-        nom::combinator::value(
-            (),
-            nom::branch::alt((
-                nom::bytes::complete::tag("you may play "),
-                nom::bytes::complete::tag("you may cast "),
-            )),
-        )
-        .parse(input)
+    let full_rest = nom_on_lower(tp.original, tp.lower, |input| {
+        value((), alt((tag("you may play "), tag("you may cast ")))).parse(input)
     })
     .map(|((), rest_orig)| {
         let rest_lower = &tp.lower[tp.lower.len() - rest_orig.len()..];
@@ -998,11 +975,15 @@ fn try_parse_play_from_exile(tp: TextPair) -> Option<ParsedEffectClause> {
 
     if let Some(rest) = full_rest {
         // Full form: rest must start with a card reference
-        if !(rest.starts_with("that card")
-            || rest.starts_with("that spell")
-            || rest.starts_with("those cards")
-            || rest.starts_with("it ")
-            || rest.lower == "it")
+        if alt((
+            tag::<_, _, VerboseError<&str>>("that card"),
+            tag("that spell"),
+            tag("those cards"),
+            tag("it "),
+        ))
+        .parse(rest.lower)
+        .is_err()
+            && rest.lower != "it"
         {
             return None;
         }
@@ -1017,10 +998,14 @@ fn try_parse_play_from_exile(tp: TextPair) -> Option<ParsedEffectClause> {
         if tp.contains("without paying") {
             return None;
         }
-        if !(tp.starts_with("play that card")
-            || tp.starts_with("cast that card")
-            || tp.starts_with("play it")
-            || tp.starts_with("cast it"))
+        if alt((
+            tag::<_, _, VerboseError<&str>>("play that card"),
+            tag("cast that card"),
+            tag("play it"),
+            tag("cast it"),
+        ))
+        .parse(tp.lower)
+        .is_err()
         {
             return None;
         }
@@ -1058,21 +1043,24 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
     let quantity = QuantityExpr::Ref { qty };
 
     // Parse the base effect and replace its count with the dynamic quantity
-    if base_tp.starts_with("draw ") || base_tp.contains(" draw") {
+    if tag::<_, _, VerboseError<&str>>("draw ")
+        .parse(base_tp.lower)
+        .is_ok()
+        || base_tp.contains(" draw")
+    {
         return Some(parsed_clause(Effect::Draw { count: quantity }));
     }
 
-    if (base_tp.starts_with("you gain ") || base_tp.starts_with("gain "))
+    if alt((tag::<_, _, VerboseError<&str>>("you gain "), tag("gain ")))
+        .parse(base_tp.lower)
+        .is_ok()
         && base_tp.contains("life")
     {
         // Extract multiplier: "gain 3 life" → factor=3, "gain life" → factor=1
-        let after_gain = nom::branch::alt((
-            nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("you gain "),
-            nom::bytes::complete::tag("gain "),
-        ))
-        .parse(base_tp.lower)
-        .map(|(rest, _)| rest)
-        .unwrap_or(base_tp.lower);
+        let after_gain = alt((tag::<_, _, VerboseError<&str>>("you gain "), tag("gain ")))
+            .parse(base_tp.lower)
+            .map(|(rest, _)| rest)
+            .unwrap_or(base_tp.lower);
         // Delegate to nom combinator (input already lowercase from base_tp.lower).
         let amount = match nom_primitives::parse_number.parse(after_gain) {
             Ok((_, n)) if n > 1 => QuantityExpr::Multiply {
@@ -1087,17 +1075,16 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
         }));
     }
 
-    if (base_tp.starts_with("you lose ") || base_tp.starts_with("lose "))
+    if alt((tag::<_, _, VerboseError<&str>>("you lose "), tag("lose ")))
+        .parse(base_tp.lower)
+        .is_ok()
         && base_tp.contains("life")
     {
         // Extract multiplier: "lose 3 life" → factor=3
-        let after_lose = nom::branch::alt((
-            nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("you lose "),
-            nom::bytes::complete::tag("lose "),
-        ))
-        .parse(base_tp.lower)
-        .map(|(rest, _)| rest)
-        .unwrap_or(base_tp.lower);
+        let after_lose = alt((tag::<_, _, VerboseError<&str>>("you lose "), tag("lose ")))
+            .parse(base_tp.lower)
+            .map(|(rest, _)| rest)
+            .unwrap_or(base_tp.lower);
         // Delegate to nom combinator (input already lowercase from base_tp.lower).
         let amount = match nom_primitives::parse_number.parse(after_lose) {
             Ok((_, n)) if n > 1 => QuantityExpr::Multiply {
@@ -1113,7 +1100,10 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
     // Handles: "~ gets +1/+1 for each creature you control",
     //          "target creature gets +2/+2 for each..."
     if let Some(gets_pos) = base_tp.find("gets ").or_else(|| base_tp.find("get ")) {
-        let offset = if base_tp.lower[gets_pos..].starts_with("gets ") {
+        let offset = if tag::<_, _, VerboseError<&str>>("gets ")
+            .parse(&base_tp.lower[gets_pos..])
+            .is_ok()
+        {
             5
         } else {
             4
@@ -1207,11 +1197,9 @@ fn lower_clause_ast(ast: ClauseAst, ctx: &ParseContext) -> ParsedEffectClause {
                 if *target == TargetFilter::Any {
                     let lower = text.to_lowercase();
                     // Check if text starts with "put " using nom tag, then use remainder.
-                    if nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>(
-                        "put ",
-                    )
-                    .parse(lower.as_str())
-                    .is_ok()
+                    if tag::<_, _, VerboseError<&str>>("put ")
+                        .parse(lower.as_str())
+                        .is_ok()
                     {
                         let after_put = &lower["put ".len()..];
                         let boundary = after_put
@@ -1296,36 +1284,35 @@ fn try_parse_verb_and_target<'a>(
     ctx: &ParseContext,
 ) -> Option<(TargetedImperativeAst, &'a str)> {
     // Simple targeted verbs: parse_target on text after the verb prefix
-    if lower.starts_with("tap ") {
-        let (target_text, _) = strip_optional_target_prefix(&text[4..]);
+    if let Some((_, rest)) = nom_on_lower(text, lower, |i| value((), tag("tap ")).parse(i)) {
+        let (target_text, _) = strip_optional_target_prefix(rest);
         let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::Tap { target }, rem));
     }
-    if lower.starts_with("untap ") {
-        let (target_text, _) = strip_optional_target_prefix(&text[6..]);
+    if let Some((_, rest)) = nom_on_lower(text, lower, |i| value((), tag("untap ")).parse(i)) {
+        let (target_text, _) = strip_optional_target_prefix(rest);
         let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::Untap { target }, rem));
     }
-    if lower.starts_with("sacrifice ") {
-        let (target_text, _) = strip_optional_target_prefix(&text[10..]);
+    if let Some((_, rest)) = nom_on_lower(text, lower, |i| value((), tag("sacrifice ")).parse(i)) {
+        let (target_text, _) = strip_optional_target_prefix(rest);
         let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::Sacrifice { target }, rem));
     }
-    if lower.starts_with("fight ") {
-        let (target_text, _) = strip_optional_target_prefix(&text[6..]);
+    if let Some((_, rest)) = nom_on_lower(text, lower, |i| value((), tag("fight ")).parse(i)) {
+        let (target_text, _) = strip_optional_target_prefix(rest);
         let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::Fight { target }, rem));
     }
-    if lower.starts_with("gain control of ") {
-        let (target_text, _) = strip_optional_target_prefix(&text[16..]);
+    if let Some((_, rest)) =
+        nom_on_lower(text, lower, |i| value((), tag("gain control of ")).parse(i))
+    {
+        let (target_text, _) = strip_optional_target_prefix(rest);
         let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::GainControl { target }, rem));
     }
     // Earthbend: "earthbend [N] [target <type>]" → Animate with haste + is_earthbend
-    if let Ok((rest, _)) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("earthbend ")
-            .parse(lower)
-    {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("earthbend ").parse(lower) {
         let (target, power, toughness) = imperative::parse_earthbend_params(text, rest);
         return Some((
             TargetedImperativeAst::Earthbend {
@@ -1337,10 +1324,7 @@ fn try_parse_verb_and_target<'a>(
         ));
     }
     // Airbend: "airbend target <type> <mana_cost>" → GrantCastingPermission(ExileWithAltCost)
-    if let Ok((rest, _)) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("airbend ")
-            .parse(lower)
-    {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("airbend ").parse(lower) {
         let original_rest = &text[text.len() - rest.len()..];
         let (target_text, _) = strip_optional_target_prefix(original_rest);
         let (target, after_target) = parse_target(target_text);
@@ -1355,8 +1339,10 @@ fn try_parse_verb_and_target<'a>(
     }
 
     // Destroy: check "all"/"each" prefix for mass destruction
-    if lower.starts_with("destroy all ") || lower.starts_with("destroy each ") {
-        let (target, rem) = parse_target(&text[8..]);
+    if let Some((_, rest)) = nom_on_lower(text, lower, |i| {
+        value((), alt((tag("destroy all "), tag("destroy each ")))).parse(i)
+    }) {
+        let (target, rem) = parse_target(rest);
         return Some((
             TargetedImperativeAst::ZoneCounterProxy(Box::new(ZoneCounterImperativeAst::Destroy {
                 target,
@@ -1365,8 +1351,8 @@ fn try_parse_verb_and_target<'a>(
             rem,
         ));
     }
-    if lower.starts_with("destroy ") {
-        let (target, rem) = parse_target(&text[8..]);
+    if let Some((_, rest)) = nom_on_lower(text, lower, |i| value((), tag("destroy ")).parse(i)) {
+        let (target, rem) = parse_target(rest);
         return Some((
             TargetedImperativeAst::ZoneCounterProxy(Box::new(ZoneCounterImperativeAst::Destroy {
                 target,
@@ -1378,9 +1364,11 @@ fn try_parse_verb_and_target<'a>(
 
     // Exile: infer origin zone from the full post-verb text (NOT the remainder,
     // since parse_zone_suffix inside parse_type_phrase consumes zone phrases).
-    if lower.starts_with("exile all ") || lower.starts_with("exile each ") {
-        let rest_lower = &lower[6..]; // after "exile "
-        let (parsed_target, rem) = parse_target(&text[6..]);
+    if let Some((_, rest)) = nom_on_lower(text, lower, |i| {
+        value((), alt((tag("exile all "), tag("exile each ")))).parse(i)
+    }) {
+        let rest_lower = &lower[lower.len() - rest.len()..];
+        let (parsed_target, rem) = parse_target(rest);
         // CR 701.5a: "exile all spells" must constrain to the stack.
         let target = if rest_lower.contains("spell") {
             constrain_filter_to_stack(parsed_target)
@@ -1397,11 +1385,9 @@ fn try_parse_verb_and_target<'a>(
             rem,
         ));
     }
-    if let Ok((rest_lower, _)) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("exile ")
-            .parse(lower)
-    {
-        let (parsed_target, rem) = parse_target(&text[6..]);
+    if let Some((_, rest)) = nom_on_lower(text, lower, |i| value((), tag("exile ")).parse(i)) {
+        let rest_lower = &lower[lower.len() - rest.len()..];
+        let (parsed_target, rem) = parse_target(rest);
         // CR 701.5a: "exile target spell" must constrain targeting to the stack,
         // mirroring the counter-spell parser at line 1036-1037.
         let target = if rest_lower.contains("spell") {
@@ -1421,11 +1407,9 @@ fn try_parse_verb_and_target<'a>(
     }
 
     // CR 701.5a: Counter a spell or ability on the stack.
-    if let Ok((rest_lower, _)) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("counter ")
-            .parse(lower)
-    {
-        let (parsed_target, rem) = parse_target(&text[8..]);
+    if let Some((_, rest)) = nom_on_lower(text, lower, |i| value((), tag("counter ")).parse(i)) {
+        let rest_lower = &lower[lower.len() - rest.len()..];
+        let (parsed_target, rem) = parse_target(rest);
         let target = if rest_lower.contains("activated or triggered ability") {
             // CR 701.5a: "activated or triggered ability" is a special-case target
             // that maps to StackAbility. We still use parse_target's remainder to
@@ -1437,7 +1421,7 @@ fn try_parse_verb_and_target<'a>(
             parsed_target
         };
         // CR 118.12: Parse "unless its controller pays {X}" for conditional counters
-        let unless_payment = parse_unless_payment(&lower[8..]);
+        let unless_payment = parse_unless_payment(rest_lower);
         return Some((
             TargetedImperativeAst::ZoneCounterProxy(Box::new(ZoneCounterImperativeAst::Counter {
                 target,
@@ -1449,8 +1433,7 @@ fn try_parse_verb_and_target<'a>(
     }
 
     // Return: determine destination separately, use parse_target remainder for compound detection
-    if lower.starts_with("return ") {
-        let rest = &text[7..];
+    if let Some((_, rest)) = nom_on_lower(text, lower, |i| value((), tag("return ")).parse(i)) {
         let (_, dest) = strip_return_destination_ext(rest);
         let (target, rem) = parse_target(rest);
         return match dest {
@@ -1478,7 +1461,7 @@ fn try_parse_verb_and_target<'a>(
     }
 
     // Put counter: use refactored try_parse_put_counter that returns remainder
-    if lower.starts_with("put ") && lower.contains("counter") {
+    if tag::<_, _, VerboseError<&str>>("put ").parse(lower).is_ok() && lower.contains("counter") {
         if let Some((
             Effect::PutCounter {
                 counter_type,
@@ -1536,10 +1519,9 @@ fn try_split_targeted_compound(text: &str, ctx: &ParseContext) -> Option<ParsedE
 
     // The remainder must start with " and " to be a compound connector.
     // Do NOT trim — the leading space is the boundary marker.
-    let (after_and, _) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>(" and ")
-            .parse(remainder)
-            .ok()?;
+    let (after_and, _) = tag::<_, _, VerboseError<&str>>(" and ")
+        .parse(remainder)
+        .ok()?;
 
     let sub_text = after_and.trim();
     if sub_text.is_empty() {
@@ -1570,7 +1552,10 @@ fn try_split_targeted_compound(text: &str, ctx: &ParseContext) -> Option<ParsedE
     // When the sub-text starts with "target" and parsed as Unimplemented, prepend
     // the verb from the primary effect and re-parse. Handles "exile target creature
     // and target artifact" where "target artifact" lacks a verb.
-    if matches!(sub_clause.effect, Effect::Unimplemented { .. }) && sub_lower.starts_with("target ")
+    if matches!(sub_clause.effect, Effect::Unimplemented { .. })
+        && tag::<_, _, VerboseError<&str>>("target ")
+            .parse(sub_lower.as_str())
+            .is_ok()
     {
         if let Some(verb) = extract_effect_verb(&primary_effect) {
             let reparsed_text = format!("{verb} {sub_text}");
@@ -1638,10 +1623,9 @@ fn try_split_damage_compound(text: &str, ctx: &ParseContext) -> Option<ParsedEff
 
     // The remainder must start with " and " to be a compound connector.
     // Do NOT trim — the leading space is the boundary marker.
-    let (after_and, _) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>(" and ")
-            .parse(remainder)
-            .ok()?;
+    let (after_and, _) = tag::<_, _, VerboseError<&str>>(" and ")
+        .parse(remainder)
+        .ok()?;
     let sub_text = after_and.trim();
     if sub_text.is_empty() {
         return None;
@@ -1746,7 +1730,7 @@ fn try_split_compound_subject(text: &str) -> Option<(TargetFilter, TargetFilter,
 /// for the second subject, both with owner_library: true.
 fn try_parse_compound_shuffle(text: &str) -> Option<ParsedEffectClause> {
     let lower = text.to_lowercase();
-    nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("shuffle ")
+    tag::<_, _, VerboseError<&str>>("shuffle ")
         .parse(lower.as_str())
         .ok()?;
 
@@ -1959,7 +1943,9 @@ fn lower_subject_predicate_ast(
                 });
             }
             // CR 701.20a: "<player> reveals the top [N] card(s) of their library"
-            if (pred_lower.starts_with("reveal ") || pred_lower.starts_with("reveals "))
+            if alt((tag::<_, _, VerboseError<&str>>("reveal "), tag("reveals ")))
+                .parse(pred_lower.as_str())
+                .is_ok()
                 && pred_lower.contains("top")
                 && pred_lower.contains("library")
             {
@@ -2087,17 +2073,14 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
 /// Handles both full form "you get an emblem with \"[text]\"" and
 /// subject-stripped form "get an emblem with \"[text]\"".
 fn try_parse_emblem_creation(lower: &str, original: &str) -> Option<Effect> {
-    // Find the prefix offset using the lowered text
-    let prefix_len = if lower.starts_with("you get an emblem with ") {
-        "you get an emblem with ".len()
-    } else if lower.starts_with("get an emblem with ") {
-        "get an emblem with ".len()
-    } else {
-        return None;
-    };
-
-    // Use original-case text for the inner content (preserves subtype capitalization)
-    let rest = &original[prefix_len..];
+    // Use nom to strip the prefix and get original-case remainder
+    let (_, rest) = nom_on_lower(original, lower, |i| {
+        value(
+            (),
+            alt((tag("you get an emblem with "), tag("get an emblem with "))),
+        )
+        .parse(i)
+    })?;
 
     // Extract the quoted emblem text (handles both "..." and '...' quoting)
     let inner = rest
@@ -2129,11 +2112,7 @@ fn try_parse_emblem_creation(lower: &str, original: &str) -> Option<Effect> {
 
 /// CR 601.2a + CR 118.9: Parse "cast it/that card [without paying its mana cost]".
 fn try_parse_cast_effect(lower: &str) -> Option<Effect> {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-    use nom::combinator::value;
-
-    type E<'a> = nom_language::error::VerboseError<&'a str>;
+    type E<'a> = VerboseError<&'a str>;
 
     // CR 305.1: "play" means cast if spell, play as land if land.
     let (rest, mode) = alt((
@@ -2146,14 +2125,18 @@ fn try_parse_cast_effect(lower: &str) -> Option<Effect> {
     let without_paying = rest.contains("without paying its mana cost")
         || rest.contains("without paying their mana cost");
 
-    let target = if rest.starts_with("it")
-        || rest.starts_with("that card")
-        || rest.starts_with("that spell")
-        || rest.starts_with("the copy")
-        || rest.starts_with("the exiled card")
-        || rest.starts_with("them")
-        || rest.starts_with("those cards")
-        || rest.starts_with("cards exiled")
+    let target = if alt((
+        tag::<_, _, E>("it"),
+        tag("that card"),
+        tag("that spell"),
+        tag("the copy"),
+        tag("the exiled card"),
+        tag("them"),
+        tag("those cards"),
+        tag("cards exiled"),
+    ))
+    .parse(rest)
+    .is_ok()
     {
         TargetFilter::ParentTarget
     } else {
@@ -2234,21 +2217,27 @@ fn is_choose_as_targeting(rest: &str) -> bool {
     }
 
     // "choose up to N" without "target" (e.g. "choose up to two creatures")
-    if rest.starts_with("up to ") {
+    if tag::<_, _, VerboseError<&str>>("up to ")
+        .parse(rest)
+        .is_ok()
+    {
         return true;
     }
 
     // "choose a/an {type} ... you control / an opponent controls"
-    if let Some(after_article) = nom::branch::alt((
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("a "),
-        nom::bytes::complete::tag("an "),
-    ))
-    .parse(rest)
-    .ok()
-    .map(|(rest, _)| rest)
+    if let Some(after_article) = alt((tag::<_, _, VerboseError<&str>>("a "), tag("an ")))
+        .parse(rest)
+        .ok()
+        .map(|(rest, _)| rest)
     {
         // Exclude patterns not yet in try_parse_named_choice but still not targeting
-        if after_article.starts_with("nonbasic land type") || after_article.starts_with("number") {
+        if alt((
+            tag::<_, _, VerboseError<&str>>("nonbasic land type"),
+            tag("number"),
+        ))
+        .parse(after_article)
+        .is_ok()
+        {
             return false;
         }
         // Must reference controller to be targeting-like
@@ -2266,31 +2255,30 @@ fn is_choose_as_targeting(rest: &str) -> bool {
 /// Match "choose a creature type", "choose a color", "choose odd or even",
 /// "choose a basic land type", "choose a card type" from lowercased Oracle text.
 pub(crate) fn try_parse_named_choice(lower: &str) -> Option<ChoiceType> {
-    if !lower.starts_with("choose ") {
-        return None;
-    }
-    let rest = &lower[7..]; // skip "choose "
-    if rest.starts_with("a creature type") {
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("choose ")
+        .parse(lower)
+        .ok()?;
+    type E<'a> = VerboseError<&'a str>;
+    if tag::<_, _, E>("a creature type").parse(rest).is_ok() {
         Some(ChoiceType::CreatureType)
-    } else if rest.starts_with("a color") {
+    } else if tag::<_, _, E>("a color").parse(rest).is_ok() {
         Some(ChoiceType::Color)
-    } else if rest.starts_with("odd or even") {
+    } else if tag::<_, _, E>("odd or even").parse(rest).is_ok() {
         Some(ChoiceType::OddOrEven)
-    } else if rest.starts_with("a basic land type") {
+    } else if tag::<_, _, E>("a basic land type").parse(rest).is_ok() {
         Some(ChoiceType::BasicLandType)
-    } else if rest.starts_with("a card type") {
+    } else if tag::<_, _, E>("a card type").parse(rest).is_ok() {
         Some(ChoiceType::CardType)
-    } else if rest.starts_with("a card name")
-        || rest.starts_with("a nonland card name")
-        || rest.starts_with("a creature card name")
+    } else if alt((
+        tag::<_, _, E>("a card name"),
+        tag("a nonland card name"),
+        tag("a creature card name"),
+    ))
+    .parse(rest)
+    .is_ok()
     {
         Some(ChoiceType::CardName)
-    } else if let Ok((range_rest, _)) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>(
-            "a number between ",
-        )
-        .parse(rest)
-    {
+    } else if let Ok((range_rest, _)) = tag::<_, _, E>("a number between ").parse(rest) {
         // "choose a number between 0 and 13"
         let mut parts = range_rest.splitn(3, ' ');
         let min = parts.next().and_then(|s| s.parse::<u8>().ok()).unwrap_or(0);
@@ -2308,12 +2296,7 @@ pub(crate) fn try_parse_named_choice(lower: &str) -> Option<ChoiceType> {
         } else {
             None
         }
-    } else if let Ok((gt_rest, _)) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>(
-            "a number greater than ",
-        )
-        .parse(rest)
-    {
+    } else if let Ok((gt_rest, _)) = tag::<_, _, E>("a number greater than ").parse(rest) {
         // "choose a number greater than 0" — open-ended, cap at 20
         let n = gt_rest
             .split_whitespace()
@@ -2324,17 +2307,20 @@ pub(crate) fn try_parse_named_choice(lower: &str) -> Option<ChoiceType> {
             min: n + 1,
             max: 20,
         })
-    } else if rest == "a number" || rest.starts_with("a number ") {
+    } else if rest == "a number" || tag::<_, _, E>("a number ").parse(rest).is_ok() {
         // Generic "choose a number" — default range 0-20
         Some(ChoiceType::NumberRange { min: 0, max: 20 })
-    } else if rest.starts_with("a land type") || rest.starts_with("a nonbasic land type") {
+    } else if alt((tag::<_, _, E>("a land type"), tag("a nonbasic land type")))
+        .parse(rest)
+        .is_ok()
+    {
         Some(ChoiceType::LandType)
-    } else if rest.starts_with("an opponent") {
+    } else if tag::<_, _, E>("an opponent").parse(rest).is_ok() {
         // CR 800.4a: Choose an opponent from among players in the game.
         Some(ChoiceType::Opponent)
-    } else if rest.starts_with("a player") {
+    } else if tag::<_, _, E>("a player").parse(rest).is_ok() {
         Some(ChoiceType::Player)
-    } else if rest.starts_with("two colors") {
+    } else if tag::<_, _, E>("two colors").parse(rest).is_ok() {
         Some(ChoiceType::TwoColors)
     } else {
         // Generic "X or Y" pattern — must come AFTER all specific patterns above
@@ -2368,13 +2354,10 @@ fn try_parse_binary_choice(rest: &str) -> Option<Vec<String>> {
 }
 
 fn parse_choose_filter(lower: &str) -> TargetFilter {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-
     // Extract type info between "choose" and "card from it"
     // Handle both "choose X" and "you choose X" forms
     let after_choose = alt((
-        tag::<_, _, nom_language::error::VerboseError<&str>>("you choose "),
+        tag::<_, _, VerboseError<&str>>("you choose "),
         tag("you may choose "),
         tag("choose "),
     ))
@@ -2476,7 +2459,12 @@ fn contains_explicit_tracked_set_pronoun(lower: &str) -> bool {
 /// the pronoun is in a return-to-battlefield construction.
 /// `lower` must be the pre-lowered version of the text.
 fn contains_implicit_tracked_set_pronoun(lower: &str) -> bool {
-    (lower.starts_with("return it ") || lower.starts_with("return them "))
+    alt((
+        tag::<_, _, VerboseError<&str>>("return it "),
+        tag("return them "),
+    ))
+    .parse(lower)
+    .is_ok()
         && lower.contains("battlefield")
 }
 
@@ -2524,21 +2512,20 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         // CR 608.2c: "Otherwise, [effect]" — attach as else_ability on the
         // most recent conditional def in the chain.
         let lower_check = normalized_text.to_lowercase();
-        let otherwise_prefix_len = if lower_check.starts_with("otherwise, ") {
-            Some("otherwise, ".len())
-        } else if lower_check.starts_with("otherwise ") {
-            Some("otherwise ".len())
-        } else if lower_check.starts_with("if not, ") {
-            Some("if not, ".len())
-        } else if lower_check.starts_with("if no player does, ") {
-            Some("if no player does, ".len())
-        } else if lower_check.starts_with("if no one does, ") {
-            Some("if no one does, ".len())
-        } else {
-            None
-        };
-        if let Some(prefix_len) = otherwise_prefix_len {
-            let else_text = &normalized_text[prefix_len..];
+        let otherwise_rest = nom_on_lower(normalized_text, &lower_check, |i| {
+            value(
+                (),
+                alt((
+                    tag("otherwise, "),
+                    tag("otherwise "),
+                    tag("if not, "),
+                    tag("if no player does, "),
+                    tag("if no one does, "),
+                )),
+            )
+            .parse(i)
+        });
+        if let Some((_, else_text)) = otherwise_rest {
             let else_def = parse_effect_chain_impl(else_text, kind, ctx);
             // Walk defs backward to find the most recent conditional
             let has_condition = defs.iter().any(|d| d.condition.is_some());
@@ -2737,8 +2724,11 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         // conjunctions. When a clause parses as Unimplemented and starts with "target",
         // inherit the verb from the previous successfully-parsed effect and re-parse.
         // Handles patterns like "destroy target artifact, target creature, ..." (Decimate).
+        let text_no_qty_lower = text_no_qty.to_lowercase();
         let clause = if matches!(clause.effect, Effect::Unimplemented { .. })
-            && text_no_qty.to_lowercase().starts_with("target ")
+            && tag::<_, _, VerboseError<&str>>("target ")
+                .parse(text_no_qty_lower.as_str())
+                .is_ok()
         {
             if let Some(verb) = defs
                 .last()
@@ -3037,11 +3027,10 @@ fn parse_search_library_details(lower: &str) -> SearchLibraryDetails {
 /// Parse "seek [count] [filter] card(s) [and put onto battlefield [tapped]]".
 /// Seek grammar is simpler than search: no "your library", no "for", no shuffle.
 fn parse_seek_details(lower: &str) -> types::SeekDetails {
-    let after_seek =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("seek ")
-            .parse(lower)
-            .map(|(rest, _)| rest)
-            .unwrap_or(lower);
+    let after_seek = tag::<_, _, VerboseError<&str>>("seek ")
+        .parse(lower)
+        .map(|(rest, _)| rest)
+        .unwrap_or(lower);
 
     // Extract destination clause before filter parsing, so it doesn't pollute the filter.
     let (filter_text, destination, enter_tapped) = {
@@ -3063,10 +3052,7 @@ fn parse_seek_details(lower: &str) -> types::SeekDetails {
     let (count, remaining) = if let Ok((rest, n)) = nom_primitives::parse_number.parse(filter_text)
     {
         (QuantityExpr::Fixed { value: n as i32 }, rest.trim_start())
-    } else if let Ok((rest, _)) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("x ")
-            .parse(filter_text)
-    {
+    } else if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("x ").parse(filter_text) {
         (
             QuantityExpr::Ref {
                 qty: QuantityRef::Variable {
@@ -3080,13 +3066,10 @@ fn parse_seek_details(lower: &str) -> types::SeekDetails {
     };
 
     // Strip leading article "a "/"an "
-    let remaining = nom::branch::alt((
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("a "),
-        nom::bytes::complete::tag("an "),
-    ))
-    .parse(remaining)
-    .map(|(rest, _)| rest)
-    .unwrap_or(remaining);
+    let remaining = alt((tag::<_, _, VerboseError<&str>>("a "), tag("an ")))
+        .parse(remaining)
+        .map(|(rest, _)| rest)
+        .unwrap_or(remaining);
 
     // Reuse the existing search filter parser
     let filter = parse_search_filter(remaining);
@@ -3318,20 +3301,12 @@ fn parse_search_filter_suffixes(text: &str, properties: &mut Vec<FilterProp>) {
     while !remaining.is_empty() {
         // Strip leading connectors
         remaining = remaining.trim_start();
-        if let Ok((r, _)) =
-            nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("and ")
-                .parse(remaining)
-        {
+        if let Ok((r, _)) = tag::<_, _, VerboseError<&str>>("and ").parse(remaining) {
             remaining = r.trim_start();
         }
 
         // "with that name" — matches cards with the same name as a previously-referenced card
-        if let Ok((rest, _)) =
-            nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>(
-                "with that name",
-            )
-            .parse(remaining)
-        {
+        if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("with that name").parse(remaining) {
             properties.push(FilterProp::SameName);
             remaining = rest.trim_start();
             continue;
@@ -3346,10 +3321,7 @@ fn parse_search_filter_suffixes(text: &str, properties: &mut Vec<FilterProp>) {
 
         // "with a different name than each [type] you control"
         if let Ok((rest, _)) =
-            nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>(
-                "with a different name than each ",
-            )
-            .parse(remaining)
+            tag::<_, _, VerboseError<&str>>("with a different name than each ").parse(remaining)
         {
             // Extract the inner type word (e.g., "aura")
             let end = rest
@@ -3411,7 +3383,10 @@ pub(crate) fn capitalize(s: &str) -> String {
 
 fn split_leading_conditional(text: &str) -> Option<(String, String)> {
     let lower = text.to_lowercase();
-    if !lower.starts_with("if ") {
+    if tag::<_, _, VerboseError<&str>>("if ")
+        .parse(lower.as_str())
+        .is_err()
+    {
         return None;
     }
 
@@ -3450,15 +3425,11 @@ fn split_leading_conditional(text: &str) -> Option<(String, String)> {
 ///
 /// CR 702.32b + CR 608.2e
 fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, String) {
-    use nom::bytes::complete::tag;
-
-    use super::oracle_nom::bridge::nom_on_lower;
-
     let lower = text.to_lowercase();
 
     // Gift negated: "if the gift wasn't promised, ..."
     if let Some((_, rest)) = nom_on_lower(text, &lower, |i| {
-        nom::combinator::value((), tag("if the gift wasn't promised, ")).parse(i)
+        value((), tag("if the gift wasn't promised, ")).parse(i)
     }) {
         return (
             Some(AbilityCondition::AdditionalCostNotPaid),
@@ -3468,7 +3439,10 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
 
     // CR 702.32b: Negated kicker: "if it wasn't kicked", "if this spell wasn't kicked",
     // "then if it wasn't kicked" — produces AdditionalCostNotPaid.
-    if lower.starts_with("if ") || lower.starts_with("then if ") {
+    if alt((tag::<_, _, VerboseError<&str>>("if "), tag("then if ")))
+        .parse(lower.as_str())
+        .is_ok()
+    {
         if let Some((_, rest)) = lower
             .split_once(" wasn't kicked, ")
             .or_else(|| lower.split_once(" wasn't bargained, "))
@@ -3484,9 +3458,9 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
     // Try the legacy phrasing first: "if this spell's additional cost was paid, ..."
     // Gift: "if the gift was promised, ..."
     let body = if let Some(((), rest)) = nom_on_lower(text, &lower, |input| {
-        nom::combinator::value(
+        value(
             (),
-            nom::branch::alt((
+            alt((
                 tag("if this spell's additional cost was paid, "),
                 tag("if the gift was promised, "),
             )),
@@ -3498,7 +3472,10 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
     // Unified kicker/bargain pattern: "if <subject> was kicked/bargained, ..."
     // Covers "if this spell was kicked", "if it was kicked", "if ~ was kicked",
     // "if this spell was bargained", etc.
-    else if lower.starts_with("if ") {
+    else if tag::<_, _, VerboseError<&str>>("if ")
+        .parse(lower.as_str())
+        .is_ok()
+    {
         lower
             .split_once(" was kicked, ")
             .or_else(|| lower.split_once(" was bargained, "))
@@ -3559,12 +3536,6 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
 /// "When you do" is a reflexive trigger (CR 603.12) that unconditionally fires when the
 /// parent non-optional effect was performed.
 fn strip_if_you_do_conditional(text: &str) -> (Option<AbilityCondition>, String) {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-    use nom::combinator::value;
-
-    use super::oracle_nom::bridge::nom_on_lower;
-
     let lower = text.to_lowercase();
 
     // CR 603.12 + CR 608.2d + CR 608.2c: Parse leading conditional prefixes using nom.
@@ -3589,13 +3560,10 @@ fn strip_if_you_do_conditional(text: &str) -> (Option<AbilityCondition>, String)
     // evaluated against state.last_zone_changed_ids at resolution time.
     // Covers: "if a permanent was returned this way", "if a land card was milled this way", etc.
     if let Some(after_article) = {
-        let r: Option<&str> = alt((
-            tag::<_, _, nom_language::error::VerboseError<&str>>("if a "),
-            tag("if an "),
-        ))
-        .parse(lower.as_str())
-        .ok()
-        .map(|(rest, _)| rest);
+        let r: Option<&str> = alt((tag::<_, _, VerboseError<&str>>("if a "), tag("if an ")))
+            .parse(lower.as_str())
+            .ok()
+            .map(|(rest, _)| rest);
         r
     } {
         if let Some((noun_phrase, after_was)) = after_article.split_once(" was ") {
@@ -3643,12 +3611,6 @@ fn strip_unless_entered_suffix(text: &str) -> (Option<AbilityCondition>, String)
 /// Handles both "if you cast it from your hand, [effect]" (inline) and
 /// "if you cast it from your hand" (standalone, when comma was consumed as boundary).
 fn strip_cast_from_zone_conditional(text: &str) -> (Option<AbilityCondition>, String) {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-    use nom::combinator::value;
-
-    use super::oracle_nom::bridge::nom_on_lower;
-
     let lower = text.to_lowercase();
     if let Some((zone, rest)) = nom_on_lower(text, &lower, |input| {
         alt((
@@ -3672,13 +3634,10 @@ fn strip_cast_from_zone_conditional(text: &str) -> (Option<AbilityCondition>, St
 /// Returns the condition and remaining effect text.
 /// Covers 80+ cards with "reveal → if [type] → zone change" patterns.
 fn strip_card_type_conditional(text: &str) -> (Option<AbilityCondition>, String) {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-
     let lower = text.to_lowercase();
     // Pattern: "if it's a/an [non][type] [card], [effect]"
     let rest = alt((
-        tag::<_, _, nom_language::error::VerboseError<&str>>("if it's a "),
+        tag::<_, _, VerboseError<&str>>("if it's a "),
         tag("if it's an "),
     ))
     .parse(lower.as_str())
@@ -3687,11 +3646,10 @@ fn strip_card_type_conditional(text: &str) -> (Option<AbilityCondition>, String)
     let Some(rest) = rest else {
         return (None, text.to_string());
     };
-    let (rest, negated) =
-        nom::combinator::opt(tag::<_, _, nom_language::error::VerboseError<&str>>("non"))
-            .parse(rest)
-            .map(|(r, matched)| (r, matched.is_some()))
-            .unwrap_or((rest, false));
+    let (rest, negated) = opt(tag::<_, _, VerboseError<&str>>("non"))
+        .parse(rest)
+        .map(|(r, matched)| (r, matched.is_some()))
+        .unwrap_or((rest, false));
     // Try to find " card" to extract type word(s), but also handle bare "if it's a land,"
     let (type_str, after_type) = if let Some(type_end) = rest.find(" card") {
         (&rest[..type_end], &rest[type_end + " card".len()..])
@@ -3719,20 +3677,13 @@ fn strip_card_type_conditional(text: &str) -> (Option<AbilityCondition>, String)
 /// Parse "it's a/an [non][type] [card]" condition text into `AbilityCondition::RevealedHasCardType`.
 /// Shared by suffix conditional stripping (e.g. "put it onto the battlefield if it's a land card").
 fn parse_its_a_type_condition(condition_text: &str) -> Option<AbilityCondition> {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-
-    let (rest, _) = alt((
-        tag::<_, _, nom_language::error::VerboseError<&str>>("it's a "),
-        tag("it's an "),
-    ))
-    .parse(condition_text)
-    .ok()?;
-    let (rest, negated) =
-        nom::combinator::opt(tag::<_, _, nom_language::error::VerboseError<&str>>("non"))
-            .parse(rest)
-            .map(|(r, matched)| (r, matched.is_some()))
-            .unwrap_or((rest, false));
+    let (rest, _) = alt((tag::<_, _, VerboseError<&str>>("it's a "), tag("it's an ")))
+        .parse(condition_text)
+        .ok()?;
+    let (rest, negated) = opt(tag::<_, _, VerboseError<&str>>("non"))
+        .parse(rest)
+        .map(|(r, matched)| (r, matched.is_some()))
+        .unwrap_or((rest, false));
     // Strip trailing " card" if present
     let type_str = rest
         .strip_suffix(" card")
@@ -3753,12 +3704,9 @@ fn try_parse_type_setting(text: &str) -> Option<AbilityDefinition> {
     let lower = text.to_lowercase();
     let lower = lower.trim_end_matches('.');
 
-    let (type_name, _) = nom::branch::alt((
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("it's a "),
-        nom::bytes::complete::tag("it's an "),
-    ))
-    .parse(lower)
-    .ok()?;
+    let (type_name, _) = alt((tag::<_, _, VerboseError<&str>>("it's a "), tag("it's an ")))
+        .parse(lower)
+        .ok()?;
 
     let type_name = type_name.trim();
     let capitalized = format!("{}{}", &type_name[..1].to_uppercase(), &type_name[1..]);
@@ -3791,12 +3739,6 @@ fn try_parse_type_setting(text: &str) -> Option<AbilityDefinition> {
 /// CR 608.2c: Strip "if it's your turn" / "if it's not your turn" prefix.
 /// Returns the condition and the remaining effect text.
 fn strip_turn_conditional(text: &str) -> (Option<AbilityCondition>, String) {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-    use nom::combinator::value;
-
-    use super::oracle_nom::bridge::nom_on_lower;
-
     let lower = text.to_lowercase();
     if let Some((negated, rest)) = nom_on_lower(text, &lower, |input| {
         alt((
@@ -3881,13 +3823,10 @@ fn strip_property_conditional(text: &str) -> (Option<AbilityCondition>, String) 
 /// Handles patterns like:
 /// - "If that creature has flying, it deals twice that much damage to itself instead."
 fn strip_target_keyword_instead(text: &str) -> (Option<AbilityCondition>, String) {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-
     let lower = text.to_lowercase();
     // "if that creature has [keyword], [body] instead"
     let prefix = alt((
-        tag::<_, _, nom_language::error::VerboseError<&str>>("if that creature has "),
+        tag::<_, _, VerboseError<&str>>("if that creature has "),
         tag("if that permanent has "),
     ))
     .parse(lower.as_str())
@@ -3924,31 +3863,21 @@ fn strip_target_keyword_instead(text: &str) -> (Option<AbilityCondition>, String
 /// - "four or more quest counters on it" → (GE, 4, "quest", len)
 /// - "no ice counters on it" → (EQ, 0, "ice", len)
 fn parse_counter_threshold(text: &str) -> Option<(Comparator, i32, String, usize)> {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-    use nom::combinator::value;
-
     let original_len = text.len();
 
     /// Parse "counters on it"/"counter on it"/"counters on this"/"counter on this" suffix.
     fn parse_counter_on_suffix(after_type: &str) -> Option<&str> {
-        let (after_counter, _) = nom::branch::alt((
-            nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("counters"),
-            nom::bytes::complete::tag("counter"),
-        ))
-        .parse(after_type)
-        .ok()?;
-        let (after_on, _) = nom::branch::alt((
-            nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("on it"),
-            nom::bytes::complete::tag("on this"),
-        ))
-        .parse(after_counter.trim_start())
-        .ok()?;
+        let (after_counter, _) = alt((tag::<_, _, VerboseError<&str>>("counters"), tag("counter")))
+            .parse(after_type)
+            .ok()?;
+        let (after_on, _) = alt((tag::<_, _, VerboseError<&str>>("on it"), tag("on this")))
+            .parse(after_counter.trim_start())
+            .ok()?;
         Some(after_on)
     }
 
     // "no [type] counters on it" → EQ(0)
-    if let Ok((rest, _)) = tag::<_, _, nom_language::error::VerboseError<&str>>("no ").parse(text) {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("no ").parse(text) {
         let type_end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
         let raw_type = &rest[..type_end];
         let counter_type = counter::normalize_counter_type(raw_type);
@@ -3962,7 +3891,7 @@ fn parse_counter_threshold(text: &str) -> Option<(Comparator, i32, String, usize
     // Delegate to nom combinator (input already lowercase).
     let (rest, n) = nom_primitives::parse_number.parse(text).ok()?;
     let rest = rest.trim_start();
-    type E<'a> = nom_language::error::VerboseError<&'a str>;
+    type E<'a> = VerboseError<&'a str>;
     let (rest, comparator) = alt((
         value(Comparator::GE, tag::<_, _, E>("or more ")),
         value(Comparator::LE, tag("or fewer ")),
@@ -4003,10 +3932,7 @@ fn strip_counter_conditional(text: &str) -> (Option<AbilityCondition>, String) {
     let tp = TextPair::new(text, &lower);
 
     // Prefix: "if it has [threshold] [type] counters on it, [remainder]"
-    if let Ok((rest, _)) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("if it has ")
-            .parse(lower.as_str())
-    {
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("if it has ").parse(lower.as_str()) {
         if let Some((comparator, threshold, counter_type, consumed)) = parse_counter_threshold(rest)
         {
             let after = rest[consumed..].trim_start();
@@ -4120,13 +4046,9 @@ fn strip_suffix_conditional(text: &str) -> (Option<AbilityCondition>, String) {
 /// Handles: "greater than {qty}", "less than {qty}", "equal to {qty}",
 /// "greater than or equal to {qty}", "{N} or greater", "{N} or less".
 fn parse_quantity_comparison(text: &str) -> Option<(Comparator, QuantityExpr)> {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-    use nom::combinator::value;
-
     // Longer prefixes first to avoid "greater than" matching before "greater than or equal to".
     // nom alt() tries in order and returns the first success.
-    type E<'a> = nom_language::error::VerboseError<&'a str>;
+    type E<'a> = VerboseError<&'a str>;
     let mut comparator_prefixes = alt((
         value(Comparator::GE, tag::<_, _, E>("greater than or equal to ")),
         value(Comparator::LE, tag("less than or equal to ")),
@@ -4176,10 +4098,9 @@ fn try_parse_generic_instead_clause(text: &str, kind: AbilityKind) -> Option<Abi
         return None;
     }
     // Must start with "if " to be a conditional-instead clause
-    let (rest, _) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("if ")
-            .parse(lower.as_str())
-            .ok()?;
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("if ")
+        .parse(lower.as_str())
+        .ok()?;
     // Find the comma separating the condition from the effect
     let comma_pos = rest.find(", ")?;
     let condition_text = &rest[..comma_pos];
@@ -4202,15 +4123,13 @@ fn try_parse_generic_instead_clause(text: &str, kind: AbilityKind) -> Option<Abi
 /// Parse "you control N or more [type]" as an AbilityCondition::QuantityCheck.
 /// Converts the control-count pattern into a quantity comparison for resolution-time evaluation.
 fn parse_control_count_as_ability_condition(text: &str) -> Option<AbilityCondition> {
-    use nom::bytes::complete::tag;
-
     let text = text.trim();
-    let (rest, _) = tag::<_, _, nom_language::error::VerboseError<&str>>("you control ")
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("you control ")
         .parse(text)
         .ok()?;
     // Delegate to nom combinator (input already lowercase).
     let (after_n, n) = nom_primitives::parse_number.parse(rest).ok()?;
-    let (or_more, _) = tag::<_, _, nom_language::error::VerboseError<&str>>("or more ")
+    let (or_more, _) = tag::<_, _, VerboseError<&str>>("or more ")
         .parse(after_n.trim_start())
         .ok()?;
     let (mut filter, leftover) = parse_type_phrase(or_more);
@@ -4238,12 +4157,6 @@ fn strip_optional_effect_prefix(
     Option<crate::types::ability::OpponentMayScope>,
     String,
 ) {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-    use nom::combinator::value;
-
-    use super::oracle_nom::bridge::nom_on_lower;
-
     let lower = text.to_lowercase();
     // CR 608.2d: "any opponent may" — opponent-choice optional effect.
     // "you may" — standard optional effect prefix.
@@ -4267,12 +4180,8 @@ fn strip_optional_effect_prefix(
 /// Returns the QuantityExpr for the iteration count and the remaining text.
 /// "For as long as" is NOT matched (different construct — duration, not iteration).
 fn strip_for_each_prefix(text: &str) -> (Option<QuantityExpr>, String) {
-    use super::oracle_nom::bridge::nom_on_lower;
-
     let lower = text.to_lowercase();
-    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| {
-        nom::combinator::value((), nom::bytes::complete::tag("for each ")).parse(i)
-    }) {
+    if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("for each ")).parse(i)) {
         let rest_lower = &lower[text.len() - rest.len()..];
         if let Some((clause, remainder)) = rest_lower.split_once(", ") {
             if let Some(qty) = parse_for_each_clause(clause) {
@@ -4322,16 +4231,18 @@ fn strip_repeat_count_suffix(text: &str) -> (Option<QuantityExpr>, String) {
 /// "Each player draws a card" → (Some(All), "draw a card")
 fn strip_each_player_subject(text: &str) -> (Option<PlayerFilter>, String) {
     let lower = text.to_lowercase();
-    let (scope, rest) = if lower.starts_with("each player with the highest speed among players ") {
-        (
-            PlayerFilter::HighestSpeed,
-            &text["each player with the highest speed among players ".len()..],
-        )
-    } else if lower.starts_with("each opponent ") {
-        (PlayerFilter::Opponent, &text["each opponent ".len()..])
-    } else if lower.starts_with("each player ") {
-        (PlayerFilter::All, &text["each player ".len()..])
-    } else {
+    let scope_rest = nom_on_lower(text, &lower, |i| {
+        alt((
+            value(
+                PlayerFilter::HighestSpeed,
+                tag("each player with the highest speed among players "),
+            ),
+            value(PlayerFilter::Opponent, tag("each opponent ")),
+            value(PlayerFilter::All, tag("each player ")),
+        ))
+        .parse(i)
+    });
+    let Some((scope, rest)) = scope_rest else {
         return (None, text.to_string());
     };
 
@@ -4339,12 +4250,16 @@ fn strip_each_player_subject(text: &str) -> (Option<PlayerFilter>, String) {
     // "may not") belong to the static parser, not the imperative effect pipeline.
     // Intercepting them here would produce Unimplemented instead of typed static modes.
     let rest_lower = rest.trim().to_lowercase();
-    if rest_lower.starts_with("can't")
-        || rest_lower.starts_with("cannot")
-        || rest_lower.starts_with("don't")
-        || rest_lower.starts_with("may only")
-        || rest_lower.starts_with("may not")
-        || rest_lower.starts_with("may cast")
+    if alt((
+        tag::<_, _, VerboseError<&str>>("can't"),
+        tag("cannot"),
+        tag("don't"),
+        tag("may only"),
+        tag("may not"),
+        tag("may cast"),
+    ))
+    .parse(rest_lower.as_str())
+    .is_ok()
     {
         return (None, text.to_string());
     }
@@ -4356,25 +4271,22 @@ fn strip_each_player_subject(text: &str) -> (Option<PlayerFilter>, String) {
 
 fn strip_leading_duration(text: &str) -> Option<(Duration, &str)> {
     let lower = text.to_lowercase();
-    for (prefix, duration) in [
-        ("until end of turn, ", Duration::UntilEndOfTurn),
-        (
-            "until the end of your next turn, ",
-            Duration::UntilYourNextTurn,
-        ),
-        ("until your next turn, ", Duration::UntilYourNextTurn),
-    ] {
-        if lower.starts_with(prefix) {
-            return Some((duration, text[prefix.len()..].trim()));
-        }
+    if let Some((duration, rest)) = nom_on_lower(text, &lower, |i| {
+        alt((
+            value(Duration::UntilEndOfTurn, tag("until end of turn, ")),
+            value(
+                Duration::UntilYourNextTurn,
+                tag("until the end of your next turn, "),
+            ),
+            value(Duration::UntilYourNextTurn, tag("until your next turn, ")),
+        ))
+        .parse(i)
+    }) {
+        return Some((duration, rest.trim()));
     }
 
     // CR 611.2b: "For as long as [condition], [effect]" — leading duration prefix.
-    if let Ok((rest, _)) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>(
-            "for as long as ",
-        )
-        .parse(lower.as_str())
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("for as long as ").parse(lower.as_str())
     {
         // Find the comma that separates the condition from the effect body.
         if let Some(comma_pos) = rest.find(", ") {
@@ -4460,7 +4372,10 @@ fn parse_for_as_long_as_condition(condition: &str) -> Option<Duration> {
     }
 
     // "you control ~" / "you control this creature"
-    if condition.starts_with("you control ") {
+    if tag::<_, _, VerboseError<&str>>("you control ")
+        .parse(condition)
+        .is_ok()
+    {
         return Some(Duration::UntilHostLeavesPlay);
     }
 
@@ -4540,21 +4455,22 @@ fn strip_temporal_suffix(text: &str) -> (&str, Option<DelayedTriggerCondition>) 
 /// "At the beginning of the next end step, untap up to two lands."
 fn strip_temporal_prefix(text: &str) -> (&str, Option<DelayedTriggerCondition>) {
     let lower = text.to_lowercase();
-    for (prefix, condition) in [
-        (
-            "at the beginning of the next end step, ",
-            DelayedTriggerCondition::AtNextPhase { phase: Phase::End },
-        ),
-        (
-            "at the beginning of the next upkeep, ",
-            DelayedTriggerCondition::AtNextPhase {
-                phase: Phase::Upkeep,
-            },
-        ),
-    ] {
-        if lower.starts_with(prefix) {
-            return (&text[prefix.len()..], Some(condition));
-        }
+    if let Some((condition, rest)) = nom_on_lower(text, &lower, |i| {
+        alt((
+            value(
+                DelayedTriggerCondition::AtNextPhase { phase: Phase::End },
+                tag("at the beginning of the next end step, "),
+            ),
+            value(
+                DelayedTriggerCondition::AtNextPhase {
+                    phase: Phase::Upkeep,
+                },
+                tag("at the beginning of the next upkeep, "),
+            ),
+        ))
+        .parse(i)
+    }) {
+        return (rest, Some(condition));
     }
     (text, None)
 }
@@ -4597,15 +4513,8 @@ const MULTI_TARGET_VERBS: &[&str] = &[
 /// "three target artifacts" → (3, "target artifacts")
 /// Returns None if text doesn't start with a number word followed by "target".
 fn strip_numeric_target_prefix(lower: &str) -> Option<(usize, &str)> {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-    use nom::combinator::value;
-
     let (rest, count) = alt((
-        value(
-            2usize,
-            tag::<_, _, nom_language::error::VerboseError<&str>>("two "),
-        ),
+        value(2usize, tag::<_, _, VerboseError<&str>>("two ")),
         value(3, tag("three ")),
         value(4, tag("four ")),
         value(5, tag("five ")),
@@ -4613,7 +4522,10 @@ fn strip_numeric_target_prefix(lower: &str) -> Option<(usize, &str)> {
     ))
     .parse(lower)
     .ok()?;
-    if rest.starts_with("target ") || rest.starts_with("target,") {
+    if alt((tag::<_, _, VerboseError<&str>>("target "), tag("target,")))
+        .parse(rest)
+        .is_ok()
+    {
         Some((count, rest))
     } else {
         None
@@ -4625,9 +4537,7 @@ fn strip_numeric_target_prefix(lower: &str) -> Option<(usize, &str)> {
 /// "up to one other target creature or spell" → ("other target creature or spell", Some { ... })
 pub(super) fn strip_optional_target_prefix(text: &str) -> (&str, Option<MultiTargetSpec>) {
     let lower = text.to_ascii_lowercase();
-    let Ok((after_up_to, _)) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("up to ")
-            .parse(lower.as_str())
+    let Ok((after_up_to, _)) = tag::<_, _, VerboseError<&str>>("up to ").parse(lower.as_str())
     else {
         return (text, None);
     };
@@ -4638,9 +4548,13 @@ pub(super) fn strip_optional_target_prefix(text: &str) -> (&str, Option<MultiTar
     let consumed = lower.len() - remainder.len();
     let rest = text[consumed..].trim_start();
     let rest_lower = rest.to_ascii_lowercase();
-    if !(rest_lower.starts_with("target ")
-        || rest_lower.starts_with("other target ")
-        || rest_lower.starts_with("another target "))
+    if alt((
+        tag::<_, _, VerboseError<&str>>("target "),
+        tag("other target "),
+        tag("another target "),
+    ))
+    .parse(rest_lower.as_str())
+    .is_err()
     {
         return (text, None);
     }
@@ -4668,7 +4582,7 @@ fn strip_any_number_quantifier(text: &str) -> (String, Option<MultiTargetSpec>) 
 
     if let Some((_, rest_orig)) =
         super::oracle_nom::bridge::nom_on_lower(after_verb_tp.original, after_verb_tp.lower, |i| {
-            nom::combinator::value((), nom::bytes::complete::tag("any number of ")).parse(i)
+            value((), tag("any number of ")).parse(i)
         })
     {
         let rebuilt = format!("{}{}", verb_tp.original, rest_orig);
@@ -4676,7 +4590,7 @@ fn strip_any_number_quantifier(text: &str) -> (String, Option<MultiTargetSpec>) 
     }
     if let Some((_, after_up_to_orig)) =
         super::oracle_nom::bridge::nom_on_lower(after_verb_tp.original, after_verb_tp.lower, |i| {
-            nom::combinator::value((), nom::bytes::complete::tag("up to ")).parse(i)
+            value((), tag("up to ")).parse(i)
         })
     {
         let after_up_to_lower =
@@ -4909,7 +4823,10 @@ fn strip_return_destination_ext(text: &str) -> (&str, Option<ReturnDestination>)
 fn try_parse_distribute_damage(lower: &str, text: &str) -> Option<ParsedEffectClause> {
     let tp = TextPair::new(text, lower);
     let pos = tp.find("deals ").or_else(|| tp.find("deal "))?;
-    let verb_len = if lower[pos..].starts_with("deals ") {
+    let verb_len = if tag::<_, _, VerboseError<&str>>("deals ")
+        .parse(&lower[pos..])
+        .is_ok()
+    {
         6
     } else {
         5
@@ -4918,7 +4835,7 @@ fn try_parse_distribute_damage(lower: &str, text: &str) -> Option<ParsedEffectCl
 
     let (amount, rest_tp) =
         if let Some((qty, rem)) = super::oracle_util::parse_count_expr(after_tp.lower) {
-            if rem.starts_with("damage") {
+            if tag::<_, _, VerboseError<&str>>("damage").parse(rem).is_ok() {
                 let skip = after_tp.lower.len() - rem.len() + "damage".len();
                 let (_, rest) = after_tp.split_at(skip);
                 (qty, rest)
@@ -4954,8 +4871,10 @@ fn try_parse_distribute_damage(lower: &str, text: &str) -> Option<ParsedEffectCl
 
     // CR 115.1d: Detect "any number of" quantifier before the target phrase.
     let target_lower = target_text.to_lowercase();
-    let (stripped_target_text, multi_target) = if target_lower.starts_with("any number of ") {
-        let skip = "any number of ".len();
+    let (stripped_target_text, multi_target) = if let Ok((rest, _)) =
+        tag::<_, _, VerboseError<&str>>("any number of ").parse(target_lower.as_str())
+    {
+        let skip = target_lower.len() - rest.len();
         (
             &target_text[skip..],
             // CR 601.2d: min: 1 because each target must receive at least 1.
@@ -4983,10 +4902,9 @@ fn try_parse_distribute_damage(lower: &str, text: &str) -> Option<ParsedEffectCl
 /// → Effect::PutCounter with distribute flag set.
 fn try_parse_distribute_counters(lower: &str, text: &str) -> Option<ParsedEffectClause> {
     // "distribute " is 11 bytes; Oracle text is ASCII so byte == char offsets.
-    let (after_lower, _) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("distribute ")
-            .parse(lower)
-            .ok()?;
+    let (after_lower, _) = tag::<_, _, VerboseError<&str>>("distribute ")
+        .parse(lower)
+        .ok()?;
     let (count_expr, rest_lower) = super::oracle_util::parse_count_expr(after_lower)?;
 
     let type_end = rest_lower
@@ -4997,9 +4915,15 @@ fn try_parse_distribute_counters(lower: &str, text: &str) -> Option<ParsedEffect
 
     // Require "counter(s)" immediately after the counter type word.
     let after_type = rest_lower[type_end..].trim_start();
-    let counter_word_len = if after_type.starts_with("counters") {
+    let counter_word_len = if tag::<_, _, VerboseError<&str>>("counters")
+        .parse(after_type)
+        .is_ok()
+    {
         "counters".len()
-    } else if after_type.starts_with("counter") {
+    } else if tag::<_, _, VerboseError<&str>>("counter")
+        .parse(after_type)
+        .is_ok()
+    {
         "counter".len()
     } else {
         return None;
@@ -5013,8 +4937,10 @@ fn try_parse_distribute_counters(lower: &str, text: &str) -> Option<ParsedEffect
     // CR 115.1d: Detect "any number of" quantifier before the target phrase.
     let target_text = &text[target_offset..];
     let target_text_lower = &lower[target_offset..];
-    let (stripped_target, multi_target) = if target_text_lower.starts_with("any number of ") {
-        let skip = "any number of ".len();
+    let (stripped_target, multi_target) = if let Ok((rest, _)) =
+        tag::<_, _, VerboseError<&str>>("any number of ").parse(target_text_lower)
+    {
+        let skip = target_text_lower.len() - rest.len();
         (
             &target_text[skip..],
             // CR 601.2d: min: 1 because each target must receive at least 1.
@@ -5070,7 +4996,10 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
     // and variable forms like "deal that much damage" or
     // "deal damage equal to its power".
     let pos = lower.find("deals ").or_else(|| lower.find("deal "))?;
-    let verb_len = if lower[pos..].starts_with("deals ") {
+    let verb_len = if tag::<_, _, VerboseError<&str>>("deals ")
+        .parse(&lower[pos..])
+        .is_ok()
+    {
         6
     } else {
         5
@@ -5081,13 +5010,19 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
     let (amount, after_target) = if let Some((qty, rest)) =
         super::oracle_util::parse_count_expr(after_lower)
     {
-        if rest.starts_with("damage") {
+        if tag::<_, _, VerboseError<&str>>("damage")
+            .parse(rest)
+            .is_ok()
+        {
             (qty, &after[after.len() - rest.len() + "damage".len()..])
         } else {
             return None;
         }
-    } else if after_lower.starts_with("twice that much damage") {
+    } else if let Ok((rem, _)) =
+        tag::<_, _, VerboseError<&str>>("twice that much damage").parse(after_lower)
+    {
         // CR 120.8: "twice that much damage" → Multiply { factor: 2, inner: EventContextAmount }
+        let consumed = after_lower.len() - rem.len();
         (
             QuantityExpr::Multiply {
                 factor: 2,
@@ -5095,21 +5030,23 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
                     qty: QuantityRef::EventContextAmount,
                 }),
             },
-            &after["twice that much damage".len()..],
+            &after[consumed..],
         )
-    } else if after_lower.starts_with("that much damage") {
+    } else if let Ok((rem, _)) =
+        tag::<_, _, VerboseError<&str>>("that much damage").parse(after_lower)
+    {
+        let consumed = after_lower.len() - rem.len();
         (
             QuantityExpr::Ref {
                 qty: QuantityRef::EventContextAmount,
             },
-            &after["that much damage".len()..],
+            &after[consumed..],
         )
-    } else if after_lower.starts_with("damage to ") {
+    } else if let Some(rest) = after_lower.strip_prefix("damage to ") {
         // Pattern: "damage to [target] equal to [amount]"
         // Used by: "deals damage to itself equal to its power",
         //          "deals damage to each player equal to the number of ...",
         //          "deals damage to that player equal to the number of ..."
-        let rest = after_lower.strip_prefix("damage to ").unwrap();
         if let Some((target_phrase, amount_phrase)) = rest.split_once(" equal to ") {
             let amount_phrase = amount_phrase
                 .trim_end_matches('.')
@@ -5140,7 +5077,10 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
                         },
                         "",
                     ));
-                } else if target_phrase.starts_with("each ") {
+                } else if tag::<_, _, VerboseError<&str>>("each ")
+                    .parse(target_phrase)
+                    .is_ok()
+                {
                     // "each player" → DamageEachPlayer (per-player varying damage)
                     // "each creature" → DamageAll (uniform damage to objects)
                     if target_phrase.contains("player") || target_phrase.contains("opponent") {
@@ -5190,8 +5130,11 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
             }
         }
         return None;
-    } else if after_lower.starts_with("damage equal to ") {
-        let amount_text = &after["damage equal to ".len()..];
+    } else if let Ok((rem, _)) =
+        tag::<_, _, VerboseError<&str>>("damage equal to ").parse(after_lower)
+    {
+        let consumed = after_lower.len() - rem.len();
+        let amount_text = &after[consumed..];
         let to_pos = amount_text.to_lowercase().find(" to ")?;
         let qty_text = amount_text[..to_pos].trim();
         let qty = crate::parser::oracle_quantity::parse_event_context_quantity(qty_text)
@@ -5210,14 +5153,21 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
         .strip_prefix("to ")
         .unwrap_or(after_target)
         .trim();
-    if after_to.starts_with("each ") {
+    if tag::<_, _, VerboseError<&str>>("each ")
+        .parse(after_to)
+        .is_ok()
+    {
         let (target, rem) = parse_target(after_to);
         return Some((Effect::DamageAll { amount, target }, rem));
     }
 
     // CR 120.3: "itself" — the source creature is both damage source and recipient.
     let after_to_lower = after_to.to_lowercase();
-    if after_to_lower == "itself" || after_to_lower.starts_with("itself ") {
+    if after_to_lower == "itself"
+        || tag::<_, _, VerboseError<&str>>("itself ")
+            .parse(after_to_lower.as_str())
+            .is_ok()
+    {
         return Some((
             Effect::DealDamage {
                 amount,
@@ -5255,7 +5205,10 @@ fn try_parse_pump(lower: &str, text: &str) -> Option<Effect> {
     // Match "+N/+M", "+X/+0", "-X/-X", etc.
     let tp = TextPair::new(text, lower);
     let re_pos = tp.find("gets ").or_else(|| tp.find("get "))?;
-    let offset = if lower[re_pos..].starts_with("gets ") {
+    let offset = if tag::<_, _, VerboseError<&str>>("gets ")
+        .parse(&lower[re_pos..])
+        .is_ok()
+    {
         5
     } else {
         4
@@ -5280,14 +5233,11 @@ fn parse_pump_clause(predicate: &str) -> Option<(PtValue, PtValue, Option<Durati
     let (without_duration, duration) = strip_trailing_duration(without_where.original);
     let lower = without_duration.to_lowercase();
 
-    let after = if lower.starts_with("gets ") {
-        &without_duration[5..]
-    } else if lower.starts_with("get ") {
-        &without_duration[4..]
-    } else {
-        return None;
-    }
-    .trim_start();
+    let after = nom_on_lower(without_duration, &lower, |i| {
+        value((), alt((tag("gets "), tag("get ")))).parse(i)
+    });
+    let (_, after) = after?;
+    let after = after.trim_start();
 
     let token_end = after
         .find(|c: char| c.is_whitespace() || c == ',' || c == '.')
@@ -5326,9 +5276,6 @@ pub(crate) fn strip_trailing_where_x<'a>(tp: TextPair<'a>) -> (TextPair<'a>, Opt
 }
 
 fn strip_leading_sequence_connector(text: &str) -> &str {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-
     let trimmed = text.trim_start();
 
     if trimmed.eq_ignore_ascii_case("then") {
@@ -5338,7 +5285,7 @@ fn strip_leading_sequence_connector(text: &str) -> &str {
     // Try to strip a leading sequence connector using nom alt().
     // Mixed case requires explicit variants since nom tag() is exact-match.
     match alt((
-        tag::<_, _, nom_language::error::VerboseError<&str>>("Then, "),
+        tag::<_, _, VerboseError<&str>>("Then, "),
         tag("Then "),
         tag("then, "),
         tag("then "),
@@ -5470,13 +5417,9 @@ fn parse_signed_pt_component(text: &str) -> Option<PtValue> {
         return None;
     }
 
-    let (sign, body) = if let Ok((rest, _)) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("+").parse(text)
-    {
+    let (sign, body) = if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("+").parse(text) {
         (1, rest.trim())
-    } else if let Ok((rest, _)) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("-").parse(text)
-    {
+    } else if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("-").parse(text) {
         (-1, rest.trim())
     } else {
         (1, text)
@@ -5569,10 +5512,9 @@ fn parse_unless_payment(lower: &str) -> Option<UnlessCost> {
 /// Parse "where X is this creature's power" and similar dynamic quantity clauses.
 fn parse_where_x_is(text: &str) -> Option<QuantityExpr> {
     let trimmed = text.trim().trim_start_matches(',').trim();
-    let (rest, _) =
-        nom::bytes::complete::tag::<_, _, nom_language::error::VerboseError<&str>>("where x is ")
-            .parse(trimmed)
-            .ok()?;
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("where x is ")
+        .parse(trimmed)
+        .ok()?;
     if rest.contains("power") {
         Some(QuantityExpr::Ref {
             qty: QuantityRef::SelfPower,
@@ -5653,11 +5595,7 @@ fn constrain_filter_to_stack(filter: TargetFilter) -> TargetFilter {
 ///
 /// An optional trailing "to [target phrase]" sets `forced_to`.
 fn try_parse_change_targets(lower: &str) -> Option<Effect> {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag;
-    use nom::combinator::value;
-
-    type E<'a> = nom_language::error::VerboseError<&'a str>;
+    type E<'a> = VerboseError<&'a str>;
 
     let (rest, scope) = alt((
         value(
