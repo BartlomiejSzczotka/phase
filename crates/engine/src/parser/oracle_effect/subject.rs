@@ -135,9 +135,7 @@ fn try_parse_subject_become_clause(text: &str, ctx: &ParseContext) -> Option<Par
     let verb_start = find_predicate_start(text)?;
     let subject = text[..verb_start].trim();
     let predicate = deconjugate_verb(text[verb_start..].trim());
-    if !predicate.to_lowercase().starts_with("become ") {
-        return None;
-    }
+    predicate.to_lowercase().strip_prefix("become ")?;
     let application = parse_subject_application(subject, ctx)?;
     build_become_clause(application, &predicate)
 }
@@ -201,16 +199,16 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
 
     // CR 115.10a: "another target X" — target with Another filter property,
     // excluding the source object from legal targets.
-    if lower.starts_with("another target ") {
+    if lower.strip_prefix("another target ").is_some() {
         let (filter, _) = parse_target(&subject["another ".len()..]);
         let filter = add_another_property(filter);
         return subject_filter_application(filter, true);
     }
-    if lower.starts_with("target ") {
+    if lower.strip_prefix("target ").is_some() {
         let (filter, _) = parse_target(subject);
         return subject_filter_application(filter, true);
     }
-    if lower.starts_with("up to ") {
+    if lower.strip_prefix("up to ").is_some() {
         let (target_text, multi_target) = super::strip_optional_target_prefix(subject);
         if multi_target.is_some() {
             let (filter, _) = parse_target(target_text);
@@ -223,7 +221,9 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
     // "each" with an interposed "of" that parse_target doesn't handle directly.
     // Must check before "each " to avoid the generic "each" path swallowing "each of".
     if let Some(remainder) = lower.strip_prefix("each of ") {
-        if remainder.starts_with("your opponents") || remainder.starts_with("your opponent") {
+        if remainder.strip_prefix("your opponents").is_some()
+            || remainder.strip_prefix("your opponent").is_some()
+        {
             return subject_filter_application(
                 TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
                 false,
@@ -231,7 +231,7 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         }
         // "each of those [creatures/players/...]" / "each of them" — anaphoric reference
         // to the targets declared in the parent ability's sub_ability chain.
-        if remainder.starts_with("those ") || remainder.starts_with("them") {
+        if remainder.strip_prefix("those ").is_some() || remainder.strip_prefix("them").is_some() {
             return subject_filter_application(TargetFilter::ParentTarget, false);
         }
         // Fallback: strip "of " and re-route through parse_target as "each <remainder>"
@@ -239,19 +239,18 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         let (filter, _) = parse_target(&normalized);
         return subject_filter_application(filter, false);
     }
-    if lower.starts_with("all ") || lower.starts_with("each ") {
-        let phrase = if lower.starts_with("all ") {
-            &subject[4..]
-        } else {
-            &subject[5..]
-        };
+    if let Some(phrase) = lower
+        .strip_prefix("all ")
+        .map(|_| &subject[4..])
+        .or_else(|| lower.strip_prefix("each ").map(|_| &subject[5..]))
+    {
         let (filter, rest) = parse_type_phrase(phrase);
         let filter = merge_partial_type_phrase_filter(filter, rest.trim());
         return subject_filter_application(filter, false);
     }
-    if lower.starts_with("enchanted creature")
-        || lower.starts_with("enchanted permanent")
-        || lower.starts_with("equipped creature")
+    if lower.strip_prefix("enchanted creature").is_some()
+        || lower.strip_prefix("enchanted permanent").is_some()
+        || lower.strip_prefix("equipped creature").is_some()
     {
         let (filter, _) = parse_target(subject);
         return Some(SubjectApplication {
@@ -268,9 +267,9 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
     } else {
         (false, lower.as_str())
     };
-    if !noun_subject.starts_with("target ")
-        && !noun_subject.starts_with("all ")
-        && !noun_subject.starts_with("each ")
+    if noun_subject.strip_prefix("target ").is_none()
+        && noun_subject.strip_prefix("all ").is_none()
+        && noun_subject.strip_prefix("each ").is_none()
     {
         let normalized = format!("all {noun_subject}");
         let (filter, rest) = parse_target(&normalized);
@@ -301,7 +300,7 @@ fn parse_subject_application(subject: &str, ctx: &ParseContext) -> Option<Subjec
         });
     }
     // "an opponent" as subject — single opponent (two-player: equivalent to "each opponent").
-    if lower.starts_with("an opponent") {
+    if lower.strip_prefix("an opponent").is_some() {
         return subject_filter_application(
             TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
             false,
@@ -497,7 +496,8 @@ fn build_continuous_clause(
     // B15: Guard against "becomes" predicates routing through continuous clause parsing.
     // Creature-land animations ("becomes a 3/3 Dinosaur creature with trample") must
     // fall through to try_parse_subject_become_clause for correct animation handling.
-    if normalized.starts_with("become ") || normalized.starts_with("become\n") {
+    if normalized.strip_prefix("become ").is_some() || normalized.strip_prefix("become\n").is_some()
+    {
         return None;
     }
 
@@ -815,19 +815,17 @@ pub(crate) fn parse_restriction_modes(lower: &str) -> Option<Vec<StaticMode>> {
         return Some(vec![StaticMode::CantBlock, StaticMode::CantBeBlocked]);
     }
     // CR 509.1c: "can't be blocked except by ..." — evasion restriction
-    if lower.starts_with("can't be blocked except by ")
-        || lower.starts_with("cannot be blocked except by ")
+    if let Some(except_text) = lower
+        .strip_prefix("can't be blocked except by ")
+        .or_else(|| lower.strip_prefix("cannot be blocked except by "))
     {
-        let except_text = lower
-            .strip_prefix("can't be blocked except by ")
-            .or_else(|| lower.strip_prefix("cannot be blocked except by "))
-            .unwrap_or("");
         return Some(vec![StaticMode::CantBeBlockedExceptBy {
             filter: except_text.to_string(),
         }]);
     }
     // CR 115.4: "can't be the target of ..." — hexproof variant
-    if lower.starts_with("can't be the target of ") || lower.starts_with("cannot be the target of ")
+    if lower.strip_prefix("can't be the target of ").is_some()
+        || lower.strip_prefix("cannot be the target of ").is_some()
     {
         return Some(vec![StaticMode::CantBeTargeted]);
     }
@@ -836,7 +834,8 @@ pub(crate) fn parse_restriction_modes(lower: &str) -> Option<Vec<StaticMode>> {
         return Some(vec![StaticMode::CantGainLife]);
     }
     // CR 302.6: "doesn't untap during [controller's] untap step"
-    if lower.starts_with("doesn't untap") || lower.starts_with("don't untap") {
+    if lower.strip_prefix("doesn't untap").is_some() || lower.strip_prefix("don't untap").is_some()
+    {
         return Some(vec![StaticMode::CantUntap]);
     }
 
@@ -868,9 +867,7 @@ fn extract_pump_modifiers(
 /// the targeted permanent's controller gains life based on the permanent's stats.
 pub(super) fn try_parse_targeted_controller_gain_life(text: &str) -> Option<ParsedEffectClause> {
     let lower = text.to_lowercase();
-    if !lower.starts_with("its controller ") {
-        return None;
-    }
+    lower.strip_prefix("its controller ")?;
     if !lower.contains("gain") || !lower.contains("life") {
         return None;
     }
@@ -944,7 +941,7 @@ pub(crate) fn starts_with_subject_prefix(lower: &str) -> bool {
         "you ",
     ]
     .iter()
-    .any(|prefix| lower.starts_with(prefix))
+    .any(|prefix| lower.strip_prefix(prefix).is_some())
 }
 
 /// Verbs recognized for subject-predicate splitting in Oracle text.

@@ -89,9 +89,7 @@ pub fn parse_effect(text: &str) -> Effect {
 /// These create multi-fire delayed triggers that persist until end of turn.
 /// Example: "whenever a creature you control deals combat damage to a player this turn, draw a card"
 fn try_parse_whenever_this_turn(tp: TextPair) -> Option<ParsedEffectClause> {
-    if !tp.starts_with("whenever ") {
-        return None;
-    }
+    tp.strip_prefix("whenever ")?;
     // Must contain "this turn" to distinguish from regular triggers.
     // Use rsplit_around: "this turn" terminates the condition — the last occurrence
     // is the correct split point if the condition itself contains "this turn".
@@ -127,9 +125,7 @@ fn try_parse_whenever_this_turn(tp: TextPair) -> Option<ParsedEffectClause> {
 /// CR 603.7c: Parse inline delayed triggers like "when that creature dies, draw a card".
 /// Returns a `CreateDelayedTrigger` wrapping the parsed inner effect.
 fn try_parse_inline_delayed_trigger(tp: TextPair) -> Option<ParsedEffectClause> {
-    if !tp.starts_with("when ") {
-        return None;
-    }
+    tp.strip_prefix("when ")?;
 
     // Find the comma separator between condition and effect
     let comma = tp.find(", ")?;
@@ -206,7 +202,7 @@ fn parse_delayed_subject_filter(condition_text: &str) -> TargetFilter {
     {
         TargetFilter::ParentTarget
     } else if condition_text.contains("it ")
-        || condition_text.starts_with("it")
+        || condition_text.strip_prefix("it").is_some()
         || condition_text.contains("this creature")
         || condition_text.contains("this permanent")
         || condition_text.contains("this artifact")
@@ -286,12 +282,13 @@ fn try_parse_cast_only_from_zones_restriction(tp: TextPair<'_>) -> Option<Parsed
         return None;
     }
 
-    let affected_players =
-        if scope_tp.starts_with("your opponents") || scope_tp.starts_with("opponents") {
-            RestrictionPlayerScope::OpponentsOfSourceController
-        } else {
-            RestrictionPlayerScope::AllPlayers
-        };
+    let affected_players = if scope_tp.strip_prefix("your opponents").is_some()
+        || scope_tp.strip_prefix("opponents").is_some()
+    {
+        RestrictionPlayerScope::OpponentsOfSourceController
+    } else {
+        RestrictionPlayerScope::AllPlayers
+    };
 
     Some(ParsedEffectClause {
         effect: Effect::AddRestriction {
@@ -338,7 +335,8 @@ fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
             shards: vec![],
         });
     let lower_rest = rest.lower.trim_start();
-    let is_mass = lower_rest.starts_with("all ") || lower_rest.starts_with("each ");
+    let is_mass =
+        lower_rest.strip_prefix("all ").is_some() || lower_rest.strip_prefix("each ").is_some();
 
     let effect = if is_mass {
         let mass_target = match target {
@@ -454,7 +452,9 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
     }
 
     // CR 122.1: "you get {E}{E}" — gain energy counters.
-    if tp.contains("{e}") && (tp.starts_with("you get ") || tp.starts_with("get ")) {
+    if tp.contains("{e}")
+        && (tp.strip_prefix("you get ").is_some() || tp.strip_prefix("get ").is_some())
+    {
         let amount = super::oracle_util::count_energy_symbols(tp.lower);
         if amount > 0 {
             return parsed_clause(Effect::GainEnergy { amount });
@@ -588,7 +588,10 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
 
     // CR 601.2d: "distribute N [type] counters among [targets]" →
     // PutCounter with distribute: Some(Counters(type)).
-    if lower.starts_with("distribute ") && lower.contains("counter") && lower.contains("among") {
+    if lower.strip_prefix("distribute ").is_some()
+        && lower.contains("counter")
+        && lower.contains("among")
+    {
         if let Some(clause) = try_parse_distribute_counters(&lower, text) {
             return clause;
         }
@@ -895,10 +898,10 @@ fn try_parse_play_from_exile(tp: TextPair) -> Option<ParsedEffectClause> {
 
     if let Some(rest) = full_rest {
         // Full form: rest must start with a card reference
-        if !(rest.starts_with("that card")
-            || rest.starts_with("that spell")
-            || rest.starts_with("those cards")
-            || rest.starts_with("it ")
+        if !(rest.strip_prefix("that card").is_some()
+            || rest.strip_prefix("that spell").is_some()
+            || rest.strip_prefix("those cards").is_some()
+            || rest.strip_prefix("it ").is_some()
             || rest.lower == "it")
         {
             return None;
@@ -914,10 +917,10 @@ fn try_parse_play_from_exile(tp: TextPair) -> Option<ParsedEffectClause> {
         if tp.contains("without paying") {
             return None;
         }
-        if !(tp.starts_with("play that card")
-            || tp.starts_with("cast that card")
-            || tp.starts_with("play it")
-            || tp.starts_with("cast it"))
+        if !(tp.strip_prefix("play that card").is_some()
+            || tp.strip_prefix("cast that card").is_some()
+            || tp.strip_prefix("play it").is_some()
+            || tp.strip_prefix("cast it").is_some())
         {
             return None;
         }
@@ -955,11 +958,11 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
     let quantity = QuantityExpr::Ref { qty };
 
     // Parse the base effect and replace its count with the dynamic quantity
-    if base_tp.starts_with("draw ") || base_tp.contains(" draw") {
+    if base_tp.strip_prefix("draw ").is_some() || base_tp.contains(" draw") {
         return Some(parsed_clause(Effect::Draw { count: quantity }));
     }
 
-    if (base_tp.starts_with("you gain ") || base_tp.starts_with("gain "))
+    if (base_tp.strip_prefix("you gain ").is_some() || base_tp.strip_prefix("gain ").is_some())
         && base_tp.contains("life")
     {
         // Extract multiplier: "gain 3 life" → factor=3, "gain life" → factor=1
@@ -982,7 +985,7 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
         }));
     }
 
-    if (base_tp.starts_with("you lose ") || base_tp.starts_with("lose "))
+    if (base_tp.strip_prefix("you lose ").is_some() || base_tp.strip_prefix("lose ").is_some())
         && base_tp.contains("life")
     {
         // Extract multiplier: "lose 3 life" → factor=3
@@ -1182,27 +1185,27 @@ fn try_parse_verb_and_target<'a>(
     ctx: &ParseContext,
 ) -> Option<(TargetedImperativeAst, &'a str)> {
     // Simple targeted verbs: parse_target on text after the verb prefix
-    if lower.starts_with("tap ") {
+    if lower.strip_prefix("tap ").is_some() {
         let (target_text, _) = strip_optional_target_prefix(&text[4..]);
         let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::Tap { target }, rem));
     }
-    if lower.starts_with("untap ") {
+    if lower.strip_prefix("untap ").is_some() {
         let (target_text, _) = strip_optional_target_prefix(&text[6..]);
         let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::Untap { target }, rem));
     }
-    if lower.starts_with("sacrifice ") {
+    if lower.strip_prefix("sacrifice ").is_some() {
         let (target_text, _) = strip_optional_target_prefix(&text[10..]);
         let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::Sacrifice { target }, rem));
     }
-    if lower.starts_with("fight ") {
+    if lower.strip_prefix("fight ").is_some() {
         let (target_text, _) = strip_optional_target_prefix(&text[6..]);
         let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::Fight { target }, rem));
     }
-    if lower.starts_with("gain control of ") {
+    if lower.strip_prefix("gain control of ").is_some() {
         let (target_text, _) = strip_optional_target_prefix(&text[16..]);
         let (target, rem) = parse_target(target_text);
         return Some((TargetedImperativeAst::GainControl { target }, rem));
@@ -1235,7 +1238,8 @@ fn try_parse_verb_and_target<'a>(
     }
 
     // Destroy: check "all"/"each" prefix for mass destruction
-    if lower.starts_with("destroy all ") || lower.starts_with("destroy each ") {
+    if lower.strip_prefix("destroy all ").is_some() || lower.strip_prefix("destroy each ").is_some()
+    {
         let (target, rem) = parse_target(&text[8..]);
         return Some((
             TargetedImperativeAst::ZoneCounterProxy(Box::new(ZoneCounterImperativeAst::Destroy {
@@ -1245,7 +1249,7 @@ fn try_parse_verb_and_target<'a>(
             rem,
         ));
     }
-    if lower.starts_with("destroy ") {
+    if lower.strip_prefix("destroy ").is_some() {
         let (target, rem) = parse_target(&text[8..]);
         return Some((
             TargetedImperativeAst::ZoneCounterProxy(Box::new(ZoneCounterImperativeAst::Destroy {
@@ -1258,7 +1262,7 @@ fn try_parse_verb_and_target<'a>(
 
     // Exile: infer origin zone from the full post-verb text (NOT the remainder,
     // since parse_zone_suffix inside parse_type_phrase consumes zone phrases).
-    if lower.starts_with("exile all ") || lower.starts_with("exile each ") {
+    if lower.strip_prefix("exile all ").is_some() || lower.strip_prefix("exile each ").is_some() {
         let rest_lower = &lower[6..]; // after "exile "
         let (parsed_target, rem) = parse_target(&text[6..]);
         // CR 701.5a: "exile all spells" must constrain to the stack.
@@ -1323,7 +1327,7 @@ fn try_parse_verb_and_target<'a>(
     }
 
     // Return: determine destination separately, use parse_target remainder for compound detection
-    if lower.starts_with("return ") {
+    if lower.strip_prefix("return ").is_some() {
         let rest = &text[7..];
         let (_, dest) = strip_return_destination_ext(rest);
         let (target, rem) = parse_target(rest);
@@ -1352,7 +1356,7 @@ fn try_parse_verb_and_target<'a>(
     }
 
     // Put counter: use refactored try_parse_put_counter that returns remainder
-    if lower.starts_with("put ") && lower.contains("counter") {
+    if lower.strip_prefix("put ").is_some() && lower.contains("counter") {
         if let Some((
             Effect::PutCounter {
                 counter_type,
@@ -1441,7 +1445,8 @@ fn try_split_targeted_compound(text: &str, ctx: &ParseContext) -> Option<ParsedE
     // When the sub-text starts with "target" and parsed as Unimplemented, prepend
     // the verb from the primary effect and re-parse. Handles "exile target creature
     // and target artifact" where "target artifact" lacks a verb.
-    if matches!(sub_clause.effect, Effect::Unimplemented { .. }) && sub_lower.starts_with("target ")
+    if matches!(sub_clause.effect, Effect::Unimplemented { .. })
+        && sub_lower.strip_prefix("target ").is_some()
     {
         if let Some(verb) = extract_effect_verb(&primary_effect) {
             let reparsed_text = format!("{verb} {sub_text}");
@@ -1825,7 +1830,8 @@ fn lower_subject_predicate_ast(
                 });
             }
             // CR 701.20a: "<player> reveals the top [N] card(s) of their library"
-            if (pred_lower.starts_with("reveal ") || pred_lower.starts_with("reveals "))
+            if (pred_lower.strip_prefix("reveal ").is_some()
+                || pred_lower.strip_prefix("reveals ").is_some())
                 && pred_lower.contains("top")
                 && pred_lower.contains("library")
             {
@@ -1954,9 +1960,9 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
 /// subject-stripped form "get an emblem with \"[text]\"".
 fn try_parse_emblem_creation(lower: &str, original: &str) -> Option<Effect> {
     // Find the prefix offset using the lowered text
-    let prefix_len = if lower.starts_with("you get an emblem with ") {
+    let prefix_len = if lower.strip_prefix("you get an emblem with ").is_some() {
         "you get an emblem with ".len()
-    } else if lower.starts_with("get an emblem with ") {
+    } else if lower.strip_prefix("get an emblem with ").is_some() {
         "get an emblem with ".len()
     } else {
         return None;
@@ -2007,14 +2013,14 @@ fn try_parse_cast_effect(lower: &str) -> Option<Effect> {
     let without_paying = rest.contains("without paying its mana cost")
         || rest.contains("without paying their mana cost");
 
-    let target = if rest.starts_with("it")
-        || rest.starts_with("that card")
-        || rest.starts_with("that spell")
-        || rest.starts_with("the copy")
-        || rest.starts_with("the exiled card")
-        || rest.starts_with("them")
-        || rest.starts_with("those cards")
-        || rest.starts_with("cards exiled")
+    let target = if rest.strip_prefix("it").is_some()
+        || rest.strip_prefix("that card").is_some()
+        || rest.strip_prefix("that spell").is_some()
+        || rest.strip_prefix("the copy").is_some()
+        || rest.strip_prefix("the exiled card").is_some()
+        || rest.strip_prefix("them").is_some()
+        || rest.strip_prefix("those cards").is_some()
+        || rest.strip_prefix("cards exiled").is_some()
     {
         TargetFilter::ParentTarget
     } else {
@@ -2095,14 +2101,16 @@ fn is_choose_as_targeting(rest: &str) -> bool {
     }
 
     // "choose up to N" without "target" (e.g. "choose up to two creatures")
-    if rest.starts_with("up to ") {
+    if rest.strip_prefix("up to ").is_some() {
         return true;
     }
 
     // "choose a/an {type} ... you control / an opponent controls"
     if let Some(after_article) = rest.strip_prefix("a ").or_else(|| rest.strip_prefix("an ")) {
         // Exclude patterns not yet in try_parse_named_choice but still not targeting
-        if after_article.starts_with("nonbasic land type") || after_article.starts_with("number") {
+        if after_article.strip_prefix("nonbasic land type").is_some()
+            || after_article.strip_prefix("number").is_some()
+        {
             return false;
         }
         // Must reference controller to be targeting-like
@@ -2120,23 +2128,20 @@ fn is_choose_as_targeting(rest: &str) -> bool {
 /// Match "choose a creature type", "choose a color", "choose odd or even",
 /// "choose a basic land type", "choose a card type" from lowercased Oracle text.
 pub(crate) fn try_parse_named_choice(lower: &str) -> Option<ChoiceType> {
-    if !lower.starts_with("choose ") {
-        return None;
-    }
-    let rest = &lower[7..]; // skip "choose "
-    if rest.starts_with("a creature type") {
+    let rest = lower.strip_prefix("choose ")?;
+    if rest.strip_prefix("a creature type").is_some() {
         Some(ChoiceType::CreatureType)
-    } else if rest.starts_with("a color") {
+    } else if rest.strip_prefix("a color").is_some() {
         Some(ChoiceType::Color)
-    } else if rest.starts_with("odd or even") {
+    } else if rest.strip_prefix("odd or even").is_some() {
         Some(ChoiceType::OddOrEven)
-    } else if rest.starts_with("a basic land type") {
+    } else if rest.strip_prefix("a basic land type").is_some() {
         Some(ChoiceType::BasicLandType)
-    } else if rest.starts_with("a card type") {
+    } else if rest.strip_prefix("a card type").is_some() {
         Some(ChoiceType::CardType)
-    } else if rest.starts_with("a card name")
-        || rest.starts_with("a nonland card name")
-        || rest.starts_with("a creature card name")
+    } else if rest.strip_prefix("a card name").is_some()
+        || rest.strip_prefix("a nonland card name").is_some()
+        || rest.strip_prefix("a creature card name").is_some()
     {
         Some(ChoiceType::CardName)
     } else if let Some(range_rest) = rest.strip_prefix("a number between ") {
@@ -2168,17 +2173,19 @@ pub(crate) fn try_parse_named_choice(lower: &str) -> Option<ChoiceType> {
             min: n + 1,
             max: 20,
         })
-    } else if rest == "a number" || rest.starts_with("a number ") {
+    } else if rest == "a number" || rest.strip_prefix("a number ").is_some() {
         // Generic "choose a number" — default range 0-20
         Some(ChoiceType::NumberRange { min: 0, max: 20 })
-    } else if rest.starts_with("a land type") || rest.starts_with("a nonbasic land type") {
+    } else if rest.strip_prefix("a land type").is_some()
+        || rest.strip_prefix("a nonbasic land type").is_some()
+    {
         Some(ChoiceType::LandType)
-    } else if rest.starts_with("an opponent") {
+    } else if rest.strip_prefix("an opponent").is_some() {
         // CR 800.4a: Choose an opponent from among players in the game.
         Some(ChoiceType::Opponent)
-    } else if rest.starts_with("a player") {
+    } else if rest.strip_prefix("a player").is_some() {
         Some(ChoiceType::Player)
-    } else if rest.starts_with("two colors") {
+    } else if rest.strip_prefix("two colors").is_some() {
         Some(ChoiceType::TwoColors)
     } else {
         // Generic "X or Y" pattern — must come AFTER all specific patterns above
@@ -2314,7 +2321,7 @@ fn contains_explicit_tracked_set_pronoun(lower: &str) -> bool {
 /// the pronoun is in a return-to-battlefield construction.
 /// `lower` must be the pre-lowered version of the text.
 fn contains_implicit_tracked_set_pronoun(lower: &str) -> bool {
-    (lower.starts_with("return it ") || lower.starts_with("return them "))
+    (lower.strip_prefix("return it ").is_some() || lower.strip_prefix("return them ").is_some())
         && lower.contains("battlefield")
 }
 
@@ -2362,15 +2369,15 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         // CR 608.2c: "Otherwise, [effect]" — attach as else_ability on the
         // most recent conditional def in the chain.
         let lower_check = normalized_text.to_lowercase();
-        let otherwise_prefix_len = if lower_check.starts_with("otherwise, ") {
+        let otherwise_prefix_len = if lower_check.strip_prefix("otherwise, ").is_some() {
             Some("otherwise, ".len())
-        } else if lower_check.starts_with("otherwise ") {
+        } else if lower_check.strip_prefix("otherwise ").is_some() {
             Some("otherwise ".len())
-        } else if lower_check.starts_with("if not, ") {
+        } else if lower_check.strip_prefix("if not, ").is_some() {
             Some("if not, ".len())
-        } else if lower_check.starts_with("if no player does, ") {
+        } else if lower_check.strip_prefix("if no player does, ").is_some() {
             Some("if no player does, ".len())
-        } else if lower_check.starts_with("if no one does, ") {
+        } else if lower_check.strip_prefix("if no one does, ").is_some() {
             Some("if no one does, ".len())
         } else {
             None
@@ -2576,7 +2583,7 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         // inherit the verb from the previous successfully-parsed effect and re-parse.
         // Handles patterns like "destroy target artifact, target creature, ..." (Decimate).
         let clause = if matches!(clause.effect, Effect::Unimplemented { .. })
-            && text_no_qty.to_lowercase().starts_with("target ")
+            && text_no_qty.to_lowercase().strip_prefix("target ").is_some()
         {
             if let Some(verb) = defs
                 .last()
@@ -3226,9 +3233,7 @@ pub(crate) fn capitalize(s: &str) -> String {
 
 fn split_leading_conditional(text: &str) -> Option<(String, String)> {
     let lower = text.to_lowercase();
-    if !lower.starts_with("if ") {
-        return None;
-    }
+    lower.strip_prefix("if ")?;
 
     let mut paren_depth = 0u32;
     let mut in_quotes = false;
@@ -3278,7 +3283,7 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
 
     // CR 702.32b: Negated kicker: "if it wasn't kicked", "if this spell wasn't kicked",
     // "then if it wasn't kicked" — produces AdditionalCostNotPaid.
-    if lower.starts_with("if ") || lower.starts_with("then if ") {
+    if lower.strip_prefix("if ").is_some() || lower.strip_prefix("then if ").is_some() {
         if let Some((_, rest)) = lower
             .split_once(" wasn't kicked, ")
             .or_else(|| lower.split_once(" wasn't bargained, "))
@@ -3305,7 +3310,7 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
     // Unified kicker/bargain pattern: "if <subject> was kicked/bargained, ..."
     // Covers "if this spell was kicked", "if it was kicked", "if ~ was kicked",
     // "if this spell was bargained", etc.
-    else if lower.starts_with("if ") {
+    else if lower.strip_prefix("if ").is_some() {
         lower
             .split_once(" was kicked, ")
             .or_else(|| lower.split_once(" was bargained, "))
@@ -4088,14 +4093,17 @@ fn strip_repeat_count_suffix(text: &str) -> (Option<QuantityExpr>, String) {
 /// "Each player draws a card" → (Some(All), "draw a card")
 fn strip_each_player_subject(text: &str) -> (Option<PlayerFilter>, String) {
     let lower = text.to_lowercase();
-    let (scope, rest) = if lower.starts_with("each player with the highest speed among players ") {
+    let (scope, rest) = if lower
+        .strip_prefix("each player with the highest speed among players ")
+        .is_some()
+    {
         (
             PlayerFilter::HighestSpeed,
             &text["each player with the highest speed among players ".len()..],
         )
-    } else if lower.starts_with("each opponent ") {
+    } else if lower.strip_prefix("each opponent ").is_some() {
         (PlayerFilter::Opponent, &text["each opponent ".len()..])
-    } else if lower.starts_with("each player ") {
+    } else if lower.strip_prefix("each player ").is_some() {
         (PlayerFilter::All, &text["each player ".len()..])
     } else {
         return (None, text.to_string());
@@ -4105,12 +4113,12 @@ fn strip_each_player_subject(text: &str) -> (Option<PlayerFilter>, String) {
     // "may not") belong to the static parser, not the imperative effect pipeline.
     // Intercepting them here would produce Unimplemented instead of typed static modes.
     let rest_lower = rest.trim().to_lowercase();
-    if rest_lower.starts_with("can't")
-        || rest_lower.starts_with("cannot")
-        || rest_lower.starts_with("don't")
-        || rest_lower.starts_with("may only")
-        || rest_lower.starts_with("may not")
-        || rest_lower.starts_with("may cast")
+    if rest_lower.strip_prefix("can't").is_some()
+        || rest_lower.strip_prefix("cannot").is_some()
+        || rest_lower.strip_prefix("don't").is_some()
+        || rest_lower.strip_prefix("may only").is_some()
+        || rest_lower.strip_prefix("may not").is_some()
+        || rest_lower.strip_prefix("may cast").is_some()
     {
         return (None, text.to_string());
     }
@@ -4221,7 +4229,7 @@ fn parse_for_as_long_as_condition(condition: &str) -> Option<Duration> {
     }
 
     // "you control ~" / "you control this creature"
-    if condition.starts_with("you control ") {
+    if condition.strip_prefix("you control ").is_some() {
         return Some(Duration::UntilHostLeavesPlay);
     }
 
@@ -4367,7 +4375,7 @@ fn strip_numeric_target_prefix(lower: &str) -> Option<(usize, &str)> {
     ];
     for (word, count) in number_words {
         if let Some(rest) = lower.strip_prefix(word) {
-            if rest.starts_with("target ") || rest.starts_with("target,") {
+            if rest.strip_prefix("target ").is_some() || rest.strip_prefix("target,").is_some() {
                 return Some((*count, rest));
             }
         }
@@ -4390,9 +4398,9 @@ pub(super) fn strip_optional_target_prefix(text: &str) -> (&str, Option<MultiTar
     let consumed = lower.len() - remainder.len();
     let rest = text[consumed..].trim_start();
     let rest_lower = rest.to_ascii_lowercase();
-    if !(rest_lower.starts_with("target ")
-        || rest_lower.starts_with("other target ")
-        || rest_lower.starts_with("another target "))
+    if !(rest_lower.strip_prefix("target ").is_some()
+        || rest_lower.strip_prefix("other target ").is_some()
+        || rest_lower.strip_prefix("another target ").is_some())
     {
         return (text, None);
     }
@@ -4418,7 +4426,7 @@ fn strip_any_number_quantifier(text: &str) -> (String, Option<MultiTargetSpec>) 
     let verb_end = lower.find(' ').map(|i| i + 1).unwrap_or(0);
     let (verb_tp, after_verb_tp) = tp.split_at(verb_end);
 
-    if after_verb_tp.starts_with("any number of ") {
+    if after_verb_tp.strip_prefix("any number of ").is_some() {
         if let Some(rest) = after_verb_tp.strip_prefix("any number of ") {
             let rebuilt = format!("{}{}", verb_tp.original, rest.original);
             return (rebuilt, Some(MultiTargetSpec { min: 0, max: None }));
@@ -4661,7 +4669,7 @@ fn try_parse_distribute_damage(lower: &str, text: &str) -> Option<ParsedEffectCl
 
     let (amount, rest_tp) =
         if let Some((qty, rem)) = super::oracle_util::parse_count_expr(after_tp.lower) {
-            if rem.starts_with("damage") {
+            if rem.strip_prefix("damage").is_some() {
                 let skip = after_tp.lower.len() - rem.len() + "damage".len();
                 let (_, rest) = after_tp.split_at(skip);
                 (qty, rest)
@@ -4697,16 +4705,17 @@ fn try_parse_distribute_damage(lower: &str, text: &str) -> Option<ParsedEffectCl
 
     // CR 115.1d: Detect "any number of" quantifier before the target phrase.
     let target_lower = target_text.to_lowercase();
-    let (stripped_target_text, multi_target) = if target_lower.starts_with("any number of ") {
-        let skip = "any number of ".len();
-        (
-            &target_text[skip..],
-            // CR 601.2d: min: 1 because each target must receive at least 1.
-            Some(MultiTargetSpec { min: 1, max: None }),
-        )
-    } else {
-        (target_text, None)
-    };
+    let (stripped_target_text, multi_target) =
+        if target_lower.strip_prefix("any number of ").is_some() {
+            let skip = "any number of ".len();
+            (
+                &target_text[skip..],
+                // CR 601.2d: min: 1 because each target must receive at least 1.
+                Some(MultiTargetSpec { min: 1, max: None }),
+            )
+        } else {
+            (target_text, None)
+        };
     let (target, _) = parse_target(stripped_target_text);
 
     Some(ParsedEffectClause {
@@ -4737,9 +4746,9 @@ fn try_parse_distribute_counters(lower: &str, text: &str) -> Option<ParsedEffect
 
     // Require "counter(s)" immediately after the counter type word.
     let after_type = rest_lower[type_end..].trim_start();
-    let counter_word_len = if after_type.starts_with("counters") {
+    let counter_word_len = if after_type.strip_prefix("counters").is_some() {
         "counters".len()
-    } else if after_type.starts_with("counter") {
+    } else if after_type.strip_prefix("counter").is_some() {
         "counter".len()
     } else {
         return None;
@@ -4753,16 +4762,17 @@ fn try_parse_distribute_counters(lower: &str, text: &str) -> Option<ParsedEffect
     // CR 115.1d: Detect "any number of" quantifier before the target phrase.
     let target_text = &text[target_offset..];
     let target_text_lower = &lower[target_offset..];
-    let (stripped_target, multi_target) = if target_text_lower.starts_with("any number of ") {
-        let skip = "any number of ".len();
-        (
-            &target_text[skip..],
-            // CR 601.2d: min: 1 because each target must receive at least 1.
-            Some(MultiTargetSpec { min: 1, max: None }),
-        )
-    } else {
-        (target_text, None)
-    };
+    let (stripped_target, multi_target) =
+        if target_text_lower.strip_prefix("any number of ").is_some() {
+            let skip = "any number of ".len();
+            (
+                &target_text[skip..],
+                // CR 601.2d: min: 1 because each target must receive at least 1.
+                Some(MultiTargetSpec { min: 1, max: None }),
+            )
+        } else {
+            (target_text, None)
+        };
     let (target, _) = parse_target(stripped_target);
 
     // Verify the "among" comes after the counter word (sanity guard against false matches).
@@ -4821,12 +4831,12 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
     let (amount, after_target) = if let Some((qty, rest)) =
         super::oracle_util::parse_count_expr(after_lower)
     {
-        if rest.starts_with("damage") {
+        if rest.strip_prefix("damage").is_some() {
             (qty, &after[after.len() - rest.len() + "damage".len()..])
         } else {
             return None;
         }
-    } else if after_lower.starts_with("twice that much damage") {
+    } else if after_lower.strip_prefix("twice that much damage").is_some() {
         // CR 120.8: "twice that much damage" → Multiply { factor: 2, inner: EventContextAmount }
         (
             QuantityExpr::Multiply {
@@ -4837,14 +4847,14 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
             },
             &after["twice that much damage".len()..],
         )
-    } else if after_lower.starts_with("that much damage") {
+    } else if after_lower.strip_prefix("that much damage").is_some() {
         (
             QuantityExpr::Ref {
                 qty: QuantityRef::EventContextAmount,
             },
             &after["that much damage".len()..],
         )
-    } else if after_lower.starts_with("damage to ") {
+    } else if after_lower.strip_prefix("damage to ").is_some() {
         // Pattern: "damage to [target] equal to [amount]"
         // Used by: "deals damage to itself equal to its power",
         //          "deals damage to each player equal to the number of ...",
@@ -4880,7 +4890,7 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
                         },
                         "",
                     ));
-                } else if target_phrase.starts_with("each ") {
+                } else if target_phrase.strip_prefix("each ").is_some() {
                     // "each player" → DamageEachPlayer (per-player varying damage)
                     // "each creature" → DamageAll (uniform damage to objects)
                     if target_phrase.contains("player") || target_phrase.contains("opponent") {
@@ -4930,7 +4940,7 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
             }
         }
         return None;
-    } else if after_lower.starts_with("damage equal to ") {
+    } else if after_lower.strip_prefix("damage equal to ").is_some() {
         let amount_text = &after["damage equal to ".len()..];
         let to_pos = amount_text.to_lowercase().find(" to ")?;
         let qty_text = amount_text[..to_pos].trim();
@@ -4950,14 +4960,14 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
         .strip_prefix("to ")
         .unwrap_or(after_target)
         .trim();
-    if after_to.starts_with("each ") {
+    if after_to.strip_prefix("each ").is_some() {
         let (target, rem) = parse_target(after_to);
         return Some((Effect::DamageAll { amount, target }, rem));
     }
 
     // CR 120.3: "itself" — the source creature is both damage source and recipient.
     let after_to_lower = after_to.to_lowercase();
-    if after_to_lower == "itself" || after_to_lower.starts_with("itself ") {
+    if after_to_lower == "itself" || after_to_lower.strip_prefix("itself ").is_some() {
         return Some((
             Effect::DealDamage {
                 amount,
@@ -5020,9 +5030,9 @@ fn parse_pump_clause(predicate: &str) -> Option<(PtValue, PtValue, Option<Durati
     let (without_duration, duration) = strip_trailing_duration(without_where.original);
     let lower = without_duration.to_lowercase();
 
-    let after = if lower.starts_with("gets ") {
+    let after = if lower.strip_prefix("gets ").is_some() {
         &without_duration[5..]
-    } else if lower.starts_with("get ") {
+    } else if lower.strip_prefix("get ").is_some() {
         &without_duration[4..]
     } else {
         return None;

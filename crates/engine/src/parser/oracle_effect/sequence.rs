@@ -105,8 +105,8 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
                     // CR 608.2c: Preserve targeted compound actions so the effect
                     // parser can retarget continuation clauses like
                     // "tap target creature ... and put a stun counter on it".
-                    let targeted_compound_continuation =
-                        before_lower.contains("target ") && remainder_trimmed.starts_with("put ");
+                    let targeted_compound_continuation = before_lower.contains("target ")
+                        && remainder_trimmed.strip_prefix("put ").is_some();
                     let suppress = before_lower.contains("from among")
                         || is_inside_temporal_prefix(&before_lower)
                         || targeted_compound_continuation;
@@ -136,13 +136,16 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
     // CR 701.18a: "search [library] for X, put/reveal Y" is a single compound action.
     // The search verb may follow a sequence connector like "Then" from a prior sentence.
     // CR 701.18a: Enumerated "search" prefixes — do NOT use contains(" search ").
-    let search_start = current_lower.starts_with("search ")
-        || current_lower.starts_with("then search ")
-        || current_lower.starts_with("you may search ")
-        || current_lower.starts_with("you search ")
-        || current_lower.starts_with("then you may search ")
-        || current_lower.starts_with("then you search ");
-    if search_start && (trimmed_lower.starts_with("reveal ") || trimmed_lower.starts_with("put ")) {
+    let search_start = current_lower.strip_prefix("search ").is_some()
+        || current_lower.strip_prefix("then search ").is_some()
+        || current_lower.strip_prefix("you may search ").is_some()
+        || current_lower.strip_prefix("you search ").is_some()
+        || current_lower.strip_prefix("then you may search ").is_some()
+        || current_lower.strip_prefix("then you search ").is_some();
+    if search_start
+        && (trimmed_lower.strip_prefix("reveal ").is_some()
+            || trimmed_lower.strip_prefix("put ").is_some())
+    {
         return None;
     }
 
@@ -169,18 +172,18 @@ fn split_comma_clause_boundary(current: &str, remainder: &str) -> Option<(Clause
 }
 
 fn starts_prefix_clause(current_lower: &str) -> bool {
-    current_lower.starts_with("until ")
-        || current_lower.starts_with("if ")
-        || current_lower.starts_with("when ")
-        || current_lower.starts_with("whenever ")
-        || current_lower.starts_with("for each ")
-        || current_lower.starts_with("then if ")
-        || current_lower.starts_with("otherwise")
-        || current_lower.starts_with("if not")
+    current_lower.strip_prefix("until ").is_some()
+        || current_lower.strip_prefix("if ").is_some()
+        || current_lower.strip_prefix("when ").is_some()
+        || current_lower.strip_prefix("whenever ").is_some()
+        || current_lower.strip_prefix("for each ").is_some()
+        || current_lower.strip_prefix("then if ").is_some()
+        || current_lower.strip_prefix("otherwise").is_some()
+        || current_lower.strip_prefix("if not").is_some()
         // CR 603.7a: Temporal prefix clauses must not be split on their internal comma.
-        || current_lower.starts_with("at the beginning ")
+        || current_lower.strip_prefix("at the beginning ").is_some()
         // CR 611.2b: "For as long as [condition], [effect]" — duration prefix clause.
-        || current_lower.starts_with("for as long as ")
+        || current_lower.strip_prefix("for as long as ").is_some()
 }
 
 /// Check whether `text` begins with an imperative verb or pronoun that can start
@@ -246,7 +249,9 @@ pub(super) fn starts_clause_text(text: &str) -> bool {
         "it ",
     ];
 
-    prefixes.iter().any(|prefix| lower.starts_with(prefix))
+    prefixes
+        .iter()
+        .any(|prefix| lower.strip_prefix(prefix).is_some())
 }
 
 /// CR 603.7a: Check if accumulated clause text begins with a temporal prefix
@@ -258,9 +263,13 @@ fn is_inside_temporal_prefix(lower: &str) -> bool {
     // Check the raw accumulated text (which may include a leading comma+space
     // from a prior clause boundary). The temporal prefix starts the clause.
     let trimmed = lower.trim_start_matches(|c: char| c == ',' || c.is_whitespace());
-    trimmed.starts_with("at the beginning of the next ")
-        || trimmed.starts_with("at the beginning of your next ")
-        || trimmed.starts_with("at the end of ")
+    trimmed
+        .strip_prefix("at the beginning of the next ")
+        .is_some()
+        || trimmed
+            .strip_prefix("at the beginning of your next ")
+            .is_some()
+        || trimmed.strip_prefix("at the end of ").is_some()
 }
 
 /// Restricted clause-start check for bare " and " splitting (not after comma).
@@ -315,13 +324,16 @@ pub(super) fn starts_bare_and_clause(text: &str) -> bool {
         "you untap ",
         "that player ",
     ];
-    if prefixes.iter().any(|prefix| lower.starts_with(prefix)) {
+    if prefixes
+        .iter()
+        .any(|prefix| lower.strip_prefix(prefix).is_some())
+    {
         return true;
     }
     // "gain N" / "lose N" — imperative with numeric argument (e.g., "gain 3 life",
     // "lose 2 life") is a clause start, but conjugated "gains"/"loses" is NOT.
-    if (lower.starts_with("gain ") && !lower.starts_with("gains "))
-        || (lower.starts_with("lose ") && !lower.starts_with("loses "))
+    if (lower.strip_prefix("gain ").is_some() && lower.strip_prefix("gains ").is_none())
+        || (lower.strip_prefix("lose ").is_some() && lower.strip_prefix("loses ").is_none())
     {
         return true;
     }
@@ -339,8 +351,8 @@ fn starts_with_damage_clause(lower: &str) -> bool {
         subject.is_empty() // bare "deals N damage"
             || subject == "it" // "it deals N damage"
             || subject == "~" // "~ deals N damage"
-            || subject.starts_with("this ") // "this creature/enchantment/token deals"
-            || subject.starts_with("that ") // "that creature deals"
+            || subject.strip_prefix("this ").is_some() // "this creature/enchantment/token deals"
+            || subject.strip_prefix("that ").is_some() // "that creature deals"
     } else {
         false
     }
@@ -604,7 +616,7 @@ pub(super) fn parse_intrinsic_continuation_ast(
             #[cfg(debug_assertions)]
             if let Some(then_pos) = lower.rfind(", then ") {
                 let after_then = lower[then_pos + ", then ".len()..].trim_end_matches('.');
-                if !after_then.starts_with("shuffle") {
+                if after_then.strip_prefix("shuffle").is_none() {
                     debug_assert!(
                         !starts_clause_text(after_then),
                         "Unsplit clause boundary in SearchLibrary continuation: \
@@ -699,7 +711,7 @@ fn parse_dig_from_among(lower: &str, _original: &str) -> Option<ContinuationAst>
     } else if let Some(rest) = after_put.strip_prefix("any number of ") {
         // "any number of creatures" → up_to with a high cap
         (255, true, rest)
-    } else if after_put.starts_with("a ") || after_put.starts_with("an ") {
+    } else if after_put.strip_prefix("a ").is_some() || after_put.strip_prefix("an ").is_some() {
         // "a creature card" / "an artifact card" — up_to 1 (player may choose none)
         let rest = after_put
             .strip_prefix("a ")
@@ -761,7 +773,9 @@ pub(super) fn parse_followup_continuation_ast(
                 || lower.contains("one of them")
                 || lower.contains("one of those") =>
         {
-            let card_filter = if lower.starts_with("you choose ") || lower.starts_with("choose ") {
+            let card_filter = if lower.strip_prefix("you choose ").is_some()
+                || lower.strip_prefix("choose ").is_some()
+            {
                 super::parse_choose_filter(&lower)
             } else {
                 super::parse_choose_filter_from_sentence(&lower)
@@ -799,7 +813,7 @@ pub(super) fn parse_followup_continuation_ast(
             Some(ContinuationAst::PutRest { destination })
         }
         // "create a ... token and suspect it" → chain suspect on last created token
-        Effect::Token { .. } if lower.starts_with("suspect ") => {
+        Effect::Token { .. } if lower.strip_prefix("suspect ").is_some() => {
             Some(ContinuationAst::SuspectLastCreated)
         }
         // CR 701.19c + CR 608.2c: "It can't be regenerated" prevents regeneration shields;
@@ -814,14 +828,14 @@ pub(super) fn parse_followup_continuation_ast(
         // of them/those" after ChangeZone or ExileTop → ChooseFromZone building block
         Effect::ChangeZone { .. } | Effect::ExileTop { .. }
             if (lower.contains("of them") || lower.contains("of those"))
-                && (lower.starts_with("choose ")
-                    || lower.starts_with("you choose ")
-                    || lower.starts_with("an opponent chooses ")
-                    || lower.starts_with("target opponent chooses ")) =>
+                && (lower.strip_prefix("choose ").is_some()
+                    || lower.strip_prefix("you choose ").is_some()
+                    || lower.strip_prefix("an opponent chooses ").is_some()
+                    || lower.strip_prefix("target opponent chooses ").is_some()) =>
         {
             let count = parse_choose_count_from_text(&lower);
-            let chooser = if lower.starts_with("an opponent chooses ")
-                || lower.starts_with("target opponent chooses ")
+            let chooser = if lower.strip_prefix("an opponent chooses ").is_some()
+                || lower.strip_prefix("target opponent chooses ").is_some()
             {
                 Chooser::Opponent
             } else {
