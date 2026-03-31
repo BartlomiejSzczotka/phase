@@ -92,6 +92,7 @@ fn stomp_back_face() -> BackFaceData {
         strive_cost: None,
         casting_restrictions: Vec::new(),
         casting_options: Vec::new(),
+        layout_kind: None,
     }
 }
 

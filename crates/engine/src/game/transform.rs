@@ -127,6 +127,7 @@ mod tests {
             strive_cost: None,
             casting_restrictions: vec![],
             casting_options: vec![],
+            layout_kind: None,
         });
 
         id

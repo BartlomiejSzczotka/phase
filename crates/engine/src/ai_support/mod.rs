@@ -94,7 +94,9 @@ pub fn legal_actions(state: &GameState) -> Vec<GameAction> {
 /// CastSpell action's object_id, reflecting all modifiers (alt costs, commander
 /// tax, battlefield reducers, affinity). Frontends use this to display dynamic
 /// mana cost overlays on cards in hand.
-pub fn legal_actions_with_costs(state: &GameState) -> (Vec<GameAction>, HashMap<ObjectId, ManaCost>) {
+pub fn legal_actions_with_costs(
+    state: &GameState,
+) -> (Vec<GameAction>, HashMap<ObjectId, ManaCost>) {
     let mut actions: Vec<GameAction> = validated_candidate_actions(state)
         .into_iter()
         .map(|candidate| candidate.action)
@@ -106,7 +108,9 @@ pub fn legal_actions_with_costs(state: &GameState) -> (Vec<GameAction>, HashMap<
     if let WaitingFor::Priority { player } = &state.waiting_for {
         for action in &actions {
             if let GameAction::CastSpell { object_id, .. } = action {
-                if let Some(cost) = crate::game::casting::effective_spell_cost(state, *player, *object_id) {
+                if let Some(cost) =
+                    crate::game::casting::effective_spell_cost(state, *player, *object_id)
+                {
                     spell_costs.insert(*object_id, cost);
                 }
             }

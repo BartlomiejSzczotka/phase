@@ -96,6 +96,24 @@ pub struct CardFace {
     pub metadata: CardMetadata,
 }
 
+/// Runtime layout discriminant for double-faced cards.
+///
+/// Stored on `BackFaceData` so the engine can distinguish Modal DFCs
+/// (which allow face-choice per CR 712.12) from Transform DFCs at runtime.
+/// Intentionally separate from `database::synthesis::LayoutKind` which is a
+/// build-pipeline type without serialization derives.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub enum LayoutKind {
+    Single,
+    Split,
+    Flip,
+    Transform,
+    Meld,
+    Adventure,
+    Modal,
+    Omen,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum CardLayout {
     Single(CardFace),

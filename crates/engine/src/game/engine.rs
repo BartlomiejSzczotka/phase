@@ -363,12 +363,15 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
         // CR 712.12: Player chooses which face of an MDFC to play as a land.
         (
             WaitingFor::ModalFaceChoice {
-                player: _,
+                player,
                 object_id,
                 card_id,
             },
             GameAction::ChooseModalFace { back_face },
         ) => {
+            if state.priority_player != *player {
+                return Err(EngineError::NotYourPriority);
+            }
             if let Some(obj) = state.objects.get_mut(object_id) {
                 if back_face {
                     // Swap to back face using existing primitives

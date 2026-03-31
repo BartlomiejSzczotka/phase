@@ -3712,6 +3712,7 @@ mod tests {
             strive_cost: None,
             casting_restrictions: Vec::new(),
             casting_options: Vec::new(),
+            layout_kind: None,
         });
 
         obj_id

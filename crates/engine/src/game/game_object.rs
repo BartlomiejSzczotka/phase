@@ -7,7 +7,7 @@ use crate::types::ability::{
     ChosenAttribute, ChosenSubtypeKind, ModalChoice, NinjutsuVariant, ReplacementDefinition,
     SolveCondition, SpellCastingOption, StaticDefinition, TriggerDefinition,
 };
-use crate::types::card::PrintedCardRef;
+use crate::types::card::{LayoutKind, PrintedCardRef};
 use crate::types::card_type::{CardType, CoreType};
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::keywords::Keyword;
@@ -39,6 +39,10 @@ pub struct BackFaceData {
     pub strive_cost: Option<ManaCost>,
     pub casting_restrictions: Vec<CastingRestriction>,
     pub casting_options: Vec<SpellCastingOption>,
+    /// Source layout kind — distinguishes Modal DFCs from Transform DFCs
+    /// so the engine can offer face-choice for MDFCs (CR 712.12).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub layout_kind: Option<LayoutKind>,
 }
 
 /// Counter types serialize as flat strings so they can be used as JSON map keys

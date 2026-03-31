@@ -29,6 +29,7 @@ import { GameLogPanel } from "../components/log/GameLogPanel.tsx";
 import { ManaPaymentUI } from "../components/mana/ManaPaymentUI.tsx";
 import { CardDataMissingModal } from "../components/modal/CardDataMissingModal.tsx";
 import { AdventureCastModal } from "../components/modal/AdventureCastModal.tsx";
+import { ModalFaceModal } from "../components/modal/ModalFaceModal.tsx";
 import { WarpCostModal } from "../components/modal/WarpCostModal.tsx";
 import { CardChoiceModal } from "../components/modal/CardChoiceModal.tsx";
 import { ChoiceModal } from "../components/modal/ChoiceModal.tsx";
@@ -841,6 +842,7 @@ function GamePageContent({
         waitingFor.data.player === playerId && <ReplacementModal />}
       <ModeChoiceModal />
       <AdventureCastModal />
+      <ModalFaceModal />
       <WarpCostModal />
 
       {/* Scry/Dig/Surveil card choice modal */}

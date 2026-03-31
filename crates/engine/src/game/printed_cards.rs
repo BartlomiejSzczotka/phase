@@ -1,6 +1,6 @@
 use crate::database::CardDatabase;
 use crate::types::ability::PtValue;
-use crate::types::card::{CardFace, CardLayout, PrintedCardRef};
+use crate::types::card::{CardFace, CardLayout, LayoutKind, PrintedCardRef};
 use crate::types::game_state::GameState;
 use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
 
@@ -162,6 +162,7 @@ pub fn snapshot_object_face(obj: &GameObject) -> BackFaceData {
         strive_cost: obj.strive_cost.clone(),
         casting_restrictions: obj.casting_restrictions.clone(),
         casting_options: obj.casting_options.clone(),
+        layout_kind: None,
     }
 }
 
@@ -193,6 +194,20 @@ pub fn rehydrate_game_from_card_db(state: &mut GameState, db: &CardDatabase) {
                         apply_card_face_to_back_face(back_face, back_card_face);
                     }
                 }
+                // CR 712.12: Restore layout_kind if it was cleared (e.g. after MDFC
+                // front-face choice). Ensures bounced MDFCs can prompt face choice again.
+                if back_face.layout_kind.is_none() {
+                    if let Some(card_rules) = db.get_by_name(&card_face.name) {
+                        back_face.layout_kind = match &card_rules.layout {
+                            CardLayout::Adventure(..) => Some(LayoutKind::Adventure),
+                            CardLayout::Transform(..) => Some(LayoutKind::Transform),
+                            CardLayout::Modal(..) => Some(LayoutKind::Modal),
+                            CardLayout::Meld(..) => Some(LayoutKind::Meld),
+                            CardLayout::Omen(..) => Some(LayoutKind::Omen),
+                            _ => None,
+                        };
+                    }
+                }
             }
 
             // Populate back_face for dual-faced layouts so the other face's
@@ -203,20 +218,22 @@ pub fn rehydrate_game_from_card_db(state: &mut GameState, db: &CardDatabase) {
                     .get_by_name(&card_face.name)
                     .and_then(|card_rules| match &card_rules.layout {
                         // CR 715: Adventure half available at cast time
-                        CardLayout::Adventure(_, back) => Some(back),
+                        CardLayout::Adventure(_, back) => Some((LayoutKind::Adventure, back)),
                         // CR 712: Transform / Modal DFC / Meld / Omen back face
-                        CardLayout::Transform(_, back)
-                        | CardLayout::Modal(_, back)
-                        | CardLayout::Meld(_, back)
-                        | CardLayout::Omen(_, back) => Some(back),
+                        CardLayout::Transform(_, back) => Some((LayoutKind::Transform, back)),
+                        CardLayout::Modal(_, back) => Some((LayoutKind::Modal, back)),
+                        CardLayout::Meld(_, back) => Some((LayoutKind::Meld, back)),
+                        CardLayout::Omen(_, back) => Some((LayoutKind::Omen, back)),
                         _ => None,
                     })
                     .or_else(|| {
+                        // Fallback: no layout info available from face-only lookup
                         obj.printed_ref
                             .as_ref()
                             .and_then(|printed_ref| db.get_other_face_by_printed_ref(printed_ref))
+                            .map(|face| (LayoutKind::Single, face))
                     });
-                if let Some(face) = second_face {
+                if let Some((layout_kind, face)) = second_face {
                     let mut back = BackFaceData {
                         name: String::new(),
                         power: None,
@@ -236,8 +253,12 @@ pub fn rehydrate_game_from_card_db(state: &mut GameState, db: &CardDatabase) {
                         strive_cost: None,
                         casting_restrictions: Vec::new(),
                         casting_options: Vec::new(),
+                        layout_kind: None,
                     };
                     apply_card_face_to_back_face(&mut back, face);
+                    if layout_kind != LayoutKind::Single {
+                        back.layout_kind = Some(layout_kind);
+                    }
                     obj.back_face = Some(back);
                 }
             }
