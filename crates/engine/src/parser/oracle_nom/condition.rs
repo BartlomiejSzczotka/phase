@@ -11,7 +11,10 @@ use nom::Parser;
 
 use super::error::OracleResult;
 use super::primitives::parse_number;
-use crate::types::ability::{Comparator, QuantityExpr, QuantityRef, StaticCondition};
+use crate::parser::oracle_target::parse_type_phrase;
+use crate::types::ability::{
+    Comparator, ControllerRef, QuantityExpr, QuantityRef, StaticCondition, TargetFilter,
+};
 
 /// Parse a condition phrase from Oracle text.
 ///
@@ -33,7 +36,7 @@ pub fn parse_inner_condition(input: &str) -> OracleResult<'_, StaticCondition> {
     alt((
         parse_turn_conditions,
         parse_source_state_conditions,
-        parse_hand_conditions,
+        parse_you_have_conditions,
         parse_control_conditions,
         parse_life_conditions,
         parse_zone_conditions,
@@ -76,148 +79,122 @@ fn parse_source_state_conditions(input: &str) -> OracleResult<'_, StaticConditio
     .parse(input)
 }
 
-/// Parse hand-related conditions.
-fn parse_hand_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
-    alt((
-        // "you have no cards in hand"
-        map(tag("you have no cards in hand"), |_| {
+/// Parse "you have" quantity conditions: hand size, graveyard size, life.
+///
+/// Composable: "you have " + threshold/absence + quantity suffix.
+/// Handles "you have no cards in hand", "you have N or more cards in hand",
+/// "you have N or more cards in your graveyard", "you have N or more life".
+fn parse_you_have_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = tag("you have ").parse(input)?;
+
+    // "you have no cards in hand" → HandSize EQ 0
+    if let Ok((rest, _)) = tag::<_, _, nom_language::error::VerboseError<&str>>("no cards in hand")
+        .parse(rest)
+    {
+        return Ok((
+            rest,
             StaticCondition::QuantityComparison {
                 lhs: QuantityExpr::Ref {
                     qty: QuantityRef::HandSize,
                 },
                 comparator: Comparator::EQ,
                 rhs: QuantityExpr::Fixed { value: 0 },
-            }
-        }),
-        // "you have seven or more cards in hand"
-        parse_cards_in_hand_ge,
-    ))
-    .parse(input)
+            },
+        ));
+    }
+
+    // "you have N or more [quantity-suffix]"
+    let (rest, n) = parse_number(rest)?;
+
+    // Try each quantity suffix
+    if let Ok((rest, _)) = tag::<_, _, nom_language::error::VerboseError<&str>>(
+        " or more cards in hand",
+    )
+    .parse(rest)
+    {
+        return Ok((
+            rest,
+            make_quantity_ge(QuantityRef::HandSize, n),
+        ));
+    }
+    if let Ok((rest, _)) = tag::<_, _, nom_language::error::VerboseError<&str>>(
+        " or more cards in your graveyard",
+    )
+    .parse(rest)
+    {
+        return Ok((
+            rest,
+            make_quantity_ge(QuantityRef::GraveyardSize, n),
+        ));
+    }
+    if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>(" or more life").parse(rest)
+    {
+        return Ok((
+            rest,
+            make_quantity_ge(QuantityRef::LifeTotal, n),
+        ));
+    }
+
+    Err(nom::Err::Error(nom_language::error::VerboseError {
+        errors: vec![(
+            input,
+            nom_language::error::VerboseErrorKind::Nom(nom::error::ErrorKind::Tag),
+        )],
+    }))
 }
 
-/// Parse "you have N or more cards in hand".
-fn parse_cards_in_hand_ge(input: &str) -> OracleResult<'_, StaticCondition> {
-    let (rest, _) = tag("you have ").parse(input)?;
-    let (rest, n) = parse_number(rest)?;
-    let (rest, _) = tag(" or more cards in hand").parse(rest)?;
-    Ok((
-        rest,
-        StaticCondition::QuantityComparison {
-            lhs: QuantityExpr::Ref {
-                qty: QuantityRef::HandSize,
-            },
-            comparator: Comparator::GE,
-            rhs: QuantityExpr::Fixed { value: n as i32 },
-        },
-    ))
+/// Build a QuantityComparison: qty >= n.
+fn make_quantity_ge(qty: QuantityRef, n: u32) -> StaticCondition {
+    StaticCondition::QuantityComparison {
+        lhs: QuantityExpr::Ref { qty },
+        comparator: Comparator::GE,
+        rhs: QuantityExpr::Fixed { value: n as i32 },
+    }
 }
 
 /// Parse "you control" condition patterns.
 fn parse_control_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
     alt((
-        // "you control a [type]" → IsPresent with filter
-        parse_you_control_a_type,
-        map(tag("you don't control a creature"), |_| {
-            StaticCondition::Not {
-                condition: Box::new(StaticCondition::IsPresent {
-                    filter: Some(you_control_typed(
-                        crate::types::ability::TypeFilter::Creature,
-                    )),
-                }),
-            }
-        }),
+        // "you control N or more [type]" → QuantityComparison(ObjectCount >= N)
+        parse_control_count_ge,
+        // "you control a/an [type]" → IsPresent with filter
+        parse_you_control_a,
+        // "you don't control a/an [type]" → Not(IsPresent)
+        parse_you_dont_control_a,
     ))
     .parse(input)
 }
 
-/// Parse "you control a/an [type]" patterns.
-fn parse_you_control_a_type(input: &str) -> OracleResult<'_, StaticCondition> {
-    use crate::types::ability::TypeFilter;
-    alt((
-        map(tag("you control a creature"), |_| {
-            StaticCondition::IsPresent {
-                filter: Some(you_control_typed(TypeFilter::Creature)),
-            }
-        }),
-        map(tag("you control an artifact"), |_| {
-            StaticCondition::IsPresent {
-                filter: Some(you_control_typed(TypeFilter::Artifact)),
-            }
-        }),
-        map(tag("you control an enchantment"), |_| {
-            StaticCondition::IsPresent {
-                filter: Some(you_control_typed(TypeFilter::Enchantment)),
-            }
-        }),
-        map(tag("you control a planeswalker"), |_| {
-            StaticCondition::IsPresent {
-                filter: Some(you_control_typed(TypeFilter::Planeswalker)),
-            }
-        }),
-        map(tag("you control a legendary creature"), |_| {
-            StaticCondition::IsPresent {
-                filter: Some(crate::types::ability::TargetFilter::Typed(
-                    crate::types::ability::TypedFilter {
-                        type_filters: vec![TypeFilter::Creature],
-                        controller: Some(crate::types::ability::ControllerRef::You),
-                        properties: vec![crate::types::ability::FilterProp::HasSupertype {
-                            value: crate::types::card_type::Supertype::Legendary,
-                        }],
-                    },
-                )),
-            }
-        }),
-    ))
-    .parse(input)
-}
-
-/// Helper: build a TargetFilter for "you control a [type]".
-fn you_control_typed(
-    type_filter: crate::types::ability::TypeFilter,
-) -> crate::types::ability::TargetFilter {
-    crate::types::ability::TargetFilter::Typed(crate::types::ability::TypedFilter {
-        type_filters: vec![type_filter],
-        controller: Some(crate::types::ability::ControllerRef::You),
-        properties: Vec::new(),
-    })
-}
-
-/// Parse life-related conditions.
-fn parse_life_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
-    alt((parse_life_le, parse_life_ge)).parse(input)
-}
-
-/// Parse "your life total is N or less".
-fn parse_life_le(input: &str) -> OracleResult<'_, StaticCondition> {
-    let (rest, _) = tag("your life total is ").parse(input)?;
+/// Canonical combinator: "you control N or more [type]" → QuantityComparison.
+///
+/// Single authority for this pattern — called from `oracle_static.rs` and
+/// `oracle_trigger.rs` to avoid three-way duplication.
+/// Returns the remainder after the type phrase (may be non-empty for trailing text).
+pub fn parse_control_count_ge(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = tag("you control ").parse(input)?;
     let (rest, n) = parse_number(rest)?;
-    let (rest, _) = tag(" or less").parse(rest)?;
+    let rest = rest.trim_start();
+    let (rest, _) = tag("or more ").parse(rest)?;
+    let type_text = rest.trim_end_matches('.');
+    let (filter, remainder) = parse_type_phrase(type_text);
+    if matches!(filter, TargetFilter::Any) {
+        return Err(nom::Err::Error(nom_language::error::VerboseError {
+            errors: vec![(
+                input,
+                nom_language::error::VerboseErrorKind::Nom(nom::error::ErrorKind::Tag),
+            )],
+        }));
+    }
+    let filter = inject_controller_you(filter);
+    // Map remainder back to original input slice — parse_type_phrase consumed
+    // from a trimmed copy, so use byte offset from the original.
+    let consumed = input.len() - remainder.len();
     Ok((
-        rest,
+        &input[consumed..],
         StaticCondition::QuantityComparison {
             lhs: QuantityExpr::Ref {
-                qty: QuantityRef::LifeTotal,
-            },
-            comparator: Comparator::LE,
-            rhs: QuantityExpr::Fixed { value: n as i32 },
-        },
-    ))
-}
-
-/// Parse "your life total is N or greater" / "you have N or more life".
-fn parse_life_ge(input: &str) -> OracleResult<'_, StaticCondition> {
-    alt((parse_life_ge_formal, parse_life_ge_informal)).parse(input)
-}
-
-fn parse_life_ge_formal(input: &str) -> OracleResult<'_, StaticCondition> {
-    let (rest, _) = tag("your life total is ").parse(input)?;
-    let (rest, n) = parse_number(rest)?;
-    let (rest, _) = tag(" or greater").parse(rest)?;
-    Ok((
-        rest,
-        StaticCondition::QuantityComparison {
-            lhs: QuantityExpr::Ref {
-                qty: QuantityRef::LifeTotal,
+                qty: QuantityRef::ObjectCount { filter },
             },
             comparator: Comparator::GE,
             rhs: QuantityExpr::Fixed { value: n as i32 },
@@ -225,10 +202,87 @@ fn parse_life_ge_formal(input: &str) -> OracleResult<'_, StaticCondition> {
     ))
 }
 
-fn parse_life_ge_informal(input: &str) -> OracleResult<'_, StaticCondition> {
-    let (rest, _) = tag("you have ").parse(input)?;
+/// Parse "you control a/an [type]" → IsPresent with filter.
+///
+/// Generalized: uses `parse_type_phrase` so any type phrase is supported,
+/// not just hardcoded creature/artifact/enchantment/planeswalker.
+fn parse_you_control_a(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = alt((tag("you control a "), tag("you control an "))).parse(input)?;
+    let (filter, remainder) = parse_type_phrase(rest);
+    if matches!(filter, TargetFilter::Any) {
+        return Err(nom::Err::Error(nom_language::error::VerboseError {
+            errors: vec![(
+                input,
+                nom_language::error::VerboseErrorKind::Nom(nom::error::ErrorKind::Tag),
+            )],
+        }));
+    }
+    let filter = inject_controller_you(filter);
+    let consumed = input.len() - remainder.len();
+    Ok((
+        &input[consumed..],
+        StaticCondition::IsPresent {
+            filter: Some(filter),
+        },
+    ))
+}
+
+/// Parse "you don't control a/an [type]" → Not(IsPresent).
+fn parse_you_dont_control_a(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = alt((tag("you don't control a "), tag("you don't control an ")))
+        .parse(input)?;
+    let (filter, remainder) = parse_type_phrase(rest);
+    if matches!(filter, TargetFilter::Any) {
+        return Err(nom::Err::Error(nom_language::error::VerboseError {
+            errors: vec![(
+                input,
+                nom_language::error::VerboseErrorKind::Nom(nom::error::ErrorKind::Tag),
+            )],
+        }));
+    }
+    let filter = inject_controller_you(filter);
+    let consumed = input.len() - remainder.len();
+    Ok((
+        &input[consumed..],
+        StaticCondition::Not {
+            condition: Box::new(StaticCondition::IsPresent {
+                filter: Some(filter),
+            }),
+        },
+    ))
+}
+
+/// Inject `ControllerRef::You` into a TargetFilter produced by `parse_type_phrase`.
+fn inject_controller_you(filter: TargetFilter) -> TargetFilter {
+    match filter {
+        TargetFilter::Typed(tf) => TargetFilter::Typed(tf.controller(ControllerRef::You)),
+        other => other,
+    }
+}
+
+
+/// Parse "your life total is N or less/greater" conditions.
+///
+/// Note: "you have N or more life" is handled by `parse_you_have_conditions`.
+fn parse_life_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = tag("your life total is ").parse(input)?;
     let (rest, n) = parse_number(rest)?;
-    let (rest, _) = tag(" or more life").parse(rest)?;
+    // Try "or less" then "or greater"
+    if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>(" or less").parse(rest)
+    {
+        return Ok((
+            rest,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::LifeTotal,
+                },
+                comparator: Comparator::LE,
+                rhs: QuantityExpr::Fixed { value: n as i32 },
+            },
+        ));
+    }
+    let (rest, _) = tag(" or greater").parse(rest)?;
     Ok((
         rest,
         StaticCondition::QuantityComparison {
@@ -386,5 +440,90 @@ mod tests {
     #[test]
     fn test_parse_condition_failure() {
         assert!(parse_condition("when something happens").is_err());
+    }
+
+    // -- Generalized control conditions --
+
+    #[test]
+    fn test_you_control_a_creature() {
+        let (rest, c) = parse_inner_condition("you control a creature").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(c, StaticCondition::IsPresent { filter: Some(_) }));
+    }
+
+    #[test]
+    fn test_you_control_an_artifact() {
+        let (rest, c) = parse_inner_condition("you control an artifact").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(c, StaticCondition::IsPresent { filter: Some(_) }));
+    }
+
+    #[test]
+    fn test_you_control_a_land() {
+        // Generalized: works for any type phrase, not just hardcoded types
+        let (rest, c) = parse_inner_condition("you control a land").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(c, StaticCondition::IsPresent { filter: Some(_) }));
+    }
+
+    #[test]
+    fn test_you_dont_control_a_creature() {
+        let (rest, c) = parse_inner_condition("you don't control a creature").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(c, StaticCondition::Not { .. }));
+    }
+
+    #[test]
+    fn test_you_dont_control_an_artifact() {
+        let (rest, c) = parse_inner_condition("you don't control an artifact").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(c, StaticCondition::Not { .. }));
+    }
+
+    #[test]
+    fn test_control_count_ge() {
+        let (rest, c) =
+            parse_inner_condition("you control three or more creatures").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                comparator,
+                rhs: QuantityExpr::Fixed { value: 3 },
+                ..
+            } => assert_eq!(comparator, Comparator::GE),
+            other => panic!("expected QuantityComparison GE 3, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_control_count_ge_artifacts() {
+        let (rest, c) =
+            parse_inner_condition("you control two or more artifacts").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(
+            c,
+            StaticCondition::QuantityComparison {
+                comparator: Comparator::GE,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn test_graveyard_count_ge() {
+        let (rest, c) =
+            parse_inner_condition("you have five or more cards in your graveyard").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::GraveyardSize,
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 5 },
+            } => {}
+            other => panic!("expected GraveyardSize GE 5, got {other:?}"),
+        }
     }
 }

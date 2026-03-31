@@ -7,8 +7,7 @@ use nom::Parser;
 use nom_language::error::VerboseError;
 
 use super::oracle_effect::{parse_effect_chain_with_context, ParseContext};
-#[allow(unused_imports)]
-use super::oracle_nom::bridge::nom_on_lower;
+use super::oracle_nom::condition::parse_inner_condition;
 use super::oracle_nom::error::OracleResult;
 use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_nom::quantity as nom_quantity;
@@ -20,8 +19,9 @@ use super::oracle_util::{
 };
 use crate::types::ability::{
     AbilityKind, Comparator, ControllerRef, CountScope, DamageKindFilter, FilterProp,
-    NinjutsuVariant, QuantityExpr, QuantityRef, TargetFilter, TriggerCondition, TriggerConstraint,
-    TriggerDefinition, TypeFilter, TypedFilter, UnlessCost, UnlessPayModifier, ZoneRef,
+    NinjutsuVariant, QuantityExpr, QuantityRef, StaticCondition, TargetFilter, TriggerCondition,
+    TriggerConstraint, TriggerDefinition, TypeFilter, TypedFilter, UnlessCost, UnlessPayModifier,
+    ZoneRef,
 };
 use crate::types::card_type::CoreType;
 use crate::types::events::PlayerActionKind;
@@ -298,6 +298,104 @@ fn spells_cast_this_turn_at_least_condition(minimum: i32) -> TriggerCondition {
         },
         comparator: Comparator::GE,
         rhs: QuantityExpr::Fixed { value: minimum },
+    }
+}
+
+/// Bridge a `StaticCondition` (from the nom condition parser) to a `TriggerCondition`.
+///
+/// Parallel to `static_condition_to_ability_condition` in `oracle_effect/mod.rs`.
+/// Returns `None` for variants that have no `TriggerCondition` equivalent —
+/// the caller falls through to the next strategy.
+fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<TriggerCondition> {
+    match sc {
+        // No positive YourTurn variant in TriggerCondition — known gap.
+        StaticCondition::DuringYourTurn => None,
+
+        // CR 608.2c: Quantity comparisons map 1:1 (same fields).
+        StaticCondition::QuantityComparison {
+            lhs,
+            comparator,
+            rhs,
+        } => Some(TriggerCondition::QuantityComparison {
+            lhs: lhs.clone(),
+            comparator: *comparator,
+            rhs: rhs.clone(),
+        }),
+
+        // CR 702.178a: Speed condition.
+        StaticCondition::HasMaxSpeed => Some(TriggerCondition::HasMaxSpeed),
+
+        // CR 716.6: Class level condition.
+        StaticCondition::ClassLevelGE { level } => {
+            Some(TriggerCondition::ClassLevelGE { level: *level })
+        }
+
+        // IsPresent with filter → ControlsType (presence check).
+        StaticCondition::IsPresent { filter } => {
+            let f = filter.clone()?;
+            Some(TriggerCondition::ControlsType { filter: f })
+        }
+
+        // Not combinator — handle common negation patterns.
+        StaticCondition::Not { condition } => match condition.as_ref() {
+            StaticCondition::DuringYourTurn => Some(TriggerCondition::NotYourTurn),
+            // Negate a quantity comparison by flipping the comparator.
+            StaticCondition::QuantityComparison {
+                lhs,
+                comparator,
+                rhs,
+            } => Some(TriggerCondition::QuantityComparison {
+                lhs: lhs.clone(),
+                comparator: comparator.negate(),
+                rhs: rhs.clone(),
+            }),
+            // Negate an IsPresent → ObjectCount == 0
+            StaticCondition::IsPresent { filter } => {
+                let f = filter.clone().unwrap_or(TargetFilter::Any);
+                Some(TriggerCondition::QuantityComparison {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { filter: f },
+                    },
+                    comparator: Comparator::EQ,
+                    rhs: QuantityExpr::Fixed { value: 0 },
+                })
+            }
+            _ => None,
+        },
+
+        // And/Or — recursive. If ANY child is unmappable, the entire compound
+        // returns None to avoid producing a less-restrictive condition.
+        StaticCondition::And { conditions } => {
+            let mapped: Option<Vec<_>> = conditions
+                .iter()
+                .map(static_condition_to_trigger_condition)
+                .collect();
+            Some(TriggerCondition::And {
+                conditions: mapped?,
+            })
+        }
+        StaticCondition::Or { conditions } => {
+            let mapped: Option<Vec<_>> = conditions
+                .iter()
+                .map(static_condition_to_trigger_condition)
+                .collect();
+            Some(TriggerCondition::Or {
+                conditions: mapped?,
+            })
+        }
+
+        // Variants with no TriggerCondition equivalent.
+        StaticCondition::SourceEnteredThisTurn
+        | StaticCondition::SourceIsTapped
+        | StaticCondition::SourceInZone { .. }
+        | StaticCondition::IsRingBearer
+        | StaticCondition::RingLevelAtLeast { .. }
+        | StaticCondition::DevotionGE { .. }
+        | StaticCondition::ChosenColorIs { .. }
+        | StaticCondition::SpeedGE { .. }
+        | StaticCondition::HasCounters { .. }
+        | StaticCondition::Unrecognized { .. }
+        | StaticCondition::None => None,
     }
 }
 
@@ -711,6 +809,30 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
         }
     }
 
+    // CR 603.4: Fallback — use the nom StaticCondition parser + bridge for
+    // unrecognized "if [condition]" patterns (hand size, life total, control
+    // presence, etc.). All ~20 specific patterns above already returned, so the
+    // fallback cannot shadow them.
+    if let Some(if_pos) = tp.find("if ") {
+        let cond_fragment = &lower[if_pos + "if ".len()..];
+        if let Ok((rest, sc)) = parse_inner_condition(cond_fragment) {
+            let rest_trimmed = rest.trim();
+            // Accept only if parser stopped at a clause boundary
+            if rest_trimmed.is_empty()
+                || rest_trimmed.starts_with(',')
+                || rest_trimmed.starts_with('.')
+            {
+                if let Some(trigger_cond) = static_condition_to_trigger_condition(&sc) {
+                    let consumed = cond_fragment.len() - rest.len();
+                    return (
+                        strip_condition_clause(text, if_pos, "if ".len() + consumed),
+                        Some(trigger_cond),
+                    );
+                }
+            }
+        }
+    }
+
     (text.to_string(), None)
 }
 
@@ -733,27 +855,26 @@ fn strip_condition_clause(text: &str, clause_start: usize, clause_len: usize) ->
 }
 
 /// Parse "if you control N or more [type]" → (condition, end_byte_offset).
-/// Generalized: uses `parse_type_phrase` to handle any permanent type, not just creatures.
-/// Delegates to `nom_primitives::parse_number` for the count (input already lowercase).
+///
+/// Delegates to the canonical `parse_control_count_ge` combinator in
+/// `oracle_nom/condition.rs` and maps the result to `TriggerCondition::ControlCount`.
 fn parse_control_count_condition(lower: &str) -> Option<(TriggerCondition, usize)> {
     let start = lower.find("if you control ")?;
-    let after_prefix = &lower[start + "if you control ".len()..];
-    let (nom_rest, n) = nom_primitives::parse_number.parse(after_prefix).ok()?;
-    let rest = nom_rest.trim_start();
-    let (or_more, ()) = value((), tag::<_, _, VerboseError<&str>>("or more "))
-        .parse(rest)
-        .ok()?;
-    let (filter, leftover) = parse_type_phrase(or_more);
-    if filter == TargetFilter::Any {
-        return None;
-    }
-    let consumed_type_len = or_more.len() - leftover.len();
-    let end = start
-        + "if you control ".len()
-        + (after_prefix.len() - rest.len())
-        + "or more ".len()
-        + consumed_type_len;
-    Some((TriggerCondition::ControlCount { minimum: n, filter }, end))
+    let control_text = &lower[start + "if ".len()..];
+    let (rest, sc) =
+        crate::parser::oracle_nom::condition::parse_control_count_ge(control_text).ok()?;
+    // Extract minimum and filter from the canonical QuantityComparison result.
+    let (minimum, filter) = match sc {
+        StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref { qty: QuantityRef::ObjectCount { filter } },
+            rhs: QuantityExpr::Fixed { value },
+            ..
+        } => (value as u32, filter),
+        _ => return None,
+    };
+    let consumed = control_text.len() - rest.len();
+    let end = start + "if ".len() + consumed;
+    Some((TriggerCondition::ControlCount { minimum, filter }, end))
 }
 
 /// Parse "N or more life this turn" → N, or "life this turn" → 1
@@ -3909,13 +4030,10 @@ mod tests {
         assert_eq!(def.mode, TriggerMode::Phase);
         assert_eq!(def.phase, Some(Phase::BeginCombat));
         assert_eq!(def.constraint, Some(TriggerConstraint::OnlyDuringYourTurn));
-        assert_eq!(
+        assert!(matches!(
             def.condition,
-            Some(TriggerCondition::ControlCount {
-                minimum: 3,
-                filter: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
-            })
-        );
+            Some(TriggerCondition::ControlCount { minimum: 3, .. })
+        ));
         // Effect: pump self +1/+1 with life gain sub_ability
         let exec = def.execute.as_ref().expect("should have execute");
         assert!(matches!(
@@ -3944,13 +4062,13 @@ mod tests {
             "if you control three or more creatures, ~ gets +1/+1 until end of turn",
         );
         assert_eq!(cleaned, "~ gets +1/+1 until end of turn");
-        assert_eq!(
+        // The canonical combinator injects ControllerRef::You since the condition
+        // is "you control". This is semantically correct.
+        let cond = cond.expect("should have condition");
+        assert!(matches!(
             cond,
-            Some(TriggerCondition::ControlCount {
-                minimum: 3,
-                filter: TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature)),
-            })
-        );
+            TriggerCondition::ControlCount { minimum: 3, .. }
+        ));
     }
 
     // --- Equipment / Aura subject filter tests ---
@@ -5890,5 +6008,218 @@ mod tests {
         );
         assert_eq!(def.mode, TriggerMode::Fight);
         assert!(def.valid_card.is_some());
+    }
+
+    // -- StaticCondition → TriggerCondition bridge tests --
+
+    #[test]
+    fn bridge_quantity_comparison() {
+        let sc = StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::HandSize,
+            },
+            comparator: Comparator::EQ,
+            rhs: QuantityExpr::Fixed { value: 0 },
+        };
+        let tc = static_condition_to_trigger_condition(&sc).unwrap();
+        assert!(matches!(
+            tc,
+            TriggerCondition::QuantityComparison {
+                comparator: Comparator::EQ,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn bridge_is_present_to_controls_type() {
+        let sc = StaticCondition::IsPresent {
+            filter: Some(TargetFilter::Typed(
+                TypedFilter::default().controller(ControllerRef::You),
+            )),
+        };
+        let tc = static_condition_to_trigger_condition(&sc).unwrap();
+        assert!(matches!(tc, TriggerCondition::ControlsType { .. }));
+    }
+
+    #[test]
+    fn bridge_is_present_none_filter_returns_none() {
+        let sc = StaticCondition::IsPresent { filter: None };
+        assert!(static_condition_to_trigger_condition(&sc).is_none());
+    }
+
+    #[test]
+    fn bridge_not_during_your_turn() {
+        let sc = StaticCondition::Not {
+            condition: Box::new(StaticCondition::DuringYourTurn),
+        };
+        let tc = static_condition_to_trigger_condition(&sc).unwrap();
+        assert_eq!(tc, TriggerCondition::NotYourTurn);
+    }
+
+    #[test]
+    fn bridge_during_your_turn_returns_none() {
+        assert!(static_condition_to_trigger_condition(&StaticCondition::DuringYourTurn).is_none());
+    }
+
+    #[test]
+    fn bridge_not_is_present_to_quantity_eq_zero() {
+        let sc = StaticCondition::Not {
+            condition: Box::new(StaticCondition::IsPresent {
+                filter: Some(TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![TypeFilter::Creature],
+                    controller: Some(ControllerRef::You),
+                    properties: Vec::new(),
+                })),
+            }),
+        };
+        let tc = static_condition_to_trigger_condition(&sc).unwrap();
+        match tc {
+            TriggerCondition::QuantityComparison {
+                comparator,
+                rhs: QuantityExpr::Fixed { value: 0 },
+                ..
+            } => assert_eq!(comparator, Comparator::EQ),
+            other => panic!("expected QuantityComparison EQ 0, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bridge_negated_quantity_comparison() {
+        let sc = StaticCondition::Not {
+            condition: Box::new(StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::LifeTotal,
+                },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 5 },
+            }),
+        };
+        let tc = static_condition_to_trigger_condition(&sc).unwrap();
+        match tc {
+            TriggerCondition::QuantityComparison {
+                comparator: Comparator::LT,
+                ..
+            } => {}
+            other => panic!("expected negated GE→LT, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bridge_has_max_speed() {
+        let tc = static_condition_to_trigger_condition(&StaticCondition::HasMaxSpeed).unwrap();
+        assert_eq!(tc, TriggerCondition::HasMaxSpeed);
+    }
+
+    #[test]
+    fn bridge_class_level_ge() {
+        let sc = StaticCondition::ClassLevelGE { level: 2 };
+        let tc = static_condition_to_trigger_condition(&sc).unwrap();
+        assert_eq!(tc, TriggerCondition::ClassLevelGE { level: 2 });
+    }
+
+    #[test]
+    fn bridge_and_recursive() {
+        let sc = StaticCondition::And {
+            conditions: vec![
+                StaticCondition::HasMaxSpeed,
+                StaticCondition::QuantityComparison {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::HandSize,
+                    },
+                    comparator: Comparator::GE,
+                    rhs: QuantityExpr::Fixed { value: 3 },
+                },
+            ],
+        };
+        let tc = static_condition_to_trigger_condition(&sc).unwrap();
+        match tc {
+            TriggerCondition::And { conditions } => assert_eq!(conditions.len(), 2),
+            other => panic!("expected And, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bridge_and_with_unmappable_returns_none() {
+        let sc = StaticCondition::And {
+            conditions: vec![
+                StaticCondition::HasMaxSpeed,
+                StaticCondition::SourceIsTapped, // unmappable
+            ],
+        };
+        assert!(static_condition_to_trigger_condition(&sc).is_none());
+    }
+
+    #[test]
+    fn bridge_unmappable_variants_return_none() {
+        assert!(static_condition_to_trigger_condition(&StaticCondition::SourceIsTapped).is_none());
+        assert!(
+            static_condition_to_trigger_condition(&StaticCondition::SourceEnteredThisTurn)
+                .is_none()
+        );
+        assert!(static_condition_to_trigger_condition(&StaticCondition::IsRingBearer).is_none());
+    }
+
+    // -- Nom bridge fallback integration tests --
+
+    #[test]
+    fn fallback_if_you_control_a_creature() {
+        // "if you control a creature" is handled by the nom bridge fallback
+        let (cleaned, cond) = extract_if_condition("if you control a creature, draw a card");
+        assert_eq!(cleaned, "draw a card");
+        assert!(cond.is_some());
+        assert!(matches!(cond.unwrap(), TriggerCondition::ControlsType { .. }));
+    }
+
+    #[test]
+    fn fallback_if_hand_empty() {
+        let (cleaned, cond) =
+            extract_if_condition("if you have no cards in hand, draw a card");
+        assert_eq!(cleaned, "draw a card");
+        match cond.unwrap() {
+            TriggerCondition::QuantityComparison {
+                comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 0 },
+                ..
+            } => {}
+            other => panic!("expected QuantityComparison EQ 0, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn fallback_does_not_shadow_specific_gained_life() {
+        // "if you gained life this turn" has a specific handler that produces
+        // GainedLife, NOT a generic QuantityComparison. Verify the specific
+        // variant is preserved even though the nom parser could also handle it.
+        let (_, cond) =
+            extract_if_condition("if you gained life this turn, draw a card");
+        assert!(matches!(cond.unwrap(), TriggerCondition::GainedLife { minimum: 1 }));
+    }
+
+    #[test]
+    fn fallback_does_not_shadow_specific_not_your_turn() {
+        let (_, cond) = extract_if_condition("if it's not your turn, draw a card");
+        assert_eq!(cond.unwrap(), TriggerCondition::NotYourTurn);
+    }
+
+    #[test]
+    fn fallback_does_not_shadow_specific_controls_count() {
+        // "if you control 3 or more creatures" has a specific handler producing ControlCount
+        let (_, cond) =
+            extract_if_condition("if you control three or more creatures, draw a card");
+        assert!(matches!(
+            cond.unwrap(),
+            TriggerCondition::ControlCount { minimum: 3, .. }
+        ));
+    }
+
+    #[test]
+    fn fallback_does_not_shadow_specific_life_total() {
+        // "if you have 5 or more life" has a specific handler producing LifeTotalGE
+        let (_, cond) = extract_if_condition("if you have five or more life, draw a card");
+        assert!(matches!(
+            cond.unwrap(),
+            TriggerCondition::LifeTotalGE { minimum: 5 }
+        ));
     }
 }

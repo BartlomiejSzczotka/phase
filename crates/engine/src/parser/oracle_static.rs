@@ -1486,8 +1486,11 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
         return Some(condition);
     }
 
-    // "you control N or more [type]" — quantity threshold
-    if let Some(condition) = parse_controls_n_or_more_condition(tp.lower) {
+    // "you control N or more [type]" — quantity threshold.
+    // Delegates to canonical combinator in oracle_nom/condition.rs.
+    if let Ok((_, condition)) =
+        crate::parser::oracle_nom::condition::parse_control_count_ge(tp.lower)
+    {
         return Some(condition);
     }
 
@@ -1734,30 +1737,6 @@ fn parse_graveyard_threshold_condition(lower: &str) -> Option<StaticCondition> {
     None
 }
 
-/// Parse "you control N or more [type]" → QuantityComparison(ObjectCount >= N).
-fn parse_controls_n_or_more_condition(lower: &str) -> Option<StaticCondition> {
-    let rest = nom_tag_lower(lower, lower, "you control ")?;
-    let (n, after_n) = parse_number(rest)?;
-    let after_n = after_n.trim();
-    let type_text = nom_tag_lower(after_n, after_n, "or more ")?;
-    let type_text = type_text.trim_end_matches('.');
-    let (filter, remainder) = parse_type_phrase(type_text);
-    if !remainder.trim().is_empty() || matches!(filter, TargetFilter::Any) {
-        return None;
-    }
-    // Inject controller: You
-    let filter = match filter {
-        TargetFilter::Typed(tf) => TargetFilter::Typed(tf.controller(ControllerRef::You)),
-        other => other,
-    };
-    Some(StaticCondition::QuantityComparison {
-        lhs: QuantityExpr::Ref {
-            qty: QuantityRef::ObjectCount { filter },
-        },
-        comparator: Comparator::GE,
-        rhs: QuantityExpr::Fixed { value: n as i32 },
-    })
-}
 
 /// Parse "N or more [type] entered the battlefield under your control this turn".
 fn parse_entered_this_turn_condition(lower: &str) -> Option<StaticCondition> {
