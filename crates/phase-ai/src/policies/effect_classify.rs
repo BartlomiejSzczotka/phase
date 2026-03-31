@@ -184,6 +184,17 @@ pub(crate) fn is_spell_beneficial(ctx: &PolicyContext<'_>) -> bool {
         _ => {}
     }
 
+    // TargetOnly marks a target without direct effect — check sub-effects for polarity.
+    // If a subsequent harmful mass effect (ChangeZoneAll, DestroyAll, DamageAll) excludes
+    // the parent target via Not(ParentTarget), the target is being SAVED from the mass effect.
+    if matches!(effects.first(), Some(Effect::TargetOnly { .. })) {
+        for effect in effects.iter().skip(1) {
+            if is_harmful_all_excluding_target(effect) {
+                return true; // Target is the survivor — beneficial
+            }
+        }
+    }
+
     // No clear polarity from active effects (empty or Contextual).
     // Auras carry their beneficial/harmful nature in static definitions.
     if let Some(source) = ctx.source_object() {
@@ -344,5 +355,30 @@ pub(crate) fn modification_polarity(m: &ContinuousModification) -> EffectPolarit
         | ContinuousModification::RemoveSubtype { .. } => EffectPolarity::Harmful,
         // SetPower/SetToughness, SetColor, etc. are contextual — could go either way.
         _ => EffectPolarity::Contextual,
+    }
+}
+
+/// Returns true if the effect is a harmful mass effect (ChangeZoneAll, DestroyAll, DamageAll)
+/// whose filter excludes the parent ability's target via `Not(ParentTarget)`.
+/// This pattern means the targeted creature is the survivor, not the victim.
+fn is_harmful_all_excluding_target(effect: &Effect) -> bool {
+    let filter = match effect {
+        Effect::ChangeZoneAll {
+            destination: Zone::Exile | Zone::Graveyard,
+            target,
+            ..
+        } => Some(target),
+        Effect::DestroyAll { target, .. } | Effect::DamageAll { target, .. } => Some(target),
+        _ => return false,
+    };
+    filter.is_some_and(filter_excludes_parent_target)
+}
+
+/// Recursively checks if a target filter contains `Not(ParentTarget)`.
+fn filter_excludes_parent_target(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Not { filter: inner } => matches!(inner.as_ref(), TargetFilter::ParentTarget),
+        TargetFilter::And { filters } => filters.iter().any(filter_excludes_parent_target),
+        _ => false,
     }
 }

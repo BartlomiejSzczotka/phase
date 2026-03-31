@@ -110,6 +110,18 @@ fn score_pre_cast(ctx: &PolicyContext<'_>) -> f64 {
         penalty -= 8.0;
     }
 
+    // ETB-only permanents (e.g. Seam Rip): the spell itself has no targets, but the
+    // card's entire value comes from a targeted ETB trigger. If no valid target exists
+    // for the ETB trigger, casting wastes the card.
+    if let Some(facts) = ctx.cast_facts() {
+        if facts.requires_targets_in_immediate_etb
+            && !facts.requires_targets_in_spell_text
+            && !etb_trigger_has_valid_targets(ctx, &facts)
+        {
+            penalty -= 8.0;
+        }
+    }
+
     penalty
 }
 
@@ -152,6 +164,42 @@ fn optional_effect_life_cost(ctx: &PolicyContext<'_>, source_id: ObjectId) -> Op
             }
             None
         })
+}
+
+/// Check if any ETB trigger on the permanent has a valid target on the battlefield.
+/// Uses the trigger's execute ability's target filter(s) and validates against live game state.
+fn etb_trigger_has_valid_targets(
+    ctx: &PolicyContext<'_>,
+    facts: &crate::cast_facts::CastFacts<'_>,
+) -> bool {
+    let source_id = match &ctx.candidate.action {
+        GameAction::CastSpell { object_id, .. } => *object_id,
+        _ => return true, // Not a cast action — assume valid
+    };
+
+    for trigger in &facts.immediate_etb_triggers {
+        let Some(execute) = &trigger.execute else {
+            continue;
+        };
+        // Walk the trigger's effect chain looking for targeted effects
+        let mut node = Some(execute.as_ref());
+        while let Some(def) = node {
+            if let Some(filter) = extract_target_filter(&def.effect) {
+                // Check if any battlefield object matches this filter
+                let has_match = ctx
+                    .state
+                    .battlefield
+                    .iter()
+                    .any(|&obj_id| matches_target_filter(ctx.state, obj_id, filter, source_id));
+                if has_match {
+                    return true;
+                }
+            }
+            node = def.sub_ability.as_deref();
+        }
+    }
+
+    false
 }
 
 fn has_opponent_bounce_target(ctx: &PolicyContext<'_>, effects: &[&Effect]) -> bool {

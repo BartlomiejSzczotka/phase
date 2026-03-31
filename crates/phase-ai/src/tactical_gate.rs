@@ -1,6 +1,6 @@
 use engine::ai_support::{AiDecisionContext, CandidateAction};
 use engine::game::combat::AttackTarget;
-use engine::types::ability::{Effect, PtValue, TargetRef};
+use engine::types::ability::{AbilityCondition, Effect, PtValue, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
 use engine::types::game_state::GameState;
@@ -148,6 +148,29 @@ fn assess_candidate(ctx: &PolicyContext<'_>) -> GateDecision {
 }
 
 fn assess_pre_cast(ctx: &PolicyContext<'_>) -> GateDecision {
+    // CR 608.2c: Reject abilities whose source-type condition is known to fail.
+    // E.g. Figure of Fable's "{1}{G/W}{G/W}: If this creature is a Scout, ..." when
+    // the source is not currently a Scout. The ability is legal to activate but wastes mana.
+    if let GameAction::ActivateAbility {
+        source_id,
+        ability_index,
+    } = &ctx.candidate.action
+    {
+        if let Some(object) = ctx.state.objects.get(source_id) {
+            if let Some(ability_def) = object.abilities.get(*ability_index) {
+                if let Some(AbilityCondition::SourceMatchesFilter { ref filter }) =
+                    ability_def.condition
+                {
+                    if !engine::game::filter::matches_target_filter(
+                        ctx.state, *source_id, filter, *source_id,
+                    ) {
+                        return GateDecision::Reject;
+                    }
+                }
+            }
+        }
+    }
+
     let effects = ctx.effects();
     if effects.is_empty() {
         return GateDecision::Allow;

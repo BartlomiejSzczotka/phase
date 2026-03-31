@@ -1047,6 +1047,15 @@ fn evaluate_condition(
                 false
             }
         }
+        // CR 608.2c: "If this creature/permanent is a [type]" — check source object.
+        AbilityCondition::SourceMatchesFilter { filter } => {
+            crate::game::filter::matches_target_filter(
+                state,
+                ability.source_id,
+                filter,
+                ability.source_id,
+            )
+        }
         // CR 608.2c: "If it's your turn" — check active player against controller.
         AbilityCondition::IsYourTurn { negated } => {
             (state.active_player == ability.controller) != *negated

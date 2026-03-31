@@ -3646,6 +3646,32 @@ fn strip_property_conditional(text: &str) -> (Option<AbilityCondition>, String) 
         }
     }
 
+    // CR 608.2c: "If this creature/permanent is a [type], [effect]" — source subtype gate.
+    // PREFIX pattern: the condition leads the text, with the effect after the comma.
+    // Used by leveler-style cards (e.g. Figure of Fable) where each activated ability
+    // gates on the source's current type.
+    for prefix in &[
+        "if this creature is a ",
+        "if this creature is an ",
+        "if this permanent is a ",
+        "if this permanent is an ",
+    ] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            if let Some((type_text, _)) = rest.split_once(", ") {
+                let type_text = type_text.trim_end_matches('.');
+                let (filter, leftover) = parse_type_phrase(type_text);
+                if !matches!(filter, TargetFilter::Any) && leftover.trim().is_empty() {
+                    // Compute offset into original text: prefix + type + ", "
+                    let effect_start = prefix.len() + type_text.len() + ", ".len();
+                    return (
+                        Some(AbilityCondition::SourceMatchesFilter { filter }),
+                        text[effect_start..].to_string(),
+                    );
+                }
+            }
+        }
+    }
+
     (None, text.to_string())
 }
 
