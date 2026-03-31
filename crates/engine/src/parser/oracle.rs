@@ -26,7 +26,6 @@ use super::oracle_level::parse_level_blocks;
 use super::oracle_modal::{
     lower_oracle_block, parse_oracle_block, strip_ability_word, strip_ability_word_with_name,
 };
-use super::oracle_nom::error::parse_or_unimplemented;
 use super::oracle_replacement::parse_replacement_line;
 use super::oracle_saga::{is_saga_chapter, parse_saga_chapters};
 use super::oracle_static::{parse_static_line, parse_static_line_multi};
@@ -930,46 +929,21 @@ pub fn parse_oracle_text(
             }
         }
 
-        // Priority 14a: "damage can't be prevented" → AddRestriction effect
-        if lower.contains("damage") && lower.contains("can't be prevented") {
-            let def = parse_effect_chain_with_context(
-                &line,
-                AbilityKind::Spell,
-                &ParseContext {
-                    subject: None,
-                    card_name: Some(card_name.to_string()),
-                },
-            );
-            if !has_unimplemented(&def) {
-                result.abilities.push(def);
-                i += 1;
-                continue;
-            }
+        // Priority 14a: Nom dispatch — try effect, trigger, static, and replacement
+        // sub-parsers. If any succeeds, use the result directly.
+        let nom_effect = dispatch_line_nom(&line, &static_line, card_name);
+        if !matches!(nom_effect, Effect::Unimplemented { .. }) {
+            result
+                .abilities
+                .push(AbilityDefinition::new(AbilityKind::Spell, nom_effect));
+            i += 1;
+            continue;
         }
 
-        // Priority 14b: Try parsing as effect even for non-spells
-        if is_effect_sentence_candidate(&lower) {
-            let def = parse_effect_chain_with_context(
-                &line,
-                AbilityKind::Spell,
-                &ParseContext {
-                    subject: None,
-                    card_name: Some(card_name.to_string()),
-                },
-            );
-            if !has_unimplemented(&def) {
-                result.abilities.push(def);
-                i += 1;
-                continue;
-            }
-        }
-
-        // Priority 15: Fallback — attempt all major branch parsers via nom alt()
-        // to collect error trace (D-12) before falling back to Unimplemented.
-        let fallback_effect = dispatch_line_nom(&line, &static_line, card_name);
+        // Priority 15: Final fallback — wrap as Unimplemented with diagnostic trace.
         result
             .abilities
-            .push(make_unimplemented_with_effect(&line, fallback_effect));
+            .push(make_unimplemented_with_effect(&line, nom_effect));
         i += 1;
     }
 
@@ -1712,143 +1686,74 @@ pub(super) fn is_replacement_pattern(lower: &str) -> bool {
 
 /// Primary nom-based dispatcher for Oracle text lines.
 ///
-/// Classifies lines by structural pattern using nom `alt()` and routes to
-/// the appropriate sub-parser. All unmatched lines produce `Effect::Unimplemented`
-/// with `VerboseError` diagnostic traces (D-12/D-13) showing which parser
-/// categories were attempted and why none matched.
-///
-/// This is the primary dispatch path — called from the main loop for lines
-/// that don't match multi-line constructs (modal blocks, die tables, etc.).
-fn dispatch_line_nom(line: &str, static_line: &str, card_name: &str) -> Effect {
-    use nom::branch::alt;
-    use nom::bytes::complete::tag_no_case;
-    use nom::combinator::fail;
-    use nom::Parser;
-
-    use super::oracle_nom::error::OracleResult;
-
-    // Structural recognizers: each attempts to match the line and classify
-    // it into a parser category. Builds the nom VerboseError trace so
-    // unmatched lines have diagnostic information about which branches
-    // were attempted.
-    fn try_trigger_prefix(input: &str) -> OracleResult<'_, Effect> {
-        alt((
-            tag_no_case("when "),
-            tag_no_case("whenever "),
-            tag_no_case("at "),
-        ))
-        .map(|_: &str| Effect::Unimplemented {
-            name: "trigger_structure".into(),
-            description: Some(format!(
-                "Trigger prefix matched but line failed trigger parser: {input}"
-            )),
-        })
-        .parse(input)
-    }
-
-    fn try_static_prefix(input: &str) -> OracleResult<'_, Effect> {
-        let lower = input.to_lowercase();
-        if is_static_pattern(&lower) {
-            Ok((
-                "",
-                Effect::Unimplemented {
-                    name: "static_structure".into(),
-                    description: Some(format!(
-                        "Static pattern matched but line failed static parser: {input}"
-                    )),
-                },
-            ))
-        } else {
-            fail::<_, Effect, _>().parse(input)
-        }
-    }
-
-    fn try_replacement_prefix(input: &str) -> OracleResult<'_, Effect> {
-        let lower = input.to_lowercase();
-        if is_replacement_pattern(&lower) {
-            Ok((
-                "",
-                Effect::Unimplemented {
-                    name: "replacement_structure".into(),
-                    description: Some(format!(
-                        "Replacement pattern matched but line failed replacement parser: {input}"
-                    )),
-                },
-            ))
-        } else {
-            fail::<_, Effect, _>().parse(input)
-        }
-    }
-
-    fn try_effect_prefix(input: &str) -> OracleResult<'_, Effect> {
-        let lower = input.to_lowercase();
-        if is_effect_sentence_candidate(&lower) {
-            Ok((
-                "",
-                Effect::Unimplemented {
-                    name: "effect_structure".into(),
-                    description: Some(format!(
-                        "Effect sentence candidate but line failed effect parser: {input}"
-                    )),
-                },
-            ))
-        } else {
-            fail::<_, Effect, _>().parse(input)
-        }
-    }
-
-    // First, try the actual sub-parsers for lines that match structural patterns.
-    // This promotes nom dispatch from fallback to primary: if a sub-parser succeeds,
-    // we use its result directly rather than requiring the priority chain to catch it.
+/// Attempt all major branch parsers — effect, trigger, static, replacement —
+/// and return the parsed Effect directly if any succeeds. On failure, produces
+/// a diagnostic `Unimplemented` with structural classification of the line.
+fn dispatch_line_nom(line: &str, _static_line: &str, card_name: &str) -> Effect {
     let lower = line.to_lowercase();
+    let ctx = ParseContext {
+        subject: None,
+        card_name: Some(card_name.to_string()),
+    };
 
-    // Try trigger parser for trigger-prefixed lines
-    if lower.strip_prefix("when ").is_some()
-        || lower.strip_prefix("whenever ").is_some()
-        || lower.strip_prefix("at ").is_some()
+    // Try effect parsing for lines matching effect sentence structure
+    // (subsumes old Priority 14a damage-prevention and Priority 14b effect candidates)
+    if is_effect_sentence_candidate(&lower)
+        || (lower.contains("damage") && lower.contains("can't be prevented"))
     {
-        let trigger = parse_trigger_line(line, card_name);
-        if let Some(ref execute) = trigger.execute {
-            if !has_unimplemented(execute) {
-                return *execute.effect.clone();
-            }
-        }
-    }
-
-    // Try static parser for static-pattern lines
-    if is_static_pattern(&lower) {
-        if let Some(_sd) = parse_static_line(static_line) {
-            // Static was parsed successfully by the sub-parser — return a marker
-            // so the caller knows dispatch_line_nom handled it (the actual StaticDefinition
-            // is collected by the priority chain's static handling code)
-        }
-    }
-
-    // Try effect parser for imperative sentence lines
-    if is_effect_sentence_candidate(&lower) {
-        let def = parse_effect_chain_with_context(
-            line,
-            AbilityKind::Spell,
-            &ParseContext {
-                subject: None,
-                card_name: Some(card_name.to_string()),
-            },
-        );
+        let def = parse_effect_chain_with_context(line, AbilityKind::Spell, &ctx);
         if !has_unimplemented(&def) {
             return *def.effect;
         }
     }
 
-    // All sub-parsers failed — produce VerboseError diagnostic trace
-    parse_or_unimplemented(line, |input| {
-        alt((
-            try_trigger_prefix,
-            try_static_prefix,
-            try_replacement_prefix,
-            try_effect_prefix,
-        ))
-        .parse(input)
-    })
+    // Structural classification for diagnostic traces (D-12/D-13).
+    // Lines that reach here failed real parsing — classify their shape
+    // for informative Unimplemented descriptions.
+    let lower_trimmed = lower.trim_start();
+    if lower_trimmed.starts_with("when ")
+        || lower_trimmed.starts_with("whenever ")
+        || lower_trimmed.starts_with("at ")
+    {
+        return Effect::Unimplemented {
+            name: "trigger_structure".into(),
+            description: Some(format!(
+                "Trigger prefix matched but line failed trigger parser: {line}"
+            )),
+        };
+    }
+
+    if is_static_pattern(&lower) {
+        return Effect::Unimplemented {
+            name: "static_structure".into(),
+            description: Some(format!(
+                "Static pattern matched but line failed static parser: {line}"
+            )),
+        };
+    }
+
+    if is_replacement_pattern(&lower) {
+        return Effect::Unimplemented {
+            name: "replacement_structure".into(),
+            description: Some(format!(
+                "Replacement pattern matched but line failed replacement parser: {line}"
+            )),
+        };
+    }
+
+    if is_effect_sentence_candidate(&lower) {
+        return Effect::Unimplemented {
+            name: "effect_structure".into(),
+            description: Some(format!(
+                "Effect sentence candidate but line failed effect parser: {line}"
+            )),
+        };
+    }
+
+    Effect::Unimplemented {
+        name: "unknown".into(),
+        description: Some(line.to_string()),
+    }
 }
 
 /// Create an Unimplemented fallback ability with a nom-provided diagnostic effect.
