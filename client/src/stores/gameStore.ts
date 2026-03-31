@@ -7,6 +7,7 @@ import type {
   GameEvent,
   GameLogEntry,
   GameState,
+  ManaCost,
   MatchConfig,
   WaitingFor,
 } from "../adapter/types";
@@ -37,6 +38,8 @@ interface GameStoreState {
   waitingFor: WaitingFor | null;
   legalActions: GameAction[];
   autoPassRecommended: boolean;
+  /** Effective mana costs for castable spells, keyed by object_id string. */
+  spellCosts: Record<string, ManaCost>;
   stateHistory: GameState[];
   turnCheckpoints: GameState[];
 }
@@ -73,6 +76,7 @@ const initialState: GameStoreState = {
   waitingFor: null,
   legalActions: [],
   autoPassRecommended: false,
+  spellCosts: {},
   stateHistory: [],
   turnCheckpoints: [],
 };
@@ -97,6 +101,7 @@ export const useGameStore = create<GameStore>()(
         waitingFor: state.waiting_for,
         legalActions: legalResult.actions,
         autoPassRecommended: legalResult.autoPassRecommended,
+        spellCosts: legalResult.spellCosts ?? {},
         events: [],
         eventHistory: [],
         logHistory: initLogEntries,
@@ -120,6 +125,7 @@ export const useGameStore = create<GameStore>()(
         waitingFor: state.waiting_for,
         legalActions: legalResult.actions,
         autoPassRecommended: legalResult.autoPassRecommended,
+        spellCosts: legalResult.spellCosts ?? {},
         events: [],
         eventHistory: [],
         logHistory: [],
@@ -187,6 +193,7 @@ export const useGameStore = create<GameStore>()(
         waitingFor: previous.waiting_for,
         legalActions: legalResult.actions,
         autoPassRecommended: legalResult.autoPassRecommended,
+        spellCosts: legalResult.spellCosts ?? {},
         events: [],
         stateHistory: stateHistory.slice(0, -1),
       });

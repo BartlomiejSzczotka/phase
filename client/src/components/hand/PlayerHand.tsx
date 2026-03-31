@@ -3,12 +3,13 @@ import { AnimatePresence, motion } from "framer-motion";
 import type { PanInfo } from "framer-motion";
 
 import { CardImage } from "../card/CardImage.tsx";
+import { ManaCostPips } from "../mana/ManaCostPips.tsx";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { useLongPress } from "../../hooks/useLongPress.ts";
 import { usePlayerId } from "../../hooks/usePlayerId.ts";
 import { dispatchAction } from "../../game/dispatch.ts";
-import type { GameAction, ObjectId } from "../../adapter/types.ts";
+import type { GameAction, ManaCost, ObjectId } from "../../adapter/types.ts";
 
 /** Cards are played when dragged above their starting position (any upward drag counts). */
 const DRAG_PLAY_THRESHOLD = -20;
@@ -173,6 +174,7 @@ export function PlayerHand() {
               key={obj.id}
               objectId={obj.id}
               cardName={obj.name}
+              manaCost={obj.mana_cost}
               unimplementedMechanics={obj.unimplemented_mechanics}
               index={i}
               handSize={handObjects.length}
@@ -200,6 +202,7 @@ export function PlayerHand() {
 interface HandCardProps {
   objectId: number;
   cardName: string;
+  manaCost: ManaCost;
   unimplementedMechanics?: string[];
   index: number;
   handSize: number;
@@ -221,6 +224,7 @@ interface HandCardProps {
 const HandCard = memo(function HandCard({
   objectId,
   cardName,
+  manaCost,
   unimplementedMechanics,
   index,
   handSize,
@@ -240,6 +244,14 @@ const HandCard = memo(function HandCard({
 }: HandCardProps) {
   const inspectObject = useUiStore((s) => s.inspectObject);
   const setDragging = useUiStore((s) => s.setDragging);
+
+  // Use effective spell cost from engine if available (reflects reductions),
+  // otherwise fall back to printed mana cost.
+  const effectiveCost = useGameStore((s) => s.spellCosts[String(objectId)]);
+  const displayCost = effectiveCost ?? manaCost;
+  // Detect cost reduction by comparing effective vs printed generic mana
+  const isReduced = effectiveCost?.type === "Cost" && manaCost.type === "Cost"
+    && (effectiveCost.generic < manaCost.generic || effectiveCost.shards.length < manaCost.shards.length);
   const playedRef = useRef(false);
 
   const setPreviewSticky = useUiStore((s) => s.setPreviewSticky);
@@ -317,6 +329,7 @@ const HandCard = memo(function HandCard({
         unimplementedMechanics={unimplementedMechanics}
         className="!w-[calc(var(--card-w)*1.14)] !h-[calc(var(--card-h)*1.14)] sm:!w-[calc(var(--card-w)*1.34)] sm:!h-[calc(var(--card-h)*1.34)] md:!w-[calc(var(--card-w)*1.4)] md:!h-[calc(var(--card-h)*1.4)]"
       />
+      <ManaCostPips cost={displayCost} isReduced={isReduced} className="absolute right-[4%] top-[2%] z-10" />
     </motion.div>
   );
 });

@@ -4,6 +4,7 @@ import type { GameObject } from "../../adapter/types.ts";
 import { useCardImage } from "../../hooks/useCardImage.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
+import { ManaCostPips } from "../mana/ManaCostPips.tsx";
 import { computePTDisplay, formatCounterType, formatTypeLine, toRoman } from "../../viewmodel/cardProps.ts";
 import {
   getKeywordDisplayText,
@@ -307,7 +308,7 @@ function CardImagePreview({
   }
 
   return (
-    <div className={`border border-gray-600 overflow-hidden shadow-2xl ${showInfoPanel ? "rounded-t-[4%] rounded-b-lg bg-gray-900" : "rounded-[4%]"}`}>
+    <div className={`${sizeClass} border border-gray-600 overflow-hidden shadow-2xl ${showInfoPanel ? "rounded-t-[4%] rounded-b-lg bg-gray-900" : "rounded-[4%]"}`}>
       <div className="relative rounded-[4%] overflow-hidden">
         <img
           src={src}
@@ -315,6 +316,9 @@ function CardImagePreview({
           className={`${sizeClass} object-cover`}
           draggable={false}
         />
+        {obj?.mana_cost && (
+          <ManaCostPips cost={obj.mana_cost} size="lg" className="absolute right-[3.75%] top-[4.5%] z-10" />
+        )}
         {classLevel != null && (
           <div className="absolute bottom-3 left-3 z-10">
             <div className="rounded-t-[4px] rounded-b-none bg-gradient-to-b from-amber-950 to-stone-900 px-3 pt-1.5 pb-2 border border-amber-800/60 shadow-lg clip-bookmark">
@@ -501,7 +505,7 @@ function CardInfoPanel({ obj }: { obj: GameObject }) {
   return (
     <div className="w-full border-t border-gray-600 bg-gray-900/95 px-3 py-2 text-xs text-gray-200">
       {/* Type line */}
-      <div className="truncate font-semibold text-gray-300">
+      <div className="font-semibold text-gray-300">
         {formatTypeLine(obj.card_types)}
       </div>
 

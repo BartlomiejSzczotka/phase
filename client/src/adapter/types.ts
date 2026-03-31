@@ -672,6 +672,8 @@ export interface SubmitResult {
 export interface LegalActionsResult {
   actions: GameAction[];
   autoPassRecommended: boolean;
+  /** Effective mana costs for castable spells, keyed by object_id string. */
+  spellCosts?: Record<string, ManaCost>;
 }
 
 export interface EngineAdapter {

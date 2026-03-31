@@ -5,6 +5,7 @@ import type {
   GameLogEntry,
   GameState,
   LegalActionsResult,
+  ManaCost,
   PlayerId,
   SubmitResult,
 } from "./types";
@@ -380,12 +381,13 @@ export class WebSocketAdapter implements EngineAdapter {
       }
 
       case "GameStarted": {
-        const data = msg.data as { state: GameState; your_player: PlayerId; opponent_name?: string; legal_actions?: GameAction[]; auto_pass_recommended?: boolean; player_token?: string };
+        const data = msg.data as { state: GameState; your_player: PlayerId; opponent_name?: string; legal_actions?: GameAction[]; auto_pass_recommended?: boolean; spell_costs?: Record<string, ManaCost>; player_token?: string };
         this.gameState = data.state;
         this._playerId = data.your_player;
         this._legalActions = {
           actions: data.legal_actions ?? [],
           autoPassRecommended: data.auto_pass_recommended ?? false,
+          spellCosts: data.spell_costs,
         };
         // Joiners receive their player_token here (hosts get it via GameCreated).
         // Set _gameCode from joinGameCode if not already set (host sets it via GameCreated).
@@ -411,11 +413,12 @@ export class WebSocketAdapter implements EngineAdapter {
       }
 
       case "StateUpdate": {
-        const data = msg.data as { state: GameState; events: GameEvent[]; legal_actions?: GameAction[]; auto_pass_recommended?: boolean; log_entries?: GameLogEntry[] };
+        const data = msg.data as { state: GameState; events: GameEvent[]; legal_actions?: GameAction[]; auto_pass_recommended?: boolean; spell_costs?: Record<string, ManaCost>; log_entries?: GameLogEntry[] };
         this.gameState = data.state;
         this._legalActions = {
           actions: data.legal_actions ?? [],
           autoPassRecommended: data.auto_pass_recommended ?? false,
+          spellCosts: data.spell_costs,
         };
         if (this.pendingResolve) {
           useMultiplayerStore.getState().setActionPending(false);

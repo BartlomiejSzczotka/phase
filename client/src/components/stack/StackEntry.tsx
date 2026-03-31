@@ -8,6 +8,7 @@ import { usePlayerId } from "../../hooks/usePlayerId.ts";
 import { dispatchAction } from "../../game/dispatch.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
+import { ManaCostPips } from "../mana/ManaCostPips.tsx";
 import type { StackEntry as StackEntryType } from "../../adapter/types.ts";
 
 interface StackEntryProps {
@@ -108,6 +109,9 @@ export function StackEntry({ entry, index, isTop, isPending, cardSize, style, on
             className="h-full w-full object-cover"
             draggable={false}
           />
+        )}
+        {isSpell && sourceObj?.mana_cost && (
+          <ManaCostPips cost={sourceObj.mana_cost} size="sm" className="absolute right-[4%] top-[2%] z-10" />
         )}
       </div>
 
