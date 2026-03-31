@@ -1,3 +1,9 @@
+use nom::branch::alt;
+use nom::bytes::complete::tag;
+use nom::combinator::value;
+use nom::Parser;
+
+use crate::parser::oracle_nom::error::OracleResult;
 use crate::types::ability::{
     Effect, ManaProduction, ManaSpendRestriction, QuantityExpr, QuantityRef,
 };
@@ -6,19 +12,34 @@ use crate::types::mana::ManaColor;
 use super::super::oracle_quantity::parse_cda_quantity;
 use super::super::oracle_util::{parse_mana_production, parse_number, TextPair};
 
+/// Bridge: run a nom combinator on a lowercase copy, mapping the consumed length
+/// back to the original-case text to compute the correct remainder.
+fn nom_on_lower<'a, T, F>(text: &'a str, lower: &str, mut parser: F) -> Option<(T, &'a str)>
+where
+    F: FnMut(&str) -> OracleResult<'_, T>,
+{
+    let (rest, result) = parser(lower).ok()?;
+    let consumed = lower.len() - rest.len();
+    Some((result, &text[consumed..]))
+}
+
 pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
     let trimmed = text.trim();
     let lower = trimmed.to_lowercase();
-    let clause = match lower.strip_prefix("add ") {
-        Some(_) => trimmed[4..].trim(),
-        None => return None,
-    };
+    // Match "add " prefix via nom
+    let (_, clause) = nom_on_lower(trimmed, &lower, |i| value((), tag("add ")).parse(i))?;
+    let clause = clause.trim();
     let clause_lower = clause.to_lowercase();
     let clause_tp = TextPair::new(clause, &clause_lower);
     let (without_where_x, where_x_expression) = super::strip_trailing_where_x(clause_tp);
     let clause = without_where_x.original.trim().trim_end_matches(['.', '"']);
-    // Strip "an additional " modifier — e.g. "add an additional {G}" → "{G}"
-    let clause = clause.strip_prefix("an additional ").unwrap_or(clause);
+    // Strip "an additional " modifier — e.g. "add an additional {G}" -> "{G}"
+    let clause_lower_trimmed = clause.to_lowercase();
+    let clause = nom_on_lower(clause, &clause_lower_trimmed, |i| {
+        value((), tag("an additional ")).parse(i)
+    })
+    .map(|(_, rest)| rest)
+    .unwrap_or(clause);
 
     if let Some(produced) = parse_mana_production_clause(clause) {
         return Some(Effect::Mana {
@@ -39,9 +60,13 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
         let rest = rest.trim().trim_end_matches(['.', '"']).trim();
         let rest_lower = rest.to_lowercase();
 
-        if rest_lower.strip_prefix("mana of any one color").is_some()
-            || rest_lower.strip_prefix("mana of any color").is_some()
-        {
+        if let Some((_, _)) = nom_on_lower(rest, &rest_lower, |i| {
+            alt((
+                value((), tag("mana of any one color")),
+                value((), tag("mana of any color")),
+            ))
+            .parse(i)
+        }) {
             return Some(Effect::Mana {
                 produced: ManaProduction::AnyOneColor {
                     count,
@@ -52,10 +77,9 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
             });
         }
 
-        if rest_lower
-            .strip_prefix("mana in any combination of colors")
-            .is_some()
-        {
+        if let Some((_, _)) = nom_on_lower(rest, &rest_lower, |i| {
+            value((), tag("mana in any combination of colors")).parse(i)
+        }) {
             return Some(Effect::Mana {
                 produced: ManaProduction::AnyCombination {
                     count,
@@ -66,11 +90,13 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
             });
         }
 
-        if rest_lower
-            .strip_prefix("mana of the chosen color")
-            .is_some()
-            || rest_lower.strip_prefix("mana of that color").is_some()
-        {
+        if let Some((_, _)) = nom_on_lower(rest, &rest_lower, |i| {
+            alt((
+                value((), tag("mana of the chosen color")),
+                value((), tag("mana of that color")),
+            ))
+            .parse(i)
+        }) {
             return Some(Effect::Mana {
                 produced: ManaProduction::ChosenColor { count },
                 restrictions: vec![],
@@ -78,7 +104,7 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
             });
         }
 
-        // CR 106.1: "[count] {color}" → single color repeated (e.g., "six {G}" → 6 Green)
+        // CR 106.1: "[count] {color}" -> single color repeated (e.g., "six {G}" -> 6 Green)
         if let Some((colors, after)) = parse_mana_production(rest) {
             let after = after.trim();
             if !colors.is_empty() && (after.is_empty() || after == ".") {
@@ -96,9 +122,10 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
             }
         }
 
-        if let Some(after_combo) = rest_lower.strip_prefix("mana in any combination of ") {
-            let offset = rest.len() - after_combo.len();
-            let color_set_text = rest[offset..].trim();
+        if let Some((_, after_combo)) = nom_on_lower(rest, &rest_lower, |i| {
+            value((), tag("mana in any combination of ")).parse(i)
+        }) {
+            let color_set_text = after_combo.trim();
             if let Some(color_options) = parse_mana_color_set(color_set_text) {
                 return Some(Effect::Mana {
                     produced: ManaProduction::AnyCombination {
@@ -160,9 +187,12 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
 pub(super) fn try_parse_activate_only_condition(text: &str) -> Option<Effect> {
     let trimmed = text.trim().trim_end_matches('.');
     let lower = trimmed.to_ascii_lowercase();
-    let raw = lower.strip_prefix("activate only if you control ")?;
+    let (_, raw) = nom_on_lower(trimmed, &lower, |i| {
+        value((), tag("activate only if you control ")).parse(i)
+    })?;
+    let raw_lower = raw.to_lowercase();
     let mut subtypes = Vec::new();
-    for part in raw.split(" or ") {
+    for part in raw_lower.split(" or ") {
         let token = part
             .trim()
             .trim_start_matches("a ")
@@ -206,15 +236,18 @@ pub(super) fn parse_mana_production_clause(text: &str) -> Option<ManaProduction>
         if remainder.is_empty() {
             return Some(ManaProduction::Fixed { colors });
         }
-        // CR 106.1: "{color} for each [filter]" → dynamic mana count
-        if let Some(for_each_clause) = remainder.strip_prefix("for each ") {
-            let qty = super::super::oracle_quantity::parse_for_each_clause(for_each_clause)?;
+        // CR 106.1: "{color} for each [filter]" -> dynamic mana count
+        let remainder_lower = remainder.to_lowercase();
+        if let Some((_, for_each_rest)) = nom_on_lower(remainder, &remainder_lower, |i| {
+            value((), tag("for each ")).parse(i)
+        }) {
+            let qty = super::super::oracle_quantity::parse_for_each_clause(for_each_rest)?;
             return Some(ManaProduction::AnyOneColor {
                 count: QuantityExpr::Ref { qty },
                 color_options: colors,
             });
         }
-        // Unknown trailing text — don't silently discard it
+        // Unknown trailing text -- don't silently discard it
         return None;
     }
 
@@ -223,9 +256,12 @@ pub(super) fn parse_mana_production_clause(text: &str) -> Option<ManaProduction>
         if remainder.is_empty() {
             return Some(ManaProduction::Colorless { count });
         }
-        // CR 106.1: "{C} for each [filter]" → dynamic colorless mana count
-        if let Some(for_each_clause) = remainder.strip_prefix("for each ") {
-            let qty = super::super::oracle_quantity::parse_for_each_clause(for_each_clause)?;
+        // CR 106.1: "{C} for each [filter]" -> dynamic colorless mana count
+        let remainder_lower = remainder.to_lowercase();
+        if let Some((_, for_each_rest)) = nom_on_lower(remainder, &remainder_lower, |i| {
+            value((), tag("for each ")).parse(i)
+        }) {
+            let qty = super::super::oracle_quantity::parse_for_each_clause(for_each_rest)?;
             return Some(ManaProduction::Colorless {
                 count: QuantityExpr::Ref { qty },
             });
@@ -257,9 +293,16 @@ pub(super) fn parse_colorless_mana_production(text: &str) -> Option<(QuantityExp
     Some((QuantityExpr::Fixed { value: count }, rest))
 }
 
+/// Parse a count prefix for mana amounts: "X ", "x ", or an English/digit number.
+///
+/// Uses nom combinators for the "X"/"x" prefix matching, falling back to
+/// `oracle_util::parse_number` for English words and digits.
 pub(super) fn parse_mana_count_prefix(text: &str) -> Option<(QuantityExpr, &str)> {
     let trimmed = text.trim_start();
-    if let Some(rest) = trimmed.strip_prefix("X ") {
+    let lower = trimmed.to_lowercase();
+
+    // Try "x " via nom (case-insensitive via lowercase)
+    if let Some((_, rest)) = nom_on_lower(trimmed, &lower, |i| value((), tag("x ")).parse(i)) {
         return Some((
             QuantityExpr::Ref {
                 qty: QuantityRef::Variable {
@@ -269,16 +312,7 @@ pub(super) fn parse_mana_count_prefix(text: &str) -> Option<(QuantityExpr, &str)
             rest.trim_start(),
         ));
     }
-    if let Some(rest) = trimmed.strip_prefix("x ") {
-        return Some((
-            QuantityExpr::Ref {
-                qty: QuantityRef::Variable {
-                    name: "X".to_string(),
-                },
-            },
-            rest.trim_start(),
-        ));
-    }
+
     let (count, rest) = parse_number(trimmed)?;
     Some((
         QuantityExpr::Fixed {
@@ -311,6 +345,10 @@ pub(super) fn apply_where_x_count_expression(
     }
 }
 
+/// Parse a set of mana color symbols separated by conjunctions.
+///
+/// Uses nom combinators for separator matching ("and/or", "or", "and", ",", "/"),
+/// delegating color symbol extraction to `parse_mana_color_symbol`.
 pub(super) fn parse_mana_color_set(text: &str) -> Option<Vec<ManaColor>> {
     let mut rest = text.trim().trim_end_matches(['.', '"']).trim();
     if rest.is_empty() {
@@ -331,37 +369,46 @@ pub(super) fn parse_mana_color_set(text: &str) -> Option<Vec<ManaColor>> {
             break;
         }
 
-        if let Some(stripped) = next.strip_prefix("and/or ") {
-            rest = stripped.trim_start();
+        // Use nom for separator matching
+        let next_lower = next.to_lowercase();
+        if let Some((_, after_sep)) = nom_on_lower(next, &next_lower, |i| {
+            alt((
+                value((), tag("and/or ")),
+                value((), tag("or ")),
+                value((), tag("and ")),
+            ))
+            .parse(i)
+        }) {
+            rest = after_sep.trim_start();
             continue;
         }
-        if let Some(stripped) = next.strip_prefix("or ") {
-            rest = stripped.trim_start();
-            continue;
-        }
-        if let Some(stripped) = next.strip_prefix("and ") {
-            rest = stripped.trim_start();
-            continue;
-        }
-        if let Some(stripped) = next.strip_prefix(',') {
-            let stripped = stripped.trim_start();
-            if let Some(after_or) = stripped.strip_prefix("or ") {
-                rest = after_or.trim_start();
-                continue;
-            }
-            if let Some(after_and_or) = stripped.strip_prefix("and/or ") {
-                rest = after_and_or.trim_start();
-                continue;
-            }
-            if let Some(after_and) = stripped.strip_prefix("and ") {
-                rest = after_and.trim_start();
+
+        // Comma-separated: ",[ and/or | or | and ] ..."
+        if let Some((_, after_comma)) =
+            nom_on_lower(next, &next_lower, |i| value((), tag(",")).parse(i))
+        {
+            let stripped = after_comma.trim_start();
+            let stripped_lower = stripped.to_lowercase();
+            if let Some((_, after_conj)) = nom_on_lower(stripped, &stripped_lower, |i| {
+                alt((
+                    value((), tag("and/or ")),
+                    value((), tag("or ")),
+                    value((), tag("and ")),
+                ))
+                .parse(i)
+            }) {
+                rest = after_conj.trim_start();
                 continue;
             }
             rest = stripped;
             continue;
         }
-        if let Some(stripped) = next.strip_prefix('/') {
-            rest = stripped.trim_start();
+
+        // Slash separator
+        if let Some((_, after_slash)) =
+            nom_on_lower(next, &next_lower, |i| value((), tag("/")).parse(i))
+        {
+            rest = after_slash.trim_start();
             continue;
         }
 
@@ -436,25 +483,40 @@ pub(super) fn all_mana_colors() -> Vec<ManaColor> {
 
 /// Parse a "Spend this mana only to cast..." clause into a `ManaSpendRestriction`.
 ///
+/// Uses nom combinators for prefix matching: "spend this mana only", "to activate
+/// abilities", "on costs that include", "to cast".
+///
 /// Handles patterns like:
-/// - "spend this mana only to cast creature spells" → SpellType("Creature")
-/// - "spend this mana only to cast a creature spell of the chosen type" → ChosenCreatureType
-/// - "spend this mana only to cast a creature spell of the chosen type, and that spell can't be countered" → ChosenCreatureType
+/// - "spend this mana only to cast creature spells" -> SpellType("Creature")
+/// - "spend this mana only to cast a creature spell of the chosen type" -> ChosenCreatureType
+/// - "spend this mana only to activate abilities" -> ActivateOnly
 pub(crate) fn parse_mana_spend_restriction(lower: &str) -> Option<ManaSpendRestriction> {
-    let base = lower.strip_prefix("spend this mana only ")?;
+    let (_, base) = nom_on_lower(lower, lower, |i| {
+        value((), tag("spend this mana only ")).parse(i)
+    })?;
     let base = base.trim_end_matches(['.', '"']);
+    let base_lower = base.to_lowercase();
 
-    // "spend this mana only to activate abilities" — activation-only
-    if base.strip_prefix("to activate abilities").is_some() {
+    // "spend this mana only to activate abilities" -- activation-only
+    if nom_on_lower(base, &base_lower, |i| {
+        value((), tag("to activate abilities")).parse(i)
+    })
+    .is_some()
+    {
         return Some(ManaSpendRestriction::ActivateOnly);
     }
 
-    // "spend this mana only on costs that include {x}" — X-cost restriction
-    if base.strip_prefix("on costs that include").is_some() {
+    // "spend this mana only on costs that include" -- X-cost restriction
+    if nom_on_lower(base, &base_lower, |i| {
+        value((), tag("on costs that include")).parse(i)
+    })
+    .is_some()
+    {
         return Some(ManaSpendRestriction::XCostOnly);
     }
 
-    let rest = base.strip_prefix("to cast ")?.trim();
+    let (_, rest) = nom_on_lower(base, &base_lower, |i| value((), tag("to cast ")).parse(i))?;
+    let rest = rest.trim();
 
     // Strip trailing ", and that spell can't be countered" or similar trailing clauses
     let rest = rest.split(", and ").next().unwrap_or(rest).trim();
@@ -473,12 +535,14 @@ pub(crate) fn parse_mana_spend_restriction(lower: &str) -> Option<ManaSpendRestr
     }
 
     // "creature spells" / "a creature spell" / "artifact spells" etc.
-    let spell_part = spell_part
-        .strip_prefix("a ")
-        .or_else(|| spell_part.strip_prefix("an "))
-        .unwrap_or(spell_part);
+    let spell_part_lower = spell_part.to_lowercase();
+    let spell_part = nom_on_lower(spell_part, &spell_part_lower, |i| {
+        alt((value((), tag("a ")), value((), tag("an ")))).parse(i)
+    })
+    .map(|(_, rest)| rest)
+    .unwrap_or(spell_part);
 
-    // Handle compound type: "instant or sorcery spells" → "Instant or Sorcery"
+    // Handle compound type: "instant or sorcery spells" -> "Instant or Sorcery"
     // Check for "[type] or [type] spell(s)" pattern
     if let Some((first, second_with_spells)) = spell_part.split_once(" or ") {
         let second = second_with_spells
@@ -512,9 +576,12 @@ pub(crate) fn parse_mana_spend_restriction(lower: &str) -> Option<ManaSpendRestr
 }
 
 /// CR 106.1 / CR 106.3: Parse "an amount of {color} equal to [quantity]"
-/// e.g. "an amount of {G} equal to ~'s power" → AnyOneColor { count: SelfPower, [Green] }
+/// e.g. "an amount of {G} equal to ~'s power" -> AnyOneColor { count: SelfPower, [Green] }
 fn try_parse_amount_equal_to(clause: &str) -> Option<Effect> {
-    let rest = clause.strip_prefix("an amount of ")?;
+    let clause_lower = clause.to_lowercase();
+    let (_, rest) = nom_on_lower(clause, &clause_lower, |i| {
+        value((), tag("an amount of ")).parse(i)
+    })?;
 
     // Parse the mana color symbol(s): "{G}", "{R}", etc.
     let (colors, after_color) = parse_mana_production(rest)?;
@@ -524,7 +591,10 @@ fn try_parse_amount_equal_to(clause: &str) -> Option<Effect> {
 
     // Expect "equal to [quantity]"
     let after_color = after_color.trim();
-    let quantity_text = after_color.strip_prefix("equal to ")?;
+    let after_color_lower = after_color.to_lowercase();
+    let (_, quantity_text) = nom_on_lower(after_color, &after_color_lower, |i| {
+        value((), tag("equal to ")).parse(i)
+    })?;
     let quantity_text = quantity_text.trim().trim_end_matches(['.', '"']);
 
     let count = parse_cda_quantity(quantity_text)?;
