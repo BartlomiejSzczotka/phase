@@ -430,6 +430,52 @@ fn resolve_ref(
                 })
             })
             .unwrap_or(0),
+        // CR 700.7: Count creatures that died (battlefield → graveyard) this turn.
+        QuantityRef::CreaturesDiedThisTurn => state
+            .zone_changes_this_turn
+            .iter()
+            .filter(|r| {
+                r.core_types.contains(&CoreType::Creature)
+                    && r.from_zone == Zone::Battlefield
+                    && r.to_zone == Zone::Graveyard
+            })
+            .count() as i32,
+        // CR 508.1a: Whether the controller declared attackers this turn.
+        QuantityRef::AttackedThisTurn => {
+            if state.players_attacked_this_turn.contains(&controller) {
+                1
+            } else {
+                0
+            }
+        }
+        // CR 603.4: Whether the controller descended this turn.
+        QuantityRef::DescendedThisTurn => {
+            if player.is_some_and(|p| p.descended_this_turn) {
+                1
+            } else {
+                0
+            }
+        }
+        // CR 117.1: Total spells cast last turn (by any player).
+        QuantityRef::SpellsCastLastTurn => state.spells_cast_last_turn.map_or(0, i32::from),
+        // CR 119.3: Total life lost by opponents this turn.
+        QuantityRef::OpponentLifeLostThisTurn => state
+            .players
+            .iter()
+            .filter(|p| p.id != controller)
+            .map(|p| p.life_lost_this_turn as i32)
+            .sum(),
+        // CR 122.1: Whether the controller added any counter to any permanent this turn.
+        QuantityRef::CounterAddedThisTurn => {
+            if state
+                .players_who_added_counter_this_turn
+                .contains(&controller)
+            {
+                1
+            } else {
+                0
+            }
+        }
     }
 }
 

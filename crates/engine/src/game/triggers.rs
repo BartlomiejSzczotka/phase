@@ -1061,6 +1061,8 @@ pub(crate) fn check_trigger_condition(
         TriggerCondition::LifeTotalGE { minimum } => {
             player_field(state, controller, |p| p.life >= *minimum)
         }
+        // CR 603.4: "if it's your turn"
+        TriggerCondition::DuringYourTurn => state.active_player == controller,
         // CR 603.4: "if it's not your turn"
         TriggerCondition::NotYourTurn => state.active_player != controller,
         // CR 603.4: "if you control N or more [type]" — generalized control count.

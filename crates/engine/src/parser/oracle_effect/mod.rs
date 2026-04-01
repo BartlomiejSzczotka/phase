@@ -9976,7 +9976,10 @@ mod tests {
             AbilityKind::Activated,
         );
         assert!(
-            matches!(def.condition, Some(AbilityCondition::SourceMatchesFilter { .. })),
+            matches!(
+                def.condition,
+                Some(AbilityCondition::SourceMatchesFilter { .. })
+            ),
             "Expected SourceMatchesFilter condition, got {:?}",
             def.condition
         );

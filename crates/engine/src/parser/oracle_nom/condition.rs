@@ -44,6 +44,7 @@ pub fn parse_inner_condition(input: &str) -> OracleResult<'_, StaticCondition> {
         parse_there_are_conditions,
         parse_entered_this_turn,
         parse_youve_this_turn,
+        parse_event_state_conditions,
     ))
     .parse(input)
 }
@@ -250,8 +251,10 @@ pub fn parse_control_count_ge(input: &str) -> OracleResult<'_, StaticCondition> 
     }
     let filter = inject_controller_you(filter);
     // Map remainder back to original input slice — parse_type_phrase consumed
-    // from a trimmed copy, so use byte offset from the original.
-    let consumed = input.len() - remainder.len();
+    // from a potentially trimmed copy, so use pointer arithmetic to get the
+    // correct byte offset (remainder.len() would be wrong if trailing chars
+    // were stripped by trim_end_matches).
+    let consumed = remainder.as_ptr() as usize - input.as_ptr() as usize;
     Ok((
         &input[consumed..],
         StaticCondition::QuantityComparison {
@@ -319,7 +322,7 @@ fn parse_control_count_le(input: &str) -> OracleResult<'_, StaticCondition> {
         }));
     }
     let filter = inject_controller_you(filter);
-    let consumed = input.len() - remainder.len();
+    let consumed = remainder.as_ptr() as usize - input.as_ptr() as usize;
     Ok((
         &input[consumed..],
         make_quantity_comparison(QuantityRef::ObjectCount { filter }, Comparator::LE, n),
@@ -477,8 +480,171 @@ fn parse_youve_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
             make_quantity_ge(QuantityRef::LifeLostThisTurn, 1),
             tag("lost life this turn"),
         ),
+        // "you've cast another spell this turn" → SpellsCastThisTurn >= 2
+        value(
+            make_quantity_ge(QuantityRef::SpellsCastThisTurn { filter: None }, 2),
+            alt((
+                tag("cast another spell this turn"),
+                tag("cast two or more spells this turn"),
+            )),
+        ),
+        // "you've attacked this turn" / "you've attacked with a creature this turn"
+        value(
+            make_quantity_ge(QuantityRef::AttackedThisTurn, 1),
+            alt((
+                tag("attacked with a creature this turn"),
+                tag("attacked this turn"),
+            )),
+        ),
+        // "you've descended this turn"
+        value(
+            make_quantity_ge(QuantityRef::DescendedThisTurn, 1),
+            tag("descended this turn"),
+        ),
     ))
     .parse(rest)
+}
+
+/// Parse event-state conditions: "a creature died this turn", "you attacked this turn",
+/// "an opponent lost life this turn", "no spells were cast last turn", etc.
+///
+/// These are game-state boolean checks expressible as QuantityComparison.
+fn parse_event_state_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
+    alt((
+        // "a creature died this turn" (Morbid) → CreaturesDiedThisTurn >= 1
+        value(
+            make_quantity_ge(QuantityRef::CreaturesDiedThisTurn, 1),
+            tag("a creature died this turn"),
+        ),
+        // "a permanent you controlled left the battlefield this turn" (Revolt)
+        value(
+            make_quantity_ge(QuantityRef::PermanentsLeftBattlefieldThisTurn, 1),
+            alt((
+                tag("a permanent you controlled left the battlefield this turn"),
+                tag("a permanent left the battlefield under your control this turn"),
+            )),
+        ),
+        // "an opponent lost life this turn"
+        value(
+            make_quantity_ge(QuantityRef::OpponentLifeLostThisTurn, 1),
+            alt((
+                tag("an opponent lost life this turn"),
+                tag("that player lost life this turn"),
+            )),
+        ),
+        // "you attacked this turn" (without "you've" prefix)
+        value(
+            make_quantity_ge(QuantityRef::AttackedThisTurn, 1),
+            alt((
+                tag("you attacked with a creature this turn"),
+                tag("you attacked this turn"),
+            )),
+        ),
+        // "you descended this turn" (without "you've" prefix)
+        value(
+            make_quantity_ge(QuantityRef::DescendedThisTurn, 1),
+            tag("you descended this turn"),
+        ),
+        // "you gained life this turn" / "you gained N or more life this turn"
+        parse_you_gained_life_this_turn,
+        // "you cast another spell this turn" / "you cast a [type] spell this turn"
+        parse_you_cast_spell_this_turn,
+        // "no spells were cast last turn" (werewolf)
+        value(
+            make_quantity_comparison(QuantityRef::SpellsCastLastTurn, Comparator::EQ, 0),
+            tag("no spells were cast last turn"),
+        ),
+        // "two or more spells were cast last turn" / "a player cast two or more spells last turn"
+        parse_spells_cast_last_turn,
+        // "you put a counter on a permanent this turn"
+        parse_counter_added_this_turn,
+    ))
+    .parse(input)
+}
+
+/// Parse "you gained [N or more] life this turn".
+fn parse_you_gained_life_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = alt((tag("you gained "), tag("you've gained "))).parse(input)?;
+    // Try "N or more life this turn"
+    if let Ok((after_n, n)) = parse_number(rest) {
+        let after_n = after_n.trim_start();
+        if let Ok((rest, _)) =
+            tag::<_, _, nom_language::error::VerboseError<&str>>("or more life this turn")
+                .parse(after_n)
+        {
+            return Ok((rest, make_quantity_ge(QuantityRef::LifeGainedThisTurn, n)));
+        }
+    }
+    // "life this turn" (minimum 1)
+    let (rest, _) = tag("life this turn").parse(rest)?;
+    Ok((rest, make_quantity_ge(QuantityRef::LifeGainedThisTurn, 1)))
+}
+
+/// Parse "you cast another spell this turn" / "you cast a [type] spell this turn".
+fn parse_you_cast_spell_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = alt((tag("you cast "), tag("you've cast "))).parse(input)?;
+    // "another spell this turn" → >= 2
+    if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("another spell this turn").parse(rest)
+    {
+        return Ok((
+            rest,
+            make_quantity_ge(QuantityRef::SpellsCastThisTurn { filter: None }, 2),
+        ));
+    }
+    // "a [type] spell this turn" / "an [type] spell this turn"
+    let (rest, _) = alt((tag("a "), tag("an "))).parse(rest)?;
+    if let Some(spell_pos) = rest.find(" spell this turn") {
+        let type_text = &rest[..spell_pos];
+        let (filter, leftover) = parse_type_phrase(type_text);
+        if leftover.trim().is_empty() && filter != TargetFilter::Any {
+            let remaining = &rest[spell_pos + " spell this turn".len()..];
+            return Ok((
+                remaining,
+                make_quantity_ge(
+                    QuantityRef::SpellsCastThisTurn {
+                        filter: Some(filter),
+                    },
+                    1,
+                ),
+            ));
+        }
+    }
+    Err(nom::Err::Error(nom_language::error::VerboseError {
+        errors: vec![(
+            input,
+            nom_language::error::VerboseErrorKind::Nom(nom::error::ErrorKind::Tag),
+        )],
+    }))
+}
+
+/// Parse "two or more spells were cast last turn" / "a player cast two or more spells last turn".
+fn parse_spells_cast_last_turn(input: &str) -> OracleResult<'_, StaticCondition> {
+    // "two or more spells were cast last turn"
+    if let Ok((rest, _)) = tag::<_, _, nom_language::error::VerboseError<&str>>(
+        "two or more spells were cast last turn",
+    )
+    .parse(input)
+    {
+        return Ok((rest, make_quantity_ge(QuantityRef::SpellsCastLastTurn, 2)));
+    }
+    // "a player cast two or more spells last turn"
+    let (rest, _) = tag("a player cast ").parse(input)?;
+    let (rest, n) = parse_number(rest)?;
+    let rest = rest.trim_start();
+    let (rest, _) = tag("or more spells last turn").parse(rest)?;
+    Ok((rest, make_quantity_ge(QuantityRef::SpellsCastLastTurn, n)))
+}
+
+/// Parse "you [put/ve put] [a counter/one or more counters] on a [permanent/creature] this turn".
+/// Composes prefix × quantity × target × suffix via chained combinators.
+fn parse_counter_added_this_turn(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = alt((tag("you put "), tag("you've put "))).parse(input)?;
+    let (rest, _) = alt((tag("one or more counters"), tag("a counter"))).parse(rest)?;
+    let (rest, _) = tag(" on a ").parse(rest)?;
+    let (rest, _) = alt((tag("permanent"), tag("creature"))).parse(rest)?;
+    let (rest, _) = tag(" this turn").parse(rest)?;
+    Ok((rest, make_quantity_ge(QuantityRef::CounterAddedThisTurn, 1)))
 }
 
 /// Parse "[N or more / a / an] [type] entered the battlefield under your control this turn".

@@ -3080,6 +3080,20 @@ fn try_parse_cost_modification(text: &str, lower: &str) -> Option<StaticDefiniti
         definition.condition = Some(first_qualified_spell_condition(filter));
     }
 
+    // Extract trailing "if [condition]" clause from cost modification lines.
+    // Pattern: "This spell costs {N} less to cast if you control a Wizard."
+    // Uses the shared nom condition combinator to handle the full class of conditions.
+    if definition.condition.is_none() {
+        if let Some(if_pos) = lower.rfind(" if ") {
+            let cond_text = lower[if_pos + " if ".len()..].trim().trim_end_matches('.');
+            if let Ok((rest, sc)) = nom_condition::parse_inner_condition(cond_text) {
+                if rest.trim().is_empty() || rest.trim() == "." {
+                    definition.condition = Some(sc);
+                }
+            }
+        }
+    }
+
     Some(definition)
 }
 

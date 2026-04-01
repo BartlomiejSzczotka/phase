@@ -3367,10 +3367,8 @@ fn pump_matches_oracle(
         }
         | Effect::PumpAll {
             power, toughness, ..
-        } => {
-            if pt_matches(power, toughness, expected_power, expected_toughness) {
-                return true;
-            }
+        } if pt_matches(power, toughness, expected_power, expected_toughness) => {
+            return true;
         }
         Effect::GenericEffect {
             static_abilities, ..
