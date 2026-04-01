@@ -2493,26 +2493,14 @@ fn count_effective_oracle_lines(oracle_text: &str) -> usize {
 /// Check if an ability chain contains an "unless" condition stored as an effect parameter
 /// (e.g., `Effect::Counter { unless_payment }` or similar).
 fn ability_chain_has_unless(def: &AbilityDefinition) -> bool {
-    let has_unless = matches!(
-        &*def.effect,
-        Effect::Counter {
-            unless_payment, ..
-        } if unless_payment.is_some()
-    );
-    if has_unless {
-        return true;
-    }
-    if let Some(ref sub) = def.sub_ability {
-        if ability_chain_has_unless(sub) {
-            return true;
-        }
-    }
-    for mode_ab in &def.mode_abilities {
-        if ability_chain_has_unless(mode_ab) {
-            return true;
-        }
-    }
-    false
+    ability_tree_any(def, &|d| {
+        matches!(
+            &*d.effect,
+            Effect::Counter {
+                unless_payment, ..
+            } if unless_payment.is_some()
+        )
+    })
 }
 
 /// Check if a line contains a modal header pattern: "choose one", "choose two", etc.
@@ -3488,6 +3476,38 @@ fn check_dropped_condition(
         if lower.contains("was kicked") || lower.contains("is kicked") {
             continue;
         }
+        // "if you search your library this way, shuffle" — shuffle clause, not a condition
+        if lower.contains("if you search") && lower.contains("shuffle") {
+            continue;
+        }
+        // "if that spell would be put into" — graveyard-exile replacement, not ability condition
+        if lower.contains("if that spell would be put into") {
+            continue;
+        }
+        // "if a creature dealt damage this way would die" — die-exile replacement clause
+        if lower.contains("would die this turn, exile") {
+            continue;
+        }
+        // "if one or more tokens/counters would be" — replacement effects, not conditions
+        if lower.contains("if one or more ") && lower.contains(" would be ") {
+            continue;
+        }
+        // "if damage would be dealt" — damage replacement effects
+        if lower.contains("if damage would be dealt") {
+            continue;
+        }
+        // "if a land is tapped for mana" — mana replacement effects
+        if lower.contains("if a land is tapped for mana") {
+            continue;
+        }
+        // "if a player would begin an extra turn" — turn replacement effects
+        if lower.contains("if a player would begin") {
+            continue;
+        }
+        // "if a card or token would be put into" — zone replacement effects
+        if lower.contains("if a card or token would be put into") {
+            continue;
+        }
         // Modal instructions: "if you control a commander" in "choose one. if..." preambles
         if lower.starts_with("choose ") && lower.contains("if ") {
             continue;
@@ -3523,18 +3543,23 @@ fn check_dropped_condition(
         });
         let has_condition_on_static = face.static_abilities.iter().any(|s| s.condition.is_some());
         let has_condition_on_replacement = face.replacements.iter().any(|r| {
-            r.execute
-                .as_ref()
-                .is_some_and(|e| ability_tree_any(e, &cond_pred))
+            // Check the replacement's own condition (ReplacementCondition)
+            r.condition.is_some()
+                // Also check the execute ability's condition (StaticCondition)
+                || r.execute
+                    .as_ref()
+                    .is_some_and(|e| ability_tree_any(e, &cond_pred))
         });
 
         // Check for "unless" conditions stored as effect parameters (e.g. Counter with unless_payment)
+        // or as trigger-level unless_pay modifiers (tax triggers like Rhystic Study)
         let has_unless_on_effect = label == "unless"
-            && face
+            && (face
                 .abilities
                 .iter()
                 .chain(face.triggers.iter().filter_map(|t| t.execute.as_deref()))
-                .any(ability_chain_has_unless);
+                .any(ability_chain_has_unless)
+                || face.triggers.iter().any(|t| t.unless_pay.is_some()));
 
         if !has_condition_on_ability
             && !has_condition_on_trigger
@@ -3998,6 +4023,37 @@ fn check_silent_drops_from_face(
             if face.keywords.iter().any(|k| {
                 let kw_name = format!("{k:?}").to_lowercase();
                 lower.starts_with(&kw_name)
+            }) {
+                continue;
+            }
+            // Skip lines covered by casting restrictions (parsed separately from abilities)
+            if !face.casting_restrictions.is_empty() && lower.starts_with("cast this spell only ")
+            {
+                continue;
+            }
+            // Skip lines that match replacement descriptions
+            if face
+                .replacements
+                .iter()
+                .any(|r| {
+                    r.description
+                        .as_ref()
+                        .is_some_and(|d| {
+                            let dl = d.to_lowercase();
+                            dl.contains(&lower) || lower.contains(dl.as_str())
+                        })
+                })
+            {
+                continue;
+            }
+            // Skip lines that match static ability descriptions
+            if face.static_abilities.iter().any(|s| {
+                s.description
+                    .as_ref()
+                    .is_some_and(|d| {
+                        let dl = d.to_lowercase();
+                        dl.contains(&lower) || lower.contains(dl.as_str())
+                    })
             }) {
                 continue;
             }

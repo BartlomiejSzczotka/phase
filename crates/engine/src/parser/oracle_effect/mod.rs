@@ -9970,40 +9970,15 @@ mod tests {
 
     #[test]
     fn figure_of_fable_source_matches_filter_condition() {
-        // Test the nom bridge directly
-        let bridge_result = try_nom_condition_as_ability_condition("this creature is a Scout");
-        assert!(
-            bridge_result.is_some(),
-            "try_nom_condition_as_ability_condition failed for 'this creature is a Scout'"
-        );
-
-        // Test split_leading_conditional directly
-        let split = split_leading_conditional(
-            "If this creature is a Scout, it becomes a Kithkin Soldier with base power and toughness 4/5",
-        );
-        assert!(
-            split.is_some(),
-            "split_leading_conditional returned None"
-        );
-
-        // Test strip_leading_general_conditional
-        let (cond, body) = strip_leading_general_conditional(
-            "If this creature is a Scout, it becomes a Kithkin Soldier with base power and toughness 4/5",
-        );
-        assert!(
-            cond.is_some(),
-            "strip_leading_general_conditional returned None condition. Body: {body}"
-        );
-
-        // Level 2 full chain: "If this creature is a Scout, it becomes a Kithkin Soldier..."
+        // CR 608.2c: "If this creature is a Scout, ..." gates on source subtype.
         let def = parse_effect_chain(
             "If this creature is a Scout, it becomes a Kithkin Soldier with base power and toughness 4/5.",
             AbilityKind::Activated,
         );
         assert!(
-            def.condition.is_some(),
-            "Expected SourceMatchesFilter condition, got None. Effect: {:?}",
-            def.effect
+            matches!(def.condition, Some(AbilityCondition::SourceMatchesFilter { .. })),
+            "Expected SourceMatchesFilter condition, got {:?}",
+            def.condition
         );
     }
 }
