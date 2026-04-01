@@ -818,9 +818,7 @@ fn parse_dig_from_among(lower: &str, _original: &str) -> Option<ContinuationAst>
 /// Extract rest_destination from "put N of them into your hand and the rest on the bottom/graveyard".
 /// Returns None if no "and the rest" clause is present.
 fn parse_of_them_rest_destination(lower: &str) -> Option<Zone> {
-    let (after_rest, _) = (take_until::<_, _, VerboseError<&str>>(" and the rest"), tag(" and the rest"))
-        .parse(lower)
-        .ok()?;
+    let (_, (_, after_rest)) = nom_primitives::split_once_on(lower, " and the rest").ok()?;
     if contains_possessive(after_rest, "into", "graveyard") {
         Some(Zone::Graveyard)
     } else if contains_possessive(after_rest, "into", "hand") {

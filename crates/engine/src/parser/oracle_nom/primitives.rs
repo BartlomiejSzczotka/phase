@@ -1,7 +1,7 @@
 //! Atomic parsing combinators for numbers, mana symbols, colors, counters, and P/T modifiers.
 
 use nom::branch::alt;
-use nom::bytes::complete::tag;
+use nom::bytes::complete::{tag, take_until};
 use nom::character::complete::{char, digit1, space0};
 use nom::combinator::{map, map_res, opt, value};
 use nom::multi::many1;
@@ -570,6 +570,27 @@ pub fn scan_contains(text: &str, phrase: &str) -> bool {
             .map_or("", |i| remaining[i + 1..].trim_start());
     }
     false
+}
+
+/// Split `input` on the first occurrence of `separator`, returning `(before, after)`.
+///
+/// Equivalent to `str::split_once(separator)` but as a nom combinator — uses
+/// `take_until` + `tag` internally, producing structured `VerboseError` traces
+/// on failure instead of a bare `None`.
+///
+/// # Example
+/// ```ignore
+/// let (rest, (before, after)) = split_once_on("hello, world", ", ")?;
+/// assert_eq!(before, "hello");
+/// assert_eq!(after, "world");  // rest == ""
+/// ```
+pub fn split_once_on<'a>(
+    input: &'a str,
+    separator: &'a str,
+) -> nom::IResult<&'a str, (&'a str, &'a str), nom_language::error::VerboseError<&'a str>> {
+    let (rest, before) = take_until(separator).parse(input)?;
+    let (after, _) = tag(separator).parse(rest)?;
+    Ok(("", (before, after)))
 }
 
 #[cfg(test)]

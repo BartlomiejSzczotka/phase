@@ -1850,12 +1850,9 @@ fn try_split_damage_compound(text: &str, ctx: &ParseContext) -> Option<ParsedEff
 ///   → (SelfRef, Typed(Creature+CountersGE(Stun,1)), "into their owners' libraries")
 fn try_split_compound_subject(text: &str) -> Option<(TargetFilter, TargetFilter, &str)> {
     // Find " and " that separates subjects
-    let (after_and_raw, (before_and, _)) =
-        (take_until::<_, _, VerboseError<&str>>(" and "), tag(" and "))
-            .parse(text)
-            .ok()?;
-    let first_text = before_and.trim();
-    let after_and = after_and_raw.trim();
+    let (_, (first_text, after_and)) = nom_primitives::split_once_on(text, " and ").ok()?;
+    let first_text = first_text.trim();
+    let after_and = after_and.trim();
 
     // Parse first subject
     let first_filter = if first_text == "~"
@@ -2516,10 +2513,7 @@ pub(crate) fn try_parse_named_choice(lower: &str) -> Option<ChoiceType> {
 /// This must come AFTER all specific patterns in try_parse_named_choice to avoid
 /// accidentally matching "choose left or right" against targeting patterns.
 fn try_parse_binary_choice(rest: &str) -> Option<Vec<String>> {
-    let (right, left) = (take_until::<_, _, VerboseError<&str>>(" or "), tag(" or "))
-        .parse(rest)
-        .ok()
-        .map(|(rem, (before, _))| (rem, before))?;
+    let (_, (left, right)) = nom_primitives::split_once_on(rest, " or ").ok()?;
     let left = left.trim();
     let right = right.trim();
 
@@ -3692,11 +3686,9 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
         .parse(lower.as_str())
         .is_ok()
     {
-        if let Some(rest) = (take_until::<_, _, VerboseError<&str>>(" wasn't kicked, "), tag(" wasn't kicked, "))
-            .parse(lower.as_str())
-            .or_else(|_: nom::Err<VerboseError<&str>>| (take_until::<_, _, VerboseError<&str>>(" wasn't bargained, "), tag(" wasn't bargained, ")).parse(lower.as_str()))
+        if let Some((_, (_, rest))) = nom_primitives::split_once_on(lower.as_str(), " wasn't kicked, ")
+            .or_else(|_| nom_primitives::split_once_on(lower.as_str(), " wasn't bargained, "))
             .ok()
-            .map(|(rest, _)| rest)
         {
             let offset = text.len() - rest.len();
             return (
@@ -3727,11 +3719,10 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
         .parse(lower.as_str())
         .is_ok()
     {
-        (take_until::<_, _, VerboseError<&str>>(" was kicked, "), tag(" was kicked, "))
-            .parse(lower.as_str())
-            .or_else(|_: nom::Err<VerboseError<&str>>| (take_until::<_, _, VerboseError<&str>>(" was bargained, "), tag(" was bargained, ")).parse(lower.as_str()))
+        nom_primitives::split_once_on(lower.as_str(), " was kicked, ")
+            .or_else(|_| nom_primitives::split_once_on(lower.as_str(), " was bargained, "))
             .ok()
-            .map(|(rest, _)| {
+            .map(|(_, (_, rest))| {
                 let offset = text.len() - rest.len();
                 text[offset..].to_string()
             })
@@ -5479,8 +5470,8 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
         // Used by: "deals damage to itself equal to its power",
         //          "deals damage to each player equal to the number of ...",
         //          "deals damage to that player equal to the number of ..."
-        if let Ok((amount_phrase, (target_phrase, _))) =
-            (take_until::<_, _, VerboseError<&str>>(" equal to "), tag(" equal to ")).parse(rest)
+        if let Ok((_, (target_phrase, amount_phrase))) =
+            nom_primitives::split_once_on(rest, " equal to ")
         {
             let amount_phrase = amount_phrase
                 .trim_end_matches('.')
@@ -6097,9 +6088,7 @@ fn try_parse_change_targets(lower: &str) -> Option<Effect> {
 
     // Split off trailing "to [target]" — forced retarget destination.
     let (spell_phrase, forced_to) =
-        if let Ok((after, (before, _))) =
-            (take_until::<_, _, VerboseError<&str>>(" to "), tag(" to ")).parse(rest)
-        {
+        if let Ok((_, (before, after))) = nom_primitives::split_once_on(rest, " to ") {
             let (filter, _) = parse_target(after);
             (before, Some(filter))
         } else {
