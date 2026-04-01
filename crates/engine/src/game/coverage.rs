@@ -3164,6 +3164,83 @@ fn resolver_handled_features() -> HashSet<&'static str> {
 // ability data across all supported cards.
 // ---------------------------------------------------------------------------
 
+/// Walk an ability definition tree, visiting all nested `AbilityDefinition`s including
+/// those embedded in compound effects (`FlipCoin`, `RollDie`, `GrantAbility`, etc.).
+/// Returns `true` if the predicate returns `true` for any node in the tree.
+fn ability_tree_any(def: &AbilityDefinition, pred: &impl Fn(&AbilityDefinition) -> bool) -> bool {
+    if pred(def) {
+        return true;
+    }
+    // Standard chaining: sub_ability, else_ability, mode_abilities
+    if let Some(ref sub) = def.sub_ability {
+        if ability_tree_any(sub, pred) {
+            return true;
+        }
+    }
+    if let Some(ref else_ab) = def.else_ability {
+        if ability_tree_any(else_ab, pred) {
+            return true;
+        }
+    }
+    for mode_ab in &def.mode_abilities {
+        if ability_tree_any(mode_ab, pred) {
+            return true;
+        }
+    }
+    // Compound effects that embed AbilityDefinitions
+    match &*def.effect {
+        Effect::FlipCoin {
+            win_effect,
+            lose_effect,
+        } => {
+            if let Some(ref w) = win_effect {
+                if ability_tree_any(w, pred) {
+                    return true;
+                }
+            }
+            if let Some(ref l) = lose_effect {
+                if ability_tree_any(l, pred) {
+                    return true;
+                }
+            }
+        }
+        Effect::FlipCoinUntilLose { win_effect } => {
+            if ability_tree_any(win_effect, pred) {
+                return true;
+            }
+        }
+        Effect::RollDie { results, .. } => {
+            for branch in results {
+                if ability_tree_any(&branch.effect, pred) {
+                    return true;
+                }
+            }
+        }
+        Effect::CreateDelayedTrigger { effect, .. } => {
+            if ability_tree_any(effect, pred) {
+                return true;
+            }
+        }
+        _ => {}
+    }
+    // ContinuousModification::GrantAbility inside GenericEffect
+    if let Effect::GenericEffect {
+        static_abilities, ..
+    } = &*def.effect
+    {
+        for stat in static_abilities {
+            for modif in &stat.modifications {
+                if let ContinuousModification::GrantAbility { definition } = modif {
+                    if ability_tree_any(definition, pred) {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
+}
+
 /// A semantic finding detected during audit of a card's parsed data vs Oracle text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -3434,23 +3511,21 @@ fn check_dropped_condition(
             continue;
         }
 
-        // Check if ANY parsed ability/trigger/static has a condition, recursing into mode_abilities
-        let has_condition_on_ability = face.abilities.iter().any(|a| {
-            a.condition.is_some() || a.mode_abilities.iter().any(|m| m.condition.is_some())
-        });
+        // Check if ANY parsed ability/trigger/static has a condition anywhere in the tree
+        let cond_pred = |d: &AbilityDefinition| d.condition.is_some();
+        let has_condition_on_ability =
+            face.abilities.iter().any(|a| ability_tree_any(a, &cond_pred));
         let has_condition_on_trigger = face.triggers.iter().any(|t| {
             t.condition.is_some()
-                || t.execute.as_ref().is_some_and(|e| {
-                    e.condition.is_some() || e.mode_abilities.iter().any(|m| m.condition.is_some())
-                })
+                || t.execute
+                    .as_ref()
+                    .is_some_and(|e| ability_tree_any(e, &cond_pred))
         });
         let has_condition_on_static = face.static_abilities.iter().any(|s| s.condition.is_some());
         let has_condition_on_replacement = face.replacements.iter().any(|r| {
-            if let Some(execute) = &r.execute {
-                execute.condition.is_some()
-            } else {
-                false
-            }
+            r.execute
+                .as_ref()
+                .is_some_and(|e| ability_tree_any(e, &cond_pred))
         });
 
         // Check for "unless" conditions stored as effect parameters (e.g. Counter with unless_payment)
@@ -3476,27 +3551,9 @@ fn check_dropped_condition(
     }
 }
 
-/// Recursively check if an ability definition or any of its sub/mode/else abilities has a duration.
+/// Recursively check if an ability definition or any nested ability has a duration.
 fn ability_has_duration(def: &AbilityDefinition) -> bool {
-    if def.duration.is_some() {
-        return true;
-    }
-    if let Some(ref sub) = def.sub_ability {
-        if ability_has_duration(sub) {
-            return true;
-        }
-    }
-    if let Some(ref else_ab) = def.else_ability {
-        if ability_has_duration(else_ab) {
-            return true;
-        }
-    }
-    for mode_ab in &def.mode_abilities {
-        if ability_has_duration(mode_ab) {
-            return true;
-        }
-    }
-    false
+    ability_tree_any(def, &|d| d.duration.is_some())
 }
 
 /// Check if Oracle text contains duration language but parsed effects lack a duration.
@@ -3609,9 +3666,10 @@ fn check_wrong_parameters(
     oracle_lines: &[String],
     findings: &mut Vec<SemanticFinding>,
 ) {
-    // Extract +N/+M patterns from Oracle text
+    // Extract +N/+M patterns from Oracle text (skip parenthesized reminder text)
     for line in oracle_lines {
-        let lower = line.to_lowercase();
+        let stripped = strip_parenthesized_reminder(line);
+        let lower = stripped.to_lowercase();
         if let Some(pump_match) = extract_pt_modifier(&lower) {
             if pump_match.0 == 0 && pump_match.1 == 0 {
                 continue;
@@ -3771,73 +3829,60 @@ fn has_matching_counter_effect(face: &CardFace, counter_type: &str) -> bool {
     let normalized = crate::parser::oracle_effect::counter::normalize_counter_type(counter_type);
     let counter_type = &normalized;
 
-    fn counter_in_chain(def: &AbilityDefinition, ct: &str) -> bool {
-        match &*def.effect {
-            Effect::PutCounter { counter_type, .. }
-            | Effect::PutCounterAll { counter_type, .. }
-                if counter_type == ct =>
-            {
-                return true;
-            }
-            // EntersWithCounters is handled via replacement effects or ETB triggers
-            _ => {}
-        }
-        if let Some(ref sub) = def.sub_ability {
-            if counter_in_chain(sub, ct) {
-                return true;
-            }
-        }
-        if let Some(ref else_ab) = def.else_ability {
-            if counter_in_chain(else_ab, ct) {
-                return true;
-            }
-        }
-        for mode_ab in &def.mode_abilities {
-            if counter_in_chain(mode_ab, ct) {
-                return true;
-            }
-        }
-        false
-    }
+    let counter_pred = |def: &AbilityDefinition| -> bool {
+        matches!(
+            &*def.effect,
+            Effect::PutCounter { counter_type: ct, .. }
+            | Effect::PutCounterAll { counter_type: ct, .. }
+            if ct == counter_type
+        )
+    };
 
     // Check abilities and trigger executions
     let in_abilities = face
         .abilities
         .iter()
         .chain(face.triggers.iter().filter_map(|t| t.execute.as_deref()))
-        .any(|def| counter_in_chain(def, counter_type));
+        .any(|def| ability_tree_any(def, &counter_pred));
 
     // Check replacement effect executions
     let in_replacements = face.replacements.iter().any(|r| {
         r.execute
             .as_ref()
-            .is_some_and(|e| counter_in_chain(e, counter_type))
+            .is_some_and(|e| ability_tree_any(e, &counter_pred))
     });
 
     in_abilities || in_replacements
 }
 
 /// Check if an ability definition has a pump effect matching the given P/T values.
-/// Checks both `Effect::Pump` and `Effect::GenericEffect` with `AddPower`/`AddToughness`
-/// continuous modifications (which is the representation used for static pump effects).
+/// Checks `Effect::Pump`, `Effect::PumpAll`, and `Effect::GenericEffect` with
+/// `AddPower`/`AddToughness` continuous modifications.
 fn pump_matches_oracle(
     def: &AbilityDefinition,
     expected_power: i32,
     expected_toughness: i32,
 ) -> bool {
+    fn pt_matches(power: &PtValue, toughness: &PtValue, ep: i32, et: i32) -> bool {
+        let p_match = match power {
+            PtValue::Fixed(v) => *v == ep,
+            _ => true, // Dynamic quantities can't be checked statically
+        };
+        let t_match = match toughness {
+            PtValue::Fixed(v) => *v == et,
+            _ => true,
+        };
+        p_match && t_match
+    }
+
     match &*def.effect {
         Effect::Pump {
             power, toughness, ..
+        }
+        | Effect::PumpAll {
+            power, toughness, ..
         } => {
-            let p_match = match power {
-                PtValue::Fixed(v) => *v == expected_power,
-                _ => true, // Dynamic quantities can't be checked statically
-            };
-            let t_match = match toughness {
-                PtValue::Fixed(v) => *v == expected_toughness,
-                _ => true,
-            };
-            if p_match && t_match {
+            if pt_matches(power, toughness, expected_power, expected_toughness) {
                 return true;
             }
         }
@@ -3870,27 +3915,9 @@ fn pump_matches_oracle(
     false
 }
 
-/// Recursively check if a pump is anywhere in the ability chain.
+/// Recursively check if a pump is anywhere in the ability tree (including compound effects).
 fn pump_in_chain(def: &AbilityDefinition, power: i32, toughness: i32) -> bool {
-    if pump_matches_oracle(def, power, toughness) {
-        return true;
-    }
-    if let Some(ref sub) = def.sub_ability {
-        if pump_in_chain(sub, power, toughness) {
-            return true;
-        }
-    }
-    if let Some(ref else_ab) = def.else_ability {
-        if pump_in_chain(else_ab, power, toughness) {
-            return true;
-        }
-    }
-    for mode_ab in &def.mode_abilities {
-        if pump_in_chain(mode_ab, power, toughness) {
-            return true;
-        }
-    }
-    false
+    ability_tree_any(def, &|d| pump_matches_oracle(d, power, toughness))
 }
 
 /// Check for silently dropped Oracle lines by comparing effective Oracle line

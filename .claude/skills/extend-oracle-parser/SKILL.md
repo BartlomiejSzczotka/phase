@@ -150,7 +150,7 @@ The parser uses a two-phase architecture: **parse → AST → lower → Effect**
 
 | Variant | Sub-parser | Effect patterns |
 |---------|-----------|----------------|
-| `Numeric(NumericImperativeAst)` | `parse_numeric_imperative_ast()` | Draw, GainLife, LoseLife, Pump, Scry, Surveil, Mill |
+| `Numeric(NumericImperativeAst)` | `parse_numeric_imperative_ast()` | Draw, GainLife, LoseLife, Pump, Scry, Surveil, Mill. Also used by `try_parse_for_each_effect()` via `with_for_each_quantity()` to replace fixed counts with dynamic for-each quantities. |
 | `Targeted(TargetedImperativeAst)` | `parse_targeted_action_ast()` | Tap, Untap, Sacrifice, Discard, Return, ReturnToBattlefield, ReturnToZone, Fight, GainControl |
 | `SearchCreation(SearchCreationImperativeAst)` | `parse_search_and_creation_ast()` | SearchLibrary, Dig, Token, CopyTokenOf |
 | `HandReveal(HandRevealImperativeAst)` | `parse_hand_reveal_ast()` | LookAtHand, RevealHand, RevealTop |
@@ -339,7 +339,7 @@ These run before the AST pipeline:
 |---------|---------|--------|
 | `try_parse_damage_prevention_disabled()` | "damage can't be prevented this turn" | GenericEffect + DamagePreventionDisabled |
 | `try_parse_still_a_type()` | "it's still a land" | GenericEffect + AddType |
-| `try_parse_for_each_effect()` | "draw a card for each creature" | Effect with QuantityExpr::Ref |
+| `try_parse_for_each_effect()` | "draw a card for each creature" | Delegates to `parse_numeric_imperative_ast()` + `with_for_each_quantity()` + `thread_for_each_subject()`. Non-numeric patterns (DealDamage, Token, PutCounter) use their own building blocks. |
 | `try_parse_equal_to_quantity_effect()` | "mill cards equal to hand size" | Effect with QuantityExpr |
 
 ---

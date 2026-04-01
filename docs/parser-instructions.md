@@ -108,7 +108,7 @@ parse_oracle_text()
               ├── try_parse_damage_prevention_disabled() # CR 614.16
               ├── strip_leading_duration()               # "until end of turn, …"
               ├── try_parse_still_a_type()               # "it's still a land" (CR 205.1a)
-              ├── try_parse_for_each_effect()             # "draw a card for each [filter]"
+              ├── try_parse_for_each_effect()             # "draw a card for each [filter]" — delegates to parse_numeric_imperative_ast() + with_for_each_quantity() + thread_for_each_subject()
               └── parse_clause_ast(text) → lower_clause_ast(ast)
                     ├── Conditional { clause }            # "if X, Y" → lower body
                     ├── SubjectPredicate { subject, predicate }
@@ -213,7 +213,7 @@ Create or extend an effect handler in `crates/engine/src/game/effects/`:
   in `lower_imperative_clause()` (in `oracle_effect/mod.rs`), before `parse_imperative_effect()` is called.
 - **Subject-predicate effects** (e.g. "creatures you control get +1/+1"): extend
   `try_parse_subject_predicate_ast()` in `oracle_effect/subject.rs` or add a new predicate variant to `PredicateAst`.
-- **"For each" patterns**: extend `try_parse_for_each_effect()` and `parse_for_each_clause()` in `oracle_effect/mod.rs`.
+- **"For each" patterns**: `try_parse_for_each_effect()` in `oracle_effect/mod.rs` delegates verb parsing to `parse_numeric_imperative_ast()` via `with_for_each_quantity()`, then threads subject via `thread_for_each_subject()`. For new verbs, extend `parse_numeric_imperative_ast()` in `imperative.rs`. For new quantity clauses, extend `parse_for_each_clause()` in `oracle_quantity.rs`. Non-numeric for-each patterns (DealDamage, Token, PutCounter) are handled as separate branches using their existing building blocks.
 - Use `strip_prefix()` over manual index arithmetic to avoid clippy warnings.
 - Return `Effect::Unimplemented { name, description }` for patterns that are recognized but
   not yet implemented rather than panicking or silently returning a wrong effect.
@@ -274,8 +274,10 @@ pub enum QuantityRef {
     ObjectCount { filter: TargetFilter },  // "for each creature you control"
     PlayerCount { filter: PlayerFilter },  // "for each opponent who lost life"
     CountersOnSelf { counter_type: String },// "for each [type] counter on ~"
+    CountersOnTarget { counter_type: String },// "for each [type] counter on that creature"
     Variable { name: String },             // "X", "that much"
     TargetPower,                           // power of targeted permanent
+    TrackedSetSize,                        // "for each card [moved] this way"
 }
 ```
 

@@ -118,7 +118,7 @@ fn parse_source_is_type(input: &str) -> OracleResult<'_, StaticCondition> {
         tag("~ is an "),
     ))
     .parse(input)?;
-    let (remainder, filter) = parse_type_phrase(rest);
+    let (filter, remainder) = parse_type_phrase(rest);
     Ok((remainder, StaticCondition::SourceMatchesFilter { filter }))
 }
 
@@ -1023,5 +1023,28 @@ mod tests {
                 zone: crate::types::zones::Zone::Exile
             }
         ));
+    }
+
+    // -- Source type matching (Figure of Fable pattern) --
+
+    #[test]
+    fn test_source_is_a_subtype() {
+        let (rest, c) = parse_inner_condition("this creature is a scout").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(c, StaticCondition::SourceMatchesFilter { .. }));
+    }
+
+    #[test]
+    fn test_source_is_an_subtype() {
+        let (rest, c) = parse_inner_condition("this creature is an elf").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(c, StaticCondition::SourceMatchesFilter { .. }));
+    }
+
+    #[test]
+    fn test_source_is_a_permanent_type() {
+        let (rest, c) = parse_inner_condition("this permanent is a creature").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(c, StaticCondition::SourceMatchesFilter { .. }));
     }
 }

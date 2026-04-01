@@ -8,7 +8,7 @@ use super::oracle_cost::parse_oracle_cost;
 use super::oracle_effect::parse_effect_chain;
 use super::oracle_nom::condition as nom_condition;
 use super::oracle_nom::primitives as nom_primitives;
-use super::oracle_quantity::{capitalize_first, parse_cda_quantity, parse_quantity_ref};
+use super::oracle_quantity::{parse_cda_quantity, parse_quantity_ref};
 use super::oracle_target::{parse_combat_status_prefix, parse_counter_suffix, parse_type_phrase};
 use super::oracle_util::{
     has_unconsumed_conditional, infer_core_type_for_subtype, parse_comparator_prefix,
@@ -767,7 +767,7 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         );
     }
 
-    // --- "as though it/they had flash" (CR 702.8d) ---
+    // --- "as though it/they had flash" (CR 702.8a) ---
     if tp.lower.contains("as though it had flash") || tp.lower.contains("as though they had flash")
     {
         return Some(
@@ -1417,12 +1417,6 @@ fn parse_static_condition(text: &str) -> Option<StaticCondition> {
         return Some(condition);
     }
 
-    // Fallback: "you control a/an [type]" for patterns the nom combinator doesn't handle
-    // (color-based presence like "a blue creature", "a token", named planeswalkers, etc.)
-    if let Some(condition) = parse_control_presence_condition(tp.lower) {
-        return Some(condition);
-    }
-
     // "the number of [quantity] is [comparator] [quantity]"
     if let Some(condition) = parse_quantity_comparison(tp.lower) {
         return Some(condition);
@@ -1468,68 +1462,6 @@ fn parse_devotion_condition(lower: &str) -> Option<StaticCondition> {
     if let Some(n_rest) = comparison.strip_suffix(" or greater") {
         let threshold = parse_number(n_rest.trim())?.0;
         return Some(StaticCondition::DevotionGE { colors, threshold });
-    }
-
-    None
-}
-
-/// Fallback: parse "you control a/an [type/subtype]" into IsPresent.
-/// Handles patterns the nom combinator doesn't (color-based, tokens, named planeswalkers).
-fn parse_control_presence_condition(lower: &str) -> Option<StaticCondition> {
-    let rest = nom_tag_lower(lower, lower, "you control a ")
-        .or_else(|| nom_tag_lower(lower, lower, "you control an "))?;
-
-    let filter = parse_presence_filter(rest)?;
-
-    Some(StaticCondition::IsPresent {
-        filter: Some(TargetFilter::Typed(filter.controller(ControllerRef::You))),
-    })
-}
-
-/// Parse a simple type/subtype/color description into a TypedFilter.
-/// Fallback for patterns `parse_type_phrase` doesn't handle.
-fn parse_presence_filter(text: &str) -> Option<TypedFilter> {
-    use crate::types::ability::TypeFilter;
-
-    let trimmed = text.trim().trim_end_matches('.');
-
-    // "[color] or [color] permanent" — color-based presence check
-    if let Some(perm_prefix) = trimmed.strip_suffix(" permanent") {
-        let colors: Vec<&str> = perm_prefix.split(" or ").collect();
-        if colors.len() >= 2 {
-            return Some(TypedFilter::card());
-        }
-    }
-
-    // "creature with power N or greater/less/more"
-    if let Some(rest) = nom_tag_lower(trimmed, trimmed, "creature with power ") {
-        let (n, remainder) = parse_number(rest)?;
-        let prop = match remainder.trim() {
-            "or greater" | "or more" => FilterProp::PowerGE { value: n as i32 },
-            "or less" => FilterProp::PowerLE { value: n as i32 },
-            _ => return None,
-        };
-        return Some(TypedFilter::creature().properties(vec![prop]));
-    }
-
-    // Simple core types
-    let type_filter = match trimmed {
-        "artifact" => Some(TypeFilter::Artifact),
-        "creature" => Some(TypeFilter::Creature),
-        "enchantment" => Some(TypeFilter::Enchantment),
-        "land" => Some(TypeFilter::Land),
-        "planeswalker" => Some(TypeFilter::Planeswalker),
-        _ => None,
-    };
-
-    if let Some(tf) = type_filter {
-        return Some(TypedFilter::new(tf));
-    }
-
-    // Subtype-based: "you control a Demon", "you control an Elf"
-    if !trimmed.is_empty() && trimmed.chars().next().unwrap().is_alphabetic() {
-        let subtype = capitalize_first(trimmed);
-        return Some(typed_filter_for_subtype(&subtype));
     }
 
     None
@@ -4645,7 +4577,7 @@ mod tests {
 
     #[test]
     fn static_cast_as_though_flash() {
-        // CR 702.8d: Flash-granting static
+        // CR 702.8a: Flash-granting static
         let def =
             parse_static_line("You may cast creature spells as though they had flash.").unwrap();
         assert_eq!(def.mode, StaticMode::CastWithFlash);

@@ -1,6 +1,7 @@
 use std::str::FromStr;
 
-use nom::bytes::complete::tag;
+use nom::branch::alt;
+use nom::bytes::complete::{tag, take_till};
 use nom::combinator::value;
 use nom::Parser;
 
@@ -782,19 +783,40 @@ pub(crate) fn starts_with_type_word(text: &str) -> bool {
     if parse_subtype(text).is_some() {
         return true;
     }
+    // Standalone "token"/"tokens" (property word, not a core type or subtype).
+    // Reuses parse_token_suffix which handles singular/plural with word boundary.
+    if parse_token_suffix(text).is_some() {
+        return true;
+    }
+    // CR 105.1: Color adjective prefix: "blue creature", "red permanent", etc.
+    // parse_type_phrase handles color prefixes internally, but the article guard
+    // must recognize them to strip "a "/"an " correctly.
+    if let Ok((rest, _)) = nom_primitives::parse_color(text) {
+        if let Ok((after_space, _)) =
+            tag::<_, _, nom_language::error::VerboseError<&str>>(" ").parse(rest)
+        {
+            if starts_with_type_word(after_space) {
+                return true;
+            }
+        }
+    }
     // CR 205.4b: Negated type prefix: "noncreature spell", "nonland permanent"
-    if let Ok((after_non, _)) =
-        tag::<_, _, nom_language::error::VerboseError<&str>>("non").parse(text)
+    if let Ok((after_non, _)) = alt((
+        tag::<_, _, nom_language::error::VerboseError<&str>>("non-"),
+        tag("non"),
+    ))
+    .parse(text)
     {
-        // Optional hyphen
-        let after_non =
-            match tag::<_, _, nom_language::error::VerboseError<&str>>("-").parse(after_non) {
-                Ok((r, _)) => r,
-                Err(_) => after_non,
-            };
-        if let Some(ws_pos) = after_non.find(|c: char| c.is_whitespace()) {
-            let after_negated = after_non[ws_pos..].trim_start();
-            return parse_core_type(after_negated).0.is_some();
+        // Consume the negated word up to whitespace, then check for a core type after.
+        if let Ok((after_space, _)) = (
+            take_till::<_, _, nom_language::error::VerboseError<&str>>(|c: char| c.is_whitespace()),
+            tag::<_, _, nom_language::error::VerboseError<&str>>(" "),
+        )
+            .parse(after_non)
+        {
+            if parse_core_type(after_space).0.is_some() {
+                return true;
+            }
         }
     }
     false
