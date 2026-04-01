@@ -410,6 +410,9 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
         | StaticCondition::UnlessPay { .. }
         | StaticCondition::Unrecognized { .. }
         | StaticCondition::None => None,
+
+        // CR 309.7: Dungeon completion bridges directly.
+        StaticCondition::CompletedADungeon => Some(TriggerCondition::CompletedADungeon),
     }
 }
 
@@ -464,6 +467,13 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
             (
                 "if it had counters on it",
                 TriggerCondition::HadCounters { counter_type: None },
+            ),
+            // CR 309.7: Acererak's intervening-if — "if you haven't completed Tomb of Annihilation"
+            (
+                "if you haven't completed tomb of annihilation",
+                TriggerCondition::NotCompletedDungeon {
+                    dungeon: crate::game::dungeon::DungeonId::TombOfAnnihilation,
+                },
             ),
         ],
     ) {

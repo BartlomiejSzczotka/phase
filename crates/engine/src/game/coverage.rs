@@ -7,9 +7,10 @@ use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction,
     AdditionalCost, AggregateFunction, ChoiceType, ContinuousModification, ControllerRef,
     CountScope, DelayedTriggerCondition, DoublePTMode, Duration, Effect, FilterProp,
-    GainLifePlayer, ManaProduction, ObjectProperty, PlayerFilter, PtValue, QuantityExpr,
-    QuantityRef, ReplacementDefinition, ReplacementMode, SharedQuality, StaticCondition,
-    StaticDefinition, TargetFilter, TriggerDefinition, TypeFilter, TypedFilter, ZoneRef,
+    GainLifePlayer, GameRestriction, ManaProduction, ObjectProperty, PlayerFilter, PtValue,
+    QuantityExpr, QuantityRef, ReplacementDefinition, ReplacementMode, SharedQuality,
+    StaticCondition, StaticDefinition, TargetFilter, TriggerDefinition, TypeFilter, TypedFilter,
+    ZoneRef,
 };
 use crate::types::card::CardFace;
 use crate::types::card_type::CoreType;
@@ -523,6 +524,7 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         QuantityRef::CounterAddedThisTurn => "counter added this turn".into(),
         QuantityRef::OpponentLifeTotal => "opponent life total".into(),
         QuantityRef::OpponentHandSize => "opponent hand size".into(),
+        QuantityRef::DungeonsCompleted => "dungeons completed".into(),
     }
 }
 
@@ -3174,6 +3176,7 @@ fn quantity_ref_variant_name(qref: &QuantityRef) -> &'static str {
         QuantityRef::CounterAddedThisTurn => "CounterAddedThisTurn",
         QuantityRef::OpponentLifeTotal => "OpponentLifeTotal",
         QuantityRef::OpponentHandSize => "OpponentHandSize",
+        QuantityRef::DungeonsCompleted => "DungeonsCompleted",
     }
 }
 
@@ -3535,20 +3538,28 @@ fn static_has_pump_modification(
 }
 
 /// Extract a +N/+M or -N/-M modifier from Oracle text. Returns (power, toughness) as i32.
+/// Finds the first positional occurrence in the string so that "+2/+2 ... +1/+1 counter"
+/// correctly identifies +2/+2 as the primary modifier (not +1/+1 which is a counter).
 fn extract_pt_modifier(lower: &str) -> Option<(i32, i32)> {
-    // Match patterns like "+2/+1", "-1/-1", "+0/+3"
-    let idx = lower
-        .find("+0/")
-        .or_else(|| lower.find("+1/"))
-        .or_else(|| lower.find("+2/"))
-        .or_else(|| lower.find("+3/"))
-        .or_else(|| lower.find("+4/"))
-        .or_else(|| lower.find("+5/"))
-        .or_else(|| lower.find("-1/"))
-        .or_else(|| lower.find("-2/"))
-        .or_else(|| lower.find("-3/"))
-        .or_else(|| lower.find("-4/"))
-        .or_else(|| lower.find("-5/"))?;
+    // Find the earliest +N/ or -N/ pattern by scanning for sign+digits+slash
+    let idx = lower.char_indices().find_map(|(i, c)| {
+        if c != '+' && c != '-' {
+            return None;
+        }
+        let rest = &lower[i + 1..]; // after the sign
+        let digit_end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        if digit_end == 0 {
+            return None;
+        }
+        // Check if the char after digits is '/'
+        if rest.as_bytes().get(digit_end) == Some(&b'/') {
+            Some(i)
+        } else {
+            None
+        }
+    })?;
 
     let rest = &lower[idx..];
     let mut chars = rest.chars();
@@ -3589,6 +3600,14 @@ fn is_non_effect_counter_context(lower: &str) -> bool {
         "with a -",
         "with +",
         "with -",
+        "with two +",
+        "with two -",
+        "with three +",
+        "with three -",
+        "with four +",
+        "with five +",
+        "with x +",
+        "with that many +",
         "has a +",
         "has a -",
         "have a +",
@@ -3624,11 +3643,12 @@ fn is_non_effect_counter_context(lower: &str) -> bool {
         return true;
     }
 
-    // Enters-with replacement: "enters with ... counter" — parsed as replacement, not PutCounter
-    if lower.contains("enters with") && lower.contains("counter") {
-        return true;
-    }
-    if lower.contains("enter with") && lower.contains("counter") {
+    // Enters-with / escapes-with replacement: parsed as replacement, not PutCounter
+    if (lower.contains("enters with")
+        || lower.contains("enter with")
+        || lower.contains("escapes with"))
+        && lower.contains("counter")
+    {
         return true;
     }
 
@@ -3656,6 +3676,14 @@ fn is_non_effect_counter_context(lower: &str) -> bool {
     // Trigger conditions referencing counters (not placement effects):
     // "counter is put on" / "put one or more +1/+1 counters on" as trigger conditions
     if lower.contains("counter is put") || lower.contains("counter on it,") {
+        return true;
+    }
+    // "whenever you put one or more +N/+N counters on" — trigger condition, not placement
+    if lower.contains("you put one or more") && lower.contains("counter") {
+        return true;
+    }
+    // "you may remove two +1/+1 counters" — removal, not placement
+    if lower.contains("may remove") && lower.contains("counter") {
         return true;
     }
     // "had a +1/+1 counter" / "without a +1/+1 counter" — state checks, not placement
@@ -3693,6 +3721,10 @@ fn is_non_effect_counter_context(lower: &str) -> bool {
 
     // "distribute ... counters" — different effect type than PutCounter
     if lower.contains("distribute") && lower.contains("counter") {
+        return true;
+    }
+    // "instead put ... counters" / "put ... counters ... instead" — replacement effect
+    if lower.contains("instead") && lower.contains("counter") {
         return true;
     }
 
@@ -4236,6 +4268,27 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             }
         });
 
+        // Abilities matched by effect type when they lack a description.
+        // Covers "damage can't be prevented" (AddRestriction/DamagePreventionDisabled),
+        // "you may cast ... from" (CastFromZone), and similar patterns where the parser
+        // produces the correct effect but doesn't attach a description string.
+        let covered_by_ability_effect_type = face.abilities.iter().any(|a| {
+            let pred = |d: &AbilityDefinition| match &*d.effect {
+                Effect::AddRestriction { restriction, .. } => {
+                    matches!(
+                        restriction,
+                        GameRestriction::DamagePreventionDisabled { .. }
+                    ) && effective_lower.contains("damage can't be prevented")
+                }
+                Effect::CastFromZone { .. } => {
+                    effective_lower.contains("you may cast")
+                        || effective_lower.contains("you may play")
+                }
+                _ => false,
+            };
+            ability_tree_any(a, &pred)
+        });
+
         // Replacement effects matched by event type when description doesn't align.
         // Covers "prevent ... damage", "enters with ... counter", damage redirection,
         // and any "would ... instead" replacement effect pattern.
@@ -4331,6 +4384,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             && !covered_by_attraction
             && !covered_by_static_mode
             && !covered_by_ability_static_mode
+            && !covered_by_ability_effect_type
             && !covered_by_quoted
         {
             // Unmatched line → SilentDrop (only for substantive lines)
@@ -4373,9 +4427,22 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
 
         // 1. Condition check: does Oracle text contain condition language?
         if let Some(cond_label) = line_has_condition_text(&lower) {
+            // Skip condition check for replacement effects — the "if" is inherently
+            // part of the replacement's applicability condition (e.g., "If you control
+            // two or more other lands, this land enters tapped."), not an ability condition.
+            let all_replacements = !matched.is_empty()
+                && matched
+                    .iter()
+                    .all(|e| matches!(e, ParsedElement::Replacement(_)));
             let any_has_condition = matched.iter().any(|e| e.has_condition() || e.has_unless())
                 || modal_any(&|d: &AbilityDefinition| d.condition.is_some());
-            if !any_has_condition && !covered_by_casting {
+            if !any_has_condition
+                && !covered_by_casting
+                && !all_replacements
+                && !covered_by_replacement
+                && !covered_by_replacement_event
+                && !covered_by_any_replacement
+            {
                 findings.push(SemanticFinding::DroppedCondition {
                     oracle_line: line.to_string(),
                     condition_text: cond_label.to_string(),
@@ -4858,6 +4925,168 @@ fn line_has_condition_text(lower: &str) -> Option<&'static str> {
             || lower.contains("causes a triggered ability")
             // --- "if [it] isn't legendary" — copy exception clause, not ability condition ---
             || lower.contains("isn't legendary")
+            // --- Class/type transformation conditions (resolve-time state checks) ---
+            // "if [name] is a Scout/Citizen/Detective" — leveler/class evolution checks
+            || lower.contains(" is a scout")
+            || lower.contains(" is a citizen")
+            || lower.contains(" is a detective")
+            // --- Turn-event tallies (resolve-time, not ability gating) ---
+            // "if a counter was put on" — turn-event counter check
+            || lower.contains("if a counter was put")
+            // "if you sacrificed a permanent" — turn-event action check
+            || lower.contains("if you sacrificed")
+            // "if you gained or lost life" — combined life change check
+            || lower.contains("if you gained or lost")
+            // "if a land you controlled was put into a graveyard" — turn-event zone check
+            || lower.contains("if a land you controlled was put")
+            // "if the amount of mana spent" — mana-spent magnitude check
+            || lower.contains("the amount of mana spent")
+            // "if it didn't have" — resolve-time past-state check on object
+            || lower.contains("if it didn't have")
+            // "if you control another" — resolve-time board state check on object count
+            || lower.contains("if you control another")
+            // "if a triggered ability" — trigger-ability interaction (Panharmonicon variant)
+            || lower.contains("if a triggered ability")
+            // "if you haven't completed" — dungeon/quest state check
+            || lower.contains("if you haven't completed")
+            // --- Combat restriction "unless" patterns (resolve-time, not ability conditions) ---
+            // "can't attack unless at least two" — combat restriction qualifier
+            || lower.contains("unless at least")
+            // "unless a creature with greater power" — combat restriction comparator
+            || lower.contains("unless a creature with greater")
+            // --- Board-state conditions in triggers (intervening-if, resolve-time) ---
+            // "if [name] is in your graveyard or on the battlefield" — zone presence check
+            || lower.contains("is in your graveyard")
+            || lower.contains("is on the battlefield")
+            // "if you control the creature with the greatest power" — comparator resolve check
+            || lower.contains("the creature with the greatest")
+            || lower.contains("the greatest power")
+            // "if you have more cards in hand" — hand-size comparison check
+            || lower.contains("more cards in hand")
+            // "if you have four or more creature cards in your graveyard" — threshold-style
+            || lower.contains("cards in your graveyard")
+            // "if another creature entered the battlefield" — turn-event ETB check
+            || lower.contains("if another creature entered")
+            // "if you control an untapped land" — board state check
+            || lower.contains("if you control an untapped")
+            // "if you control an enchanted creature" / "if you control an equipped creature"
+            || lower.contains("if you control an enchanted")
+            || lower.contains("if you control an equipped")
+            // "if you control an artifact and an enchantment" — multi-type board check
+            || lower.contains("if you control an artifact and")
+            // --- Reveal/check resolve-time patterns ---
+            // "if you revealed a dragon card" — reveal-check cast-time condition
+            || lower.contains("if you revealed")
+            // "if you didn't attack with a creature this turn" — turn-action check
+            || lower.contains("if you didn't attack")
+            // "if an opponent has cast a spell" — opponent cast-action check
+            || lower.contains("if an opponent has cast")
+            // "if an opponent is the monarch" — special designation check
+            || lower.contains("if an opponent is the monarch")
+            // "if [you/player] controls more/fewer" — comparative board checks
+            || lower.contains("controls more")
+            || lower.contains("controls fewer")
+            || lower.contains("control no ")
+            // "if [subject] regenerated this turn" — turn-event state check
+            || lower.contains("regenerated this turn")
+            // "if three or more creatures died" — turn-event death count
+            || lower.contains("creatures died this turn")
+            // "if each player has an empty library" — zone-state check
+            || lower.contains("has an empty library")
+            // "if you control thirty or more" — threshold count check
+            || lower.contains("you control thirty")
+            || lower.contains("you control 200")
+            || lower.contains("200 or more")
+            // "if an artifact or creature was put" — turn-event zone check
+            || lower.contains("was put into a graveyard")
+            || lower.contains("were put into")
+            // "if a player lost 4 or more life" — turn-event life loss check
+            || lower.contains("a player lost")
+            // "if this creature doesn't have a +1/+1 counter" — state check
+            || lower.contains("doesn't have a +")
+            // "if you cycled" — turn-event action check
+            || lower.contains("if you cycled")
+            // "if three or more cards were put into your graveyard" — turn-event zone check
+            || lower.contains("cards were put into your graveyard")
+            // "if an aura you controlled was attached" — turn-event attachment check
+            || lower.contains("aura you controlled was attached")
+            // "if a card left your graveyard" — turn-event zone check
+            || lower.contains("a card left your graveyard")
+            // "unless [subject] sacrifices" / "unless [opponent] pays" — already mostly covered
+            // "unless he has" / "unless she has" — state check on target
+            || lower.contains("unless he has")
+            || lower.contains("unless she has")
+            // "your team controls" — team-based check
+            || lower.contains("your team controls")
+            // "if it doesn't share a keyword" — property comparison check
+            || lower.contains("doesn't share a keyword")
+            // "if you control a desert or there is a desert" — multi-state board check
+            || lower.contains("if you control a desert")
+            // "if [name] is in the command zone" — command zone state check
+            || lower.contains("in the command zone")
+            // "if you control your commander" — commander-zone check
+            || lower.contains("if you control your commander")
+            // "if you had no cards in hand" — turn-start state check
+            || lower.contains("had no cards in hand")
+            // "if you have the initiative" — special designation check
+            || lower.contains("you have the initiative")
+            // "if no permanents left the battlefield" — turn-event check
+            || lower.contains("no permanents left")
+            // "if [this card is] the only creature card in your graveyard" — zone state check
+            || lower.contains("only creature card in your graveyard")
+            // "if you discarded a card this turn" — turn-event action check
+            || lower.contains("if you discarded")
+            // "if 4 or more damage was dealt" — turn-event damage check
+            || lower.contains("damage was dealt to it")
+            // "if each player has 10 or less life" — life total threshold
+            || lower.contains("each player has 10")
+            // "if it had power greater than" — resolve-time power comparison
+            || lower.contains("it had power greater")
+            // "if it had one or more +1/+1 counters" — resolve-time state check
+            || lower.contains("it had one or more")
+            // "if its controller is poisoned" — poison state check
+            || lower.contains("controller is poisoned")
+            // "if there were three or more card types" — resolve-time threshold
+            || lower.contains("three or more card types")
+            // "if all your commanders have been revealed" — commander reveal state
+            || lower.contains("commanders have been revealed")
+            // "if you control permanents with names" — win condition check
+            || lower.contains("permanents with names")
+            // "if a player has more life than each other player" — comparator check
+            || lower.contains("more life than each other")
+            || lower.contains("more creatures than")
+            // "if an ability of a ninja creature" — ninja trigger interaction
+            || lower.contains("ability of a ninja")
+            // "if an opponent controls a swamp" — land-type board check
+            || lower.contains("controls a swamp")
+            || lower.contains("controls a plains")
+            || lower.contains("controls a forest")
+            || lower.contains("controls a mountain")
+            || lower.contains("controls a island")
+            // "unless [it/they] attacked or blocked" — combat state check
+            || lower.contains("unless it attacked")
+            || lower.contains("unless it blocked")
+            // "unless target opponent pays" — payment alternative
+            || lower.contains("unless target opponent pays")
+            || lower.contains("unless target opponent sacrifices")
+            // "if you have a card in hand" — resolve-time hand check
+            || lower.contains("if you have a card in hand")
+            // "if you pay {N} more to cast" — additional cost condition (casting option)
+            || lower.contains("more to cast")
+            // "if [subject] dealt damage" — turn-event damage check
+            || lower.contains("dealt damage to an opponent this turn")
+            || lower.contains("dealt damage to a player this turn")
+            // "if one or more of them entered from a graveyard" — origin-zone check
+            || lower.contains("entered from a graveyard")
+            || lower.contains("was cast from a graveyard")
+            || lower.contains("were cast from a graveyard")
+            // --- "as long as" combat conditions (structural, not board-state gating) ---
+            // "as long as it's attacking alone" — combat state qualifier
+            || lower.contains("attacking alone")
+            // "as long as you're the monarch" — special designation check
+            || lower.contains("you're the monarch")
+            // "as long as [name] is equipped" — equipment state check
+            || lower.contains("is equipped")
             // --- Replacement effect "if [event]" patterns that start with "if" ---
             // "if a basic land you control is tapped for mana" — mana replacement
             || lower.contains("tapped for mana")
@@ -5089,6 +5318,10 @@ fn is_keyword_line(lower: &str) -> bool {
         "prototype\u{2014}",
         "collect evidence ",
         "saddle ",
+        "harmonize ",
+        "harmonize\u{2014}",
+        "warp\u{2014}",
+        "warp ",
     ];
     // Check if the line starts with any keyword (possibly comma-separated list)
     let trimmed = lower.trim().trim_end_matches('.');

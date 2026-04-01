@@ -492,6 +492,11 @@ fn resolve_ref(
             .map(|p| p.hand.len() as i32)
             .max()
             .unwrap_or(0),
+        // CR 309.7: Number of dungeons the controller has completed.
+        QuantityRef::DungeonsCompleted => state
+            .dungeon_progress
+            .get(&controller)
+            .map_or(0, |p| p.completed.len() as i32),
     }
 }
 

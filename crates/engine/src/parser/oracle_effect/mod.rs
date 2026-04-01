@@ -4551,6 +4551,7 @@ fn static_condition_to_ability_condition(sc: &StaticCondition) -> Option<Ability
         | StaticCondition::And { .. }
         | StaticCondition::Or { .. }
         | StaticCondition::RingLevelAtLeast { .. }
+        | StaticCondition::CompletedADungeon
         | StaticCondition::None => None,
     }
 }

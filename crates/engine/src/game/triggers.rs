@@ -1257,6 +1257,16 @@ pub(crate) fn check_trigger_condition(
         TriggerCondition::Or { conditions } => conditions
             .iter()
             .any(|c| check_trigger_condition(state, c, controller, source_id)),
+        // CR 309.7: True when the controller has completed at least one dungeon.
+        TriggerCondition::CompletedADungeon => state
+            .dungeon_progress
+            .get(&controller)
+            .is_some_and(|p| !p.completed.is_empty()),
+        // CR 309.7: True when the controller has NOT completed a specific dungeon.
+        TriggerCondition::NotCompletedDungeon { dungeon } => !state
+            .dungeon_progress
+            .get(&controller)
+            .is_some_and(|p| p.completed.contains(dungeon)),
     }
 }
 

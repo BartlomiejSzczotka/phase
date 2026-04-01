@@ -239,6 +239,11 @@ pub(crate) fn evaluate_condition(
         // TODO: Wire into the attack/block cost payment flow.
         StaticCondition::UnlessPay { .. } => false,
         StaticCondition::None => true,
+        // CR 309.7: True when the controller has completed at least one dungeon.
+        StaticCondition::CompletedADungeon => state
+            .dungeon_progress
+            .get(&controller)
+            .is_some_and(|p| !p.completed.is_empty()),
     }
 }
 
