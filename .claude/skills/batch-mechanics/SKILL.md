@@ -35,7 +35,7 @@ You are orchestrating a multi-phase workflow. Follow each phase exactly. If any 
    - `/add-static-ability` — static/continuous effects
    - `/add-replacement-effect` — replacement effects
    - `/add-interactive-effect` — effects requiring player choices (WaitingFor/GameAction round-trip)
-   - `/extend-oracle-parser` — parser-only changes
+   - `/oracle-parser` — parser-only changes
    - `/casting-stack-conditions` — casting flow or stack changes
 6. Order groups by dependency — if Group A must be done before Group B can start, note this
 7. Present the groupings to the user for approval before spawning teammates

@@ -122,7 +122,7 @@ Only needed if the effect has a `target: TargetFilter` field that isn't `None`/`
   - `parse_utility_imperative_ast()`
 
 - [ ] **`crates/engine/src/parser/oracle_effect/` — subject-preserving helpers (if needed)**
-  If the subject of the sentence carries game-relevant information (who does it, who it targets), preserve it before fallback subject stripping. The current pattern is `try_parse_targeted_controller_gain_life()` in `lower_imperative_clause()`. See `docs/parser-instructions.md` § "Subject Stripping" for the full rationale.
+  If the subject of the sentence carries game-relevant information (who does it, who it targets), preserve it before fallback subject stripping. The current pattern is `try_parse_targeted_controller_gain_life()` in `lower_imperative_clause()`. See the `/oracle-parser` skill § "Subject Stripping" for the full rationale.
 
 - [ ] **`crates/engine/src/parser/oracle_effect/` — `parse_effect_chain()` integration**
   If the effect commonly appears as part of a multi-sentence ability (e.g., "Look at target opponent's hand. You may choose a nonland card from it. Exile that card."), ensure the sentence splitting and `sub_ability` chaining produces the right structure. The engine composes effects via `sub_ability` chains — don't create mega-effects that do multiple things.
