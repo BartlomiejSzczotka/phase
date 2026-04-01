@@ -509,6 +509,69 @@ pub fn parse_phrase_fragment(input: &str) -> OracleResult<'_, &str> {
     }))
 }
 
+// ── Word-boundary scanning primitives ─────────────────────────────────
+//
+// These are the shared building blocks for scanning Oracle text at word
+// boundaries.  All per-file `scan_*` functions should delegate to these
+// rather than re-implementing the scanning loop.
+
+/// Try a nom combinator at every word boundary in `text`, returning the
+/// first successful match.  This is the generic primitive behind all
+/// `scan_for_*` helpers.
+///
+/// The combinator is tried at the start of `text`, then at each position
+/// after a space.  Returns `Some(value)` on the first match, `None` if
+/// no word boundary produces a match.
+///
+/// # Example
+/// ```ignore
+/// use nom::bytes::complete::tag;
+/// use nom::combinator::value;
+/// let found = scan_at_word_boundaries("the creature dies", |i| {
+///     value("dies", tag("dies")).parse(i)
+/// });
+/// assert_eq!(found, Some("dies"));
+/// ```
+pub fn scan_at_word_boundaries<'a, O, F>(text: &'a str, mut combinator: F) -> Option<O>
+where
+    F: FnMut(&'a str) -> nom::IResult<&'a str, O, nom_language::error::VerboseError<&'a str>>,
+{
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if let Ok((_, val)) = combinator(remaining) {
+            return Some(val);
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
+    }
+    None
+}
+
+/// Check whether `phrase` appears at any word boundary in `text`.
+///
+/// More precise than `str::contains()` — matches complete phrases at word
+/// starts, preventing false positives from substring matches inside other
+/// words (e.g. `scan_contains("studies", "dies")` → false).
+///
+/// Equivalent to `scan_at_word_boundaries(text, |i| tag(phrase).parse(i)).is_some()`
+/// but avoids the generic closure overhead for the common boolean-guard case.
+pub fn scan_contains(text: &str, phrase: &str) -> bool {
+    let mut remaining = text;
+    while !remaining.is_empty() {
+        if tag::<_, _, nom_language::error::VerboseError<&str>>(phrase)
+            .parse(remaining)
+            .is_ok()
+        {
+            return true;
+        }
+        remaining = remaining
+            .find(' ')
+            .map_or("", |i| remaining[i + 1..].trim_start());
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

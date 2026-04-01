@@ -91,6 +91,133 @@ pub fn parse_effect(text: &str) -> Effect {
     parse_effect_clause(text, &ParseContext::default()).effect
 }
 
+// ── Word-boundary scanners for delayed trigger dispatch ──────────────────
+
+/// Delayed trigger condition kinds, used by `scan_delayed_condition_kind`.
+#[derive(Debug, Clone, Copy)]
+enum DelayedConditionKind {
+    Dies,
+    PutIntoGraveyard,
+    LeavesPlay,
+    EntersBattlefield,
+}
+
+/// Nom combinator for delayed trigger condition keywords.
+/// Ordered: longer phrases first to prevent prefix collisions
+/// (e.g., "enters the battlefield" before bare "enters").
+fn parse_delayed_condition_keyword(
+    input: &str,
+) -> nom::IResult<&str, DelayedConditionKind, VerboseError<&str>> {
+    alt((
+        value(
+            DelayedConditionKind::LeavesPlay,
+            tag("leaves the battlefield"),
+        ),
+        value(
+            DelayedConditionKind::EntersBattlefield,
+            tag("enters the battlefield"),
+        ),
+        // CR 700.4: "is put into a graveyard" from battlefield = dies
+        value(
+            DelayedConditionKind::PutIntoGraveyard,
+            tag("is put into a graveyard"),
+        ),
+        value(
+            DelayedConditionKind::PutIntoGraveyard,
+            tag("is put into your graveyard"),
+        ),
+        value(
+            DelayedConditionKind::PutIntoGraveyard,
+            tag("is put into their graveyard"),
+        ),
+        value(DelayedConditionKind::Dies, tag("dies")),
+        value(DelayedConditionKind::Dies, tag("die")),
+        // Bare "enters" last — least specific
+        value(DelayedConditionKind::EntersBattlefield, tag("enters")),
+    ))
+    .parse(input)
+}
+
+/// Word-boundary scanner for delayed trigger condition keywords.
+/// Delegates to the shared `scan_at_word_boundaries` primitive.
+fn scan_delayed_condition_kind(text: &str) -> Option<DelayedConditionKind> {
+    nom_primitives::scan_at_word_boundaries(text, parse_delayed_condition_keyword)
+}
+
+/// Nom combinator for delayed trigger subject reference phrases.
+/// Returns `Some(TargetFilter)` for ParentTarget or SelfRef references.
+fn parse_delayed_subject_keyword(
+    input: &str,
+) -> nom::IResult<&str, TargetFilter, VerboseError<&str>> {
+    alt((
+        // ParentTarget references (longer phrases first)
+        value(TargetFilter::ParentTarget, tag("the exiled ")),
+        value(TargetFilter::ParentTarget, tag("the targeted ")),
+        value(TargetFilter::ParentTarget, tag("the creature")),
+        value(TargetFilter::ParentTarget, tag("the permanent")),
+        value(TargetFilter::ParentTarget, tag("the token")),
+        value(TargetFilter::ParentTarget, tag("that ")),
+        value(TargetFilter::ParentTarget, tag("target ")),
+        // SelfRef references
+        value(TargetFilter::SelfRef, tag("this creature")),
+        value(TargetFilter::SelfRef, tag("this permanent")),
+        value(TargetFilter::SelfRef, tag("this artifact")),
+    ))
+    .parse(input)
+}
+
+/// Word-boundary scanner for delayed trigger subject references.
+/// Delegates to `scan_at_word_boundaries` for typed phrases, then falls back
+/// to checking for bare "it" (which can appear at end of string).
+fn scan_delayed_subject(text: &str) -> Option<TargetFilter> {
+    // First try typed subject references via the shared scanner
+    if let Some(filter) =
+        nom_primitives::scan_at_word_boundaries(text, parse_delayed_subject_keyword)
+    {
+        return Some(filter);
+    }
+    // Fallback: bare "it" at any word boundary (end of string or followed by space,
+    // but NOT "its " which is possessive, not a pronoun reference)
+    if nom_primitives::scan_at_word_boundaries(text, |input| {
+        let (rest, _) = tag::<_, _, VerboseError<&str>>("it").parse(input)?;
+        // Require word boundary: end of string, space (but not "its"), or punctuation
+        if rest.is_empty() || rest.starts_with(' ') && !rest.starts_with("s ") {
+            Ok((rest, ()))
+        } else {
+            Err(nom::Err::Error(VerboseError {
+                errors: vec![(
+                    input,
+                    nom_language::error::VerboseErrorKind::Context("it word boundary"),
+                )],
+            }))
+        }
+    })
+    .is_some()
+    {
+        return Some(TargetFilter::SelfRef);
+    }
+    None
+}
+
+/// Word-boundary scanner for tracked set references in delayed trigger conditions.
+/// Checks for "that ", "the exiled ", "the targeted " at word boundaries.
+fn scan_tracked_set_reference(text: &str) -> bool {
+    nom_primitives::scan_at_word_boundaries(text, |input| {
+        alt((
+            tag::<_, _, VerboseError<&str>>("that "),
+            tag("the exiled "),
+            tag("the targeted "),
+        ))
+        .parse(input)
+    })
+    .is_some()
+}
+
+/// Delegates to the shared word-boundary scanning primitive in `oracle_nom::primitives`.
+fn scan_contains_phrase(text: &str, phrase: &str) -> bool {
+    nom_primitives::scan_contains(text, phrase)
+}
+
 /// CR 603.7c: Parse "whenever [trigger condition] this turn, [effect]" delayed triggers.
 /// These create multi-fire delayed triggers that persist until end of turn.
 /// Example: "whenever a creature you control deals combat damage to a player this turn, draw a card"
@@ -148,42 +275,33 @@ fn try_parse_inline_delayed_trigger(tp: TextPair) -> Option<ParsedEffectClause> 
     let condition_text = &tp.lower["when ".len()..comma];
     let effect_text = &tp.original[comma + 2..];
 
-    let condition = if condition_text.contains("dies") || condition_text.contains("die") {
-        DelayedTriggerCondition::WhenDies {
+    let condition = match scan_delayed_condition_kind(condition_text) {
+        Some(DelayedConditionKind::Dies | DelayedConditionKind::PutIntoGraveyard) => {
+            DelayedTriggerCondition::WhenDies {
+                filter: parse_delayed_subject_filter(condition_text),
+            }
+        }
+        Some(DelayedConditionKind::LeavesPlay) => DelayedTriggerCondition::WhenLeavesPlayFiltered {
             filter: parse_delayed_subject_filter(condition_text),
+        },
+        Some(DelayedConditionKind::EntersBattlefield) => {
+            if has_unconsumed_conditional(condition_text) {
+                tracing::warn!(
+                    text = condition_text,
+                    "Unconsumed conditional in delayed trigger 'enters' match — parser may need extension"
+                );
+            }
+            DelayedTriggerCondition::WhenEntersBattlefield {
+                filter: parse_delayed_subject_filter(condition_text),
+            }
         }
-    } else if condition_text.contains("is put into")
-        && (condition_text.contains("graveyard") || condition_text.contains("a graveyard"))
-    {
-        // CR 700.4: "is put into a graveyard" from battlefield = dies
-        DelayedTriggerCondition::WhenDies {
-            filter: parse_delayed_subject_filter(condition_text),
-        }
-    } else if condition_text.contains("leaves the battlefield") {
-        DelayedTriggerCondition::WhenLeavesPlayFiltered {
-            filter: parse_delayed_subject_filter(condition_text),
-        }
-    } else if condition_text.contains("enters the battlefield") || condition_text.contains("enters")
-    {
-        if has_unconsumed_conditional(condition_text) {
-            tracing::warn!(
-                text = condition_text,
-                "Unconsumed conditional in delayed trigger 'enters' match — parser may need extension"
-            );
-        }
-        DelayedTriggerCondition::WhenEntersBattlefield {
-            filter: parse_delayed_subject_filter(condition_text),
-        }
-    } else {
-        return None;
+        None => return None,
     };
 
     // "that creature/permanent/token" references the parent spell's target.
     // "the exiled creature/card" and "the targeted creature" also reference
     // the parent's tracked set.
-    let uses_tracked_set = condition_text.contains("that ")
-        || condition_text.contains("the exiled ")
-        || condition_text.contains("the targeted ");
+    let uses_tracked_set = scan_tracked_set_reference(condition_text);
 
     let inner = parse_effect_chain(effect_text, AbilityKind::Spell);
 
@@ -208,27 +326,7 @@ fn try_parse_inline_delayed_trigger(tp: TextPair) -> Option<ParsedEffectClause> 
 /// "it"/"this creature"/"this permanent"/"this artifact" → SelfRef (source object).
 /// "target creature" → ParentTarget (named target in the condition).
 fn parse_delayed_subject_filter(condition_text: &str) -> TargetFilter {
-    if condition_text.contains("that ")
-        || condition_text.contains("the exiled ")
-        || condition_text.contains("the targeted ")
-        || condition_text.contains("the creature")
-        || condition_text.contains("the permanent")
-        || condition_text.contains("the token")
-        || condition_text.contains("target ")
-    {
-        TargetFilter::ParentTarget
-    } else if condition_text.contains("it ")
-        || tag::<_, _, VerboseError<&str>>("it")
-            .parse(condition_text)
-            .is_ok()
-        || condition_text.contains("this creature")
-        || condition_text.contains("this permanent")
-        || condition_text.contains("this artifact")
-    {
-        TargetFilter::SelfRef
-    } else {
-        TargetFilter::Any
-    }
+    scan_delayed_subject(condition_text).unwrap_or(TargetFilter::Any)
 }
 
 /// CR 614.16: Parse "Damage can't be prevented [this turn]" into Effect::AddRestriction.
@@ -236,23 +334,24 @@ fn parse_delayed_subject_filter(condition_text: &str) -> TargetFilter {
 ///   - "Damage can't be prevented this turn"
 ///   - "Combat damage that would be dealt by creatures you control can't be prevented"
 fn try_parse_damage_prevention_disabled(tp: TextPair) -> Option<ParsedEffectClause> {
-    if !tp.contains("can't be prevented") && !tp.contains("cannot be prevented") {
+    // Guard: must contain both "damage" and a prevention-disabled phrase.
+    // Use word-boundary scanning to avoid substring false positives.
+    let has_prevention_disabled = scan_contains_phrase(tp.lower, "can't be prevented")
+        || scan_contains_phrase(tp.lower, "cannot be prevented");
+    if !has_prevention_disabled {
         return None;
     }
-    if !tp.contains("damage") {
+    if !scan_contains_phrase(tp.lower, "damage") {
         return None;
     }
 
     // Determine expiry: "this turn" → EndOfTurn, otherwise EndOfTurn as default
-    let expiry = if tp.contains("this turn") {
-        crate::types::ability::RestrictionExpiry::EndOfTurn
-    } else {
-        // Default to EndOfTurn for damage prevention restrictions
-        crate::types::ability::RestrictionExpiry::EndOfTurn
-    };
+    let expiry = crate::types::ability::RestrictionExpiry::EndOfTurn;
 
     // Determine scope from the subject phrase
-    let scope = if tp.contains("creatures you control") || tp.contains("sources you control") {
+    let scope = if scan_contains_phrase(tp.lower, "creatures you control")
+        || scan_contains_phrase(tp.lower, "sources you control")
+    {
         Some(
             crate::types::ability::RestrictionScope::SourcesControlledBy(
                 crate::types::player::PlayerId(0), // Placeholder — resolved at runtime from ability controller
@@ -299,11 +398,13 @@ fn try_parse_cast_only_from_zones_restriction(tp: TextPair<'_>) -> Option<Parsed
         (tp, RestrictionExpiry::EndOfTurn, None)
     };
 
-    if !scope_tp.contains("can't cast spells from anywhere other than") {
+    if !scan_contains_phrase(scope_tp.lower, "can't cast spells from anywhere other than") {
         return None;
     }
 
-    if !scope_tp.contains("their hand") && !scope_tp.contains("their hands") {
+    if !scan_contains_phrase(scope_tp.lower, "their hand")
+        && !scan_contains_phrase(scope_tp.lower, "their hands")
+    {
         return None;
     }
 
@@ -510,7 +611,7 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
 
     // CR 106.12: "don't lose [unspent] {color} mana as steps and phases end" —
     // mana pool retention. Parsed as supported no-op (runtime behavior is future work).
-    if tp.contains("lose") && tp.contains("mana as steps") {
+    if scan_contains_phrase(tp.lower, "lose") && scan_contains_phrase(tp.lower, "mana as steps") {
         return parsed_clause(Effect::GenericEffect {
             static_abilities: vec![],
             duration: None,
@@ -519,7 +620,7 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
     }
 
     // CR 701.54: "the ring tempts you" — Ring Tempts You effect.
-    if tp.contains("the ring tempts you") {
+    if scan_contains_phrase(tp.lower, "the ring tempts you") {
         return parsed_clause(Effect::RingTemptsYou);
     }
 
@@ -624,9 +725,9 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
 
     // CR 601.2d: "deal N damage divided as you choose among [targets]" /
     // "distributed among" / "divided evenly" → DealDamage with distribute.
-    if lower.contains("divided as you choose among")
-        || lower.contains("distributed among")
-        || lower.contains("divided evenly")
+    if scan_contains_phrase(&lower, "divided as you choose among")
+        || scan_contains_phrase(&lower, "distributed among")
+        || scan_contains_phrase(&lower, "divided evenly")
     {
         if let Some(clause) = try_parse_distribute_damage(&lower, text) {
             return clause;
@@ -638,8 +739,8 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
     if tag::<_, _, VerboseError<&str>>("distribute ")
         .parse(lower.as_str())
         .is_ok()
-        && lower.contains("counter")
-        && lower.contains("among")
+        && scan_contains_phrase(&lower, "counter")
+        && scan_contains_phrase(&lower, "among")
     {
         if let Some(clause) = try_parse_distribute_counters(&lower, text) {
             return clause;
@@ -663,7 +764,9 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
 
     // CR 122.3: "cast that card by paying an amount of {E} equal to its mana value"
     // → GrantCastingPermission with ExileWithEnergyCost
-    if tp.contains("by paying an amount of {e}") && tp.contains("equal to its mana value") {
+    if scan_contains_phrase(tp.lower, "by paying an amount of {e}")
+        && scan_contains_phrase(tp.lower, "equal to its mana value")
+    {
         return parsed_clause(Effect::GrantCastingPermission {
             permission: CastingPermission::ExileWithEnergyCost,
             target: TargetFilter::ParentTarget,
@@ -900,8 +1003,11 @@ fn try_parse_put_on_top_or_bottom(tp: TextPair) -> Option<ParsedEffectClause> {
     let tp = tp.trim_end_matches('.');
 
     // Must contain the signature suffix
-    if !tp.contains("on the top or bottom of their library")
-        && !tp.contains("on their choice of the top or bottom of their library")
+    if !scan_contains_phrase(tp.lower, "on the top or bottom of their library")
+        && !scan_contains_phrase(
+            tp.lower,
+            "on their choice of the top or bottom of their library",
+        )
     {
         return None;
     }
@@ -991,11 +1097,12 @@ fn try_parse_play_from_exile(tp: TextPair) -> Option<ParsedEffectClause> {
         // Bare form (after "you may" was stripped by parse_effect_chain):
         // Only match when temporal context exists ("this turn", "until"),
         // otherwise it's a CastFromZone, not impulse draw permission.
-        let has_temporal = tp.contains("this turn") || tp.contains("until ");
+        let has_temporal =
+            scan_contains_phrase(tp.lower, "this turn") || scan_contains_phrase(tp.lower, "until ");
         if !has_temporal {
             return None;
         }
-        if tp.contains("without paying") {
+        if scan_contains_phrase(tp.lower, "without paying") {
             return None;
         }
         if alt((
@@ -1998,8 +2105,8 @@ fn lower_subject_predicate_ast(
             if alt((tag::<_, _, VerboseError<&str>>("reveal "), tag("reveals ")))
                 .parse(pred_lower.as_str())
                 .is_ok()
-                && pred_lower.contains("top")
-                && pred_lower.contains("library")
+                && scan_contains_phrase(&pred_lower, "top")
+                && scan_contains_phrase(&pred_lower, "library")
             {
                 // Delegate to nom combinator (input already lowercase from pred_lower).
                 let count = if let Some(after_top) = strip_after(&pred_lower, "top ") {
@@ -2174,8 +2281,8 @@ fn try_parse_cast_effect(lower: &str) -> Option<Effect> {
     .parse(lower)
     .ok()?;
 
-    let without_paying = rest.contains("without paying its mana cost")
-        || rest.contains("without paying their mana cost");
+    let without_paying = scan_contains_phrase(rest, "without paying its mana cost")
+        || scan_contains_phrase(rest, "without paying their mana cost");
 
     let target = if alt((
         tag::<_, _, E>("it"),
@@ -2253,7 +2360,7 @@ fn parse_imperative_effect_inner(tp: TextPair, ctx: &ParseContext) -> ParsedEffe
 ///   - "a color" / "a creature type" / "a card type" / "a card name" — different mechanics
 fn is_choose_as_targeting(rest: &str) -> bool {
     // Already handled elsewhere
-    if rest.contains("card from it") {
+    if scan_contains_phrase(rest, "card from it") {
         return false;
     }
 
@@ -2264,7 +2371,7 @@ fn is_choose_as_targeting(rest: &str) -> bool {
     }
 
     // Any phrase containing "target" is a targeting synonym
-    if rest.contains("target") {
+    if scan_contains_phrase(rest, "target") {
         return true;
     }
 
@@ -2293,9 +2400,9 @@ fn is_choose_as_targeting(rest: &str) -> bool {
             return false;
         }
         // Must reference controller to be targeting-like
-        if after_article.contains("you control")
-            || after_article.contains("opponent controls")
-            || after_article.contains("an opponent controls")
+        if scan_contains_phrase(after_article, "you control")
+            || scan_contains_phrase(after_article, "opponent controls")
+            || scan_contains_phrase(after_article, "an opponent controls")
         {
             return true;
         }
@@ -2498,12 +2605,12 @@ fn is_exile_effect(effect: &Effect) -> bool {
 /// CR 603.7: Detect explicit cross-clause pronouns ("those cards", "the exiled card").
 /// `lower` must be the pre-lowered version of the text.
 fn contains_explicit_tracked_set_pronoun(lower: &str) -> bool {
-    lower.contains("those cards")
-        || lower.contains("those permanents")
-        || lower.contains("those creatures")
-        || lower.contains("the exiled card")
-        || lower.contains("the exiled permanent")
-        || lower.contains("the exiled creature")
+    scan_contains_phrase(lower, "those cards")
+        || scan_contains_phrase(lower, "those permanents")
+        || scan_contains_phrase(lower, "those creatures")
+        || scan_contains_phrase(lower, "the exiled card")
+        || scan_contains_phrase(lower, "the exiled permanent")
+        || scan_contains_phrase(lower, "the exiled creature")
 }
 
 /// CR 603.7: Detect implicit anaphora ("return it/them to the battlefield")
@@ -2517,7 +2624,7 @@ fn contains_implicit_tracked_set_pronoun(lower: &str) -> bool {
     ))
     .parse(lower)
     .is_ok()
-        && lower.contains("battlefield")
+        && scan_contains_phrase(lower, "battlefield")
 }
 
 fn mark_uses_tracked_set(def: &mut AbilityDefinition) {
@@ -3047,7 +3154,7 @@ fn consolidate_die_and_coin_defs(defs: &mut Vec<AbilityDefinition>, _kind: Abili
 // --- Search library parser ---
 
 fn parse_search_library_details(lower: &str) -> SearchLibraryDetails {
-    let reveal = lower.contains("reveal");
+    let reveal = scan_contains_phrase(lower, "reveal");
 
     // Extract count from "up to N" (must be done before filter extraction since
     // "for up to five creature cards" needs to skip the count to find the type).
@@ -3101,7 +3208,7 @@ fn parse_seek_details(lower: &str) -> types::SeekDetails {
         if let Some(idx) = put_idx {
             let dest_clause = &after_seek[idx..];
             let dest = parse_search_destination(dest_clause);
-            let tapped = dest_clause.contains("battlefield tapped");
+            let tapped = scan_contains_phrase(dest_clause, "battlefield tapped");
             (&after_seek[..idx], dest, tapped)
         } else {
             (after_seek, Zone::Hand, false)
@@ -3169,7 +3276,7 @@ fn parse_search_filter(text: &str) -> TargetFilter {
 
     // Separate the type word from property suffixes.
     // Extract type/subtype first, then parse remaining text for filter properties.
-    let is_basic = type_text.contains("basic");
+    let is_basic = scan_contains_phrase(type_text, "basic");
     let clean = type_text.replace("basic ", "");
 
     // Try to find where the type word ends and property suffixes begin.
@@ -3417,7 +3524,7 @@ fn parse_search_filter_suffixes(text: &str, properties: &mut Vec<FilterProp>) {
 /// Parse the destination zone from search Oracle text.
 /// Looks for "put it into your hand", "put it onto the battlefield", etc.
 fn parse_search_destination(lower: &str) -> Zone {
-    if lower.contains("onto the battlefield") {
+    if scan_contains_phrase(lower, "onto the battlefield") {
         Zone::Battlefield
     } else if contains_possessive(lower, "into", "hand") {
         Zone::Hand
@@ -3581,7 +3688,7 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
 
     // CR 702.49 + CR 608.2e: "if {possessive} sneak/ninjutsu cost was paid [this turn], instead ..."
     let tp = TextPair::new(text, &lower);
-    if body.is_none() && lower.contains("sneak cost was paid") {
+    if body.is_none() && scan_contains_phrase(&lower, "sneak cost was paid") {
         if let Some(after) = tp.strip_after("instead ") {
             return (
                 Some(AbilityCondition::NinjutsuVariantPaidInstead {
@@ -3591,7 +3698,7 @@ fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCondition>, S
             );
         }
     }
-    if body.is_none() && lower.contains("ninjutsu cost was paid") {
+    if body.is_none() && scan_contains_phrase(&lower, "ninjutsu cost was paid") {
         if let Some(after) = tp.strip_after("instead ") {
             return (
                 Some(AbilityCondition::NinjutsuVariantPaidInstead {
@@ -4373,6 +4480,7 @@ fn static_condition_to_ability_condition(sc: &StaticCondition) -> Option<Ability
         | StaticCondition::SourceAttackingAlone
         | StaticCondition::IsMonarch
         | StaticCondition::HasCityBlessing
+        | StaticCondition::UnlessPay { .. }
         | StaticCondition::Unrecognized { .. }
         | StaticCondition::And { .. }
         | StaticCondition::Or { .. }

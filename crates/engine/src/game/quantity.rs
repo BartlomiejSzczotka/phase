@@ -476,6 +476,22 @@ fn resolve_ref(
                 0
             }
         }
+        // CR 119.3: Maximum life total among opponents.
+        QuantityRef::OpponentLifeTotal => state
+            .players
+            .iter()
+            .filter(|p| p.id != controller)
+            .map(|p| p.life)
+            .max()
+            .unwrap_or(0),
+        // CR 402.1: Maximum hand size among opponents.
+        QuantityRef::OpponentHandSize => state
+            .players
+            .iter()
+            .filter(|p| p.id != controller)
+            .map(|p| p.hand.len() as i32)
+            .max()
+            .unwrap_or(0),
     }
 }
 

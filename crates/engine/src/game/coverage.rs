@@ -520,6 +520,8 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         QuantityRef::SpellsCastLastTurn => "spells cast last turn".into(),
         QuantityRef::OpponentLifeLostThisTurn => "opponent life lost this turn".into(),
         QuantityRef::CounterAddedThisTurn => "counter added this turn".into(),
+        QuantityRef::OpponentLifeTotal => "opponent life total".into(),
+        QuantityRef::OpponentHandSize => "opponent hand size".into(),
     }
 }
 
@@ -3055,6 +3057,8 @@ fn quantity_ref_variant_name(qref: &QuantityRef) -> &'static str {
         QuantityRef::SpellsCastLastTurn => "SpellsCastLastTurn",
         QuantityRef::OpponentLifeLostThisTurn => "OpponentLifeLostThisTurn",
         QuantityRef::CounterAddedThisTurn => "CounterAddedThisTurn",
+        QuantityRef::OpponentLifeTotal => "OpponentLifeTotal",
+        QuantityRef::OpponentHandSize => "OpponentHandSize",
     }
 }
 

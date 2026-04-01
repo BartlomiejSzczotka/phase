@@ -234,6 +234,10 @@ pub(crate) fn evaluate_condition(
         // CR 702.131a: True when the controller has the city's blessing.
         // TODO: Add city_blessing tracking to GameState when Ascend is fully implemented.
         StaticCondition::HasCityBlessing => false,
+        // CR 118.12: "unless pays" conditions evaluate as false (restriction active)
+        // until the cost payment system is fully wired for attack/block tax costs.
+        // TODO: Wire into the attack/block cost payment flow.
+        StaticCondition::UnlessPay { .. } => false,
         StaticCondition::None => true,
     }
 }

@@ -396,7 +396,7 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
             Some(TriggerCondition::SourceInZone { zone: *zone })
         }
 
-        // Variants with no TriggerCondition equivalent (combat-only / source-state).
+        // Variants with no TriggerCondition equivalent (combat-only / source-state / cost).
         StaticCondition::SourceEnteredThisTurn
         | StaticCondition::IsRingBearer
         | StaticCondition::RingLevelAtLeast { .. }
@@ -407,6 +407,7 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
         | StaticCondition::SourceMatchesFilter { .. }
         | StaticCondition::DefendingPlayerControls { .. }
         | StaticCondition::SourceAttackingAlone
+        | StaticCondition::UnlessPay { .. }
         | StaticCondition::Unrecognized { .. }
         | StaticCondition::None => None,
     }
@@ -530,10 +531,16 @@ fn extract_if_condition(text: &str) -> (String, Option<TriggerCondition>) {
         let cond_fragment = &lower[if_pos + "if ".len()..];
         if let Ok((rest, sc)) = parse_inner_condition(cond_fragment) {
             let rest_trimmed = rest.trim();
-            // Accept only if parser stopped at a clause boundary
-            if rest_trimmed.is_empty()
-                || rest_trimmed.starts_with(',')
-                || rest_trimmed.starts_with('.')
+            // Accept only if parser stopped at a clause boundary and there's
+            // no "otherwise" branch that depends on this condition.
+            let has_otherwise = rest_trimmed
+                .trim_start_matches('.')
+                .trim_start()
+                .starts_with("otherwise");
+            if !has_otherwise
+                && (rest_trimmed.is_empty()
+                    || rest_trimmed.starts_with(',')
+                    || rest_trimmed.starts_with('.'))
             {
                 if let Some(trigger_cond) = static_condition_to_trigger_condition(&sc) {
                     let consumed = cond_fragment.len() - rest.len();
@@ -3080,16 +3087,7 @@ fn parse_phase_keyword(input: &str) -> nom::IResult<&str, Phase, VerboseError<&s
 
 /// Scan phase_text for a phase keyword at each word boundary using nom combinators.
 fn scan_for_phase(text: &str) -> Option<Phase> {
-    let mut remaining = text;
-    while !remaining.is_empty() {
-        if let Ok((_, phase)) = parse_phase_keyword(remaining) {
-            return Some(phase);
-        }
-        remaining = remaining
-            .find(' ')
-            .map_or("", |i| remaining[i + 1..].trim_start());
-    }
-    None
+    super::oracle_nom::primitives::scan_at_word_boundaries(text, parse_phase_keyword)
 }
 
 /// CR 503.1a / CR 507.1: Parse turn constraint from phase text using nom prefix dispatch.

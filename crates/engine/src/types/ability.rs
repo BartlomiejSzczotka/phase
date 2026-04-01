@@ -1207,6 +1207,12 @@ pub enum QuantityRef {
     OpponentLifeLostThisTurn,
     /// CR 122.1: Whether the controller added any counter to any permanent this turn.
     CounterAddedThisTurn,
+    /// CR 119.3: Maximum life total among the controller's opponents.
+    /// Used for "an opponent has more life than you" cross-player comparisons.
+    OpponentLifeTotal,
+    /// CR 402.1: Maximum hand size among the controller's opponents.
+    /// Used for "an opponent has more cards in hand than you" cross-player comparisons.
+    OpponentHandSize,
 }
 
 /// CR 107.2: Rounding direction for "half X" expressions in Magic.
@@ -1400,6 +1406,13 @@ pub enum StaticCondition {
     IsMonarch,
     /// CR 702.131a: True when the controller has the city's blessing (Ascend).
     HasCityBlessing,
+    /// CR 118.12: "unless [player] pays [cost]" — a mana tax condition.
+    /// Used for Ghostly Prison, Propaganda, etc. The restriction applies unless the
+    /// relevant player pays the specified cost. Evaluated as false (restriction active)
+    /// until the cost payment system is wired.
+    UnlessPay {
+        cost: ManaCost,
+    },
     /// Condition text that the parser could not yet decompose into a typed variant.
     /// Evaluated permissively (always true) so the static effect still applies.
     Unrecognized {

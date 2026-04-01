@@ -11,7 +11,7 @@ use nom::sequence::preceded;
 use nom::Parser;
 
 use super::error::OracleResult;
-use super::primitives::parse_number;
+use super::primitives::{parse_mana_cost, parse_number};
 use crate::parser::oracle_target::parse_type_phrase;
 use crate::types::ability::{
     Comparator, ControllerRef, CountScope, QuantityExpr, QuantityRef, StaticCondition, TargetFilter,
@@ -40,6 +40,7 @@ pub fn parse_inner_condition(input: &str) -> OracleResult<'_, StaticCondition> {
         parse_player_state_conditions,
         parse_you_have_conditions,
         parse_control_conditions,
+        parse_opponent_comparison_conditions,
         parse_life_conditions,
         parse_zone_conditions,
         parse_there_are_conditions,
@@ -47,6 +48,7 @@ pub fn parse_inner_condition(input: &str) -> OracleResult<'_, StaticCondition> {
         parse_youve_this_turn,
         parse_event_state_conditions,
         parse_combat_context_conditions,
+        parse_unless_pay_condition,
     ))
     .parse(input)
 }
@@ -131,6 +133,7 @@ fn parse_source_state_conditions(input: &str) -> OracleResult<'_, StaticConditio
         parse_this_type_entered_this_turn,
         value(StaticCondition::IsRingBearer, tag("~ is your ring-bearer")),
         parse_source_is_type,
+        parse_source_power_toughness_condition,
     ))
     .parse(input)
 }
@@ -172,6 +175,42 @@ fn parse_this_type_entered_this_turn(input: &str) -> OracleResult<'_, StaticCond
     ))
     .parse(rest)?;
     Ok((rest, StaticCondition::SourceEnteredThisTurn))
+}
+
+/// CR 208.3: Parse source power/toughness comparison conditions.
+///
+/// Handles "its power is N or less/greater", "~ has power N or greater",
+/// and equivalent enchanted/equipped creature patterns.
+/// Used for "as long as enchanted creature's power is 3 or less" etc.
+fn parse_source_power_toughness_condition(input: &str) -> OracleResult<'_, StaticCondition> {
+    // Subject: "its ", "~ has ", "enchanted creature's ", "equipped creature's "
+    let (rest, _) = alt((
+        tag("its "),
+        tag("enchanted creature's "),
+        tag("equipped creature's "),
+    ))
+    .parse(input)?;
+    // Property: "power " or "toughness "
+    let (rest, qty) = alt((
+        value(QuantityRef::SelfPower, tag("power is ")),
+        value(QuantityRef::SelfToughness, tag("toughness is ")),
+    ))
+    .parse(rest)?;
+    let (rest, n) = parse_number(rest)?;
+    // Comparator: "or less" / "or greater"
+    let (rest, comparator) = alt((
+        value(Comparator::LE, tag(" or less")),
+        value(Comparator::GE, tag(" or greater")),
+    ))
+    .parse(rest)?;
+    Ok((
+        rest,
+        StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref { qty },
+            comparator,
+            rhs: QuantityExpr::Fixed { value: n as i32 },
+        },
+    ))
 }
 
 /// Parse "you have" quantity conditions: hand size, graveyard size, life.
@@ -857,6 +896,113 @@ fn parse_there_are_conditions(input: &str) -> OracleResult<'_, StaticCondition> 
     Ok((rest, make_quantity_ge(QuantityRef::GraveyardSize, n)))
 }
 
+/// Parse "an opponent controls more [type] than you" → QuantityComparison.
+/// Also handles "an opponent has more life/cards in hand than you".
+///
+/// These are cross-player quantity comparisons where the opponent's quantity
+/// exceeds the controller's. Composed as QuantityComparison with opponent-scoped
+/// refs on the LHS and controller-scoped refs on the RHS.
+fn parse_opponent_comparison_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = tag("an opponent ").parse(input)?;
+
+    // "an opponent controls more [type] than you"
+    if let Ok((rest2, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("controls more ").parse(rest)
+    {
+        if let Ok((rest3, type_text)) =
+            take_until::<_, _, nom_language::error::VerboseError<&str>>(" than you").parse(rest2)
+        {
+            let (rest3, _) = tag(" than you").parse(rest3)?;
+            let (filter, _) = parse_type_phrase(type_text.trim());
+            let opp_filter = match filter {
+                TargetFilter::Typed(tf) => {
+                    TargetFilter::Typed(tf.controller(ControllerRef::Opponent))
+                }
+                other => other,
+            };
+            let you_filter = match parse_type_phrase(type_text.trim()) {
+                (TargetFilter::Typed(tf), _) => {
+                    TargetFilter::Typed(tf.controller(ControllerRef::You))
+                }
+                (other, _) => other,
+            };
+            return Ok((
+                rest3,
+                StaticCondition::QuantityComparison {
+                    lhs: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { filter: opp_filter },
+                    },
+                    comparator: Comparator::GT,
+                    rhs: QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { filter: you_filter },
+                    },
+                },
+            ));
+        }
+    }
+
+    // "an opponent has more life than you"
+    if let Ok((rest2, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("has more life than you").parse(rest)
+    {
+        return Ok((
+            rest2,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::OpponentLifeTotal,
+                },
+                comparator: Comparator::GT,
+                rhs: QuantityExpr::Ref {
+                    qty: QuantityRef::LifeTotal,
+                },
+            },
+        ));
+    }
+
+    // "an opponent has more cards in hand than you"
+    if let Ok((rest2, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("has more cards in hand than you")
+            .parse(rest)
+    {
+        return Ok((
+            rest2,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::OpponentHandSize,
+                },
+                comparator: Comparator::GT,
+                rhs: QuantityExpr::Ref {
+                    qty: QuantityRef::HandSize,
+                },
+            },
+        ));
+    }
+
+    Err(nom::Err::Error(nom_language::error::VerboseError {
+        errors: vec![(
+            input,
+            nom_language::error::VerboseErrorKind::Nom(nom::error::ErrorKind::Tag),
+        )],
+    }))
+}
+
+/// CR 118.12: Parse "[player] pays {cost}" → UnlessPay { cost }.
+///
+/// Handles "you pay {N}", "their controller pays {N}", "its controller pays {N}".
+/// Used inside "unless" conditions for tax effects (Ghostly Prison, Propaganda, etc.).
+fn parse_unless_pay_condition(input: &str) -> OracleResult<'_, StaticCondition> {
+    // Consume the payer prefix (all variants lead to the same semantic: paying a cost).
+    let (rest, _) = alt((
+        tag("you pay "),
+        tag("its controller pays "),
+        tag("their controller pays "),
+        tag("that player pays "),
+    ))
+    .parse(input)?;
+    let (rest, cost) = parse_mana_cost(rest)?;
+    Ok((rest, StaticCondition::UnlessPay { cost }))
+}
+
 /// Parse an "unless" condition, wrapping the inner condition in `Not`.
 fn parse_unless_condition(input: &str) -> OracleResult<'_, StaticCondition> {
     let (rest, inner) = parse_inner_condition(input)?;
@@ -871,6 +1017,7 @@ fn parse_unless_condition(input: &str) -> OracleResult<'_, StaticCondition> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::mana::ManaCost;
 
     #[test]
     fn test_parse_condition_your_turn() {
@@ -1402,5 +1549,168 @@ mod tests {
             } => {}
             other => panic!("expected HandSize LE 2, got {other:?}"),
         }
+    }
+
+    // -- Opponent comparison conditions --
+
+    #[test]
+    fn test_opponent_controls_more_creatures() {
+        let (rest, c) =
+            parse_inner_condition("an opponent controls more creatures than you").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { .. },
+                    },
+                comparator: Comparator::GT,
+                rhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { .. },
+                    },
+            } => {}
+            other => panic!("expected ObjectCount GT ObjectCount, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_opponent_has_more_life() {
+        let (rest, c) = parse_inner_condition("an opponent has more life than you").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::OpponentLifeTotal,
+                    },
+                comparator: Comparator::GT,
+                rhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::LifeTotal,
+                    },
+            } => {}
+            other => panic!("expected OpponentLifeTotal GT LifeTotal, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_opponent_has_more_cards_in_hand() {
+        let (rest, c) =
+            parse_inner_condition("an opponent has more cards in hand than you").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::OpponentHandSize,
+                    },
+                comparator: Comparator::GT,
+                rhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::HandSize,
+                    },
+            } => {}
+            other => panic!("expected OpponentHandSize GT HandSize, got {other:?}"),
+        }
+    }
+
+    // -- Unless pay conditions --
+
+    #[test]
+    fn test_unless_you_pay() {
+        let (rest, c) = parse_inner_condition("you pay {2}").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::UnlessPay { cost } => {
+                assert_eq!(
+                    cost,
+                    ManaCost::Cost {
+                        shards: vec![],
+                        generic: 2
+                    }
+                );
+            }
+            other => panic!("expected UnlessPay, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_unless_their_controller_pays() {
+        let (rest, c) = parse_inner_condition("their controller pays {1}").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(c, StaticCondition::UnlessPay { .. }));
+    }
+
+    #[test]
+    fn test_unless_condition_with_pay() {
+        let (rest, c) = parse_condition("unless you pay {2}").unwrap();
+        assert_eq!(rest, "");
+        // "unless X" wraps inner in Not
+        match c {
+            StaticCondition::Not { condition } => {
+                assert!(matches!(*condition, StaticCondition::UnlessPay { .. }));
+            }
+            other => panic!("expected Not(UnlessPay), got {other:?}"),
+        }
+    }
+
+    // -- Source power/toughness comparison conditions --
+
+    #[test]
+    fn test_its_power_is_3_or_less() {
+        let (rest, c) = parse_inner_condition("its power is three or less").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::SelfPower,
+                    },
+                comparator: Comparator::LE,
+                rhs: QuantityExpr::Fixed { value: 3 },
+            } => {}
+            other => panic!("expected SelfPower LE 3, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_enchanted_creature_power_ge() {
+        let (rest, c) =
+            parse_inner_condition("enchanted creature's power is four or greater").unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::SelfPower,
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 4 },
+            } => {}
+            other => panic!("expected SelfPower GE 4, got {other:?}"),
+        }
+    }
+
+    // -- "as long as" with new conditions --
+
+    #[test]
+    fn test_as_long_as_you_control_a_swamp() {
+        let (rest, c) = parse_condition("as long as you control a swamp").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(c, StaticCondition::IsPresent { filter: Some(_) }));
+    }
+
+    #[test]
+    fn test_as_long_as_power_3_or_less() {
+        let (rest, c) = parse_condition("as long as its power is three or less").unwrap();
+        assert_eq!(rest, "");
+        assert!(matches!(
+            c,
+            StaticCondition::QuantityComparison {
+                comparator: Comparator::LE,
+                ..
+            }
+        ));
     }
 }
