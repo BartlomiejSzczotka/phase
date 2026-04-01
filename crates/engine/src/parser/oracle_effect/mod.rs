@@ -10188,7 +10188,6 @@ mod tests {
                     type_filters: vec![TypeFilter::Creature],
                     controller: Some(ControllerRef::You),
                     properties: vec![FilterProp::Another],
-                    ..Default::default()
                 })),
                 ..Default::default()
             },
