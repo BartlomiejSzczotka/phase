@@ -336,6 +336,7 @@ fn spell_record_matches_type_filter(record: &SpellCastRecord, filter: &TypeFilte
 fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) -> bool {
     match prop {
         FilterProp::WithKeyword { value } => record.keywords.iter().any(|k| k == value),
+        FilterProp::WithoutKeyword { value } => !record.keywords.iter().any(|k| k == value),
         FilterProp::HasColor { color } => record.colors.contains(color),
         FilterProp::NotColor { color } => !record.colors.contains(color),
         FilterProp::HasSupertype { value } => record.supertypes.contains(value),
@@ -432,6 +433,8 @@ fn matches_filter_prop(
         // CR 302.6 / CR 110.5: Untapped status as targeting qualifier.
         FilterProp::Untapped => !obj.tapped,
         FilterProp::WithKeyword { value } => obj.has_keyword(value),
+        // CR 702: "without [keyword]" — negated keyword filter.
+        FilterProp::WithoutKeyword { value } => !obj.has_keyword(value),
         FilterProp::CountersGE {
             counter_type,
             count,

@@ -564,7 +564,8 @@ fn filter_references_ability(filter: &TargetFilter) -> bool {
     match filter {
         TargetFilter::Typed(TypedFilter { properties, .. }) => properties
             .iter()
-            .any(|p| matches!(p, crate::types::ability::FilterProp::WithKeyword { .. })),
+            .any(|p| matches!(p, crate::types::ability::FilterProp::WithKeyword { .. }
+                                | crate::types::ability::FilterProp::WithoutKeyword { .. })),
         TargetFilter::And { filters } | TargetFilter::Or { filters } => {
             filters.iter().any(filter_references_ability)
         }

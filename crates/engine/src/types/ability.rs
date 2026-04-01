@@ -796,6 +796,11 @@ pub enum FilterProp {
     WithKeyword {
         value: Keyword,
     },
+    /// CR 702: Matches objects that do NOT have a given keyword ability.
+    /// Used for "without flying", "without first strike", etc.
+    WithoutKeyword {
+        value: Keyword,
+    },
     CountersGE {
         counter_type: CounterType,
         count: u32,
@@ -1186,6 +1191,22 @@ pub enum QuantityRef {
     /// A number chosen as the source entered the battlefield (e.g., Talion, the Kindly Lord).
     /// Resolved from the source object's `ChosenAttribute::Number`.
     ChosenNumber,
+    /// CR 700.7: Number of creatures that died this turn (Morbid).
+    /// Resolved against all players (game-wide event count).
+    CreaturesDiedThisTurn,
+    /// CR 508.1a: Number of times the controller declared attackers this turn.
+    /// Used for "if you attacked this turn" conditions.
+    AttackedThisTurn,
+    /// CR 603.4: Whether the controller descended this turn (permanent card entered graveyard).
+    DescendedThisTurn,
+    /// CR 117.1: Number of spells cast last turn (by any player).
+    /// Used for werewolf transform conditions.
+    SpellsCastLastTurn,
+    /// CR 119.3: Amount of life any opponent has lost this turn.
+    /// Used for "if an opponent lost life this turn" conditions.
+    OpponentLifeLostThisTurn,
+    /// CR 122.1: Whether the controller added any counter to any permanent this turn.
+    CounterAddedThisTurn,
 }
 
 /// CR 107.2: Rounding direction for "half X" expressions in Magic.
@@ -3690,6 +3711,8 @@ pub enum TriggerCondition {
     NoSpellsCastLastTurn,
     /// CR 603.4: "if two or more spells were cast last turn" — werewolf reverse transform.
     TwoOrMoreSpellsCastLastTurn,
+    /// CR 603.4: "if it's your turn" — intervening-if requiring the controller's turn.
+    DuringYourTurn,
     /// CR 603.4: "if it's not your turn" / "if it isn't your turn"
     NotYourTurn,
     /// CR 508.1a: "Whenever ~ and at least N other creatures attack."
@@ -5110,6 +5133,9 @@ mod tests {
             FilterProp::Tapped,
             FilterProp::Untapped,
             FilterProp::WithKeyword {
+                value: Keyword::Flying,
+            },
+            FilterProp::WithoutKeyword {
                 value: Keyword::Flying,
             },
             FilterProp::CountersGE {

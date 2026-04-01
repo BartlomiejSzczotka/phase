@@ -4,12 +4,12 @@ use crate::game::game_object::GameObject;
 use crate::game::static_abilities::{build_static_registry, StaticAbilityHandler};
 use crate::game::triggers::build_trigger_registry;
 use crate::types::ability::{
-    AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost,
-    AggregateFunction, ChoiceType, ContinuousModification, ControllerRef, CountScope,
-    DelayedTriggerCondition, DoublePTMode, Duration, Effect, FilterProp, GainLifePlayer,
-    ManaProduction, ObjectProperty, PlayerFilter, PtValue, QuantityExpr, QuantityRef,
-    ReplacementDefinition, ReplacementMode, SharedQuality, StaticCondition, StaticDefinition,
-    TargetFilter, TriggerDefinition, TypeFilter, TypedFilter, ZoneRef,
+    AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction,
+    AdditionalCost, AggregateFunction, ChoiceType, ContinuousModification, ControllerRef,
+    CountScope, DelayedTriggerCondition, DoublePTMode, Duration, Effect, FilterProp,
+    GainLifePlayer, ManaProduction, ObjectProperty, PlayerFilter, PtValue, QuantityExpr,
+    QuantityRef, ReplacementDefinition, ReplacementMode, SharedQuality, StaticCondition,
+    StaticDefinition, TargetFilter, TriggerDefinition, TypeFilter, TypedFilter, ZoneRef,
 };
 use crate::types::card::CardFace;
 use crate::types::card_type::CoreType;
@@ -225,6 +225,7 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             FilterProp::Tapped => parts.push("tapped".into()),
             FilterProp::Untapped => parts.push("untapped".into()),
             FilterProp::WithKeyword { value } => parts.push(format!("with {value:?}")),
+            FilterProp::WithoutKeyword { value } => parts.push(format!("without {value:?}")),
             FilterProp::CountersGE {
                 counter_type,
                 count,
@@ -513,6 +514,12 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         }
         QuantityRef::TurnsTaken => "turns taken".into(),
         QuantityRef::ChosenNumber => "chosen number".into(),
+        QuantityRef::CreaturesDiedThisTurn => "creatures died this turn".into(),
+        QuantityRef::AttackedThisTurn => "attacked this turn".into(),
+        QuantityRef::DescendedThisTurn => "descended this turn".into(),
+        QuantityRef::SpellsCastLastTurn => "spells cast last turn".into(),
+        QuantityRef::OpponentLifeLostThisTurn => "opponent life lost this turn".into(),
+        QuantityRef::CounterAddedThisTurn => "counter added this turn".into(),
     }
 }
 
@@ -3042,6 +3049,12 @@ fn quantity_ref_variant_name(qref: &QuantityRef) -> &'static str {
         QuantityRef::PermanentsLeftBattlefieldThisTurn => "PermanentsLeftBattlefieldThisTurn",
         QuantityRef::TurnsTaken => "TurnsTaken",
         QuantityRef::ChosenNumber => "ChosenNumber",
+        QuantityRef::CreaturesDiedThisTurn => "CreaturesDiedThisTurn",
+        QuantityRef::AttackedThisTurn => "AttackedThisTurn",
+        QuantityRef::DescendedThisTurn => "DescendedThisTurn",
+        QuantityRef::SpellsCastLastTurn => "SpellsCastLastTurn",
+        QuantityRef::OpponentLifeLostThisTurn => "OpponentLifeLostThisTurn",
+        QuantityRef::CounterAddedThisTurn => "CounterAddedThisTurn",
     }
 }
 
@@ -3179,9 +3192,7 @@ fn ability_tree_any(def: &AbilityDefinition, pred: &impl Fn(&AbilityDefinition) 
                 }
             }
         }
-        Effect::FlipCoinUntilLose { win_effect }
-            if ability_tree_any(win_effect, pred) =>
-        {
+        Effect::FlipCoinUntilLose { win_effect } if ability_tree_any(win_effect, pred) => {
             return true;
         }
         Effect::RollDie { results, .. } => {
@@ -3191,9 +3202,7 @@ fn ability_tree_any(def: &AbilityDefinition, pred: &impl Fn(&AbilityDefinition) 
                 }
             }
         }
-        Effect::CreateDelayedTrigger { effect, .. }
-            if ability_tree_any(effect, pred) =>
-        {
+        Effect::CreateDelayedTrigger { effect, .. } if ability_tree_any(effect, pred) => {
             return true;
         }
         _ => {}
@@ -3406,9 +3415,7 @@ fn static_has_pump_modification(
                 ContinuousModification::AddPower { value } if *value == expected_power => {
                     power_match = true;
                 }
-                ContinuousModification::AddToughness { value }
-                    if *value == expected_toughness =>
-                {
+                ContinuousModification::AddToughness { value } if *value == expected_toughness => {
                     tough_match = true;
                 }
                 _ => {}
@@ -3512,9 +3519,16 @@ impl<'a> ParsedElement<'a> {
     }
 
     /// Check if this element (or any nested ability) has a condition set.
+    /// For abilities, also checks `activation_restrictions` for `RequiresCondition`
+    /// entries (e.g., "activate only if you control an Island").
     fn has_condition(&self) -> bool {
         match self {
-            ParsedElement::Ability(a) => ability_tree_any(a, &|d| d.condition.is_some()),
+            ParsedElement::Ability(a) => ability_tree_any(a, &|d| {
+                d.condition.is_some()
+                    || d.activation_restrictions
+                        .iter()
+                        .any(|r| matches!(r, ActivationRestriction::RequiresCondition { .. }))
+            }),
             ParsedElement::Trigger(t) => {
                 t.condition.is_some()
                     || t.execute
@@ -3550,17 +3564,15 @@ impl<'a> ParsedElement<'a> {
             ParsedElement::Ability(a) => {
                 ability_tree_any(a, &|d| pump_matches_oracle(d, power, toughness))
             }
-            ParsedElement::Trigger(t) => t
-                .execute
-                .as_ref()
-                .is_some_and(|e| ability_tree_any(e, &|d| pump_matches_oracle(d, power, toughness))),
+            ParsedElement::Trigger(t) => t.execute.as_ref().is_some_and(|e| {
+                ability_tree_any(e, &|d| pump_matches_oracle(d, power, toughness))
+            }),
             ParsedElement::Static(s) => {
                 static_has_pump_modification(std::slice::from_ref(s), power, toughness)
             }
-            ParsedElement::Replacement(r) => r
-                .execute
-                .as_ref()
-                .is_some_and(|e| ability_tree_any(e, &|d| pump_matches_oracle(d, power, toughness))),
+            ParsedElement::Replacement(r) => r.execute.as_ref().is_some_and(|e| {
+                ability_tree_any(e, &|d| pump_matches_oracle(d, power, toughness))
+            }),
         }
     }
 
@@ -3668,7 +3680,11 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
         elements.push(ParsedElement::Replacement(r));
     }
 
-    for line in oracle_text.split('\n').map(|l| l.trim()).filter(|l| !l.is_empty()) {
+    for line in oracle_text
+        .split('\n')
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty())
+    {
         let stripped = strip_parenthesized_reminder(line);
         let stripped = stripped.trim();
         if stripped.is_empty() {
@@ -3706,26 +3722,24 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             let kw_name = format!("{k:?}").to_lowercase();
             lower.starts_with(&kw_name)
         }) || is_keyword_line(&lower);
-        let covered_by_casting = !face.casting_restrictions.is_empty()
-            && lower.starts_with("cast this spell only ");
+        let covered_by_casting =
+            !face.casting_restrictions.is_empty() && lower.starts_with("cast this spell only ");
         let covered_by_additional_cost =
             face.additional_cost.is_some() && lower.starts_with("as an additional cost ");
         // Enchant keyword lines ("Enchant creature", "Enchant land you control")
         let covered_by_enchant = lower.starts_with("enchant ");
         // Replacement effects with matching descriptions (enter-tapped, etc.)
         let covered_by_replacement = face.replacements.iter().any(|r| {
-            r.description
-                .as_ref()
-                .is_some_and(|d| {
-                    let dl = d.to_lowercase();
-                    let dn = normalize_for_matching(&dl, &card_name_lower);
-                    dl.contains(&lower)
-                        || lower.contains(dl.as_str())
-                        || dn.contains(&lower)
-                        || lower.contains(dn.as_str())
-                        || dl.contains(&norm)
-                        || norm.contains(dl.as_str())
-                })
+            r.description.as_ref().is_some_and(|d| {
+                let dl = d.to_lowercase();
+                let dn = normalize_for_matching(&dl, &card_name_lower);
+                dl.contains(&lower)
+                    || lower.contains(dl.as_str())
+                    || dn.contains(&lower)
+                    || lower.contains(dn.as_str())
+                    || dl.contains(&norm)
+                    || norm.contains(dl.as_str())
+            })
         });
 
         if matched.is_empty()

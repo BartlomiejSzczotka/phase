@@ -634,7 +634,10 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
         pos += consumed;
     }
 
-    if let Some((keyword_props, consumed)) = parse_keyword_suffix(&lower[pos..]) {
+    if let Some((keyword_props, consumed)) = parse_without_keyword_suffix(&lower[pos..]) {
+        properties.extend(keyword_props);
+        pos += consumed;
+    } else if let Some((keyword_props, consumed)) = parse_keyword_suffix(&lower[pos..]) {
         properties.extend(keyword_props);
         pos += consumed;
     }
@@ -1271,6 +1274,50 @@ fn parse_keyword_suffix(text: &str) -> Option<(Vec<FilterProp>, usize)> {
         let keyword =
             Keyword::from_str(keyword_str).unwrap_or(Keyword::Unknown(keyword_str.to_string()));
         properties.push(FilterProp::WithKeyword { value: keyword });
+        consumed += keyword_len;
+        remaining = &remaining[keyword_len..];
+
+        // Try keyword list separators in longest-match-first order.
+        let mut found_sep = false;
+        for sep in &[", and ", " and ", ", "] {
+            if let Ok((rest, _)) =
+                tag::<_, _, nom_language::error::VerboseError<&str>>(*sep).parse(remaining)
+            {
+                consumed += sep.len();
+                remaining = rest;
+                found_sep = true;
+                break;
+            }
+        }
+        if !found_sep {
+            break;
+        }
+    }
+
+    if properties.is_empty() {
+        None
+    } else {
+        Some((properties, consumed))
+    }
+}
+
+/// Parse "without [keyword]" suffix — negated keyword filter.
+/// Handles "without flying", "without first strike", etc.
+/// Parallels `parse_keyword_suffix` but emits `WithoutKeyword`.
+fn parse_without_keyword_suffix(text: &str) -> Option<(Vec<FilterProp>, usize)> {
+    let trimmed = text.trim_start();
+    let leading_ws = text.len() - trimmed.len();
+    let (after_without, _) = tag::<_, _, nom_language::error::VerboseError<&str>>("without ")
+        .parse(trimmed)
+        .ok()?;
+    let mut remaining = after_without;
+    let mut consumed = leading_ws + "without ".len();
+    let mut properties = Vec::new();
+
+    while let Some((keyword_str, keyword_len)) = parse_leading_keyword(remaining) {
+        let keyword =
+            Keyword::from_str(keyword_str).unwrap_or(Keyword::Unknown(keyword_str.to_string()));
+        properties.push(FilterProp::WithoutKeyword { value: keyword });
         consumed += keyword_len;
         remaining = &remaining[keyword_len..];
 
@@ -3534,6 +3581,42 @@ mod tests {
                     .iter()
                     .any(|p| matches!(p, FilterProp::PowerGE { value: 3 })),
                 "Expected PowerGE(3) in {:?}",
+                tf.properties
+            );
+        } else {
+            panic!("Expected Typed filter, got {filter:?}");
+        }
+    }
+
+    #[test]
+    fn parse_type_phrase_creature_without_flying() {
+        let (filter, rest) = parse_type_phrase("creature without flying");
+        assert!(rest.trim().is_empty(), "remainder: '{rest}'");
+        if let TargetFilter::Typed(tf) = &filter {
+            assert!(tf.type_filters.contains(&TypeFilter::Creature));
+            assert!(
+                tf.properties.iter().any(
+                    |p| matches!(p, FilterProp::WithoutKeyword { value } if *value == Keyword::Flying)
+                ),
+                "Expected WithoutKeyword(Flying) in {:?}",
+                tf.properties
+            );
+        } else {
+            panic!("Expected Typed filter, got {filter:?}");
+        }
+    }
+
+    #[test]
+    fn parse_type_phrase_creature_without_first_strike() {
+        let (filter, rest) = parse_type_phrase("creature without first strike");
+        assert!(rest.trim().is_empty(), "remainder: '{rest}'");
+        if let TargetFilter::Typed(tf) = &filter {
+            assert!(tf.type_filters.contains(&TypeFilter::Creature));
+            assert!(
+                tf.properties.iter().any(
+                    |p| matches!(p, FilterProp::WithoutKeyword { value } if *value == Keyword::FirstStrike)
+                ),
+                "Expected WithoutKeyword(FirstStrike) in {:?}",
                 tf.properties
             );
         } else {

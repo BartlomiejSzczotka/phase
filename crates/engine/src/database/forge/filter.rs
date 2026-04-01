@@ -120,11 +120,21 @@ fn translate_dotted_filter(segments: &[&str]) -> Result<TargetFilter, ForgeTrans
             }
 
             // Keyword predicates: "withFlying", "withHaste", etc.
-            seg if seg.starts_with("with") => {
+            seg if seg.starts_with("with") && !seg.starts_with("without") => {
                 if let Some(kw_name) = seg.strip_prefix("with") {
                     let kw: Keyword = kw_name.parse().unwrap();
                     if !matches!(kw, Keyword::Unknown(_)) {
                         properties.push(FilterProp::WithKeyword { value: kw });
+                    }
+                }
+            }
+
+            // Negated keyword predicates: "withoutFlying", "withoutFirstStrike", etc.
+            seg if seg.starts_with("without") => {
+                if let Some(kw_name) = seg.strip_prefix("without") {
+                    let kw: Keyword = kw_name.parse().unwrap();
+                    if !matches!(kw, Keyword::Unknown(_)) {
+                        properties.push(FilterProp::WithoutKeyword { value: kw });
                     }
                 }
             }
