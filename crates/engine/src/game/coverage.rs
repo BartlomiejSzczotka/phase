@@ -2490,19 +2490,6 @@ fn count_effective_oracle_lines(oracle_text: &str) -> usize {
     count
 }
 
-/// Check if an ability chain contains an "unless" condition stored as an effect parameter
-/// (e.g., `Effect::Counter { unless_payment }` or similar).
-fn ability_chain_has_unless(def: &AbilityDefinition) -> bool {
-    ability_tree_any(def, &|d| {
-        matches!(
-            &*d.effect,
-            Effect::Counter {
-                unless_payment, ..
-            } if unless_payment.is_some()
-        )
-    })
-}
-
 /// Check if a line contains a modal header pattern: "choose one", "choose two", etc.
 /// Matches standalone, triggered, activated, and period-terminated forms.
 fn is_modal_header_line(lower: &str) -> bool {
@@ -3296,13 +3283,8 @@ pub struct SemanticAuditSummary {
 
 /// Run a full semantic audit across all supported cards in the database.
 ///
-/// Checks each card for:
-/// - Ability type mismatches (trigger text parsed as non-trigger, etc.)
-/// - Unimplemented sub-effect stubs
-/// - Dropped conditions ("if", "as long as", "unless")
-/// - Dropped durations ("until end of turn", etc.)
-/// - Wrong numeric parameters (+N/+M, draw N, etc.)
-/// - Silent drops (Oracle lines with no parsed item)
+/// Per-line structural comparison: each Oracle line is matched to its corresponding
+/// parsed element(s) via description matching, then checked for expected properties.
 pub fn audit_semantic(card_db: &CardDatabase) -> SemanticAuditSummary {
     let trigger_registry = build_trigger_registry();
     let static_registry = build_static_registry();
@@ -3317,46 +3299,12 @@ pub fn audit_semantic(card_db: &CardDatabase) -> SemanticAuditSummary {
         }
         total_audited += 1;
 
-        let mut findings = Vec::new();
-
         let oracle_text = match &face.oracle_text {
             Some(text) if !text.is_empty() => text.clone(),
             _ => continue,
         };
 
-        let oracle_lines: Vec<String> = oracle_text
-            .split('\n')
-            .map(|l| l.trim().to_string())
-            .filter(|l| !l.is_empty())
-            .collect();
-
-        // Check each Oracle line for semantic issues
-        for line in &oracle_lines {
-            let stripped = strip_parenthesized_reminder(line);
-            let stripped = stripped.trim();
-            if stripped.is_empty() {
-                continue;
-            }
-            let lower = stripped.to_lowercase();
-
-            // 1. Ability type check
-            check_ability_type_mismatch(&lower, stripped, face, &mut findings);
-
-            // 2. Condition drop check
-            check_dropped_condition(&lower, stripped, face, &mut findings);
-
-            // 3. Duration drop check
-            check_dropped_duration(&lower, stripped, face, &mut findings);
-        }
-
-        // 4. Unimplemented stub check (walk all parsed abilities)
-        check_unimplemented_stubs(face, &oracle_text, &mut findings);
-
-        // 5. Parameter checks for pump/damage/draw effects
-        check_wrong_parameters(face, &oracle_lines, &mut findings);
-
-        // 6. Silent drop check (count parsed items from face fields vs oracle lines)
-        check_silent_drops_from_face(&oracle_text, face, &mut findings);
+        let findings = audit_card_lines(&oracle_text, face);
 
         if !findings.is_empty() {
             for finding in &findings {
@@ -3380,505 +3328,9 @@ pub fn audit_semantic(card_db: &CardDatabase) -> SemanticAuditSummary {
         flagged_cards,
     }
 }
-
-/// Check if Oracle line suggests a trigger but is parsed as a different type (or vice versa).
-fn check_ability_type_mismatch(
-    lower: &str,
-    _original: &str,
-    face: &CardFace,
-    findings: &mut Vec<SemanticFinding>,
-) {
-    let is_trigger_text = lower.starts_with("when ")
-        || lower.starts_with("whenever ")
-        || lower.starts_with("at the beginning of ")
-        || lower.starts_with("at end of ");
-
-    if is_trigger_text {
-        // This line should correspond to a trigger in the parsed data.
-        // If no trigger's source_text or mode matches, and it's found as a static or ability,
-        // that's a type mismatch.
-        let has_matching_trigger = face.triggers.iter().any(|t| {
-            if let Some(execute) = &t.execute {
-                if let Some(ref desc) = execute.description {
-                    desc.to_lowercase().contains(&lower[..lower.len().min(30)])
-                } else {
-                    false
-                }
-            } else {
-                false
-            }
-        });
-
-        if !has_matching_trigger
-            && !face.triggers.is_empty()
-            && face.triggers.len() < oracle_lines_that_look_like_triggers(face)
-        {
-            findings.push(SemanticFinding::WrongAbilityType {
-                oracle_line: _original.to_string(),
-                expected: "trigger".to_string(),
-                actual: "non-trigger".to_string(),
-            });
-        }
-    }
-}
-
-/// Count Oracle lines that look like triggers for a card face.
-fn oracle_lines_that_look_like_triggers(face: &CardFace) -> usize {
-    let oracle = match &face.oracle_text {
-        Some(text) => text,
-        None => return 0,
-    };
-    oracle
-        .split('\n')
-        .map(|l| l.trim().to_lowercase())
-        .filter(|l| {
-            l.starts_with("when ")
-                || l.starts_with("whenever ")
-                || l.starts_with("at the beginning of ")
-                || l.starts_with("at end of ")
-        })
-        .count()
-}
-
-/// Check if Oracle text contains condition language but parsed ability lacks a condition.
-fn check_dropped_condition(
-    lower: &str,
-    original: &str,
-    face: &CardFace,
-    findings: &mut Vec<SemanticFinding>,
-) {
-    // Condition indicators in Oracle text
-    let condition_phrases: &[(&str, &str)] = &[
-        ("if ", "if"),
-        ("as long as ", "as long as"),
-        ("unless ", "unless"),
-    ];
-
-    for &(phrase, label) in condition_phrases {
-        if !lower.contains(phrase) {
-            continue;
-        }
-
-        // Skip patterns that are clearly not ability conditions
-        // "if able" is a rules obligation, not a condition
-        if lower.contains("if able") {
-            continue;
-        }
-        // "as long as" at the start of a line is usually a duration, not a condition on an ability
-        if lower.starts_with("as long as ") {
-            continue;
-        }
-        // "if you do" / "if you don't" are resolution conditions, already handled
-        if lower.contains("if you do") || lower.contains("if you don't") {
-            continue;
-        }
-        // "if this spell was kicked" / "if ~ was kicked" are kicker conditions handled at cast time
-        if lower.contains("was kicked") || lower.contains("is kicked") {
-            continue;
-        }
-        // "if you search your library this way, shuffle" — shuffle clause, not a condition
-        if lower.contains("if you search") && lower.contains("shuffle") {
-            continue;
-        }
-        // "if that spell would be put into" — graveyard-exile replacement, not ability condition
-        if lower.contains("if that spell would be put into") {
-            continue;
-        }
-        // "if a creature dealt damage this way would die" — die-exile replacement clause
-        if lower.contains("would die this turn, exile") {
-            continue;
-        }
-        // "if one or more tokens/counters would be" — replacement effects, not conditions
-        if lower.contains("if one or more ") && lower.contains(" would be ") {
-            continue;
-        }
-        // "if damage would be dealt" — damage replacement effects
-        if lower.contains("if damage would be dealt") {
-            continue;
-        }
-        // "if a land is tapped for mana" — mana replacement effects
-        if lower.contains("if a land is tapped for mana") {
-            continue;
-        }
-        // "if a player would begin an extra turn" — turn replacement effects
-        if lower.contains("if a player would begin") {
-            continue;
-        }
-        // "if a card or token would be put into" — zone replacement effects
-        if lower.contains("if a card or token would be put into") {
-            continue;
-        }
-        // Modal instructions: "if you control a commander" in "choose one. if..." preambles
-        if lower.starts_with("choose ") && lower.contains("if ") {
-            continue;
-        }
-        // "if it's not your turn" / "if it's your turn" are turn-based conditions often on replacements
-        if lower.contains("if it's not your turn") || lower.contains("if it's your turn") {
-            continue;
-        }
-        // Delirium/threshold: "if there are four or more card types" is a keyword condition
-        if lower.contains("if there are ") && lower.contains(" card types ") {
-            continue;
-        }
-        // "if no other" / "if no creatures" are attack/combat conditions
-        if lower.contains("if no other ") || lower.contains("if no creatures ") {
-            continue;
-        }
-        // "if a creature" / "if an opponent" at line start are trigger conditions on triggers
-        // which should be checked against the trigger's condition field, not abilities
-        if (lower.starts_with("if a ") || lower.starts_with("if an ")) && !face.triggers.is_empty()
-        {
-            continue;
-        }
-
-        // Check if ANY parsed ability/trigger/static has a condition anywhere in the tree
-        let cond_pred = |d: &AbilityDefinition| d.condition.is_some();
-        let has_condition_on_ability =
-            face.abilities.iter().any(|a| ability_tree_any(a, &cond_pred));
-        let has_condition_on_trigger = face.triggers.iter().any(|t| {
-            t.condition.is_some()
-                || t.execute
-                    .as_ref()
-                    .is_some_and(|e| ability_tree_any(e, &cond_pred))
-        });
-        let has_condition_on_static = face.static_abilities.iter().any(|s| s.condition.is_some());
-        let has_condition_on_replacement = face.replacements.iter().any(|r| {
-            // Check the replacement's own condition (ReplacementCondition)
-            r.condition.is_some()
-                // Also check the execute ability's condition (StaticCondition)
-                || r.execute
-                    .as_ref()
-                    .is_some_and(|e| ability_tree_any(e, &cond_pred))
-        });
-
-        // Check for "unless" conditions stored as effect parameters (e.g. Counter with unless_payment)
-        // or as trigger-level unless_pay modifiers (tax triggers like Rhystic Study)
-        let has_unless_on_effect = label == "unless"
-            && (face
-                .abilities
-                .iter()
-                .chain(face.triggers.iter().filter_map(|t| t.execute.as_deref()))
-                .any(ability_chain_has_unless)
-                || face.triggers.iter().any(|t| t.unless_pay.is_some()));
-
-        if !has_condition_on_ability
-            && !has_condition_on_trigger
-            && !has_condition_on_static
-            && !has_condition_on_replacement
-            && !has_unless_on_effect
-        {
-            findings.push(SemanticFinding::DroppedCondition {
-                oracle_line: original.to_string(),
-                condition_text: label.to_string(),
-            });
-            break; // One finding per line
-        }
-    }
-}
-
-/// Recursively check if an ability definition or any nested ability has a duration.
-fn ability_has_duration(def: &AbilityDefinition) -> bool {
-    ability_tree_any(def, &|d| d.duration.is_some())
-}
-
-/// Check if Oracle text contains duration language but parsed effects lack a duration.
-fn check_dropped_duration(
-    lower: &str,
-    original: &str,
-    face: &CardFace,
-    findings: &mut Vec<SemanticFinding>,
-) {
-    let duration_phrases: &[(&str, &str)] = &[
-        ("until end of turn", "until end of turn"),
-        ("until your next turn", "until your next turn"),
-        ("for as long as ", "for as long as"),
-        ("until end of combat", "until end of combat"),
-    ];
-
-    for &(phrase, label) in duration_phrases {
-        if !lower.contains(phrase) {
-            continue;
-        }
-
-        // Check if ANY parsed ability has a duration set (including mode_abilities and chains)
-        let has_duration = face.abilities.iter().any(ability_has_duration)
-            || face
-                .triggers
-                .iter()
-                .any(|t| t.execute.as_ref().is_some_and(|e| ability_has_duration(e)))
-            || face
-                .replacements
-                .iter()
-                .any(|r| r.execute.as_ref().is_some_and(|e| ability_has_duration(e)));
-
-        // Also check static abilities with ForAsLongAs duration
-        let has_static_duration = face.static_abilities.iter().any(|s| s.condition.is_some());
-
-        if !has_duration && !has_static_duration {
-            findings.push(SemanticFinding::DroppedDuration {
-                oracle_line: original.to_string(),
-                duration_text: label.to_string(),
-            });
-            break;
-        }
-    }
-}
-
-/// Walk all parsed abilities and flag Unimplemented stubs.
-fn check_unimplemented_stubs(
-    face: &CardFace,
-    oracle_text: &str,
-    findings: &mut Vec<SemanticFinding>,
-) {
-    let first_line = oracle_text
-        .split('\n')
-        .next()
-        .unwrap_or("")
-        .trim()
-        .to_string();
-
-    for def in &face.abilities {
-        collect_unimplemented_from_ability(def, &first_line, findings);
-    }
-    for trig in &face.triggers {
-        if let Some(execute) = &trig.execute {
-            collect_unimplemented_from_ability(execute, &first_line, findings);
-        }
-    }
-    for repl in &face.replacements {
-        if let Some(execute) = &repl.execute {
-            collect_unimplemented_from_ability(execute, &first_line, findings);
-        }
-    }
-}
-
-/// Recursively collect Unimplemented stubs from an ability tree.
-fn collect_unimplemented_from_ability(
-    def: &AbilityDefinition,
-    oracle_line: &str,
-    findings: &mut Vec<SemanticFinding>,
-) {
-    if let Effect::Unimplemented {
-        name, description, ..
-    } = &*def.effect
-    {
-        let desc = description.as_deref().unwrap_or(name.as_str()).to_string();
-        findings.push(SemanticFinding::UnimplementedSubEffect {
-            oracle_line: oracle_line.to_string(),
-            stub_description: desc,
-        });
-    }
-    if let Some(AbilityCost::Unimplemented { description }) = &def.cost {
-        findings.push(SemanticFinding::UnimplementedSubEffect {
-            oracle_line: oracle_line.to_string(),
-            stub_description: format!("Cost: {description}"),
-        });
-    }
-    if let Some(ref sub) = def.sub_ability {
-        collect_unimplemented_from_ability(sub, oracle_line, findings);
-    }
-    if let Some(ref else_ab) = def.else_ability {
-        collect_unimplemented_from_ability(else_ab, oracle_line, findings);
-    }
-    for mode_ab in &def.mode_abilities {
-        collect_unimplemented_from_ability(mode_ab, oracle_line, findings);
-    }
-}
-
-/// Check pump effect parameters match Oracle text "+N/+M" values.
-fn check_wrong_parameters(
-    face: &CardFace,
-    oracle_lines: &[String],
-    findings: &mut Vec<SemanticFinding>,
-) {
-    // Extract +N/+M patterns from Oracle text (skip parenthesized reminder text)
-    for line in oracle_lines {
-        let stripped = strip_parenthesized_reminder(line);
-        let lower = stripped.to_lowercase();
-        if let Some(pump_match) = extract_pt_modifier(&lower) {
-            if pump_match.0 == 0 && pump_match.1 == 0 {
-                continue;
-            }
-
-            // When +N/+M refers to counters (not pump), check for counter effects instead.
-            if is_counter_reference(&lower) {
-                let counter_type = format!(
-                    "{}{}/{}{}",
-                    if pump_match.0 >= 0 { "+" } else { "" },
-                    pump_match.0,
-                    if pump_match.1 >= 0 { "+" } else { "" },
-                    pump_match.1
-                );
-                let has_counter_effect = has_matching_counter_effect(face, &counter_type);
-                if !has_counter_effect {
-                    findings.push(SemanticFinding::WrongParameter {
-                        oracle_line: line.clone(),
-                        field: "counter".to_string(),
-                        expected: format!("{counter_type} counter"),
-                        actual: "no matching counter effect".to_string(),
-                    });
-                }
-                continue;
-            }
-
-            // Find matching pump effect in abilities and trigger executions
-            let has_matching_pump = face
-                .abilities
-                .iter()
-                .chain(face.triggers.iter().filter_map(|t| t.execute.as_deref()))
-                .any(|def| pump_in_chain(def, pump_match.0, pump_match.1));
-
-            // Also check static ability modifications (lord-style pumps like
-            // "other creatures you control get +1/+1")
-            let has_static_pump =
-                static_has_pump_modification(&face.static_abilities, pump_match.0, pump_match.1);
-
-            // Check replacement effect executions
-            let has_replacement_pump = face.replacements.iter().any(|r| {
-                r.execute
-                    .as_ref()
-                    .is_some_and(|e| pump_in_chain(e, pump_match.0, pump_match.1))
-            });
-
-            if !has_matching_pump && !has_static_pump && !has_replacement_pump {
-                findings.push(SemanticFinding::WrongParameter {
-                    oracle_line: line.clone(),
-                    field: "pump".to_string(),
-                    expected: format!("+{}/+{}", pump_match.0, pump_match.1),
-                    actual: "no matching pump effect".to_string(),
-                });
-            }
-        }
-    }
-}
-
-/// Check if any static ability has AddPower/AddToughness modifications matching the given P/T.
-fn static_has_pump_modification(
-    statics: &[StaticDefinition],
-    expected_power: i32,
-    expected_toughness: i32,
-) -> bool {
-    for stat in statics {
-        let mut power_match = expected_power == 0;
-        let mut tough_match = expected_toughness == 0;
-        for modif in &stat.modifications {
-            match modif {
-                ContinuousModification::AddPower { value } if *value == expected_power => {
-                    power_match = true;
-                }
-                ContinuousModification::AddToughness { value } if *value == expected_toughness => {
-                    tough_match = true;
-                }
-                _ => {}
-            }
-        }
-        if power_match && tough_match {
-            return true;
-        }
-    }
-    false
-}
-
-/// Extract a +N/+M or -N/-M modifier from Oracle text. Returns (power, toughness) as i32.
-fn extract_pt_modifier(lower: &str) -> Option<(i32, i32)> {
-    // Match patterns like "+2/+1", "-1/-1", "+0/+3"
-    let idx = lower
-        .find("+0/")
-        .or_else(|| lower.find("+1/"))
-        .or_else(|| lower.find("+2/"))
-        .or_else(|| lower.find("+3/"))
-        .or_else(|| lower.find("+4/"))
-        .or_else(|| lower.find("+5/"))
-        .or_else(|| lower.find("-1/"))
-        .or_else(|| lower.find("-2/"))
-        .or_else(|| lower.find("-3/"))
-        .or_else(|| lower.find("-4/"))
-        .or_else(|| lower.find("-5/"))?;
-
-    let rest = &lower[idx..];
-    // Parse sign+digits / sign+digits
-    let mut chars = rest.chars();
-    let sign1 = chars.next()?;
-    let power_str: String = chars.by_ref().take_while(|c| c.is_ascii_digit()).collect();
-    let power: i32 = power_str.parse().ok()?;
-    let power = if sign1 == '-' { -power } else { power };
-
-    // Skip the '/'
-    let sign2 = chars.next()?;
-    if sign2 != '+' && sign2 != '-' {
-        return None;
-    }
-    let tough_str: String = chars.take_while(|c| c.is_ascii_digit()).collect();
-    let toughness: i32 = tough_str.parse().ok()?;
-    let toughness = if sign2 == '-' { -toughness } else { toughness };
-
-    Some((power, toughness))
-}
-
-/// Returns true if the Oracle line's +N/+M pattern refers to counters rather than a pump effect.
-/// Examples: "+1/+1 counter", "two +1/+1 counters", "in the form of -1/-1 counters"
-fn is_counter_reference(lower: &str) -> bool {
-    // Direct counter mention: "+1/+1 counter" or "+1/+1 counters"
-    if lower.contains("counter") {
-        // Find the +N/+M pattern and check if "counter" follows it
-        if let Some(idx) = lower.find('+').or_else(|| lower.find('-')) {
-            let rest = &lower[idx..];
-            // Match +N/+M pattern then check what follows
-            let after_pattern = rest.find('/').map(|slash| {
-                // Skip past the /+N or /-N part
-                let after_slash = &rest[slash + 1..];
-                let digits_end = after_slash
-                    .find(|c: char| !c.is_ascii_digit() && c != '+' && c != '-')
-                    .unwrap_or(after_slash.len());
-                &after_slash[digits_end..]
-            });
-            if let Some(after) = after_pattern {
-                let trimmed = after.trim_start();
-                if trimmed.starts_with("counter") {
-                    return true;
-                }
-            }
-        }
-    }
-    // "in the form of +N/+M" (wither, infect reminder text)
-    if lower.contains("in the form of ") {
-        return true;
-    }
-    false
-}
-
-/// Check if any parsed ability, trigger execution, or replacement has a PutCounter/PutCounterAll
-/// effect matching the given counter type (e.g., "+1/+1").
-fn has_matching_counter_effect(face: &CardFace, counter_type: &str) -> bool {
-    // Normalize Oracle text format ("+1/+1") to engine format ("P1P1")
-    let normalized = crate::parser::oracle_effect::counter::normalize_counter_type(counter_type);
-    let counter_type = &normalized;
-
-    let counter_pred = |def: &AbilityDefinition| -> bool {
-        matches!(
-            &*def.effect,
-            Effect::PutCounter { counter_type: ct, .. }
-            | Effect::PutCounterAll { counter_type: ct, .. }
-            if ct == counter_type
-        )
-    };
-
-    // Check abilities and trigger executions
-    let in_abilities = face
-        .abilities
-        .iter()
-        .chain(face.triggers.iter().filter_map(|t| t.execute.as_deref()))
-        .any(|def| ability_tree_any(def, &counter_pred));
-
-    // Check replacement effect executions
-    let in_replacements = face.replacements.iter().any(|r| {
-        r.execute
-            .as_ref()
-            .is_some_and(|e| ability_tree_any(e, &counter_pred))
-    });
-
-    in_abilities || in_replacements
-}
+// ---------------------------------------------------------------------------
+// Shared utility functions for semantic audit
+// ---------------------------------------------------------------------------
 
 /// Check if an ability definition has a pump effect matching the given P/T values.
 /// Checks `Effect::Pump`, `Effect::PumpAll`, and `Effect::GenericEffect` with
@@ -3906,8 +3358,10 @@ fn pump_matches_oracle(
         }
         | Effect::PumpAll {
             power, toughness, ..
-        } if pt_matches(power, toughness, expected_power, expected_toughness) => {
-            return true;
+        } => {
+            if pt_matches(power, toughness, expected_power, expected_toughness) {
+                return true;
+            }
         }
         Effect::GenericEffect {
             static_abilities, ..
@@ -3938,137 +3392,93 @@ fn pump_matches_oracle(
     false
 }
 
-/// Recursively check if a pump is anywhere in the ability tree (including compound effects).
-fn pump_in_chain(def: &AbilityDefinition, power: i32, toughness: i32) -> bool {
-    ability_tree_any(def, &|d| pump_matches_oracle(d, power, toughness))
+/// Check if any static ability has AddPower/AddToughness modifications matching the given P/T.
+fn static_has_pump_modification(
+    statics: &[StaticDefinition],
+    expected_power: i32,
+    expected_toughness: i32,
+) -> bool {
+    for stat in statics {
+        let mut power_match = expected_power == 0;
+        let mut tough_match = expected_toughness == 0;
+        for modif in &stat.modifications {
+            match modif {
+                ContinuousModification::AddPower { value } if *value == expected_power => {
+                    power_match = true;
+                }
+                ContinuousModification::AddToughness { value }
+                    if *value == expected_toughness =>
+                {
+                    tough_match = true;
+                }
+                _ => {}
+            }
+        }
+        if power_match && tough_match {
+            return true;
+        }
+    }
+    false
 }
 
-/// Check for silently dropped Oracle lines by comparing effective Oracle line
-/// count against the number of parsed items on the CardFace (abilities, triggers,
-/// statics, replacements, keywords).
-fn check_silent_drops_from_face(
-    oracle_text: &str,
-    face: &CardFace,
-    findings: &mut Vec<SemanticFinding>,
-) {
-    let effective_oracle = count_effective_oracle_lines(oracle_text);
+/// Extract a +N/+M or -N/-M modifier from Oracle text. Returns (power, toughness) as i32.
+fn extract_pt_modifier(lower: &str) -> Option<(i32, i32)> {
+    // Match patterns like "+2/+1", "-1/-1", "+0/+3"
+    let idx = lower
+        .find("+0/")
+        .or_else(|| lower.find("+1/"))
+        .or_else(|| lower.find("+2/"))
+        .or_else(|| lower.find("+3/"))
+        .or_else(|| lower.find("+4/"))
+        .or_else(|| lower.find("+5/"))
+        .or_else(|| lower.find("-1/"))
+        .or_else(|| lower.find("-2/"))
+        .or_else(|| lower.find("-3/"))
+        .or_else(|| lower.find("-4/"))
+        .or_else(|| lower.find("-5/"))?;
 
-    // Count parsed items from face fields (each ability, trigger, static, replacement,
-    // and keyword block counts as one parsed item)
-    let mut parsed_count = face.abilities.len()
-        + face.triggers.len()
-        + face.static_abilities.len()
-        + face.replacements.len();
+    let rest = &lower[idx..];
+    let mut chars = rest.chars();
+    let sign1 = chars.next()?;
+    let power_str: String = chars.by_ref().take_while(|c| c.is_ascii_digit()).collect();
+    let power: i32 = power_str.parse().ok()?;
+    let power = if sign1 == '-' { -power } else { power };
 
-    // Keywords often appear as a single line with multiple keywords
-    if !face.keywords.is_empty() {
-        parsed_count += 1;
+    let sign2 = chars.next()?;
+    if sign2 != '+' && sign2 != '-' {
+        return None;
     }
+    let tough_str: String = chars.take_while(|c| c.is_ascii_digit()).collect();
+    let toughness: i32 = tough_str.parse().ok()?;
+    let toughness = if sign2 == '-' { -toughness } else { toughness };
 
-    // Modal spells count their modes separately
-    if face.modal.is_some() {
-        // Modal header + mode abilities are counted as one unit already
-        // via abilities, so don't double-count
-    }
+    Some((power, toughness))
+}
 
-    if effective_oracle > parsed_count {
-        // Find lines that don't seem to match any parsed item's description
-        let described: Vec<String> = face
-            .abilities
-            .iter()
-            .flat_map(|a| {
-                std::iter::once(a.description.clone()).chain(
-                    a.mode_abilities
-                        .iter()
-                        .filter_map(|m| m.description.clone())
-                        .map(Some),
-                )
-            })
-            .flatten()
-            .chain(face.triggers.iter().flat_map(|t| {
-                // Include trigger description and execute description + mode_abilities
-                let trigger_desc = t.description.clone();
-                let exec_desc = t.execute.as_ref().and_then(|e| e.description.clone());
-                let mode_descs: Vec<_> = t
-                    .execute
-                    .iter()
-                    .flat_map(|e| {
-                        e.mode_abilities
-                            .iter()
-                            .filter_map(|m| m.description.clone())
-                    })
-                    .collect();
-                std::iter::once(trigger_desc)
-                    .chain(std::iter::once(exec_desc))
-                    .flatten()
-                    .chain(mode_descs)
-            }))
-            .map(|s| s.to_lowercase())
-            .collect();
-
-        for line in oracle_text
-            .split('\n')
-            .map(|l| l.trim())
-            .filter(|l| !l.is_empty())
-        {
-            let stripped = strip_parenthesized_reminder(line);
-            let stripped = stripped.trim();
-            if stripped.is_empty() {
-                continue;
-            }
-            let lower = stripped.to_lowercase();
-            // Skip keyword lines
-            if face.keywords.iter().any(|k| {
-                let kw_name = format!("{k:?}").to_lowercase();
-                lower.starts_with(&kw_name)
-            }) {
-                continue;
-            }
-            // Skip lines covered by casting restrictions (parsed separately from abilities)
-            if !face.casting_restrictions.is_empty() && lower.starts_with("cast this spell only ")
-            {
-                continue;
-            }
-            // Skip lines that match replacement descriptions
-            if face
-                .replacements
-                .iter()
-                .any(|r| {
-                    r.description
-                        .as_ref()
-                        .is_some_and(|d| {
-                            let dl = d.to_lowercase();
-                            dl.contains(&lower) || lower.contains(dl.as_str())
-                        })
-                })
-            {
-                continue;
-            }
-            // Skip lines that match static ability descriptions
-            if face.static_abilities.iter().any(|s| {
-                s.description
-                    .as_ref()
-                    .is_some_and(|d| {
-                        let dl = d.to_lowercase();
-                        dl.contains(&lower) || lower.contains(dl.as_str())
-                    })
-            }) {
-                continue;
-            }
-            // Check if any described ability matches
-            if !described
-                .iter()
-                .any(|d| d.contains(&lower) || lower.contains(d.as_str()))
-            {
-                // Only flag if this line looks substantive (not just a keyword or flavor)
-                if lower.len() > 20 {
-                    findings.push(SemanticFinding::SilentDrop {
-                        oracle_line: line.to_string(),
-                    });
+/// Returns true if the Oracle line's +N/+M pattern refers to counters rather than a pump effect.
+fn is_counter_reference(lower: &str) -> bool {
+    if lower.contains("counter") {
+        if let Some(idx) = lower.find('+').or_else(|| lower.find('-')) {
+            let rest = &lower[idx..];
+            let after_pattern = rest.find('/').map(|slash| {
+                let after_slash = &rest[slash + 1..];
+                let digits_end = after_slash
+                    .find(|c: char| !c.is_ascii_digit() && c != '+' && c != '-')
+                    .unwrap_or(after_slash.len());
+                &after_slash[digits_end..]
+            });
+            if let Some(after) = after_pattern {
+                let trimmed = after.trim_start();
+                if trimmed.starts_with("counter") {
+                    return true;
                 }
             }
         }
     }
+    if lower.contains("in the form of ") {
+        return true;
+    }
+    false
 }
 
 // ---------------------------------------------------------------------------
@@ -4200,9 +3610,40 @@ impl<'a> ParsedElement<'a> {
     }
 }
 
+/// Normalize Oracle text for description matching: replace card-name self-references
+/// with `~` so they match parsed descriptions (which use `~` normalization).
+fn normalize_for_matching(lower: &str, card_name_lower: &str) -> String {
+    // Replace the full card name (or comma-truncated form) with ~
+    let mut result = lower.to_string();
+    if !card_name_lower.is_empty() {
+        // Try full name first, then comma-truncated (e.g. "Akiri, Line-Slinger" → "Akiri")
+        result = result.replace(card_name_lower, "~");
+        if let Some(short) = card_name_lower.split(',').next() {
+            let short = short.trim();
+            if short.len() > 2 {
+                result = result.replace(short, "~");
+            }
+        }
+    }
+    // Normalize common self-reference phrases to ~
+    for phrase in &[
+        "this creature",
+        "this permanent",
+        "this enchantment",
+        "this artifact",
+        "this land",
+        "this spell",
+        "this aura",
+    ] {
+        result = result.replace(phrase, "~");
+    }
+    result
+}
+
 /// Per-line audit of a single card: match Oracle lines to parsed elements and check properties.
 fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> {
     let mut findings = Vec::new();
+    let card_name_lower = face.name.to_lowercase();
 
     // Build the pool of parsed elements
     let mut elements: Vec<ParsedElement<'_>> = Vec::new();
@@ -4240,29 +3681,60 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             continue;
         }
 
+        // Normalize self-references for matching
+        let norm = normalize_for_matching(&lower, &card_name_lower);
+
         // --- Match this line to parsed element(s) ---
         let matched: Vec<&ParsedElement<'_>> = elements
             .iter()
             .filter(|e| {
                 if let Some(desc) = e.description_lower() {
-                    desc.contains(&lower) || lower.contains(desc.as_str())
+                    // Try both raw and normalized matching
+                    desc.contains(&lower)
+                        || lower.contains(desc.as_str())
+                        || desc.contains(&norm)
+                        || norm.contains(desc.as_str())
                 } else {
                     false
                 }
             })
             .collect();
 
-        // Also check if this line is covered by keywords or casting restrictions
+        // Also check if this line is covered by keywords, casting restrictions, or
+        // other non-ability structured data
         let covered_by_keyword = face.keywords.iter().any(|k| {
             let kw_name = format!("{k:?}").to_lowercase();
             lower.starts_with(&kw_name)
-        });
+        }) || is_keyword_line(&lower);
         let covered_by_casting = !face.casting_restrictions.is_empty()
             && lower.starts_with("cast this spell only ");
         let covered_by_additional_cost =
             face.additional_cost.is_some() && lower.starts_with("as an additional cost ");
+        // Enchant keyword lines ("Enchant creature", "Enchant land you control")
+        let covered_by_enchant = lower.starts_with("enchant ");
+        // Replacement effects with matching descriptions (enter-tapped, etc.)
+        let covered_by_replacement = face.replacements.iter().any(|r| {
+            r.description
+                .as_ref()
+                .is_some_and(|d| {
+                    let dl = d.to_lowercase();
+                    let dn = normalize_for_matching(&dl, &card_name_lower);
+                    dl.contains(&lower)
+                        || lower.contains(dl.as_str())
+                        || dn.contains(&lower)
+                        || lower.contains(dn.as_str())
+                        || dl.contains(&norm)
+                        || norm.contains(dl.as_str())
+                })
+        });
 
-        if matched.is_empty() && !covered_by_keyword && !covered_by_casting && !covered_by_additional_cost {
+        if matched.is_empty()
+            && !covered_by_keyword
+            && !covered_by_casting
+            && !covered_by_additional_cost
+            && !covered_by_enchant
+            && !covered_by_replacement
+        {
             // Unmatched line → SilentDrop (only for substantive lines)
             if lower.len() > 20 {
                 findings.push(SemanticFinding::SilentDrop {
@@ -4411,6 +3883,62 @@ fn line_has_condition_text(lower: &str) -> Option<&'static str> {
     }
 
     None
+}
+
+/// Check if a line is a standalone keyword ability line (may be comma-separated).
+/// Covers common keywords that don't always match the Keyword enum's Debug format.
+fn is_keyword_line(lower: &str) -> bool {
+    const KEYWORDS: &[&str] = &[
+        "flying",
+        "first strike",
+        "double strike",
+        "vigilance",
+        "trample",
+        "deathtouch",
+        "lifelink",
+        "haste",
+        "reach",
+        "menace",
+        "hexproof",
+        "indestructible",
+        "flash",
+        "defender",
+        "prowess",
+        "protection from ",
+        "ward",
+        "changeling",
+        "partner",
+        "shroud",
+        "fear",
+        "intimidate",
+        "skulk",
+        "shadow",
+        "horsemanship",
+        "flanking",
+        "rampage ",
+        "bushido ",
+        "cumulative upkeep ",
+        "affinity for ",
+        "convoke",
+        "delve",
+        "improvise",
+        "cascade",
+        "mutate ",
+        "infect",
+        "wither",
+        "undying",
+        "persist",
+        "devoid",
+        "unleash",
+        "extort",
+        "dredge ",
+        "suspend ",
+    ];
+    // Check if the line starts with any keyword (possibly comma-separated list)
+    let trimmed = lower.trim().trim_end_matches('.');
+    KEYWORDS
+        .iter()
+        .any(|kw| trimmed.starts_with(kw) || trimmed == kw.trim())
 }
 
 /// Check if an Oracle line contains duration language, returning the label if so.
@@ -5122,125 +4650,92 @@ mod tests {
     // -----------------------------------------------------------------------
 
     #[test]
-    fn test_audit_semantic_detects_wrong_ability_type() {
-        // Oracle text starts with "When" (trigger indicator) but we only put
-        // it as a static ability with no trigger — should flag WrongAbilityType
-        // if the heuristic sees more trigger-like lines than actual triggers.
+    fn test_audit_per_line_detects_dropped_condition() {
         let mut face = make_face();
-        face.oracle_text = Some("When this creature enters, draw a card.\nFlying".to_string());
-        // Add a static ability instead of a trigger
-        face.static_abilities
-            .push(StaticDefinition::new(StaticMode::Flying));
-        // No triggers set — only a static ability
-
-        let mut findings = Vec::new();
-        let lower = "when this creature enters, draw a card.";
-        check_ability_type_mismatch(
-            lower,
-            "When this creature enters, draw a card.",
-            &face,
-            &mut findings,
+        let oracle = "Target creature gets +2/+2 as long as you control a Dragon.";
+        face.oracle_text = Some(oracle.to_string());
+        // Ability with NO condition set — description must match the Oracle line
+        face.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Pump {
+                    power: PtValue::Fixed(2),
+                    toughness: PtValue::Fixed(2),
+                    target: TargetFilter::Any,
+                },
+            )
+            .description(oracle.to_string()),
         );
 
-        // With no triggers at all, the heuristic does not fire (requires non-empty triggers
-        // with count mismatch). This is by design — we check the partial-trigger case.
-        // Instead test the unimplemented stub detection which is more reliable.
-        // The WrongAbilityType check is conservative to avoid false positives.
+        let findings = audit_card_lines(oracle, &face);
+
         assert!(
-            findings.is_empty()
-                || findings
-                    .iter()
-                    .any(|f| matches!(f, SemanticFinding::WrongAbilityType { .. }))
+            findings
+                .iter()
+                .any(|f| matches!(f, SemanticFinding::DroppedCondition { condition_text, .. } if condition_text == "as long as")),
+            "Should detect dropped 'as long as' condition: {findings:?}"
         );
     }
 
     #[test]
-    fn test_audit_semantic_detects_dropped_condition() {
+    fn test_audit_per_line_detects_unimplemented_stub() {
         let mut face = make_face();
-        face.oracle_text =
-            Some("Target creature gets +2/+2 as long as you control a Dragon.".to_string());
-        // Ability with NO condition set
-        face.abilities.push(AbilityDefinition::new(
-            AbilityKind::Spell,
-            Effect::Pump {
-                power: PtValue::Fixed(2),
-                toughness: PtValue::Fixed(2),
-                target: TargetFilter::Any,
-            },
-        ));
-
-        let mut findings = Vec::new();
-        let lower = "target creature gets +2/+2 as long as you control a dragon.";
-        check_dropped_condition(
-            lower,
-            "Target creature gets +2/+2 as long as you control a Dragon.",
-            &face,
-            &mut findings,
+        let oracle = "Fateseal 2.";
+        face.oracle_text = Some(oracle.to_string());
+        face.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Unimplemented {
+                    name: "Fateseal".to_string(),
+                    description: Some("Fateseal 2".to_string()),
+                },
+            )
+            .description("Fateseal 2.".to_string()),
         );
 
-        assert_eq!(findings.len(), 1);
-        assert!(matches!(
-            &findings[0],
-            SemanticFinding::DroppedCondition { condition_text, .. } if condition_text == "as long as"
-        ));
+        let findings = audit_card_lines(oracle, &face);
+
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, SemanticFinding::UnimplementedSubEffect { stub_description, .. } if stub_description == "Fateseal 2")),
+            "Should detect unimplemented stub: {findings:?}"
+        );
     }
 
     #[test]
-    fn test_audit_semantic_detects_unimplemented_stub() {
+    fn test_audit_per_line_detects_dropped_duration() {
         let mut face = make_face();
-        face.oracle_text = Some("Fateseal 2.".to_string());
-        face.abilities.push(AbilityDefinition::new(
-            AbilityKind::Spell,
-            Effect::Unimplemented {
-                name: "Fateseal".to_string(),
-                description: Some("Fateseal 2".to_string()),
-            },
-        ));
-
-        let mut findings = Vec::new();
-        check_unimplemented_stubs(&face, "Fateseal 2.", &mut findings);
-
-        assert_eq!(findings.len(), 1);
-        assert!(matches!(
-            &findings[0],
-            SemanticFinding::UnimplementedSubEffect { stub_description, .. } if stub_description == "Fateseal 2"
-        ));
-    }
-
-    #[test]
-    fn test_audit_semantic_detects_dropped_duration() {
-        let mut face = make_face();
-        face.oracle_text = Some("Target creature gets +3/+3 until end of turn.".to_string());
+        let oracle = "Target creature gets +3/+3 until end of turn.";
+        face.oracle_text = Some(oracle.to_string());
         // Ability with no duration
-        face.abilities.push(AbilityDefinition::new(
-            AbilityKind::Spell,
-            Effect::Pump {
-                power: PtValue::Fixed(3),
-                toughness: PtValue::Fixed(3),
-                target: TargetFilter::Any,
-            },
-        ));
-
-        let mut findings = Vec::new();
-        let lower = "target creature gets +3/+3 until end of turn.";
-        check_dropped_duration(
-            lower,
-            "Target creature gets +3/+3 until end of turn.",
-            &face,
-            &mut findings,
+        face.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Pump {
+                    power: PtValue::Fixed(3),
+                    toughness: PtValue::Fixed(3),
+                    target: TargetFilter::Any,
+                },
+            )
+            .description(oracle.to_string()),
         );
 
-        assert_eq!(findings.len(), 1);
-        assert!(matches!(
-            &findings[0],
-            SemanticFinding::DroppedDuration { duration_text, .. } if duration_text == "until end of turn"
-        ));
+        let findings = audit_card_lines(oracle, &face);
+
+        assert!(
+            findings
+                .iter()
+                .any(|f| matches!(f, SemanticFinding::DroppedDuration { duration_text, .. } if duration_text == "until end of turn")),
+            "Should detect dropped duration: {findings:?}"
+        );
     }
 
     #[test]
-    fn test_audit_semantic_no_false_positive_when_condition_present() {
+    fn test_audit_per_line_no_false_positive_when_condition_present() {
         let mut face = make_face();
-        face.oracle_text = Some("Draw a card if you control an artifact.".to_string());
+        let oracle = "Draw a card if you control an artifact.";
+        face.oracle_text = Some(oracle.to_string());
         face.abilities.push(
             AbilityDefinition::new(
                 AbilityKind::Spell,
@@ -5256,21 +4751,17 @@ mod tests {
                 },
                 comparator: crate::types::ability::Comparator::GE,
                 rhs: QuantityExpr::Fixed { value: 1 },
-            }),
+            })
+            .description(oracle.to_string()),
         );
 
-        let mut findings = Vec::new();
-        let lower = "draw a card if you control an artifact.";
-        check_dropped_condition(
-            lower,
-            "Draw a card if you control an artifact.",
-            &face,
-            &mut findings,
-        );
+        let findings = audit_card_lines(oracle, &face);
 
         assert!(
-            findings.is_empty(),
-            "Should not flag when condition is present"
+            !findings
+                .iter()
+                .any(|f| matches!(f, SemanticFinding::DroppedCondition { .. })),
+            "Should not flag when condition is present: {findings:?}"
         );
     }
 
