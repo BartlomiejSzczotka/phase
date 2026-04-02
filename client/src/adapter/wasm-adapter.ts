@@ -86,6 +86,14 @@ export class WasmAdapter implements EngineAdapter {
     return this.fallback!.getState();
   }
 
+  async getFilteredState(viewerId: number): Promise<GameState> {
+    this.assertInitialized();
+    if (this.engine) {
+      return this.engine.getFilteredState(viewerId);
+    }
+    return this.fallback!.getFilteredState(viewerId);
+  }
+
   async getLegalActions(): Promise<LegalActionsResult> {
     this.assertInitialized();
     if (this.engine) {
@@ -257,6 +265,7 @@ interface MainThreadFallback {
   ensureCardDatabase(): Promise<number>;
   submitAction(action: GameAction): Promise<SubmitResult>;
   getState(): Promise<GameState>;
+  getFilteredState(viewerId: number): Promise<GameState>;
   getLegalActions(): Promise<LegalActionsResult>;
   getAiAction(difficulty: string, playerId: number): Promise<GameAction | null>;
   restoreState(stateJson: string): void;
@@ -299,6 +308,12 @@ async function createMainThreadFallback(): Promise<MainThreadFallback> {
     getState: () =>
       enqueue(() => {
         const s = wasm.get_game_state();
+        return (s === null ? wasm.create_initial_state() : s) as GameState;
+      }),
+
+    getFilteredState: (viewerId: number) =>
+      enqueue(() => {
+        const s = wasm.get_filtered_game_state(viewerId);
         return (s === null ? wasm.create_initial_state() : s) as GameState;
       }),
 

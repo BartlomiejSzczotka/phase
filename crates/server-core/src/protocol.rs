@@ -200,6 +200,11 @@ pub enum ServerMessage {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
+
+    fn load_fixture(path: &str) -> Value {
+        serde_json::from_str(path).unwrap()
+    }
 
     #[test]
     fn client_message_create_game_roundtrips() {
@@ -731,6 +736,46 @@ mod tests {
                 assert!(ai_seats.is_empty());
             }
             _ => panic!("wrong variant"),
+        }
+    }
+
+    #[test]
+    fn game_started_fixture_matches_server_message_contract() {
+        let fixture = load_fixture(include_str!(
+            "../../../fixtures/adapter-contract/game_started.json"
+        ));
+        let parsed: ServerMessage = serde_json::from_value(fixture).unwrap();
+        match parsed {
+            ServerMessage::GameStarted {
+                your_player,
+                opponent_name,
+                legal_actions,
+                ..
+            } => {
+                assert_eq!(your_player, PlayerId(0));
+                assert_eq!(opponent_name.as_deref(), Some("Opponent"));
+                assert_eq!(legal_actions, vec![GameAction::PassPriority]);
+            }
+            other => panic!("wrong variant: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn state_update_fixture_matches_server_message_contract() {
+        let fixture = load_fixture(include_str!(
+            "../../../fixtures/adapter-contract/state_update.json"
+        ));
+        let parsed: ServerMessage = serde_json::from_value(fixture).unwrap();
+        match parsed {
+            ServerMessage::StateUpdate {
+                events,
+                legal_actions,
+                ..
+            } => {
+                assert_eq!(events.len(), 1);
+                assert_eq!(legal_actions, vec![GameAction::PassPriority]);
+            }
+            other => panic!("wrong variant: {other:?}"),
         }
     }
 }

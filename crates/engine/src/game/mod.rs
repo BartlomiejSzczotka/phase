@@ -32,6 +32,7 @@ pub mod planeswalker;
 pub mod players;
 pub mod printed_cards;
 pub mod priority;
+pub mod public_state;
 pub mod quantity;
 pub mod replacement;
 pub mod restrictions;
@@ -47,6 +48,7 @@ pub mod transform;
 pub(crate) mod trigger_matchers;
 pub mod triggers;
 pub mod turns;
+pub mod visibility;
 pub mod zones;
 
 pub use deck_loading::{
@@ -63,7 +65,9 @@ pub use keywords::parse_keywords;
 pub use layers::evaluate_layers;
 pub use mana_payment::{can_pay, pay_cost, produce_mana, PaymentError};
 pub use printed_cards::rehydrate_game_from_card_db;
+pub use public_state::finalize_public_state;
 pub use triggers::process_triggers;
+pub use visibility::filter_state_for_viewer;
 pub use zones::{
     add_to_zone, create_object, move_to_library_at_index, move_to_library_position, move_to_zone,
     remove_from_zone,

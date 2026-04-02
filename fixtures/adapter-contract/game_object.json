@@ -1,0 +1,53 @@
+{
+  "id": 1,
+  "card_id": 100,
+  "owner": 0,
+  "controller": 0,
+  "zone": "Battlefield",
+  "tapped": false,
+  "face_down": false,
+  "flipped": false,
+  "transformed": false,
+  "damage_marked": 0,
+  "dealt_deathtouch_damage": false,
+  "attached_to": null,
+  "attachments": [],
+  "counters": {},
+  "name": "Fixture Bear",
+  "power": 2,
+  "toughness": 2,
+  "loyalty": null,
+  "card_types": {
+    "supertypes": [],
+    "core_types": ["Creature"],
+    "subtypes": ["Bear"]
+  },
+  "mana_cost": {
+    "type": "Cost",
+    "shards": ["Green"],
+    "generic": 1
+  },
+  "keywords": ["Trample"],
+  "abilities": [],
+  "trigger_definitions": [],
+  "replacement_definitions": [],
+  "static_definitions": [],
+  "color": ["Green"],
+  "printed_ref": null,
+  "back_face": null,
+  "base_power": 2,
+  "base_toughness": 2,
+  "base_card_types": {
+    "supertypes": [],
+    "core_types": ["Creature"],
+    "subtypes": ["Bear"]
+  },
+  "base_keywords": ["Trample"],
+  "base_abilities": [],
+  "base_trigger_definitions": [],
+  "base_replacement_definitions": [],
+  "base_static_definitions": [],
+  "base_color": ["Green"],
+  "timestamp": 7,
+  "entered_battlefield_turn": 1
+}

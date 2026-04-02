@@ -1,0 +1,18 @@
+{
+  "type": "EffectZoneChoice",
+  "data": {
+    "player": 0,
+    "cards": [1, 2],
+    "count": 1,
+    "up_to": true,
+    "source_id": 99,
+    "effect_kind": "ChangeZone",
+    "zone": "Hand",
+    "destination": "Battlefield",
+    "enter_tapped": false,
+    "enter_transformed": false,
+    "under_your_control": false,
+    "enters_attacking": false,
+    "owner_library": false
+  }
+}

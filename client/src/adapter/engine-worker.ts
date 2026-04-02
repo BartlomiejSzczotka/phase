@@ -10,6 +10,7 @@ import init, {
   initialize_game,
   submit_action,
   get_game_state,
+  get_filtered_game_state,
   get_ai_action,
   get_ai_scored_candidates,
   select_action_from_scores,
@@ -37,6 +38,7 @@ type EngineRequest =
     }
   | { type: "submitAction"; id: number; action: GameAction }
   | { type: "getState"; id: number }
+  | { type: "getFilteredState"; id: number; viewerId: number }
   | { type: "getLegalActions"; id: number }
   | { type: "getAiAction"; id: number; difficulty: string; playerId: number }
   | {
@@ -164,6 +166,12 @@ self.onmessage = async (e: MessageEvent<EngineRequest>) => {
 
       case "getState": {
         const state = get_game_state();
+        result(msg.id, state === null ? create_initial_state() : state);
+        break;
+      }
+
+      case "getFilteredState": {
+        const state = get_filtered_game_state(msg.viewerId);
         result(msg.id, state === null ? create_initial_state() : state);
         break;
       }

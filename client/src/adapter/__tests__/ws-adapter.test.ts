@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { WebSocketAdapter } from "../ws-adapter";
-import { useMultiplayerStore } from "../../stores/multiplayerStore";
 import type { GameState } from "../types";
 
 // Minimal mock WebSocket
@@ -19,7 +18,7 @@ class MockWebSocket {
 // Replace global WebSocket with mock
 vi.stubGlobal("WebSocket", MockWebSocket);
 
-// Mock localStorage (ws-adapter uses localStorage for session persistence)
+// Shared session service relies on localStorage in test environments.
 vi.stubGlobal("localStorage", {
   getItem: vi.fn(() => null),
   setItem: vi.fn(),
@@ -109,31 +108,79 @@ describe("WebSocketAdapter", () => {
     });
   });
 
-  describe("Bug E: activePlayerId from GameStarted", () => {
-    it("sets activePlayerId in multiplayerStore on GameStarted", () => {
-      // Reset store
-      useMultiplayerStore.getState().setActivePlayerId(null);
-
-      // Create fresh adapter to trigger GameStarted again
+  describe("GameStarted identity event", () => {
+    it("emits playerIdentity when GameStarted arrives", () => {
       const adapter2 = new WebSocketAdapter(
         "ws://localhost:9374/ws",
         "join",
         { main_deck: [], sideboard: [] },
         "ABC123",
       );
+      const listener = vi.fn();
+      adapter2.onEvent(listener);
       const initPromise2 = adapter2.initialize();
       const ws2 = (adapter2 as unknown as { ws: MockWebSocket }).ws;
       ws2.onopen?.();
       ws2.onmessage?.({
         data: JSON.stringify({
           type: "GameStarted",
-          data: { state: createMockState(), your_player: 1 },
+          data: { state: createMockState(), your_player: 1, opponent_name: "Opponent" },
         }),
       });
 
       return initPromise2.then(() => {
-        expect(useMultiplayerStore.getState().activePlayerId).toBe(1);
+        expect(listener).toHaveBeenCalledWith({
+          type: "playerIdentity",
+          playerId: 1,
+          opponentName: "Opponent",
+        });
       });
+    });
+  });
+
+  describe("reconnect flow", () => {
+    it("reconnects with the persisted session after socket close", async () => {
+      vi.useFakeTimers();
+      try {
+        const reconnectingAdapter = new WebSocketAdapter(
+          "ws://localhost:9374/ws",
+          "join",
+          { main_deck: [], sideboard: [] },
+          "ABC123",
+        );
+        const initPromise = reconnectingAdapter.initialize();
+        const initialWs = (reconnectingAdapter as unknown as { ws: MockWebSocket }).ws;
+        initialWs.onopen?.();
+        initialWs.onmessage?.({
+          data: JSON.stringify({
+            type: "GameStarted",
+            data: {
+              state: createMockState(),
+              your_player: 1,
+              player_token: "player-token",
+            },
+          }),
+        });
+        await initPromise;
+
+        initialWs.onclose?.();
+        await vi.advanceTimersByTimeAsync(1000);
+
+        const reconnectWs = (reconnectingAdapter as unknown as { ws: MockWebSocket }).ws;
+        reconnectWs.onopen?.();
+
+        expect(reconnectWs.send).toHaveBeenCalledWith(
+          JSON.stringify({
+            type: "Reconnect",
+            data: {
+              game_code: "ABC123",
+              player_token: "player-token",
+            },
+          }),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });

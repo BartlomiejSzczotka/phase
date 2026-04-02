@@ -27,7 +27,6 @@ use super::ability_utils::{
 };
 use super::casting;
 use super::casting_costs;
-use super::derived::derive_display_state;
 use super::effects;
 use super::mana_abilities;
 use super::mana_payment;
@@ -36,6 +35,7 @@ use super::match_flow;
 use super::mulligan;
 use super::planeswalker;
 use super::priority;
+use super::public_state::{finalize_public_state, sync_waiting_for};
 use super::restrictions;
 use super::sba;
 use super::triggers;
@@ -62,16 +62,9 @@ pub fn apply(state: &mut GameState, action: GameAction) -> Result<ActionResult, 
     let mut result = apply_action(state, action)?;
     sync_waiting_for(state, &result.waiting_for);
     run_auto_pass_loop(state, &mut result);
-    derive_display_state(state);
+    finalize_public_state(state);
     result.log_entries = super::log::resolve_log_entries(&result.events, state);
     Ok(result)
-}
-
-fn sync_waiting_for(state: &mut GameState, waiting_for: &WaitingFor) {
-    state.waiting_for = waiting_for.clone();
-    if let WaitingFor::Priority { player } = waiting_for {
-        state.priority_player = *player;
-    }
 }
 
 fn resume_pending_continuation_if_priority(
@@ -3699,7 +3692,6 @@ fn run_post_action_pipeline(
 
     if let Some(wf) = begin_pending_trigger_target_selection(state)? {
         state.waiting_for = wf.clone();
-        derive_display_state(state);
         return Ok(wf);
     }
 
@@ -4634,7 +4626,7 @@ pub fn start_game_with_starting_player(
     };
 
     state.waiting_for = waiting_for.clone();
-    derive_display_state(state);
+    finalize_public_state(state);
 
     let log_entries = super::log::resolve_log_entries(&events, state);
     ActionResult {
@@ -4662,7 +4654,7 @@ pub fn start_game_skip_mulligan(state: &mut GameState) -> ActionResult {
 
     let waiting_for = turns::auto_advance(state, &mut events);
     state.waiting_for = waiting_for.clone();
-    derive_display_state(state);
+    finalize_public_state(state);
 
     let log_entries = super::log::resolve_log_entries(&events, state);
     ActionResult {

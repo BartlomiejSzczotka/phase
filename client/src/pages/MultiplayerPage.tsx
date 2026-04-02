@@ -13,6 +13,7 @@ import { MenuShell } from "../components/menu/MenuShell";
 import { MyDecks } from "../components/menu/MyDecks";
 import { ACTIVE_DECK_KEY, loadActiveDeck, touchDeckPlayed } from "../constants/storage";
 import { parseRoomCode } from "../network/connection";
+import { clearWsSession } from "../services/multiplayerSession";
 import { useMultiplayerStore } from "../stores/multiplayerStore";
 import { useGameStore, saveActiveGame } from "../stores/gameStore";
 import type { HostSettings } from "../components/lobby/HostSetup";
@@ -123,7 +124,7 @@ export function MultiplayerPage() {
           return true;
         }
 
-        localStorage.removeItem("phase-ws-session");
+        clearWsSession();
         const gameId = crypto.randomUUID();
         saveActiveGame({ id: gameId, mode: "online", difficulty: "" });
         useGameStore.setState({ gameId });

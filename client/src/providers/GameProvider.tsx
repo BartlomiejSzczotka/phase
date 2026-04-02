@@ -17,6 +17,7 @@ import { createPeerSession } from "../network/peer";
 import type { ParsedDeck } from "../services/deckParser";
 import { consumeRecentAutoUpdateMarker } from "../pwa/updateMarker";
 import { ensureCardDatabase } from "../services/cardData";
+import { clearWsSession, loadWsSession, saveWsSession } from "../services/multiplayerSession";
 import { detectServerUrl } from "../services/serverDetection";
 import { useGameStore, loadGame, clearGame, clearActiveGame } from "../stores/gameStore";
 import { useMultiplayerStore } from "../stores/multiplayerStore";
@@ -189,7 +190,7 @@ export function GameProvider({
 
     const isOnline = mode === "online";
     const isP2P = mode === "p2p-host" || mode === "p2p-join";
-    const hasSession = localStorage.getItem("phase-ws-session") !== null;
+    const hasSession = loadWsSession() !== null;
     const isReconnect = isOnline && !joinCode && hasSession;
 
     let cancelled = false;
@@ -227,6 +228,9 @@ export function GameProvider({
             const adapter = new P2PHostAdapter(deckList, session);
 
             p2pUnsubscribe = adapter.onEvent((event) => {
+              if (event.type === "playerIdentity") {
+                useMultiplayerStore.getState().setActivePlayerId(event.playerId);
+              }
               if (event.type === "stateChanged") {
                 processRemoteUpdate(event.state, event.events, event.legalResult);
               }
@@ -249,6 +253,9 @@ export function GameProvider({
             const adapter = new P2PGuestAdapter(deckList, session);
 
             p2pUnsubscribe = adapter.onEvent((event) => {
+              if (event.type === "playerIdentity") {
+                useMultiplayerStore.getState().setActivePlayerId(event.playerId);
+              }
               if (event.type === "stateChanged") {
                 processRemoteUpdate(event.state, event.events, event.legalResult);
               }
@@ -311,9 +318,27 @@ export function GameProvider({
           deck,
           wsMode === "join" ? joinCode : undefined,
           wsMode === "join" ? password : undefined,
+          useMultiplayerStore.getState().displayName || "Player",
         );
 
         wsUnsubscribe = wsAdapter.onEvent((event) => {
+          if (event.type === "playerIdentity") {
+            useMultiplayerStore.getState().setActivePlayerId(event.playerId);
+            useMultiplayerStore.getState().setOpponentDisplayName(event.opponentName);
+          }
+          if (event.type === "actionPendingChanged") {
+            useMultiplayerStore.getState().setActionPending(event.pending);
+          }
+          if (event.type === "latencyChanged") {
+            useMultiplayerStore.getState().setLatency(event.latencyMs);
+          }
+          if (event.type === "sessionChanged") {
+            if (event.session) {
+              saveWsSession(event.session);
+            } else {
+              clearWsSession();
+            }
+          }
           if (event.type === "stateChanged") {
             // Ensure adapter is set before animating so state updates land correctly
             const needAdapter = !useGameStore.getState().adapter && wsAdapter;
@@ -341,6 +366,10 @@ export function GameProvider({
             onReadyRef.current?.();
             audioManager.setContext("battlefield");
           }
+          if (event.type === "playerEliminated" && event.becameSpectator) {
+            useMultiplayerStore.getState().setIsSpectator(true);
+            useMultiplayerStore.getState().showToast("You have been eliminated. Now spectating.");
+          }
           onWsEventRef.current?.(event);
         });
 
@@ -350,7 +379,10 @@ export function GameProvider({
         controller.start();
 
         if (isReconnect) {
-          wsAdapter.tryReconnect();
+          const session = loadWsSession();
+          if (session) {
+            wsAdapter.tryReconnect(session);
+          }
         } else {
           initGame(gameId, wsAdapter, undefined, undefined, undefined, matchConfig).then(() => {
             if (cancelled) return;
@@ -372,6 +404,8 @@ export function GameProvider({
         if (wsUnsubscribe) wsUnsubscribe();
         if (wsAdapter) wsAdapter.dispose();
         useMultiplayerStore.getState().setConnectionStatus("disconnected");
+        useMultiplayerStore.getState().setActionPending(false);
+        useMultiplayerStore.getState().setLatency(null);
         audioManager.setContext("menu");
         reset();
       };

@@ -2,7 +2,6 @@ import type {
   EngineAdapter,
   GameAction,
   GameEvent,
-  GameObject,
   GameState,
   LegalActionsResult,
   MatchConfig,
@@ -14,10 +13,10 @@ import { AdapterError } from "./types";
 import { WasmAdapter } from "./wasm-adapter";
 import type { PeerSession } from "../network/peer";
 import type { P2PMessage } from "../network/protocol";
-import { useMultiplayerStore } from "../stores/multiplayerStore";
 
 /** Events emitted by P2P adapters for UI state updates. */
 export type P2PAdapterEvent =
+  | { type: "playerIdentity"; playerId: PlayerId }
   | { type: "roomCreated"; roomCode: string }
   | { type: "waitingForGuest" }
   | { type: "guestConnected" }
@@ -32,57 +31,6 @@ interface DeckListPayload {
   player: { main_deck: string[]; sideboard: string[] };
   opponent: { main_deck: string[]; sideboard: string[] };
   ai_decks: Array<{ main_deck: string[]; sideboard: string[] }>;
-}
-
-/** Scrub a card object so only its zone/ID remain visible (card back). */
-function scrubObject(obj: GameObject): void {
-  obj.face_down = true;
-  obj.name = "Hidden Card";
-  obj.abilities = [];
-  obj.keywords = [];
-  obj.base_keywords = [];
-  obj.power = null;
-  obj.toughness = null;
-  obj.loyalty = null;
-  obj.color = [];
-  obj.base_color = [];
-  obj.trigger_definitions = [];
-  obj.replacement_definitions = [];
-  obj.static_definitions = [];
-}
-
-/**
- * Filter game state for the guest player.
- * Matches server-side filter_state_for_player: keeps hand/library arrays
- * intact (preserving card count) but scrubs object details.
- */
-function filterStateForGuest(state: GameState): GameState {
-  const clone = JSON.parse(JSON.stringify(state)) as GameState;
-
-  for (const pool of clone.deck_pools ?? []) {
-    if (pool.player !== 1) {
-      pool.registered_main = [];
-      pool.registered_sideboard = [];
-      pool.current_main = [];
-      pool.current_sideboard = [];
-    }
-  }
-
-  // Scrub host's hand objects (guest sees card backs, not contents)
-  for (const objId of clone.players[0]?.hand ?? []) {
-    const obj = clone.objects[objId];
-    if (obj) scrubObject(obj);
-  }
-
-  // Scrub library objects for both players (hide card order/identity)
-  for (const player of clone.players) {
-    for (const objId of player.library) {
-      const obj = clone.objects[objId];
-      if (obj) scrubObject(obj);
-    }
-  }
-
-  return clone;
 }
 
 /**
@@ -163,14 +111,11 @@ export class P2PHostAdapter implements EngineAdapter {
     };
 
     const result = await this.wasm.initializeGame(deckPayload, undefined, 2, matchConfig);
-    const state = await this.wasm.getState();
     const legalResult = await this.wasm.getLegalActions();
-
-    // Host is player 0
-    useMultiplayerStore.getState().setActivePlayerId(0);
+    this.emit({ type: "playerIdentity", playerId: 0 });
 
     // Send initial state to guest (filtered) with legal actions
-    const filteredState = filterStateForGuest(state);
+    const filteredState = await this.wasm.getFilteredState(1);
     this.session.send({
       type: "game_setup",
       state: filteredState,
@@ -184,11 +129,10 @@ export class P2PHostAdapter implements EngineAdapter {
 
   async submitAction(action: GameAction): Promise<SubmitResult> {
     const result = await this.wasm.submitAction(action);
-    const state = await this.wasm.getState();
     const legalResult = await this.wasm.getLegalActions();
 
     // Send filtered state update to guest with legal actions
-    const filteredState = filterStateForGuest(state);
+    const filteredState = await this.wasm.getFilteredState(1);
     this.session.send({
       type: "state_update",
       state: filteredState,
@@ -238,7 +182,7 @@ export class P2PHostAdapter implements EngineAdapter {
           const legalResult = await this.wasm.getLegalActions();
 
           // Send filtered state back to guest with legal actions
-          const filteredState = filterStateForGuest(state);
+          const filteredState = await this.wasm.getFilteredState(1);
           this.session.send({
             type: "state_update",
             state: filteredState,
@@ -326,8 +270,7 @@ export class P2PGuestAdapter implements EngineAdapter {
     _playerCount?: number,
     _matchConfig?: MatchConfig,
   ): Promise<SubmitResult> {
-    // Guest is player 1
-    useMultiplayerStore.getState().setActivePlayerId(1);
+    this.emit({ type: "playerIdentity", playerId: 1 });
 
     // Await the eagerly-created promise — resolves immediately if
     // game_setup arrived during initialize(), otherwise waits.

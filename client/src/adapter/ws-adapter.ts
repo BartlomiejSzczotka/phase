@@ -11,7 +11,7 @@ import type {
 } from "./types";
 import { AdapterError, AdapterErrorCode } from "./types";
 import { isValidWebSocketUrl } from "../services/serverDetection";
-import { useMultiplayerStore } from "../stores/multiplayerStore";
+import type { WsSessionData } from "../services/multiplayerSession";
 
 /** Deck data format matching server protocol. */
 export interface DeckData {
@@ -22,6 +22,10 @@ export interface DeckData {
 
 /** Events emitted by the WebSocketAdapter for UI state updates. */
 export type WsAdapterEvent =
+  | { type: "playerIdentity"; playerId: PlayerId; opponentName: string | null }
+  | { type: "actionPendingChanged"; pending: boolean }
+  | { type: "latencyChanged"; latencyMs: number | null }
+  | { type: "sessionChanged"; session: WsSessionData | null }
   | { type: "gameCreated"; gameCode: string }
   | { type: "waitingForOpponent" }
   | { type: "opponentDisconnected"; graceSeconds: number }
@@ -30,7 +34,7 @@ export type WsAdapterEvent =
   | { type: "playerReconnected"; playerId: PlayerId }
   | { type: "gamePaused"; disconnectedPlayer: PlayerId; timeoutSeconds: number }
   | { type: "gameResumed" }
-  | { type: "playerEliminated"; playerId: PlayerId }
+  | { type: "playerEliminated"; playerId: PlayerId; becameSpectator: boolean }
   | { type: "spectatorJoined"; name: string }
   | { type: "gameOver"; winner: PlayerId | null; reason: string }
   | { type: "error"; message: string }
@@ -43,20 +47,6 @@ export type WsAdapterEvent =
   | { type: "timerUpdate"; player: PlayerId; remainingSeconds: number };
 
 type WsAdapterEventListener = (event: WsAdapterEvent) => void;
-
-const WS_STORAGE_KEY = "phase-ws-session";
-const SESSION_TTL_MS = 2 * 60 * 60 * 1000; // 2 hours
-
-interface SessionData {
-  gameCode: string;
-  playerToken: string;
-  serverUrl: string;
-  timestamp: number;
-}
-
-function isSessionValid(session: SessionData): boolean {
-  return Date.now() - (session.timestamp ?? 0) < SESSION_TTL_MS;
-}
 
 /**
  * WebSocket-backed implementation of EngineAdapter.
@@ -88,6 +78,7 @@ export class WebSocketAdapter implements EngineAdapter {
     private readonly deckData: DeckData,
     private readonly joinGameCode?: string,
     private readonly joinPassword?: string,
+    private readonly displayName = "Player",
   ) {}
 
   get gameCode(): string | null {
@@ -143,13 +134,12 @@ export class WebSocketAdapter implements EngineAdapter {
             data: { deck: this.deckData },
           });
         } else {
-          const displayName = useMultiplayerStore.getState().displayName;
           this.send({
             type: "JoinGameWithPassword",
             data: {
               game_code: this.joinGameCode!,
               deck: this.deckData,
-              display_name: displayName || "Player",
+              display_name: this.displayName,
               password: this.joinPassword ?? null,
             },
           });
@@ -181,7 +171,7 @@ export class WebSocketAdapter implements EngineAdapter {
         // Clear any pending action state — the server may have already processed
         // the action but the response was lost with the connection.
         if (this.pendingReject) {
-          useMultiplayerStore.getState().setActionPending(false);
+          this.emit({ type: "actionPendingChanged", pending: false });
           this.pendingReject(
             new AdapterError("WS_CLOSED", "Connection closed during action", true),
           );
@@ -206,7 +196,7 @@ export class WebSocketAdapter implements EngineAdapter {
       throw new AdapterError("WS_ERROR", "WebSocket not connected", false);
     }
 
-    useMultiplayerStore.getState().setActionPending(true);
+    this.emit({ type: "actionPendingChanged", pending: true });
     return new Promise<SubmitResult>((resolve, reject) => {
       this.pendingResolve = resolve;
       this.pendingReject = reject;
@@ -279,24 +269,16 @@ export class WebSocketAdapter implements EngineAdapter {
     this.pendingReject = null;
     this.initResolve = null;
     this.initReject = null;
-    this.listeners = [];
-    useMultiplayerStore.getState().setActionPending(false);
-    useMultiplayerStore.getState().setLatency(null);
+    this.emit({ type: "actionPendingChanged", pending: false });
+    this.emit({ type: "latencyChanged", latencyMs: null });
     if (this.gameEnded) {
-      localStorage.removeItem(WS_STORAGE_KEY);
+      this.emit({ type: "sessionChanged", session: null });
     }
+    this.listeners = [];
   }
 
   /** Attempt reconnection using stored session data. */
-  tryReconnect(): boolean {
-    const raw = localStorage.getItem(WS_STORAGE_KEY);
-    if (!raw) return false;
-
-    const session: SessionData = JSON.parse(raw);
-    if (!isSessionValid(session)) {
-      localStorage.removeItem(WS_STORAGE_KEY);
-      return false;
-    }
+  tryReconnect(session: WsSessionData): boolean {
     this._gameCode = session.gameCode;
     this.playerToken = session.playerToken;
 
@@ -339,6 +321,11 @@ export class WebSocketAdapter implements EngineAdapter {
 
   private attemptReconnect(): void {
     if (this.disposed) return;
+    const session = this.currentSession();
+    if (!session) {
+      this.emit({ type: "reconnectFailed" });
+      return;
+    }
     if (this.reconnectAttempt >= this.maxReconnectAttempts) {
       this.emit({ type: "reconnectFailed" });
       return;
@@ -351,7 +338,7 @@ export class WebSocketAdapter implements EngineAdapter {
       maxAttempts: this.maxReconnectAttempts,
     });
     this.reconnectTimer = setTimeout(() => {
-      this.tryReconnect();
+      this.tryReconnect(session);
     }, delay);
   }
 
@@ -374,7 +361,7 @@ export class WebSocketAdapter implements EngineAdapter {
         const data = msg.data as { game_code: string; player_token: string };
         this._gameCode = data.game_code;
         this.playerToken = data.player_token;
-        this.persistSession();
+        this.emit({ type: "sessionChanged", session: this.currentSession() });
         this.emit({ type: "gameCreated", gameCode: data.game_code });
         this.emit({ type: "waitingForOpponent" });
         break;
@@ -396,10 +383,13 @@ export class WebSocketAdapter implements EngineAdapter {
             this._gameCode = this.joinGameCode;
           }
           this.playerToken = data.player_token;
-          this.persistSession();
+          this.emit({ type: "sessionChanged", session: this.currentSession() });
         }
-        useMultiplayerStore.getState().setActivePlayerId(data.your_player);
-        useMultiplayerStore.getState().setOpponentDisplayName(data.opponent_name ?? null);
+        this.emit({
+          type: "playerIdentity",
+          playerId: data.your_player,
+          opponentName: data.opponent_name ?? null,
+        });
         if (this.initResolve) {
           this.initResolve();
           this.initResolve = null;
@@ -421,7 +411,7 @@ export class WebSocketAdapter implements EngineAdapter {
           spellCosts: data.spell_costs,
         };
         if (this.pendingResolve) {
-          useMultiplayerStore.getState().setActionPending(false);
+          this.emit({ type: "actionPendingChanged", pending: false });
           this.pendingResolve({ events: data.events, log_entries: data.log_entries });
           this.pendingResolve = null;
           this.pendingReject = null;
@@ -433,7 +423,7 @@ export class WebSocketAdapter implements EngineAdapter {
 
       case "ActionRejected": {
         const data = msg.data as { reason: string };
-        useMultiplayerStore.getState().setActionPending(false);
+        this.emit({ type: "actionPendingChanged", pending: false });
         if (this.pendingReject) {
           this.pendingReject(
             new AdapterError("ACTION_REJECTED", data.reason, true),
@@ -461,8 +451,8 @@ export class WebSocketAdapter implements EngineAdapter {
       case "GameOver": {
         const data = msg.data as { winner: PlayerId | null; reason: string };
         this.gameEnded = true;
-        useMultiplayerStore.getState().setActionPending(false);
-        localStorage.removeItem(WS_STORAGE_KEY);
+        this.emit({ type: "actionPendingChanged", pending: false });
+        this.emit({ type: "sessionChanged", session: null });
         this.emit({
           type: "gameOver",
           winner: data.winner,
@@ -530,12 +520,11 @@ export class WebSocketAdapter implements EngineAdapter {
 
       case "PlayerEliminated": {
         const data = msg.data as { player_id: PlayerId };
-        this.emit({ type: "playerEliminated", playerId: data.player_id });
-        // Auto-transition to spectator if the eliminated player is us
-        if (data.player_id === this._playerId) {
-          useMultiplayerStore.getState().setIsSpectator(true);
-          useMultiplayerStore.getState().showToast("You have been eliminated. Now spectating.");
-        }
+        this.emit({
+          type: "playerEliminated",
+          playerId: data.player_id,
+          becameSpectator: data.player_id === this._playerId,
+        });
         break;
       }
 
@@ -548,7 +537,7 @@ export class WebSocketAdapter implements EngineAdapter {
       case "Pong": {
         const data = msg.data as { timestamp: number };
         const rtt = Date.now() - data.timestamp;
-        useMultiplayerStore.getState().setLatency(rtt);
+        this.emit({ type: "latencyChanged", latencyMs: rtt });
         break;
       }
 
@@ -560,15 +549,15 @@ export class WebSocketAdapter implements EngineAdapter {
     }
   }
 
-  private persistSession(): void {
-    if (this._gameCode && this.playerToken) {
-      const session: SessionData = {
-        gameCode: this._gameCode,
-        playerToken: this.playerToken,
-        serverUrl: this.serverUrl,
-        timestamp: Date.now(),
-      };
-      localStorage.setItem(WS_STORAGE_KEY, JSON.stringify(session));
+  private currentSession(): WsSessionData | null {
+    if (!this._gameCode || !this.playerToken) {
+      return null;
     }
+    return {
+      gameCode: this._gameCode,
+      playerToken: this.playerToken,
+      serverUrl: this.serverUrl,
+      timestamp: Date.now(),
+    };
   }
 }

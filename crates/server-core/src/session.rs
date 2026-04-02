@@ -6,6 +6,7 @@ use engine::ai_support::{
 };
 use engine::game::deck_loading::{load_deck_into_state, DeckPayload, PlayerDeckPayload};
 use engine::game::engine::{apply, start_game};
+use engine::game::finalize_public_state;
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
 use engine::types::format::FormatConfig;
@@ -189,6 +190,7 @@ impl GameSession {
         let fresh_seed: u64 = rand::rng().random();
         state.rng_seed = fresh_seed;
         state.rng = rand_chacha::ChaCha20Rng::seed_from_u64(fresh_seed);
+        finalize_public_state(&mut state);
 
         let ai_seats: HashSet<PlayerId> = ps.ai_seats.iter().map(|&s| PlayerId(s)).collect();
 

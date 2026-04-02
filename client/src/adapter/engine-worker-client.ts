@@ -124,6 +124,10 @@ export class EngineWorkerClient {
     return this.request<GameState>({ type: "getState" });
   }
 
+  async getFilteredState(viewerId: number): Promise<GameState> {
+    return this.request<GameState>({ type: "getFilteredState", viewerId });
+  }
+
   async getLegalActions(): Promise<LegalActionsResult> {
     return this.request<LegalActionsResult>({ type: "getLegalActions" });
   }

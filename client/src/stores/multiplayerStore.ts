@@ -2,6 +2,11 @@ import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
 import type { FormatConfig, GameFormat, MatchType, PlayerId } from "../adapter/types";
+import {
+  clearWsSession,
+  loadWsSession,
+  saveWsSession,
+} from "../services/multiplayerSession";
 import { isValidWebSocketUrl } from "../services/serverDetection";
 import { saveActiveGame, useGameStore } from "./gameStore";
 
@@ -270,7 +275,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
           clearTimeout(hostReconnectTimer);
           hostReconnectTimer = null;
         }
-        localStorage.removeItem("phase-ws-session");
+        clearWsSession();
         gameStartedFired = false;
         hostReconnectAttempt = 0;
 
@@ -285,15 +290,12 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
         const handleHostMessage = (ws: WebSocket, msg: { type: string; data?: unknown }) => {
           if (msg.type === "GameCreated") {
             const data = msg.data as { game_code: string; player_token: string };
-            localStorage.setItem(
-              "phase-ws-session",
-              JSON.stringify({
-                gameCode: data.game_code,
-                playerToken: data.player_token,
-                serverUrl: get().serverAddress,
-                timestamp: Date.now(),
-              }),
-            );
+            saveWsSession({
+              gameCode: data.game_code,
+              playerToken: data.player_token,
+              serverUrl: get().serverAddress,
+              timestamp: Date.now(),
+            });
             // Reset reconnect counter on successful (re)connection
             hostReconnectAttempt = 0;
             set({ hostGameCode: data.game_code, hostingStatus: "waiting" });
@@ -325,10 +327,10 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
         // Attempt to reconnect the hosting WS using stored session token
         const attemptHostReconnect = () => {
           if (gameStartedFired) return;
-          const raw = localStorage.getItem("phase-ws-session");
-          if (!raw || hostReconnectAttempt >= HOST_MAX_RECONNECT_ATTEMPTS) {
+          const session = loadWsSession();
+          if (!session || hostReconnectAttempt >= HOST_MAX_RECONNECT_ATTEMPTS) {
             // No session to reconnect or exhausted attempts — give up
-            localStorage.removeItem("phase-ws-session");
+            clearWsSession();
             set({
               hostGameCode: null,
               hostIsPublic: false,
@@ -345,9 +347,8 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
             hostReconnectTimer = null;
             if (gameStartedFired) return;
 
-            const session = JSON.parse(raw) as { gameCode: string; playerToken: string };
             if (!isValidWebSocketUrl(get().serverAddress)) {
-              localStorage.removeItem("phase-ws-session");
+              clearWsSession();
               set({
                 hostGameCode: null,
                 hostIsPublic: false,
@@ -463,7 +464,7 @@ export const useMultiplayerStore = create<MultiplayerState & MultiplayerActions>
         }
         gameStartedFired = false;
         hostReconnectAttempt = 0;
-        localStorage.removeItem("phase-ws-session");
+        clearWsSession();
         set({
           hostGameCode: null,
           hostIsPublic: false,

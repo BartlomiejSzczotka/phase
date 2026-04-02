@@ -11,6 +11,7 @@ import {
   listSavedDeckNames,
 } from "../constants/storage";
 import { isTauri } from "../services/sidecar";
+import { loadWsSession } from "../services/multiplayerSession";
 import {
   clearActiveGame,
   loadActiveGame,
@@ -53,15 +54,7 @@ export function MenuPage() {
     const saved = loadActiveGame();
     if (saved) {
       if (saved.mode === "online") {
-        let hasSession = false;
-        const raw = localStorage.getItem("phase-ws-session");
-        if (raw) {
-          try {
-            const session = JSON.parse(raw) as { timestamp?: number };
-            const TWO_HOURS = 2 * 60 * 60 * 1000;
-            hasSession = Date.now() - (session.timestamp ?? 0) < TWO_HOURS;
-          } catch { /* malformed session */ }
-        }
+        const hasSession = loadWsSession() !== null;
         if (hasSession) {
           setActiveGame(saved);
         } else {

@@ -4,11 +4,10 @@ use crate::types::card::{CardFace, CardLayout, LayoutKind, PrintedCardRef};
 use crate::types::game_state::GameState;
 use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
 
-use super::derived::derive_display_state;
 use crate::types::counter::CounterType;
 
 use super::game_object::{BackFaceData, GameObject};
-use super::layers::evaluate_layers;
+use super::public_state::finalize_public_state;
 
 pub fn printed_ref_from_face(card_face: &CardFace) -> Option<PrintedCardRef> {
     card_face
@@ -276,12 +275,8 @@ pub fn rehydrate_game_from_card_db(state: &mut GameState, db: &CardDatabase) {
         state.layers_dirty = true;
     }
 
-    if state.layers_dirty {
-        evaluate_layers(state);
-    }
-
-    if changed_any {
-        derive_display_state(state);
+    if changed_any || state.layers_dirty {
+        finalize_public_state(state);
     }
 }
 

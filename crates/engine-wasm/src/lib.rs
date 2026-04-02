@@ -7,12 +7,11 @@ use wasm_bindgen::prelude::*;
 
 use engine::ai_support::{auto_pass_recommended, legal_actions_with_costs};
 use engine::database::CardDatabase;
-use engine::game::derived::derive_display_state;
 use engine::game::engine::apply;
-use engine::game::layers::evaluate_layers;
 use engine::game::{
-    evaluate_deck_compatibility, load_deck_into_state, rehydrate_game_from_card_db,
-    resolve_deck_list, start_game, validate_deck_for_format, DeckCompatibilityRequest, DeckList,
+    evaluate_deck_compatibility, filter_state_for_viewer, finalize_public_state,
+    load_deck_into_state, rehydrate_game_from_card_db, resolve_deck_list, start_game,
+    validate_deck_for_format, DeckCompatibilityRequest, DeckList,
 };
 use engine::types::format::FormatConfig;
 use engine::types::identifiers::ObjectId;
@@ -288,6 +287,15 @@ pub fn get_game_state() -> JsValue {
     }
 }
 
+/// Get a filtered view of the current game state for the given player.
+#[wasm_bindgen]
+pub fn get_filtered_game_state(viewer: u8) -> JsValue {
+    match with_state(|state| to_js(&filter_state_for_viewer(state, PlayerId(viewer)))) {
+        Ok(val) => val,
+        Err(_) => JsValue::NULL,
+    }
+}
+
 /// Get the legal actions, auto-pass recommendation, and spell costs for the current game state.
 /// Returns `{ actions: GameAction[], autoPassRecommended: boolean, spellCosts: Record<ObjectId, ManaCost> }`.
 #[wasm_bindgen]
@@ -329,10 +337,7 @@ pub fn restore_game_state(json_str: &str) -> Result<(), JsValue> {
             rehydrate_game_from_card_db(&mut state, db);
         }
     });
-    if state.layers_dirty {
-        evaluate_layers(&mut state);
-    }
-    derive_display_state(&mut state);
+    finalize_public_state(&mut state);
     GAME_STATE.with(|cell| cell.set(Some(state)));
     Ok(())
 }
