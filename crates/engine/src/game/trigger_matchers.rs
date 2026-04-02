@@ -15,6 +15,154 @@ use crate::types::zones::Zone;
 
 use super::triggers::TriggerMatcher;
 
+pub fn trigger_matcher(mode: TriggerMode) -> Option<TriggerMatcher> {
+    Some(match mode {
+        TriggerMode::ChangesZone => match_changes_zone,
+        TriggerMode::ChangesZoneAll => match_changes_zone_all,
+        TriggerMode::DamageDone
+        | TriggerMode::DamageDoneOnce
+        | TriggerMode::DamageAll
+        | TriggerMode::DamageDealtOnce => match_damage_done,
+        TriggerMode::DamageDoneOnceByController => match_damage_done_once_by_controller,
+        TriggerMode::SpellCast | TriggerMode::SpellCastOrCopy | TriggerMode::SpellCopy => {
+            match_spell_cast
+        }
+        TriggerMode::Attacks => match_attacks,
+        TriggerMode::AttackersDeclared | TriggerMode::AttackersDeclaredOneTarget => {
+            match_attackers_declared
+        }
+        TriggerMode::Blocks => match_blocks,
+        TriggerMode::BlockersDeclared => match_blockers_declared,
+        TriggerMode::Countered => match_countered,
+        TriggerMode::CounterAdded
+        | TriggerMode::CounterAddedOnce
+        | TriggerMode::CounterAddedAll => match_counter_added,
+        TriggerMode::CounterRemoved | TriggerMode::CounterRemovedOnce => match_counter_removed,
+        TriggerMode::Taps | TriggerMode::TapAll => match_taps,
+        TriggerMode::Untaps | TriggerMode::UntapAll => match_untaps,
+        TriggerMode::LifeGained => match_life_gained,
+        TriggerMode::LifeLost | TriggerMode::LifeLostAll => match_life_lost,
+        TriggerMode::Drawn => match_drawn,
+        TriggerMode::Discarded | TriggerMode::DiscardedAll => match_discarded,
+        TriggerMode::Sacrificed | TriggerMode::SacrificedOnce => match_sacrificed,
+        TriggerMode::Destroyed => match_destroyed,
+        TriggerMode::TokenCreated | TriggerMode::TokenCreatedOnce => match_token_created,
+        TriggerMode::TurnBegin => match_turn_begin,
+        TriggerMode::Phase => match_phase,
+        TriggerMode::BecomesTarget | TriggerMode::BecomesTargetOnce => match_becomes_target,
+        TriggerMode::LandPlayed => match_land_played,
+        TriggerMode::ManaAdded => match_mana_added,
+        TriggerMode::SearchedLibrary
+        | TriggerMode::Scry
+        | TriggerMode::Surveil
+        | TriggerMode::CollectEvidence
+        | TriggerMode::PlayerPerformedAction => match_player_action,
+        TriggerMode::LeavesBattlefield => match_leaves_battlefield,
+        TriggerMode::BecomesBlocked => match_becomes_blocked,
+        TriggerMode::YouAttack => match_you_attack,
+        TriggerMode::DamageReceived => match_damage_received,
+        TriggerMode::ExcessDamage => match_excess_damage,
+        TriggerMode::ExcessDamageAll => match_excess_damage_all,
+        TriggerMode::AttackerBlocked
+        | TriggerMode::AttackerBlockedOnce
+        | TriggerMode::AttackerBlockedByCreature => match_attacker_blocked,
+        TriggerMode::AttackerUnblocked | TriggerMode::AttackerUnblockedOnce => {
+            match_attacker_unblocked
+        }
+        TriggerMode::Milled | TriggerMode::MilledOnce | TriggerMode::MilledAll => match_milled,
+        TriggerMode::Exiled => match_exiled,
+        TriggerMode::Attached => match_attached,
+        TriggerMode::Unattach => match_unattach,
+        TriggerMode::Cycled => match_cycled,
+        TriggerMode::Shuffled => match_shuffled,
+        TriggerMode::Revealed => match_revealed,
+        TriggerMode::TapsForMana => match_taps_for_mana,
+        TriggerMode::ChangesController => match_changes_controller,
+        TriggerMode::Transformed => match_transformed,
+        TriggerMode::Fight | TriggerMode::FightOnce => match_fight,
+        TriggerMode::Immediate | TriggerMode::Always => match_always,
+        TriggerMode::Explored => match_explored,
+        TriggerMode::TurnFaceUp => match_turn_face_up,
+        TriggerMode::DayTimeChanges => match_day_time_changes,
+        TriggerMode::CommitCrime => match_commit_crime,
+        TriggerMode::CaseSolved => match_case_solved,
+        TriggerMode::ClassLevelGained => match_class_level_gained,
+        TriggerMode::BecomeMonarch => match_become_monarch,
+        TriggerMode::RolledDie | TriggerMode::RolledDieOnce => match_rolled_die,
+        TriggerMode::FlippedCoin => match_flipped_coin,
+        TriggerMode::RingTemptsYou => match_ring_tempts_you,
+        TriggerMode::DungeonCompleted => match_dungeon_completed,
+        TriggerMode::RoomEntered => match_room_entered,
+        TriggerMode::TakesInitiative => match_takes_initiative,
+        TriggerMode::Exploited => match_exploited,
+        TriggerMode::BecomeMonstrous => match_become_monstrous,
+        TriggerMode::ManaExpend => match_mana_expend,
+        TriggerMode::EntersOrAttacks => match_enters_or_attacks,
+        TriggerMode::AttacksOrBlocks => match_attacks_or_blocks,
+        TriggerMode::Crewed | TriggerMode::BecomesCrewed => match_vehicle_crewed,
+        TriggerMode::Firebend => match_firebend,
+        TriggerMode::Airbend => match_airbend,
+        TriggerMode::Earthbend => match_earthbend,
+        TriggerMode::Waterbend => match_waterbend,
+        TriggerMode::ElementalBend => match_elemental_bend,
+        TriggerMode::DamagePreventedOnce
+        | TriggerMode::AbilityCast
+        | TriggerMode::AbilityResolves
+        | TriggerMode::AbilityTriggered
+        | TriggerMode::SpellAbilityCast
+        | TriggerMode::SpellAbilityCopy
+        | TriggerMode::CounterPlayerAddedAll
+        | TriggerMode::CounterTypeAddedAll
+        | TriggerMode::PayLife
+        | TriggerMode::PayCumulativeUpkeep
+        | TriggerMode::PayEcho
+        | TriggerMode::PhaseIn
+        | TriggerMode::PhaseOut
+        | TriggerMode::PhaseOutAll
+        | TriggerMode::NewGame
+        | TriggerMode::LosesGame
+        | TriggerMode::Championed
+        | TriggerMode::Exerted
+        | TriggerMode::Saddled
+        | TriggerMode::Evolved
+        | TriggerMode::Enlisted
+        | TriggerMode::Adapt
+        | TriggerMode::Foretell
+        | TriggerMode::Investigated
+        | TriggerMode::PlanarDice
+        | TriggerMode::PlaneswalkedFrom
+        | TriggerMode::PlaneswalkedTo
+        | TriggerMode::ChaosEnsues
+        | TriggerMode::Clashed
+        | TriggerMode::Copied
+        | TriggerMode::ConjureAll
+        | TriggerMode::Vote
+        | TriggerMode::BecomeRenowned
+        | TriggerMode::Proliferate
+        | TriggerMode::Abandoned
+        | TriggerMode::ClaimPrize
+        | TriggerMode::CrankContraption
+        | TriggerMode::Devoured
+        | TriggerMode::Discover
+        | TriggerMode::Forage
+        | TriggerMode::FullyUnlock
+        | TriggerMode::GiveGift
+        | TriggerMode::ManifestDread
+        | TriggerMode::Mentored
+        | TriggerMode::Mutates
+        | TriggerMode::SeekAll
+        | TriggerMode::SetInMotion
+        | TriggerMode::Specializes
+        | TriggerMode::Stationed
+        | TriggerMode::Trains
+        | TriggerMode::UnlockDoor
+        | TriggerMode::VisitAttraction
+        | TriggerMode::BecomesPlotted
+        | TriggerMode::BecomesSaddled => match_unimplemented,
+        TriggerMode::Unknown(_) => return None,
+    })
+}
+
 // ---------------------------------------------------------------------------
 // Trigger Registry
 // ---------------------------------------------------------------------------
@@ -1893,6 +2041,17 @@ mod tests {
 
     fn setup() -> GameState {
         GameState::new_two_player(42)
+    }
+
+    #[test]
+    fn trigger_matcher_covers_registry_entries() {
+        let registry = build_trigger_registry();
+        for mode in registry.keys() {
+            assert!(
+                trigger_matcher(mode.clone()).is_some(),
+                "missing direct matcher for {mode:?}"
+            );
+        }
     }
 
     /// Helper to create a minimal TriggerDefinition with typed fields.

@@ -20,11 +20,18 @@ use crate::types::statics::StaticMode;
 /// - `Player::can_look_at_top_of_library`
 pub fn derive_display_state(state: &mut GameState) {
     let turn = state.turn_number;
+    let dirty = &state.public_state_dirty;
 
-    let object_ids: Vec<_> = state.objects.keys().copied().collect();
+    let object_ids: Vec<_> = if dirty.all_objects_dirty {
+        state.objects.keys().copied().collect()
+    } else {
+        dirty.dirty_objects.iter().copied().collect()
+    };
     for id in object_ids {
         let (unimplemented, summoning_sickness, mana_idx) = {
-            let obj = state.objects.get(&id).expect("object exists");
+            let Some(obj) = state.objects.get(&id) else {
+                continue;
+            };
             let mana_idx = obj
                 .abilities
                 .iter()
@@ -56,87 +63,114 @@ pub fn derive_display_state(state: &mut GameState) {
 
     // Compute per-card devotion for cards with DevotionGE conditions
     // (Theros gods pattern — derive colors from the card's own base_color)
-    let devotion_cards: Vec<_> = state
-        .objects
-        .iter()
-        .filter_map(|(&id, obj)| {
-            let has_devotion_static =
-                obj.static_definitions
-                    .iter()
-                    .any(|def| match &def.condition {
-                        Some(StaticCondition::DevotionGE { .. }) => true,
-                        Some(StaticCondition::Not { condition })
-                            if matches!(condition.as_ref(), StaticCondition::DevotionGE { .. }) =>
-                        {
-                            true
-                        }
-                        _ => false,
-                    });
-            if has_devotion_static && !obj.base_color.is_empty() {
-                let devotion = count_devotion(state, obj.controller, &obj.base_color);
-                Some((id, devotion))
-            } else {
-                None
+    if dirty.all_objects_dirty || dirty.battlefield_display_dirty {
+        let devotion_cards: Vec<_> = state
+            .objects
+            .iter()
+            .filter_map(|(&id, obj)| {
+                let has_devotion_static =
+                    obj.static_definitions
+                        .iter()
+                        .any(|def| match &def.condition {
+                            Some(StaticCondition::DevotionGE { .. }) => true,
+                            Some(StaticCondition::Not { condition })
+                                if matches!(
+                                    condition.as_ref(),
+                                    StaticCondition::DevotionGE { .. }
+                                ) =>
+                            {
+                                true
+                            }
+                            _ => false,
+                        });
+                if has_devotion_static && !obj.base_color.is_empty() {
+                    let devotion = count_devotion(state, obj.controller, &obj.base_color);
+                    Some((id, devotion))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (id, devotion) in devotion_cards {
+            if let Some(obj) = state.objects.get_mut(&id) {
+                obj.devotion = Some(devotion);
             }
-        })
-        .collect();
-    for (id, devotion) in devotion_cards {
-        if let Some(obj) = state.objects.get_mut(&id) {
-            obj.devotion = Some(devotion);
         }
     }
 
     // CR 903.8: Compute commander tax for display.
-    let commander_taxes: Vec<_> = state
-        .objects
-        .iter()
-        .filter_map(|(&id, obj)| {
-            if obj.is_commander {
-                Some((id, super::commander::commander_tax(state, id)))
-            } else {
-                None
+    if dirty.all_objects_dirty || dirty.battlefield_display_dirty {
+        let commander_taxes: Vec<_> = state
+            .objects
+            .iter()
+            .filter_map(|(&id, obj)| {
+                if obj.is_commander {
+                    Some((id, super::commander::commander_tax(state, id)))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for (id, tax) in commander_taxes {
+            if let Some(obj) = state.objects.get_mut(&id) {
+                obj.commander_tax = Some(tax);
             }
-        })
-        .collect();
-    for (id, tax) in commander_taxes {
-        if let Some(obj) = state.objects.get_mut(&id) {
-            obj.commander_tax = Some(tax);
         }
     }
 
     // Compute dynamic land frame colors from currently available mana options.
-    let mana_color_cards: Vec<_> = state
-        .battlefield
-        .iter()
-        .filter_map(|&id| {
-            let obj = state.objects.get(&id)?;
-            if !obj.card_types.core_types.contains(&CoreType::Land) {
-                return None;
+    if dirty.all_objects_dirty || dirty.mana_display_dirty || dirty.battlefield_display_dirty {
+        let mana_color_cards: Vec<_> = state
+            .battlefield
+            .iter()
+            .filter_map(|&id| {
+                let obj = state.objects.get(&id)?;
+                if !obj.card_types.core_types.contains(&CoreType::Land) {
+                    return None;
+                }
+                let colors = display_land_mana_colors(state, id, obj.controller);
+                Some((id, colors))
+            })
+            .collect();
+        for (id, colors) in mana_color_cards {
+            if let Some(obj) = state.objects.get_mut(&id) {
+                obj.available_mana_colors = colors;
             }
-            let colors = display_land_mana_colors(state, id, obj.controller);
-            Some((id, colors))
-        })
-        .collect();
-    for (id, colors) in mana_color_cards {
-        if let Some(obj) = state.objects.get_mut(&id) {
-            obj.available_mana_colors = colors;
         }
     }
 
     // Compute per-player derived fields
-    let peek_flags: Vec<bool> = state
-        .players
-        .iter()
-        .map(|p| {
+    if dirty.all_players_dirty || dirty.battlefield_display_dirty {
+        let peek_flags: Vec<bool> = state
+            .players
+            .iter()
+            .map(|p| {
+                let ctx = StaticCheckContext {
+                    player_id: Some(p.id),
+                    ..Default::default()
+                };
+                check_static_ability(state, StaticMode::MayLookAtTopOfLibrary, &ctx)
+            })
+            .collect();
+        for (i, flag) in peek_flags.into_iter().enumerate() {
+            state.players[i].can_look_at_top_of_library = flag;
+        }
+    } else {
+        let dirty_players: Vec<_> = dirty.dirty_players.iter().copied().collect();
+        for player_id in dirty_players {
             let ctx = StaticCheckContext {
-                player_id: Some(p.id),
+                player_id: Some(player_id),
                 ..Default::default()
             };
-            check_static_ability(state, StaticMode::MayLookAtTopOfLibrary, &ctx)
-        })
-        .collect();
-    for (i, flag) in peek_flags.into_iter().enumerate() {
-        state.players[i].can_look_at_top_of_library = flag;
+            let flag = check_static_ability(state, StaticMode::MayLookAtTopOfLibrary, &ctx);
+            if let Some(player) = state
+                .players
+                .iter_mut()
+                .find(|player| player.id == player_id)
+            {
+                player.can_look_at_top_of_library = flag;
+            }
+        }
     }
 }
 

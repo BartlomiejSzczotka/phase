@@ -133,9 +133,110 @@ fn collect_evidence_candidate_combos(
     combos
 }
 
-pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
-    let mut actions = match &state.waiting_for {
-        WaitingFor::Priority { player } => priority_actions(state, *player),
+pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
+    match &state.waiting_for {
+        WaitingFor::ReplacementChoice {
+            candidate_count,
+            player,
+            ..
+        } => (0..*candidate_count)
+            .map(|i| {
+                candidate(
+                    GameAction::ChooseReplacement { index: i },
+                    TacticalClass::Replacement,
+                    Some(*player),
+                )
+            })
+            .collect(),
+        WaitingFor::CopyTargetChoice {
+            player,
+            valid_targets,
+            ..
+        } => valid_targets
+            .iter()
+            .map(|&target_id| {
+                candidate(
+                    GameAction::ChooseTarget {
+                        target: Some(TargetRef::Object(target_id)),
+                    },
+                    TacticalClass::Selection,
+                    Some(*player),
+                )
+            })
+            .collect(),
+        WaitingFor::ExploreChoice {
+            player, choosable, ..
+        } => choosable
+            .iter()
+            .map(|&target_id| {
+                candidate(
+                    GameAction::ChooseTarget {
+                        target: Some(TargetRef::Object(target_id)),
+                    },
+                    TacticalClass::Selection,
+                    Some(*player),
+                )
+            })
+            .collect(),
+        WaitingFor::DiscoverChoice { player, .. } => vec![
+            candidate(
+                GameAction::DiscoverChoice { cast: true },
+                TacticalClass::Selection,
+                Some(*player),
+            ),
+            candidate(
+                GameAction::DiscoverChoice { cast: false },
+                TacticalClass::Selection,
+                Some(*player),
+            ),
+        ],
+        WaitingFor::LearnChoice { player, hand_cards } => {
+            let mut actions: Vec<_> = hand_cards
+                .iter()
+                .map(|&card_id| {
+                    candidate(
+                        GameAction::LearnDecision {
+                            choice: LearnOption::Rummage { card_id },
+                        },
+                        TacticalClass::Selection,
+                        Some(*player),
+                    )
+                })
+                .collect();
+            actions.push(candidate(
+                GameAction::LearnDecision {
+                    choice: LearnOption::Skip,
+                },
+                TacticalClass::Selection,
+                Some(*player),
+            ));
+            actions
+        }
+        WaitingFor::TopOrBottomChoice { player, .. }
+        | WaitingFor::ClashCardPlacement { player, .. } => vec![
+            candidate(
+                GameAction::ChooseTopOrBottom { top: true },
+                TacticalClass::Selection,
+                Some(*player),
+            ),
+            candidate(
+                GameAction::ChooseTopOrBottom { top: false },
+                TacticalClass::Selection,
+                Some(*player),
+            ),
+        ],
+        WaitingFor::BetweenGamesChoosePlayDraw { player, .. } => vec![
+            candidate(
+                GameAction::ChoosePlayDraw { play_first: true },
+                TacticalClass::Selection,
+                Some(*player),
+            ),
+            candidate(
+                GameAction::ChoosePlayDraw { play_first: false },
+                TacticalClass::Selection,
+                Some(*player),
+            ),
+        ],
         WaitingFor::MulliganDecision { .. } => vec![
             candidate(
                 GameAction::MulliganDecision { keep: true },
@@ -151,6 +252,13 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
         WaitingFor::MulliganBottomCards { player, count } => {
             bottom_card_actions(state, *player, *count)
         }
+        _ => Vec::new(),
+    }
+}
+
+pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
+    let actions = match &state.waiting_for {
+        WaitingFor::Priority { player } => priority_actions(state, *player),
         WaitingFor::ManaPayment {
             player,
             convoke_mode,
@@ -187,50 +295,6 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
             valid_blocker_ids,
             valid_block_targets,
         } => blocker_actions(*player, valid_blocker_ids, valid_block_targets),
-        WaitingFor::ReplacementChoice {
-            candidate_count,
-            player,
-            ..
-        } => (0..*candidate_count)
-            .map(|i| {
-                candidate(
-                    GameAction::ChooseReplacement { index: i },
-                    TacticalClass::Replacement,
-                    Some(*player),
-                )
-            })
-            .collect(),
-        // CR 707.9: AI chooses a permanent to copy for "enter as a copy of" replacements.
-        WaitingFor::CopyTargetChoice {
-            player,
-            valid_targets,
-            ..
-        } => valid_targets
-            .iter()
-            .map(|&target_id| {
-                candidate(
-                    GameAction::ChooseTarget {
-                        target: Some(TargetRef::Object(target_id)),
-                    },
-                    TacticalClass::Selection,
-                    Some(*player),
-                )
-            })
-            .collect(),
-        WaitingFor::ExploreChoice {
-            player, choosable, ..
-        } => choosable
-            .iter()
-            .map(|&target_id| {
-                candidate(
-                    GameAction::ChooseTarget {
-                        target: Some(TargetRef::Object(target_id)),
-                    },
-                    TacticalClass::Selection,
-                    Some(*player),
-                )
-            })
-            .collect(),
         WaitingFor::EquipTarget {
             player,
             equipment_id,
@@ -255,60 +319,12 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
             crew_power,
             eligible_creatures,
         } => crew_vehicle_candidates(state, *player, *vehicle_id, *crew_power, eligible_creatures),
-        WaitingFor::DiscoverChoice { player, .. } => vec![
-            candidate(
-                GameAction::DiscoverChoice { cast: true },
-                TacticalClass::Selection,
-                Some(*player),
-            ),
-            candidate(
-                GameAction::DiscoverChoice { cast: false },
-                TacticalClass::Selection,
-                Some(*player),
-            ),
-        ],
-        // CR 701.48a: Learn — rummage each card in hand, or skip.
-        WaitingFor::LearnChoice { player, hand_cards } => {
-            let mut actions: Vec<_> = hand_cards
-                .iter()
-                .map(|&card_id| {
-                    candidate(
-                        GameAction::LearnDecision {
-                            choice: LearnOption::Rummage { card_id },
-                        },
-                        TacticalClass::Selection,
-                        Some(*player),
-                    )
-                })
-                .collect();
-            actions.push(candidate(
-                GameAction::LearnDecision {
-                    choice: LearnOption::Skip,
-                },
-                TacticalClass::Selection,
-                Some(*player),
-            ));
-            actions
-        }
         WaitingFor::TapCreaturesForManaAbility {
             player,
             count,
             creatures,
             ..
         } => select_cards_variants(*player, creatures, Some(*count)),
-        WaitingFor::TopOrBottomChoice { player, .. }
-        | WaitingFor::ClashCardPlacement { player, .. } => vec![
-            candidate(
-                GameAction::ChooseTopOrBottom { top: true },
-                TacticalClass::Selection,
-                Some(*player),
-            ),
-            candidate(
-                GameAction::ChooseTopOrBottom { top: false },
-                TacticalClass::Selection,
-                Some(*player),
-            ),
-        ],
         WaitingFor::ScryChoice { player, cards } => select_cards_variants(*player, cards, None),
         WaitingFor::DigChoice {
             player,
@@ -411,18 +427,6 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
             }
         }
         WaitingFor::BetweenGamesSideboard { player, .. } => sideboard_actions(state, *player),
-        WaitingFor::BetweenGamesChoosePlayDraw { player, .. } => vec![
-            candidate(
-                GameAction::ChoosePlayDraw { play_first: true },
-                TacticalClass::Selection,
-                Some(*player),
-            ),
-            candidate(
-                GameAction::ChoosePlayDraw { play_first: false },
-                TacticalClass::Selection,
-                Some(*player),
-            ),
-        ],
         WaitingFor::NamedChoice {
             player,
             options,
@@ -1059,10 +1063,25 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
             })
             .collect(),
         WaitingFor::GameOver { .. } => Vec::new(),
+        WaitingFor::ReplacementChoice { .. }
+        | WaitingFor::CopyTargetChoice { .. }
+        | WaitingFor::ExploreChoice { .. }
+        | WaitingFor::DiscoverChoice { .. }
+        | WaitingFor::LearnChoice { .. }
+        | WaitingFor::TopOrBottomChoice { .. }
+        | WaitingFor::ClashCardPlacement { .. }
+        | WaitingFor::BetweenGamesChoosePlayDraw { .. }
+        | WaitingFor::MulliganDecision { .. }
+        | WaitingFor::MulliganBottomCards { .. } => Vec::new(),
     };
 
-    // Any WaitingFor state with a pending_cast supports CancelCast to back out.
-    // Injected here so every casting-flow state gets it automatically.
+    actions
+}
+
+pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
+    let mut actions = candidate_actions_exact(state);
+    actions.extend(candidate_actions_broad(state));
+
     if state.waiting_for.has_pending_cast() {
         if let Some(player) = state.waiting_for.acting_player() {
             actions.push(candidate(

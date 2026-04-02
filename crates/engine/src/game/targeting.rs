@@ -4,6 +4,7 @@ use crate::types::identifiers::ObjectId;
 use crate::types::keywords::{HexproofFilter, Keyword, ProtectionTarget};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
+use std::collections::HashSet;
 
 /// Find legal targets using a typed TargetFilter (CR 115.2 + CR 702.16b).
 ///
@@ -65,30 +66,95 @@ pub fn find_legal_targets(
     if !explicit_zones.is_empty() {
         // Explicit zone search: ONLY search the specified zones
         for zone in &explicit_zones {
-            for obj_id in zone_object_ids(state, *zone) {
-                if super::filter::matches_target_filter_controlled(
-                    state,
-                    obj_id,
-                    filter,
-                    source_id,
-                    source_controller,
-                ) {
-                    let obj = match state.objects.get(&obj_id) {
-                        Some(o) => o,
-                        None => continue,
-                    };
-                    if *zone == Zone::Battlefield {
-                        // Full targeting rules on battlefield (hexproof, shroud, protection)
-                        if can_target(obj, source_controller, source_id, state) {
-                            targets.push(TargetRef::Object(obj_id));
-                        }
-                    } else {
-                        // Non-battlefield: only protection applies (702.16a)
-                        if !is_protected_from(obj, source_id, state) {
-                            targets.push(TargetRef::Object(obj_id));
+            match zone {
+                Zone::Battlefield => {
+                    for &obj_id in &state.battlefield {
+                        if super::filter::matches_target_filter_controlled(
+                            state,
+                            obj_id,
+                            filter,
+                            source_id,
+                            source_controller,
+                        ) {
+                            let obj = match state.objects.get(&obj_id) {
+                                Some(o) => o,
+                                None => continue,
+                            };
+                            if can_target(obj, source_controller, source_id, state) {
+                                targets.push(TargetRef::Object(obj_id));
+                            }
                         }
                     }
                 }
+                Zone::Exile => add_zone_targets(
+                    state,
+                    &state.exile,
+                    filter,
+                    source_controller,
+                    source_id,
+                    false,
+                    &mut targets,
+                ),
+                Zone::Graveyard => {
+                    for player in &state.players {
+                        add_zone_targets(
+                            state,
+                            &player.graveyard,
+                            filter,
+                            source_controller,
+                            source_id,
+                            false,
+                            &mut targets,
+                        );
+                    }
+                }
+                Zone::Hand => {
+                    for player in &state.players {
+                        add_zone_targets(
+                            state,
+                            &player.hand,
+                            filter,
+                            source_controller,
+                            source_id,
+                            false,
+                            &mut targets,
+                        );
+                    }
+                }
+                Zone::Library => {
+                    for player in &state.players {
+                        add_zone_targets(
+                            state,
+                            &player.library,
+                            filter,
+                            source_controller,
+                            source_id,
+                            false,
+                            &mut targets,
+                        );
+                    }
+                }
+                Zone::Stack => {
+                    for entry in &state.stack {
+                        let obj_id = entry.id;
+                        if super::filter::matches_target_filter_controlled(
+                            state,
+                            obj_id,
+                            filter,
+                            source_id,
+                            source_controller,
+                        ) {
+                            let obj = match state.objects.get(&obj_id) {
+                                Some(o) => o,
+                                None => continue,
+                            };
+                            if !is_protected_from(obj, source_id, state) {
+                                targets.push(TargetRef::Object(obj_id));
+                            }
+                        }
+                    }
+                }
+                Zone::Command => {}
             }
         }
     } else {
@@ -128,11 +194,20 @@ pub fn validate_targets(
     source_id: ObjectId,
 ) -> Vec<TargetRef> {
     let legal = find_legal_targets(state, filter, source_controller, source_id);
-    targets
-        .iter()
-        .filter(|t| legal.contains(t))
-        .cloned()
-        .collect()
+    if legal.len() <= 8 {
+        targets
+            .iter()
+            .filter(|t| legal.contains(t))
+            .cloned()
+            .collect()
+    } else {
+        let legal_set: HashSet<TargetRef> = legal.into_iter().collect();
+        targets
+            .iter()
+            .filter(|t| legal_set.contains(*t))
+            .cloned()
+            .collect()
+    }
 }
 
 /// Returns true if ALL original targets are now illegal (spell fizzles per CR 608.2b).
@@ -276,6 +351,38 @@ fn add_stack_abilities(state: &GameState, source_id: ObjectId, targets: &mut Vec
                 targets.push(TargetRef::Object(entry.id));
             }
             StackEntryKind::Spell { .. } => {}
+        }
+    }
+}
+
+fn add_zone_targets(
+    state: &GameState,
+    object_ids: &[ObjectId],
+    filter: &TargetFilter,
+    source_controller: PlayerId,
+    source_id: ObjectId,
+    require_full_targeting: bool,
+    targets: &mut Vec<TargetRef>,
+) {
+    for &obj_id in object_ids {
+        if super::filter::matches_target_filter_controlled(
+            state,
+            obj_id,
+            filter,
+            source_id,
+            source_controller,
+        ) {
+            let obj = match state.objects.get(&obj_id) {
+                Some(o) => o,
+                None => continue,
+            };
+            if require_full_targeting {
+                if can_target(obj, source_controller, source_id, state) {
+                    targets.push(TargetRef::Object(obj_id));
+                }
+            } else if !is_protected_from(obj, source_id, state) {
+                targets.push(TargetRef::Object(obj_id));
+            }
         }
     }
 }

@@ -307,21 +307,19 @@ pub fn evaluate_layers(state: &mut GameState) {
     }
 
     // Step 2: Gather active continuous effects
-    let effects = gather_active_continuous_effects(state);
+    let effects_by_layer = gather_active_continuous_effects(state);
 
     // Step 3: Process each layer in order
-    for &layer in Layer::all() {
-        if layer == Layer::CounterPT {
+    for (layer, layer_bucket) in &effects_by_layer {
+        if *layer == Layer::CounterPT {
             // Step 4: Counter-based P/T handled separately
             continue;
         }
 
-        let layer_effects: Vec<&ActiveContinuousEffect> =
-            effects.iter().filter(|e| e.layer == layer).collect();
-
-        if layer_effects.is_empty() {
+        if layer_bucket.is_empty() {
             continue;
         }
+        let layer_effects: Vec<&ActiveContinuousEffect> = layer_bucket.iter().collect();
 
         let ordered = if layer.has_dependency_ordering() {
             order_with_dependencies(&layer_effects, state)
@@ -381,8 +379,13 @@ pub fn evaluate_layers(state: &mut GameState) {
 
 /// Collect all active continuous effects from permanents on the battlefield.
 /// CR 613.1: Gather all active continuous effects for layer evaluation.
-fn gather_active_continuous_effects(state: &GameState) -> Vec<ActiveContinuousEffect> {
-    let mut effects = Vec::new();
+fn gather_active_continuous_effects(
+    state: &GameState,
+) -> Vec<(Layer, Vec<ActiveContinuousEffect>)> {
+    let mut effects: Vec<(Layer, Vec<ActiveContinuousEffect>)> = Layer::all()
+        .iter()
+        .map(|&layer| (layer, Vec::new()))
+        .collect();
 
     for &id in &state.battlefield {
         let obj = match state.objects.get(&id) {
@@ -406,16 +409,20 @@ fn gather_active_continuous_effects(state: &GameState) -> Vec<ActiveContinuousEf
 
             // Each modification becomes its own ActiveContinuousEffect with the correct layer
             for modification in &def.modifications {
-                effects.push(ActiveContinuousEffect {
-                    source_id: id,
-                    def_index: Some(def_idx),
-                    layer: modification.layer(),
-                    timestamp: obj.timestamp,
-                    modification: modification.clone(),
-                    affected_filter: affected_filter.clone(),
-                    mode: def.mode.clone(),
-                    characteristic_defining: def.characteristic_defining,
-                });
+                push_effect(
+                    &mut effects,
+                    modification.layer(),
+                    ActiveContinuousEffect {
+                        source_id: id,
+                        def_index: Some(def_idx),
+                        layer: modification.layer(),
+                        timestamp: obj.timestamp,
+                        modification: modification.clone(),
+                        affected_filter: affected_filter.clone(),
+                        mode: def.mode.clone(),
+                        characteristic_defining: def.characteristic_defining,
+                    },
+                );
             }
         }
     }
@@ -441,16 +448,20 @@ fn gather_active_continuous_effects(state: &GameState) -> Vec<ActiveContinuousEf
             let affected_filter = def.affected.clone().unwrap_or(TargetFilter::Any);
 
             for modification in &def.modifications {
-                effects.push(ActiveContinuousEffect {
-                    source_id: id,
-                    def_index: Some(def_idx),
-                    layer: modification.layer(),
-                    timestamp: obj.timestamp,
-                    modification: modification.clone(),
-                    affected_filter: affected_filter.clone(),
-                    mode: def.mode.clone(),
-                    characteristic_defining: def.characteristic_defining,
-                });
+                push_effect(
+                    &mut effects,
+                    modification.layer(),
+                    ActiveContinuousEffect {
+                        source_id: id,
+                        def_index: Some(def_idx),
+                        layer: modification.layer(),
+                        timestamp: obj.timestamp,
+                        modification: modification.clone(),
+                        affected_filter: affected_filter.clone(),
+                        mode: def.mode.clone(),
+                        characteristic_defining: def.characteristic_defining,
+                    },
+                );
             }
         }
     }
@@ -464,12 +475,15 @@ fn gather_active_continuous_effects(state: &GameState) -> Vec<ActiveContinuousEf
 /// Collect active transient effects, filtering out expired host-bound effects.
 fn gather_transient_continuous_effects(
     state: &GameState,
-    effects: &mut Vec<ActiveContinuousEffect>,
+    effects: &mut Vec<(Layer, Vec<ActiveContinuousEffect>)>,
 ) {
     for tce in &state.transient_continuous_effects {
         // UntilHostLeavesPlay: skip if source is no longer on the battlefield
         if tce.duration == Duration::UntilHostLeavesPlay
-            && !state.battlefield.contains(&tce.source_id)
+            && !state
+                .objects
+                .get(&tce.source_id)
+                .is_some_and(|obj| obj.zone == crate::types::zones::Zone::Battlefield)
         {
             continue;
         }
@@ -489,17 +503,37 @@ fn gather_transient_continuous_effects(
         }
 
         for modification in &tce.modifications {
-            effects.push(ActiveContinuousEffect {
-                source_id: tce.source_id,
-                def_index: None,
-                layer: modification.layer(),
-                timestamp: tce.timestamp,
-                modification: modification.clone(),
-                affected_filter: tce.affected.clone(),
-                mode: StaticMode::Continuous,
-                characteristic_defining: false,
-            });
+            push_effect(
+                effects,
+                modification.layer(),
+                ActiveContinuousEffect {
+                    source_id: tce.source_id,
+                    def_index: None,
+                    layer: modification.layer(),
+                    timestamp: tce.timestamp,
+                    modification: modification.clone(),
+                    affected_filter: tce.affected.clone(),
+                    mode: StaticMode::Continuous,
+                    characteristic_defining: false,
+                },
+            );
         }
+    }
+}
+
+#[allow(clippy::ptr_arg)]
+fn push_effect(
+    effects: &mut Vec<(Layer, Vec<ActiveContinuousEffect>)>,
+    layer: Layer,
+    effect: ActiveContinuousEffect,
+) {
+    if let Some((_, bucket)) = effects
+        .iter_mut()
+        .find(|(bucket_layer, _)| *bucket_layer == layer)
+    {
+        bucket.push(effect);
+    } else {
+        effects.push((layer, vec![effect]));
     }
 }
 

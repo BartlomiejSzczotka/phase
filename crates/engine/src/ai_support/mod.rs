@@ -1,7 +1,7 @@
 mod candidates;
 mod context;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::game::engine::apply;
 use crate::game::mana_abilities;
@@ -13,17 +13,332 @@ use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaCost;
 
-pub use candidates::{candidate_actions, ActionMetadata, CandidateAction, TacticalClass};
+pub use candidates::{
+    candidate_actions, candidate_actions_broad, candidate_actions_exact, ActionMetadata,
+    CandidateAction, TacticalClass,
+};
 pub use context::{build_decision_context, AiDecisionContext};
 
 pub fn validated_candidate_actions(state: &GameState) -> Vec<CandidateAction> {
     candidate_actions(state)
         .into_iter()
+        .filter(|candidate| !cheap_reject_candidate(state, &candidate.action))
         .filter(|candidate| {
             let mut sim = state.clone();
             apply(&mut sim, candidate.action.clone()).is_ok()
         })
         .collect()
+}
+
+fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
+    let Some(acting_player) = state.waiting_for.acting_player() else {
+        return true;
+    };
+
+    match (&state.waiting_for, action) {
+        (WaitingFor::Priority { player }, _) if *player != acting_player => true,
+        (WaitingFor::Priority { .. }, GameAction::CastSpell { object_id, .. })
+        | (WaitingFor::Priority { .. }, GameAction::PlayLand { object_id, .. })
+        | (WaitingFor::Priority { .. }, GameAction::Transform { object_id })
+        | (WaitingFor::Priority { .. }, GameAction::TurnFaceUp { object_id })
+        | (WaitingFor::Priority { .. }, GameAction::PlayFaceDown { object_id, .. })
+        | (WaitingFor::Priority { .. }, GameAction::TapLandForMana { object_id })
+        | (WaitingFor::Priority { .. }, GameAction::UntapLandForMana { object_id }) => {
+            !state.objects.contains_key(object_id)
+        }
+        (WaitingFor::Priority { .. }, GameAction::ActivateAbility { source_id, .. })
+        | (
+            WaitingFor::Priority { .. },
+            GameAction::CrewVehicle {
+                vehicle_id: source_id,
+                ..
+            },
+        )
+        | (
+            WaitingFor::Priority { .. },
+            GameAction::Equip {
+                equipment_id: source_id,
+                ..
+            },
+        )
+        | (WaitingFor::Priority { .. }, GameAction::ChooseRingBearer { target: source_id }) => {
+            !state.objects.contains_key(source_id)
+        }
+        (
+            WaitingFor::ReplacementChoice {
+                candidate_count, ..
+            },
+            GameAction::ChooseReplacement { index },
+        ) => *index >= *candidate_count,
+        (
+            WaitingFor::CopyTargetChoice { valid_targets, .. },
+            GameAction::ChooseTarget { target },
+        ) => !matches_target_choice(target, valid_targets),
+        (WaitingFor::ExploreChoice { choosable, .. }, GameAction::ChooseTarget { target }) => {
+            !matches_target_choice(target, choosable)
+        }
+        (WaitingFor::TargetSelection { selection, .. }, GameAction::ChooseTarget { target })
+        | (
+            WaitingFor::TriggerTargetSelection { selection, .. },
+            GameAction::ChooseTarget { target },
+        ) => !matches_waiting_target_choice(selection.current_legal_targets.as_slice(), target),
+        (WaitingFor::ModeChoice { modal, .. }, GameAction::SelectModes { indices })
+        | (WaitingFor::AbilityModeChoice { modal, .. }, GameAction::SelectModes { indices }) => {
+            indices.iter().any(|index| *index >= modal.mode_count)
+                || indices.len() < modal.min_choices
+                || indices.len() > modal.max_choices
+        }
+        (WaitingFor::NamedChoice { options, .. }, GameAction::ChooseOption { choice }) => {
+            !options.is_empty() && !options.iter().any(|option| option == choice)
+        }
+        (WaitingFor::LearnChoice { hand_cards, .. }, GameAction::LearnDecision { choice }) => {
+            match choice {
+                crate::types::actions::LearnOption::Rummage { card_id } => {
+                    !hand_cards.contains(card_id) || !state.objects.contains_key(card_id)
+                }
+                crate::types::actions::LearnOption::Skip => false,
+            }
+        }
+        (WaitingFor::DiscoverChoice { .. }, GameAction::DiscoverChoice { .. })
+        | (WaitingFor::MulliganDecision { .. }, GameAction::MulliganDecision { .. })
+        | (WaitingFor::BetweenGamesChoosePlayDraw { .. }, GameAction::ChoosePlayDraw { .. })
+        | (WaitingFor::TopOrBottomChoice { .. }, GameAction::ChooseTopOrBottom { .. })
+        | (WaitingFor::ClashCardPlacement { .. }, GameAction::ChooseTopOrBottom { .. })
+        | (WaitingFor::OptionalCostChoice { .. }, GameAction::DecideOptionalCost { .. })
+        | (WaitingFor::DefilerPayment { .. }, GameAction::DecideOptionalCost { .. })
+        | (WaitingFor::OptionalEffectChoice { .. }, GameAction::DecideOptionalEffect { .. })
+        | (WaitingFor::OpponentMayChoice { .. }, GameAction::DecideOptionalEffect { .. })
+        | (WaitingFor::UnlessPayment { .. }, GameAction::PayUnlessCost { .. })
+        | (WaitingFor::AdventureCastChoice { .. }, GameAction::ChooseAdventureFace { .. })
+        | (WaitingFor::ModalFaceChoice { .. }, GameAction::ChooseModalFace { .. })
+        | (WaitingFor::WarpCostChoice { .. }, GameAction::ChooseWarpCost { .. }) => false,
+        (WaitingFor::MulliganBottomCards { player, count }, GameAction::SelectCards { cards }) => {
+            selection_mismatch(
+                cards,
+                &state.players[player.0 as usize].hand,
+                Some((*count).into()),
+            )
+        }
+        (
+            WaitingFor::ScryChoice { player: _, cards },
+            GameAction::SelectCards { cards: chosen },
+        )
+        | (
+            WaitingFor::SurveilChoice { player: _, cards },
+            GameAction::SelectCards { cards: chosen },
+        ) => selection_mismatch(chosen, cards, None),
+        (
+            WaitingFor::RevealChoice {
+                player: _, cards, ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => selection_mismatch(chosen, cards, Some(1)),
+        (
+            WaitingFor::SearchChoice {
+                player: _,
+                cards,
+                count,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        )
+        | (
+            WaitingFor::ChooseFromZoneChoice {
+                player: _,
+                cards,
+                count,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        )
+        | (
+            WaitingFor::DiscardForCost {
+                player: _,
+                cards,
+                count,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        )
+        | (
+            WaitingFor::SacrificeForCost {
+                player: _,
+                permanents: cards,
+                count,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        )
+        | (
+            WaitingFor::ExileFromGraveyardForCost {
+                player: _,
+                cards,
+                count,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        )
+        | (
+            WaitingFor::ConniveDiscard {
+                player: _,
+                cards,
+                count,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        )
+        | (
+            WaitingFor::DiscardToHandSize {
+                player: _,
+                cards,
+                count,
+            },
+            GameAction::SelectCards { cards: chosen },
+        )
+        | (
+            WaitingFor::TapCreaturesForManaAbility {
+                player: _,
+                creatures: cards,
+                count,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => selection_mismatch(chosen, cards, Some(*count)),
+        (
+            WaitingFor::EffectZoneChoice {
+                player: _,
+                cards,
+                count,
+                up_to,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        )
+        | (
+            WaitingFor::DiscardChoice {
+                player: _,
+                cards,
+                count,
+                up_to,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => {
+            let exact = if *up_to { None } else { Some(*count) };
+            selection_mismatch(chosen, cards, exact) || (*up_to && chosen.len() > *count)
+        }
+        (
+            WaitingFor::DigChoice {
+                player: _,
+                selectable_cards,
+                keep_count,
+                up_to,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => {
+            let exact = if *up_to {
+                None
+            } else {
+                Some((*keep_count).min(selectable_cards.len()))
+            };
+            selection_mismatch(chosen, selectable_cards, exact)
+                || (*up_to && chosen.len() > *keep_count)
+        }
+        (
+            WaitingFor::CollectEvidenceChoice {
+                player: _, cards, ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => selection_mismatch(chosen, cards, None),
+        (
+            WaitingFor::WardDiscardChoice {
+                player: _, cards, ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        )
+        | (
+            WaitingFor::WardSacrificeChoice {
+                player: _,
+                permanents: cards,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => selection_mismatch(chosen, cards, Some(1)),
+        (
+            WaitingFor::ManifestDreadChoice { player: _, cards },
+            GameAction::SelectCards { cards: chosen },
+        ) => selection_mismatch(chosen, cards, Some(1)),
+        (
+            WaitingFor::DeclareAttackers {
+                player,
+                valid_attacker_ids,
+                ..
+            },
+            GameAction::DeclareAttackers { attacks },
+        ) => {
+            *player != acting_player
+                || attacks.iter().any(|(attacker, _)| {
+                    !valid_attacker_ids.contains(attacker) || !state.objects.contains_key(attacker)
+                })
+        }
+        (
+            WaitingFor::DeclareBlockers {
+                player,
+                valid_blocker_ids,
+                valid_block_targets,
+            },
+            GameAction::DeclareBlockers { assignments },
+        ) => {
+            *player != acting_player
+                || assignments.iter().any(|(blocker, attacker)| {
+                    !valid_blocker_ids.contains(blocker)
+                        || !state.objects.contains_key(blocker)
+                        || !state.objects.contains_key(attacker)
+                        || !valid_block_targets
+                            .get(blocker)
+                            .is_some_and(|targets| targets.contains(attacker))
+                })
+        }
+        _ => false,
+    }
+}
+
+fn selection_mismatch(
+    chosen: &[ObjectId],
+    options: &[ObjectId],
+    exact_count: Option<usize>,
+) -> bool {
+    if exact_count.is_some_and(|count| chosen.len() != count) {
+        return true;
+    }
+    let option_set: HashSet<ObjectId> = options.iter().copied().collect();
+    let mut seen = HashSet::new();
+    chosen
+        .iter()
+        .any(|card| !option_set.contains(card) || !seen.insert(*card))
+}
+
+fn matches_target_choice(
+    target: &Option<crate::types::ability::TargetRef>,
+    valid_targets: &[ObjectId],
+) -> bool {
+    match target {
+        Some(crate::types::ability::TargetRef::Object(target_id)) => {
+            valid_targets.contains(target_id)
+        }
+        _ => false,
+    }
+}
+
+fn matches_waiting_target_choice(
+    valid_targets: &[crate::types::ability::TargetRef],
+    target: &Option<crate::types::ability::TargetRef>,
+) -> bool {
+    match target {
+        Some(target) => valid_targets.contains(target),
+        None => true,
+    }
 }
 
 /// Returns the legal actions for the current game state.
@@ -174,7 +489,9 @@ fn activatable_mana_ability_actions(state: &GameState) -> Vec<GameAction> {
 
 #[cfg(test)]
 mod tests {
-    use super::{candidate_actions, legal_actions, validated_candidate_actions};
+    use super::{
+        candidate_actions, cheap_reject_candidate, legal_actions, validated_candidate_actions,
+    };
     use crate::types::actions::GameAction;
     use crate::types::game_state::{GameState, WaitingFor};
     use crate::types::player::PlayerId;
@@ -210,5 +527,30 @@ mod tests {
         assert!(actions
             .iter()
             .any(|action| matches!(action, GameAction::PassPriority)));
+    }
+
+    #[test]
+    fn cheap_reject_candidate_rejects_out_of_range_replacement_choice() {
+        let mut state = GameState::new_two_player(42);
+        state.waiting_for = WaitingFor::ReplacementChoice {
+            player: PlayerId(0),
+            candidate_count: 2,
+            candidate_descriptions: Vec::new(),
+        };
+
+        assert!(cheap_reject_candidate(
+            &state,
+            &GameAction::ChooseReplacement { index: 2 }
+        ));
+        assert!(!cheap_reject_candidate(
+            &state,
+            &GameAction::ChooseReplacement { index: 1 }
+        ));
+    }
+
+    #[test]
+    fn cheap_reject_candidate_preserves_ambiguous_priority_pass() {
+        let state = GameState::new_two_player(42);
+        assert!(!cheap_reject_candidate(&state, &GameAction::PassPriority));
     }
 }

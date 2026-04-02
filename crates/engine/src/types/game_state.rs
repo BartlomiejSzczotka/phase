@@ -310,6 +310,29 @@ pub struct TargetSelectionProgress {
     pub current_legal_targets: Vec<TargetRef>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PublicStateDirty {
+    pub all_objects_dirty: bool,
+    pub dirty_objects: HashSet<ObjectId>,
+    pub all_players_dirty: bool,
+    pub dirty_players: HashSet<PlayerId>,
+    pub battlefield_display_dirty: bool,
+    pub mana_display_dirty: bool,
+}
+
+impl PublicStateDirty {
+    pub fn all_dirty() -> Self {
+        Self {
+            all_objects_dirty: true,
+            dirty_objects: HashSet::new(),
+            all_players_dirty: true,
+            dirty_players: HashSet::new(),
+            battlefield_display_dirty: true,
+            mana_display_dirty: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum TargetSelectionConstraint {
@@ -1153,6 +1176,10 @@ pub struct GameState {
     // Layer system
     pub layers_dirty: bool,
     pub next_timestamp: u64,
+    #[serde(skip, default = "PublicStateDirty::all_dirty")]
+    pub public_state_dirty: PublicStateDirty,
+    #[serde(skip, default)]
+    pub state_revision: u64,
 
     // Runtime continuous effects (from resolved spells/abilities, not printed card text)
     #[serde(default)]
@@ -1519,6 +1546,8 @@ impl GameState {
             post_replacement_effect: None,
             layers_dirty: true,
             next_timestamp: 1,
+            public_state_dirty: PublicStateDirty::all_dirty(),
+            state_revision: 0,
             transient_continuous_effects: Vec::new(),
             next_continuous_effect_id: 1,
             day_night: None,
@@ -1668,6 +1697,8 @@ impl PartialEq for GameState {
             && self.pending_replacement == other.pending_replacement
             && self.layers_dirty == other.layers_dirty
             && self.next_timestamp == other.next_timestamp
+            && self.public_state_dirty == other.public_state_dirty
+            && self.state_revision == other.state_revision
             && self.day_night == other.day_night
             && self.spells_cast_this_turn == other.spells_cast_this_turn
             && self.spells_cast_last_turn == other.spells_cast_last_turn

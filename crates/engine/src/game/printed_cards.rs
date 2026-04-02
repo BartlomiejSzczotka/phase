@@ -7,7 +7,9 @@ use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
 use crate::types::counter::CounterType;
 
 use super::game_object::{BackFaceData, GameObject};
-use super::public_state::finalize_public_state;
+use super::public_state::{
+    bump_state_revision, finalize_public_state, mark_public_state_all_dirty,
+};
 
 pub fn printed_ref_from_face(card_face: &CardFace) -> Option<PrintedCardRef> {
     card_face
@@ -276,6 +278,8 @@ pub fn rehydrate_game_from_card_db(state: &mut GameState, db: &CardDatabase) {
     }
 
     if changed_any || state.layers_dirty {
+        bump_state_revision(state);
+        mark_public_state_all_dirty(state);
         finalize_public_state(state);
     }
 }

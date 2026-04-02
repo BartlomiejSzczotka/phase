@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::types::ability::{
     AbilityDefinition, ControllerRef, Effect, ModalChoice, PlayerFilter, ResolvedAbility,
@@ -27,8 +27,8 @@ use super::speed::{
 };
 use super::stack;
 
-// Re-export so existing `use crate::game::triggers::build_trigger_registry` paths still work.
-pub use super::trigger_matchers::build_trigger_registry;
+// Re-export so existing paths stay valid.
+pub use super::trigger_matchers::{build_trigger_registry, trigger_matcher};
 
 /// Function signature for trigger matchers: returns true if event matches the trigger.
 pub type TriggerMatcher = fn(
@@ -89,24 +89,30 @@ fn ward_cost_to_unless_cost(ward_cost: &WardCost) -> UnlessCost {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Check trigger definitions on an object against an event, collecting matches into `pending`.
 ///
 /// When `zone_filter` is `Some(zone)`, only trigger definitions whose `trigger_zones`
 /// contains that zone will be checked. This enables graveyard (and future exile) triggers
 /// without scanning every zone unconditionally.
+struct MatchedTrigger {
+    trig_idx: usize,
+    pending: PendingTrigger,
+    batched: bool,
+    constraint: Option<crate::types::ability::TriggerConstraint>,
+}
+
+#[allow(clippy::too_many_arguments)]
 fn collect_matching_triggers(
-    state: &mut GameState,
-    registry: &HashMap<TriggerMode, TriggerMatcher>,
+    state: &GameState,
     event: &GameEvent,
     obj_id: ObjectId,
     controller: PlayerId,
     trigger_defs: &[TriggerDefinition],
     timestamp: u32,
     zone_filter: Option<Zone>,
-    pending: &mut Vec<PendingTrigger>,
     batched_this_pass: &mut HashSet<(ObjectId, usize)>,
-) {
+) -> Vec<MatchedTrigger> {
+    let mut pending = Vec::new();
     for (trig_idx, trig_def) in trigger_defs.iter().enumerate() {
         // Zone guard: only fire a trigger if its declared zones include the zone being scanned.
         // Empty trigger_zones defaults to battlefield-only (engine-internal triggers like
@@ -127,29 +133,28 @@ fn collect_matching_triggers(
         if trig_def.batched && batched_this_pass.contains(&(obj_id, trig_idx)) {
             continue;
         }
-        if let Some(matcher) = registry.get(&trig_def.mode) {
-            if matcher(event, trig_def, obj_id, state) {
-                if !check_trigger_constraint(state, trig_def, obj_id, trig_idx, controller, event) {
+        if let Some(matcher) = trigger_matcher(trig_def.mode.clone()) {
+            if !matcher(event, trig_def, obj_id, state) {
+                continue;
+            }
+            if !check_trigger_constraint(state, trig_def, obj_id, trig_idx, controller, event) {
+                continue;
+            }
+            if let Some(ref condition) = trig_def.condition {
+                if !check_trigger_condition(state, condition, controller, Some(obj_id), Some(event))
+                {
                     continue;
                 }
-                if let Some(ref condition) = trig_def.condition {
-                    if !check_trigger_condition(
-                        state,
-                        condition,
-                        controller,
-                        Some(obj_id),
-                        Some(event),
-                    ) {
-                        continue;
-                    }
-                }
-                let ability = build_triggered_ability(state, trig_def, obj_id, controller);
-                let (modal, mode_abilities) = trig_def
-                    .execute
-                    .as_ref()
-                    .map(|exec| (exec.modal.clone(), exec.mode_abilities.clone()))
-                    .unwrap_or_default();
-                pending.push(PendingTrigger {
+            }
+            let ability = build_triggered_ability(state, trig_def, obj_id, controller);
+            let (modal, mode_abilities) = trig_def
+                .execute
+                .as_ref()
+                .map(|exec| (exec.modal.clone(), exec.mode_abilities.clone()))
+                .unwrap_or_default();
+            pending.push(MatchedTrigger {
+                trig_idx,
+                pending: PendingTrigger {
                     source_id: obj_id,
                     controller,
                     condition: trig_def.condition.clone(),
@@ -160,14 +165,13 @@ fn collect_matching_triggers(
                     modal,
                     mode_abilities,
                     description: trig_def.description.clone(),
-                });
-                record_trigger_fired(state, trig_def, obj_id, trig_idx);
-                if trig_def.batched {
-                    batched_this_pass.insert((obj_id, trig_idx));
-                }
-            }
+                },
+                batched: trig_def.batched,
+                constraint: trig_def.constraint.clone(),
+            });
         }
     }
+    pending
 }
 
 fn trigger_source_ids_for_zone(state: &GameState, zone: Zone) -> Vec<ObjectId> {
@@ -195,7 +199,6 @@ fn trigger_source_ids_for_zone(state: &GameState, zone: Zone) -> Vec<ObjectId> {
 /// Process events and place triggered abilities on the stack in APNAP order.
 /// CR 603.3b: Process triggered abilities waiting to be put on the stack.
 pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
-    let registry = build_trigger_registry();
     let mut pending: Vec<PendingTrigger> = Vec::new();
     // CR 603.2c: Track which batched triggers (source_id, trig_idx) have already
     // fired in this pass so "one or more" triggers fire at most once per batch.
@@ -206,12 +209,12 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
         for obj_id in trigger_source_ids_for_zone(state, Zone::Battlefield) {
             let (
                 controller,
-                trigger_defs,
                 timestamp,
                 has_prowess,
                 has_exploit,
                 firebending_n,
                 ward_costs,
+                matched_triggers,
             ) = {
                 let obj = match state.objects.get(&obj_id) {
                     Some(o) => o,
@@ -225,40 +228,49 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                     }
                 });
                 // CR 702.21a: Collect all ward costs — each instance triggers independently.
-                let wards: Vec<WardCost> = obj
-                    .keywords
-                    .iter()
-                    .filter_map(|k| {
-                        if let Keyword::Ward(cost) = k {
-                            Some(cost.clone())
-                        } else {
-                            None
-                        }
-                    })
-                    .collect();
+                let wards = if matches!(event, GameEvent::BecomesTarget { .. }) {
+                    obj.keywords
+                        .iter()
+                        .filter_map(|k| {
+                            if let Keyword::Ward(cost) = k {
+                                Some(cost.clone())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 (
                     obj.controller,
-                    obj.trigger_definitions.clone(),
                     obj.entered_battlefield_turn.unwrap_or(0),
-                    obj.has_keyword(&Keyword::Prowess),
-                    obj.has_keyword(&Keyword::Exploit),
+                    matches!(event, GameEvent::SpellCast { .. })
+                        && obj.has_keyword(&Keyword::Prowess),
+                    matches!(event, GameEvent::ZoneChanged { .. })
+                        && obj.has_keyword(&Keyword::Exploit),
                     fb_n,
                     wards,
+                    collect_matching_triggers(
+                        state,
+                        event,
+                        obj_id,
+                        obj.controller,
+                        &obj.trigger_definitions,
+                        obj.entered_battlefield_turn.unwrap_or(0),
+                        Some(Zone::Battlefield),
+                        &mut batched_this_pass,
+                    ),
                 )
             };
 
-            collect_matching_triggers(
-                state,
-                &registry,
-                event,
-                obj_id,
-                controller,
-                &trigger_defs,
-                timestamp,
-                Some(Zone::Battlefield),
-                &mut pending,
-                &mut batched_this_pass,
-            );
+            for matched in matched_triggers {
+                record_trigger_fired(state, matched.constraint.as_ref(), obj_id, matched.trig_idx);
+                if matched.batched {
+                    batched_this_pass.insert((obj_id, matched.trig_idx));
+                }
+                pending.push(matched.pending);
+            }
 
             // CR 702.108a: Prowess triggers when controller casts a noncreature spell.
             // Cards define Prowess as K:Prowess with no explicit trigger_definition,
@@ -446,26 +458,35 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
         // CR 113.6k: Non-battlefield trigger zones are opt-in via trigger_zones.
         for zone in [Zone::Graveyard, Zone::Exile, Zone::Stack] {
             for obj_id in trigger_source_ids_for_zone(state, zone) {
-                let (controller, trigger_defs) = {
+                let matched_triggers = {
                     let obj = match state.objects.get(&obj_id) {
                         Some(o) => o,
                         None => continue,
                     };
-                    (obj.controller, obj.trigger_definitions.clone())
+                    collect_matching_triggers(
+                        state,
+                        event,
+                        obj_id,
+                        obj.controller,
+                        &obj.trigger_definitions,
+                        0,
+                        Some(zone),
+                        &mut batched_this_pass,
+                    )
                 };
 
-                collect_matching_triggers(
-                    state,
-                    &registry,
-                    event,
-                    obj_id,
-                    controller,
-                    &trigger_defs,
-                    0,
-                    Some(zone),
-                    &mut pending,
-                    &mut batched_this_pass,
-                );
+                for matched in matched_triggers {
+                    record_trigger_fired(
+                        state,
+                        matched.constraint.as_ref(),
+                        obj_id,
+                        matched.trig_idx,
+                    );
+                    if matched.batched {
+                        batched_this_pass.insert((obj_id, matched.trig_idx));
+                    }
+                    pending.push(matched.pending);
+                }
             }
         }
 
@@ -935,8 +956,7 @@ fn delayed_trigger_matches(
         }),
         // CR 603.7c: "Whenever [event] this turn" — delegate to trigger matcher registry.
         DelayedTriggerCondition::WheneverEvent { trigger } => {
-            let registry = super::trigger_matchers::build_trigger_registry();
-            if let Some(matcher) = registry.get(&trigger.mode) {
+            if let Some(matcher) = super::trigger_matchers::trigger_matcher(trigger.mode.clone()) {
                 events
                     .iter()
                     .any(|event| matcher(event, trigger, source_id, state))
@@ -1342,13 +1362,13 @@ fn player_field(state: &GameState, controller: PlayerId, f: impl Fn(&Player) -> 
 /// Record that a constrained trigger has fired.
 fn record_trigger_fired(
     state: &mut GameState,
-    trig_def: &TriggerDefinition,
+    constraint: Option<&crate::types::ability::TriggerConstraint>,
     obj_id: ObjectId,
     trig_idx: usize,
 ) {
     use crate::types::ability::TriggerConstraint;
 
-    let constraint = match &trig_def.constraint {
+    let constraint = match constraint {
         Some(c) => c,
         None => return, // No constraint — nothing to track
     };

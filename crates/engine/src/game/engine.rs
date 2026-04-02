@@ -33,7 +33,9 @@ use super::match_flow;
 use super::mulligan;
 use super::planeswalker;
 use super::priority;
-use super::public_state::{finalize_public_state, sync_waiting_for};
+use super::public_state::{
+    bump_state_revision, finalize_public_state, mark_public_state_all_dirty, sync_waiting_for,
+};
 use super::turns;
 use super::zones;
 
@@ -55,6 +57,8 @@ pub fn apply(state: &mut GameState, action: GameAction) -> Result<ActionResult, 
     // consumed by sub_ability continuations via EventContextAmount fallback.
     state.last_effect_count = None;
     let mut result = apply_action(state, action)?;
+    bump_state_revision(state);
+    mark_public_state_all_dirty(state);
     sync_waiting_for(state, &result.waiting_for);
     run_auto_pass_loop(state, &mut result);
     finalize_public_state(state);
@@ -2292,6 +2296,8 @@ pub fn start_game_with_starting_player(
     };
 
     state.waiting_for = waiting_for.clone();
+    bump_state_revision(state);
+    mark_public_state_all_dirty(state);
     finalize_public_state(state);
 
     let log_entries = super::log::resolve_log_entries(&events, state);
@@ -2320,6 +2326,8 @@ pub fn start_game_skip_mulligan(state: &mut GameState) -> ActionResult {
 
     let waiting_for = turns::auto_advance(state, &mut events);
     state.waiting_for = waiting_for.clone();
+    bump_state_revision(state);
+    mark_public_state_all_dirty(state);
     finalize_public_state(state);
 
     let log_entries = super::log::resolve_log_entries(&events, state);
