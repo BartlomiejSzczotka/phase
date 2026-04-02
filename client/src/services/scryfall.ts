@@ -20,6 +20,8 @@ function loadImageMap(): Promise<ImageMap | null> {
 
 const SCRYFALL_DELAY_MS = 75;
 const NOT_FOUND_TTL_MS = 10 * 60 * 1000; // 10 minutes
+const MAX_RETRIES = 3;
+const BASE_BACKOFF_MS = 1000;
 
 /** Cards that returned 404 from both exact and fuzzy lookup. */
 const notFoundCache = new Map<string, number>();
@@ -52,7 +54,17 @@ interface ScryfallSearchResponse {
 
 let lastRequestTime = 0;
 
-async function rateLimitedFetch(url: string): Promise<Response> {
+/**
+ * Rate-limited fetch with 429 backoff and retry.
+ *
+ * Enforces a minimum delay between requests (Scryfall asks for 50-100ms),
+ * and automatically retries on 429 using the Retry-After header with
+ * exponential backoff as a fallback.
+ */
+async function rateLimitedFetch(
+  url: string,
+  attempt: number = 0,
+): Promise<Response> {
   const now = Date.now();
   const elapsed = now - lastRequestTime;
   if (elapsed < SCRYFALL_DELAY_MS) {
@@ -61,7 +73,19 @@ async function rateLimitedFetch(url: string): Promise<Response> {
     );
   }
   lastRequestTime = Date.now();
-  return fetch(url);
+
+  const response = await fetch(url);
+
+  if (response.status === 429 && attempt < MAX_RETRIES) {
+    const retryAfter = response.headers.get("Retry-After");
+    const delayMs = retryAfter
+      ? parseInt(retryAfter, 10) * 1000
+      : BASE_BACKOFF_MS * 2 ** attempt;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    return rateLimitedFetch(url, attempt + 1);
+  }
+
+  return response;
 }
 
 /** Strip set code brackets (e.g. "Goblin Lackey [UZ]" → "Goblin Lackey"). */
@@ -239,12 +263,6 @@ export async function searchScryfall(
 
   if (signal?.aborted) {
     return { cards: [], total: 0 };
-  }
-
-  if (response.status === 429) {
-    const retryAfter = parseInt(response.headers.get("Retry-After") ?? "1", 10);
-    await new Promise((r) => setTimeout(r, retryAfter * 1000));
-    return searchScryfall(query, signal);
   }
 
   if (response.status === 404) {
