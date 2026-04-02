@@ -64,7 +64,16 @@ export default defineConfig({
       includeAssets: ["**/*.mp3", "**/*.m4a"],
       workbox: {
         maximumFileSizeToCacheInBytes: 15 * 1024 * 1024,
+        globIgnores: ["**/engine_wasm_bg-*.wasm"],
         runtimeCaching: [
+          {
+            urlPattern: /engine_wasm_bg-.*\.wasm$/,
+            handler: "CacheFirst",
+            options: {
+              cacheName: "engine-wasm",
+              expiration: { maxEntries: 2, maxAgeSeconds: 2592000 },
+            },
+          },
           {
             urlPattern: /card-data\.json$/,
             handler: "StaleWhileRevalidate",

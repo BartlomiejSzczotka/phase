@@ -1,8 +1,7 @@
 import { audioManager, initAudioOnInteraction } from "../audio/AudioManager";
-import { ensureWasmInit } from "../services/cardData";
 
 export interface PreloadProgress {
-  phase: "wasm" | "audio" | "complete";
+  phase: "audio" | "complete";
   percent: number;
 }
 
@@ -25,8 +24,8 @@ export function subscribePreload(listener: ProgressListener): () => void {
 
 /**
  * Run the startup preload sequence:
- * 1. Initialize WASM module (0–50%)
- * 2. Preload SFX audio buffers (50–100%)
+ * 1. Register music interaction listeners
+ * 2. Preload SFX audio buffers
  *
  * Also registers audio interaction listeners for music playback.
  * Idempotent — safe to call multiple times.
@@ -35,20 +34,9 @@ export function ensurePreload(): Promise<void> {
   if (preloadPromise) return preloadPromise;
 
   preloadPromise = (async () => {
-    // Phase 1: WASM init (0–50%)
-    emit({ phase: "wasm", percent: 5 });
-    try {
-      await ensureWasmInit();
-    } catch {
-      // WASM init failure — continue so splash still dismisses
-    }
-    emit({ phase: "wasm", percent: 50 });
-
-    // Register audio interaction listeners (music starts on first click)
     initAudioOnInteraction();
 
-    // Phase 2: SFX preload (50–100%)
-    emit({ phase: "audio", percent: 55 });
+    emit({ phase: "audio", percent: 20 });
     audioManager.warmUp();
     await audioManager.preloadSfx();
     emit({ phase: "complete", percent: 100 });

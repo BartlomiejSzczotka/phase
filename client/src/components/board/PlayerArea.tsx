@@ -1,9 +1,7 @@
-import { useMemo } from "react";
-
-import type { GameObject, PlayerId } from "../../adapter/types.ts";
+import type { PlayerId } from "../../adapter/types.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
-import { partitionByType, groupByName } from "../../viewmodel/battlefieldProps.ts";
 import type { GroupedPermanent } from "../../viewmodel/battlefieldProps.ts";
+import type { PlayerBattlefieldView } from "../../viewmodel/gameStateView.ts";
 import { BattlefieldRow } from "./BattlefieldRow.tsx";
 import { GroupedPermanentDisplay } from "./GroupedPermanent.tsx";
 import { CompactStrip } from "./CompactStrip.tsx";
@@ -46,35 +44,19 @@ interface PlayerAreaProps {
   landColumnExtra?: React.ReactNode;
   /** Override creature groups with pre-sorted list (for blocker alignment) */
   creatureOverride?: GroupedPermanent[];
+  battlefieldView?: PlayerBattlefieldView;
 }
 
-export function PlayerArea({ playerId, mode, onFocus, isActive, landColumnExtra, creatureOverride }: PlayerAreaProps) {
+export function PlayerArea({
+  playerId,
+  mode,
+  onFocus,
+  isActive,
+  landColumnExtra,
+  creatureOverride,
+  battlefieldView,
+}: PlayerAreaProps) {
   const gameState = useGameStore((s) => s.gameState);
-
-  const partitioned = useMemo(() => {
-    if (!gameState) return null;
-
-    const battlefieldObjects = gameState.battlefield
-      .map((id) => gameState.objects[id])
-      .filter(Boolean);
-
-    const playerObjects = battlefieldObjects.filter(
-      (obj) => obj.controller === playerId,
-    );
-
-    const partition = partitionByType(playerObjects);
-    const objectMap = new Map(playerObjects.map((o) => [o.id, o]));
-    const resolveObjects = (ids: number[]) =>
-      ids.map((id) => objectMap.get(id)).filter(Boolean) as GameObject[];
-
-    return {
-      creatures: groupByName(resolveObjects(partition.creatures)),
-      lands: groupByName(resolveObjects(partition.lands)),
-      support: groupByName(resolveObjects(partition.support)),
-      planeswalkers: groupByName(resolveObjects(partition.planeswalkers)),
-      other: groupByName(resolveObjects(partition.other)),
-    };
-  }, [gameState, playerId]);
 
   if (!gameState) return null;
 
@@ -93,6 +75,7 @@ export function PlayerArea({ playerId, mode, onFocus, isActive, landColumnExtra,
   const isCommander = gameState.format_config?.format === "Commander";
   const isEliminated = player?.is_eliminated ?? false;
   const isMirrored = mode === "focused";
+  const partitioned = battlefieldView;
 
   const creatures = creatureOverride ?? partitioned?.creatures ?? [];
   const hasPlaneswalkers = (partitioned?.planeswalkers.length ?? 0) > 0;

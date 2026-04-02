@@ -1,9 +1,9 @@
 import { memo, useMemo, useState } from "react";
 
 import type { GroupedPermanent as GroupedPermanentType } from "../../viewmodel/battlefieldProps";
-import { useGameStore } from "../../stores/gameStore.ts";
 import { usePreferencesStore } from "../../stores/preferencesStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
+import { useBoardInteractionState } from "./BoardInteractionContext.tsx";
 import { PermanentCard } from "./PermanentCard.tsx";
 
 interface GroupedPermanentProps {
@@ -14,14 +14,11 @@ export const GroupedPermanentDisplay = memo(function GroupedPermanentDisplay({ g
   const [expanded, setExpanded] = useState(false);
   const battlefieldCardDisplay = usePreferencesStore((s) => s.battlefieldCardDisplay);
   const combatMode = useUiStore((s) => s.combatMode);
-
-  // During blocker assignment, check if this group contains any attacking creatures
-  const combatAttackers = useGameStore((s) => s.gameState?.combat?.attackers);
+  const { committedAttackerIds } = useBoardInteractionState();
   const containsAttacker = useMemo(() => {
-    if (combatMode !== "blockers" || !combatAttackers) return false;
-    const attackerIds = combatAttackers.map((a) => a.object_id);
-    return group.ids.some((id) => attackerIds.includes(id));
-  }, [combatMode, combatAttackers, group.ids]);
+    if (combatMode !== "blockers") return false;
+    return group.ids.some((id) => committedAttackerIds.has(id));
+  }, [combatMode, committedAttackerIds, group.ids]);
 
   // Auto-expand during blocker mode when the group contains attackers
   const effectiveExpanded = expanded || containsAttacker;

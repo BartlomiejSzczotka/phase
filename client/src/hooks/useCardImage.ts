@@ -15,6 +15,120 @@ interface UseCardImageResult {
   isLoading: boolean;
 }
 
+interface MemoryCacheEntry {
+  objectUrl: string | null;
+  pendingRelease: boolean;
+  promise: Promise<string | null> | null;
+  refCount: number;
+  src: string | null;
+}
+
+const imageRequestCache = new Map<string, MemoryCacheEntry>();
+
+function imageRequestKey(
+  cardName: string,
+  size: string,
+  faceIndex: number,
+  isToken: boolean,
+  filterPower: number | null,
+  filterToughness: number | null,
+  filterColors: string,
+): string {
+  return [
+    cardName,
+    size,
+    String(faceIndex),
+    isToken ? "token" : "card",
+    filterPower ?? "",
+    filterToughness ?? "",
+    filterColors,
+  ].join("|");
+}
+
+function releaseCachedImageSrc(key: string): void {
+  const entry = imageRequestCache.get(key);
+  if (!entry) return;
+  entry.refCount = Math.max(0, entry.refCount - 1);
+  if (entry.refCount === 0) {
+    if (entry.promise) {
+      entry.pendingRelease = true;
+      return;
+    }
+    if (entry.objectUrl) {
+      revokeImageUrl(entry.objectUrl);
+    }
+    imageRequestCache.delete(key);
+  }
+}
+
+async function acquireCachedImageSrc(
+  key: string,
+  cardName: string,
+  size: "small" | "normal" | "large" | "art_crop",
+  faceIndex: number,
+  isToken: boolean,
+  filterPower: number | null,
+  filterToughness: number | null,
+  filterColors: string,
+): Promise<string | null> {
+  const existing = imageRequestCache.get(key);
+  if (existing) {
+    existing.refCount += 1;
+    if (existing.src !== null) return existing.src;
+    if (existing.promise) return existing.promise;
+  }
+
+  const entry: MemoryCacheEntry = {
+    objectUrl: null,
+    pendingRelease: false,
+    promise: null,
+    refCount: 1,
+    src: null,
+  };
+  imageRequestCache.set(key, entry);
+
+  const finalizeEntry = (resolvedSrc: string | null) => {
+    entry.src = resolvedSrc;
+    entry.promise = null;
+    if (entry.pendingRelease && entry.refCount === 0) {
+      if (entry.objectUrl) {
+        revokeImageUrl(entry.objectUrl);
+      }
+      imageRequestCache.delete(key);
+    }
+    return resolvedSrc;
+  };
+
+  entry.promise = (async () => {
+    const filterSuffix = isToken
+      ? `:${filterPower ?? ""}/${filterToughness ?? ""}/${filterColors}`
+      : "";
+    const cacheKey = isToken ? `token:${cardName}${filterSuffix}` : cardName;
+    const cached = await getCachedImage(cacheKey, size);
+    if (cached) {
+      entry.objectUrl = cached;
+      return finalizeEntry(cached);
+    }
+
+    const remoteSrc = isToken
+      ? await fetchTokenImageUrl(cardName, size, {
+          power: filterPower,
+          toughness: filterToughness,
+          colors: filterColors ? filterColors.split(",") : undefined,
+        })
+      : await fetchCardImageUrl(cardName, faceIndex, size);
+    return finalizeEntry(remoteSrc);
+  })().catch((error) => {
+    if (entry.objectUrl) {
+      revokeImageUrl(entry.objectUrl);
+    }
+    imageRequestCache.delete(key);
+    throw error;
+  });
+
+  return entry.promise;
+}
+
 export function useCardImage(
   cardName: string,
   options?: UseCardImageOptions,
@@ -29,6 +143,15 @@ export function useCardImage(
   const filterColors = tokenFilters?.colors?.join(",") ?? "";
   const [src, setSrc] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const requestKey = imageRequestKey(
+    cardName,
+    size,
+    faceIndex,
+    isToken,
+    filterPower,
+    filterToughness,
+    filterColors,
+  );
 
   useEffect(() => {
     if (!cardName) {
@@ -38,38 +161,22 @@ export function useCardImage(
     }
 
     let cancelled = false;
-    let objectUrl: string | null = null;
 
     async function loadImage() {
       setIsLoading(true);
       setSrc(null);
 
       try {
-        // Check IndexedDB cache first (tokens use a prefixed key with filters to avoid collisions)
-        const filterSuffix = isToken ? `:${filterPower ?? ""}/${filterToughness ?? ""}/${filterColors}` : "";
-        const key = isToken ? `token:${cardName}${filterSuffix}` : cardName;
-        const cached = await getCachedImage(key, size);
-        if (cached) {
-          if (!cancelled) {
-            objectUrl = cached;
-            setSrc(cached);
-            setIsLoading(false);
-          } else {
-            revokeImageUrl(cached);
-          }
-          return;
-        }
-
-        // Cache miss — resolve Scryfall CDN URL and set directly as img src
-        // (cross-origin images can't be fetched as blobs without CORS headers,
-        // but <img src> bypasses CORS; the browser HTTP cache handles repeat loads)
-        const imageUrl = isToken
-          ? await fetchTokenImageUrl(cardName, size, {
-              power: filterPower,
-              toughness: filterToughness,
-              colors: filterColors ? filterColors.split(",") : undefined,
-            })
-          : await fetchCardImageUrl(cardName, faceIndex, size);
+        const imageUrl = await acquireCachedImageSrc(
+          requestKey,
+          cardName,
+          size,
+          faceIndex,
+          isToken,
+          filterPower,
+          filterToughness,
+          filterColors,
+        );
         if (!cancelled) {
           setSrc(imageUrl);
           setIsLoading(false);
@@ -85,11 +192,9 @@ export function useCardImage(
 
     return () => {
       cancelled = true;
-      if (objectUrl) {
-        revokeImageUrl(objectUrl);
-      }
+      releaseCachedImageSrc(requestKey);
     };
-  }, [cardName, size, faceIndex, isToken, filterPower, filterToughness, filterColors]);
+  }, [cardName, faceIndex, filterColors, filterPower, filterToughness, isToken, requestKey, size]);
 
   return { src, isLoading };
 }

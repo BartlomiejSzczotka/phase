@@ -1,15 +1,21 @@
 import { useMemo } from "react";
 
-import type { GameObject, PlayerId } from "../../adapter/types.ts";
+import type { PlayerId } from "../../adapter/types.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { usePlayerId } from "../../hooks/usePlayerId.ts";
-import { partitionByType, groupByName } from "../../viewmodel/battlefieldProps.ts";
 import { sortCreaturesForBlockers } from "../../viewmodel/blockerSorting.ts";
+import {
+  buildPlayerBattlefieldView,
+  getOpponentIds,
+} from "../../viewmodel/gameStateView.ts";
+import { BoardInteractionContext } from "./BoardInteractionContext.tsx";
 import { PlayerArea } from "./PlayerArea.tsx";
 
 export function GameBoard() {
   const gameState = useGameStore((s) => s.gameState);
+  const waitingFor = useGameStore((s) => s.waitingFor);
+  const legalActions = useGameStore((s) => s.legalActions);
   const canUndo = useGameStore((s) => s.stateHistory.length > 0);
   const undo = useGameStore((s) => s.undo);
   const blockerAssignments = useUiStore((s) => s.blockerAssignments);
@@ -18,42 +24,136 @@ export function GameBoard() {
   // Track which opponent is focused (expanded) in multiplayer
   const focusedOpponent = useUiStore((s) => s.focusedOpponent) as PlayerId | null;
 
-  // Compute live opponents from seat order
   const opponents = useMemo(() => {
-    if (!gameState) return [];
-    const seatOrder = gameState.seat_order ?? gameState.players.map((p) => p.id);
-    const eliminated = gameState.eliminated_players ?? [];
-    return seatOrder.filter((id) => id !== myId && !eliminated.includes(id));
+    return getOpponentIds(gameState, myId);
   }, [gameState, myId]);
 
-  // For blocker sorting: compute grouped creatures for the focused/single opponent
   const focusedId = focusedOpponent ?? (opponents.length === 1 ? opponents[0] : null);
+  const playerBattlefieldView = useMemo(
+    () => buildPlayerBattlefieldView(gameState, myId),
+    [gameState, myId],
+  );
+  const focusedBattlefieldView = useMemo(
+    () => (focusedId == null ? null : buildPlayerBattlefieldView(gameState, focusedId)),
+    [gameState, focusedId],
+  );
 
   const sortedPlayerCreatures = useMemo(() => {
-    if (!gameState || focusedId == null) return undefined;
+    if (!focusedBattlefieldView) return undefined;
+    return sortCreaturesForBlockers(
+      playerBattlefieldView.creatures,
+      focusedBattlefieldView.creatures,
+      blockerAssignments,
+    );
+  }, [playerBattlefieldView, focusedBattlefieldView, blockerAssignments]);
 
-    const battlefieldObjects = gameState.battlefield
-      .map((id) => gameState.objects[id])
-      .filter(Boolean);
+  const boardInteractionState = useMemo(() => {
+    const validTargetObjectIds = new Set<number>();
+    const validAttackerIds = new Set<number>();
+    const activatableObjectIds = new Set<number>();
+    const manaTappableObjectIds = new Set<number>();
+    const selectableManaCostCreatureIds = new Set<number>();
+    const undoableTapObjectIds = new Set<number>();
+    const committedAttackerIds = new Set<number>();
 
-    const partitionAndGroup = (objects: GameObject[]) => {
-      const partition = partitionByType(objects);
-      const objectMap = new Map(objects.map((o) => [o.id, o]));
-      const resolveObjects = (ids: number[]) =>
-        ids.map((id) => objectMap.get(id)).filter(Boolean) as GameObject[];
+    if (gameState?.combat?.attackers) {
+      for (const attacker of gameState.combat.attackers) {
+        committedAttackerIds.add(attacker.object_id);
+      }
+    }
+
+    if (gameState?.lands_tapped_for_mana?.[myId]) {
+      for (const objectId of gameState.lands_tapped_for_mana[myId]) {
+        undoableTapObjectIds.add(objectId);
+      }
+    }
+
+    if (waitingFor?.type === "DeclareAttackers") {
+      for (const objectId of waitingFor.data.valid_attacker_ids ?? []) {
+        validAttackerIds.add(objectId);
+      }
+    }
+
+    if (
+      waitingFor?.type === "TargetSelection"
+      || waitingFor?.type === "TriggerTargetSelection"
+    ) {
+      for (const target of waitingFor.data.selection.current_legal_targets) {
+        if ("Object" in target) {
+          validTargetObjectIds.add(target.Object);
+        }
+      }
+    } else if (waitingFor?.type === "CopyTargetChoice") {
+      for (const objectId of waitingFor.data.valid_targets) {
+        validTargetObjectIds.add(objectId);
+      }
+    } else if (waitingFor?.type === "ExploreChoice") {
+      for (const objectId of waitingFor.data.choosable) {
+        validTargetObjectIds.add(objectId);
+      }
+    } else if (waitingFor?.type === "TapCreaturesForManaAbility") {
+      for (const objectId of waitingFor.data.creatures) {
+        selectableManaCostCreatureIds.add(objectId);
+      }
+    }
+
+    if (!gameState?.objects) {
       return {
-        creatures: groupByName(resolveObjects(partition.creatures)),
+        activatableObjectIds,
+        committedAttackerIds,
+        manaTappableObjectIds,
+        selectableManaCostCreatureIds,
+        undoableTapObjectIds,
+        validAttackerIds,
+        validTargetObjectIds,
       };
+    }
+
+    const playerCanAct =
+      waitingFor != null
+      && (
+        (waitingFor.type === "Priority" && waitingFor.data.player === myId)
+        || (waitingFor.type === "ManaPayment" && waitingFor.data.player === myId)
+        || (waitingFor.type === "UnlessPayment" && waitingFor.data.player === myId)
+      );
+
+    if (waitingFor?.type === "Priority" && waitingFor.data.player === myId) {
+      for (const action of legalActions) {
+        if (action.type !== "ActivateAbility") continue;
+        const object = gameState.objects[action.data.source_id];
+        const ability = object?.abilities?.[action.data.ability_index] as
+          | { effect?: { type?: string } }
+          | undefined;
+        if (ability?.effect?.type !== "Mana") {
+          activatableObjectIds.add(action.data.source_id);
+        }
+      }
+    }
+
+    if (playerCanAct) {
+      for (const objectId of gameState.battlefield) {
+        const object = gameState.objects[objectId];
+        if (!object || object.controller !== myId || object.tapped) continue;
+        if (object.card_types.core_types.includes("Land")) {
+          manaTappableObjectIds.add(objectId);
+          continue;
+        }
+        if (object.has_mana_ability && !object.has_summoning_sickness) {
+          manaTappableObjectIds.add(objectId);
+        }
+      }
+    }
+
+    return {
+      activatableObjectIds,
+      committedAttackerIds,
+      manaTappableObjectIds,
+      selectableManaCostCreatureIds,
+      undoableTapObjectIds,
+      validAttackerIds,
+      validTargetObjectIds,
     };
-
-    const playerObjects = battlefieldObjects.filter((obj) => obj.controller === myId);
-    const opponentObjects = battlefieldObjects.filter((obj) => obj.controller === focusedId);
-
-    const playerGroups = partitionAndGroup(playerObjects);
-    const opponentGroups = partitionAndGroup(opponentObjects);
-
-    return sortCreaturesForBlockers(playerGroups.creatures, opponentGroups.creatures, blockerAssignments);
-  }, [gameState, myId, focusedId, blockerAssignments]);
+  }, [gameState, legalActions, myId, waitingFor]);
 
   if (!gameState) {
     return (
@@ -79,40 +179,41 @@ export function GameBoard() {
   ) : null;
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
-      {/* Opponent area */}
-      {is1v1 ? (
-        // 1v1: single opponent in focused mode (identical to original layout)
+    <BoardInteractionContext.Provider value={boardInteractionState}>
+      <div className="relative flex min-h-0 flex-1 flex-col">
+        {/* Opponent area */}
+        {is1v1 ? (
+          <PlayerArea
+            battlefieldView={focusedBattlefieldView ?? undefined}
+            playerId={opponents[0]}
+            mode="focused"
+          />
+        ) : (
+          <div className="flex min-h-0 flex-1 flex-col">
+            {focusedOpponent != null && opponents.includes(focusedOpponent) ? (
+              <PlayerArea
+                battlefieldView={focusedBattlefieldView ?? undefined}
+                playerId={focusedOpponent}
+                mode="focused"
+              />
+            ) : (
+              <div className="flex flex-1 items-center justify-center">
+                <span className="text-xs text-gray-600">Click an opponent to view their board</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="h-1 shrink-0" />
+
         <PlayerArea
-          playerId={opponents[0]}
-          mode="focused"
+          battlefieldView={playerBattlefieldView}
+          playerId={myId}
+          mode="full"
+          landColumnExtra={undoButton}
+          creatureOverride={sortedPlayerCreatures}
         />
-      ) : (
-        // Multiplayer: focused opponent battlefield (selection via OpponentHud tabs)
-        <div className="flex min-h-0 flex-1 flex-col">
-          {focusedOpponent != null && opponents.includes(focusedOpponent) ? (
-            <PlayerArea
-              playerId={focusedOpponent}
-              mode="focused"
-            />
-          ) : (
-            <div className="flex flex-1 items-center justify-center">
-              <span className="text-xs text-gray-600">Click an opponent to view their board</span>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Minimal center gap */}
-      <div className="h-1 shrink-0" />
-
-      {/* Player's battlefield */}
-      <PlayerArea
-        playerId={myId}
-        mode="full"
-        landColumnExtra={undoButton}
-        creatureOverride={sortedPlayerCreatures}
-      />
-    </div>
+      </div>
+    </BoardInteractionContext.Provider>
   );
 }

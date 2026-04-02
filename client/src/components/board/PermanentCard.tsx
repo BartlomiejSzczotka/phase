@@ -14,6 +14,7 @@ import { usePreferencesStore } from "../../stores/preferencesStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { COUNTER_COLORS, computePTDisplay, formatCounterTooltip, formatCounterType, toRoman } from "../../viewmodel/cardProps.ts";
 import { getCardDisplayColors } from "../card/cardFrame.ts";
+import { useBoardInteractionState } from "./BoardInteractionContext.tsx";
 import { KeywordStrip } from "./KeywordStrip.tsx";
 
 interface PermanentCardProps {
@@ -29,6 +30,15 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
   const battlefieldCardDisplay = usePreferencesStore((s) => s.battlefieldCardDisplay);
   const tapRotation = usePreferencesStore((s) => s.tapRotation);
   const showKeywordStrip = usePreferencesStore((s) => s.showKeywordStrip) ?? true;
+  const {
+    activatableObjectIds,
+    committedAttackerIds,
+    manaTappableObjectIds,
+    selectableManaCostCreatureIds,
+    undoableTapObjectIds,
+    validAttackerIds,
+    validTargetObjectIds,
+  } = useBoardInteractionState();
 
   const {
     selectedObjectId, selectObject, hoverObject, inspectObject,
@@ -47,68 +57,17 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
     selectedCardIds: s.selectedCardIds,
     toggleSelectedCard: s.toggleSelectedCard,
   })));
-  const combatAttackers = useGameStore(
-    (s) => s.gameState?.combat?.attackers,
-  );
-  // Targeting state — boolean selectors avoid subscribing to the full waitingFor object
-  const isValidTarget = useGameStore((s) => {
-    const wf = s.waitingFor;
-    if ((wf?.type === "TargetSelection" || wf?.type === "TriggerTargetSelection") && wf.data.player === playerId) {
-      return wf.data.selection.current_legal_targets.some(
-        (target) => "Object" in target && target.Object === objectId,
-      );
-    }
-    if (wf?.type === "CopyTargetChoice" && wf.data.player === playerId) {
-      return wf.data.valid_targets.includes(objectId);
-    }
-    if (wf?.type === "ExploreChoice" && wf.data.player === playerId) {
-      return wf.data.choosable.includes(objectId);
-    }
-    return false;
-  });
-  const isValidAttacker = useGameStore((s) =>
-    s.waitingFor?.type === "DeclareAttackers"
-      ? (s.waitingFor.data.valid_attacker_ids ?? []).includes(objectId)
-      : false,
-  );
-
-  // Check if this permanent has activatable non-mana abilities from legal actions.
-  // Mana abilities are also in legalActions (for auto-pass awareness) but excluded
-  // here since canTapForMana handles their highlight independently.
-  const hasActivatableAbility = useGameStore((s) => {
-    const wf = s.waitingFor;
-    if (!wf || wf.type !== "Priority" || wf.data.player !== playerId) return false;
-    const obj = s.gameState?.objects[objectId];
-    return s.legalActions.some((a) =>
-      a.type === "ActivateAbility" && a.data.source_id === objectId
-      && (obj?.abilities?.[a.data.ability_index] as { effect?: { type?: string } } | undefined)?.effect?.type !== "Mana",
-    );
-  });
-
-  // Land tappability derived from game state — no need for legal_actions
-  const canTapForMana = useGameStore((s) => {
-    const wf = s.waitingFor;
-    if (!wf) return false;
-    // Mana abilities are legal during priority and mana payment
-    const isPlayerActing =
-      (wf.type === "Priority" && wf.data.player === playerId) ||
-      (wf.type === "ManaPayment" && wf.data.player === playerId) ||
-      (wf.type === "UnlessPayment" && wf.data.player === playerId);
-    if (!isPlayerActing) return false;
-    const o = s.gameState?.objects[objectId];
-    if (!o || o.tapped || o.controller !== playerId) return false;
-    // CR 605.1b: Lands and non-land permanents with mana abilities can tap for mana.
-    // CR 302.6: Non-land creatures with summoning sickness cannot activate tap abilities.
-    return o.card_types.core_types.includes("Land")
-      || (o.has_mana_ability && !o.has_summoning_sickness);
-  });
+  const isValidTarget = validTargetObjectIds.has(objectId);
+  const isValidAttacker = validAttackerIds.has(objectId);
+  const hasActivatableAbility = activatableObjectIds.has(objectId);
+  const canTapForMana = manaTappableObjectIds.has(objectId);
   const isActivatable = hasActivatableAbility || canTapForMana;
   const tapCreatureCostChoice = useGameStore((s) =>
     s.waitingFor?.type === "TapCreaturesForManaAbility" && s.waitingFor.data.player === playerId
       ? s.waitingFor.data
       : null,
   );
-  const isSelectableForManaCost = tapCreatureCostChoice?.creatures.includes(objectId) ?? false;
+  const isSelectableForManaCost = selectableManaCostCreatureIds.has(objectId);
   const isSelectedForManaCost = isSelectableForManaCost && selectedCardIds.includes(objectId);
 
   const setPendingAbilityChoice = useUiStore((s) => s.setPendingAbilityChoice);
@@ -122,11 +81,7 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
     [allExileLinks, objectId],
   );
 
-  // Engine-driven undo check: land is in the player's lands_tapped_for_mana tracking
-  const isUndoableTap = useGameStore((s) => {
-    const tapped = s.gameState?.lands_tapped_for_mana?.[playerId] ?? [];
-    return tapped.includes(objectId);
-  });
+  const isUndoableTap = undoableTapObjectIds.has(objectId);
 
   const handleMouseEnter = useCallback(() => {
     hoverObject(objectId); inspectObject(objectId);
@@ -161,8 +116,7 @@ export const PermanentCard = memo(function PermanentCard({ objectId }: Permanent
   // Combat state — check both UI selection and committed combat state
   const isSelectingAttacker =
     combatMode === "attackers" && selectedAttackers.includes(objectId);
-  const isCommittedAttacker =
-    combatAttackers?.some((a) => a.object_id === objectId) ?? false;
+  const isCommittedAttacker = committedAttackerIds.has(objectId);
   const isAttacking = isSelectingAttacker || isCommittedAttacker;
   const isBlocking =
     combatMode === "blockers" && blockerAssignments.has(objectId);

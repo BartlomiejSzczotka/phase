@@ -1,7 +1,5 @@
-import { evaluate_deck_compatibility_js } from "@wasm/engine";
-
 import type { GameFormat, MatchType } from "../adapter/types";
-import { ensureCardDatabase } from "./cardData";
+import { evaluateDeckCompatibilityJs } from "./engineRuntime";
 import type { ParsedDeck } from "./deckParser";
 
 export interface CompatibilityCheck {
@@ -86,10 +84,8 @@ export async function evaluateDeckCompatibility(
   deck: ParsedDeck,
   options: EvaluateOptions = {},
 ): Promise<DeckCompatibilityResult> {
-  await ensureCardDatabase();
-
   const request = buildRequest(deck, options);
-  return evaluate_deck_compatibility_js(request) as DeckCompatibilityResult;
+  return await evaluateDeckCompatibilityJs(request) as DeckCompatibilityResult;
 }
 
 export async function evaluateDeckCompatibilityBatch(

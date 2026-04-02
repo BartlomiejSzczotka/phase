@@ -1,6 +1,6 @@
 import { useCallback, useMemo } from "react";
 
-import type { GameObject, TargetRef } from "../../adapter/types.ts";
+import type { GameObject } from "../../adapter/types.ts";
 import { CardImage } from "../card/CardImage.tsx";
 import { ModalPanelShell } from "../ui/ModalPanelShell.tsx";
 import { useLongPress } from "../../hooks/useLongPress.ts";
@@ -8,6 +8,7 @@ import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { usePlayerId } from "../../hooks/usePlayerId.ts";
 import { useGameDispatch } from "../../hooks/useGameDispatch.ts";
+import { getPlayerZoneIds } from "../../viewmodel/gameStateView.ts";
 
 interface ZoneViewerProps {
   zone: "graveyard" | "exile";
@@ -24,38 +25,36 @@ function hasAdventureCreaturePermission(obj: GameObject): boolean {
   return obj.casting_permissions?.some((p) => p.type === "AdventureCreature") ?? false;
 }
 
-function isObjectATarget(targetRefs: TargetRef[], objectId: number): boolean {
-  return targetRefs.some((t) => "Object" in t && t.Object === objectId);
-}
-
 export function ZoneViewer({ zone, playerId, onClose }: ZoneViewerProps) {
-  const gameState = useGameStore((s) => s.gameState);
+  const objects = useGameStore((s) => s.gameState?.objects);
+  const zoneIds = useGameStore((s) => getPlayerZoneIds(s.gameState, zone, playerId));
+  const waitingFor = useGameStore((s) => s.waitingFor);
   const dispatch = useGameStore((s) => s.dispatch);
   const dispatchAction = useGameDispatch();
   const currentPlayerId = usePlayerId();
 
   const cards = useMemo(() => {
-    if (!gameState) return [];
-
-    const ids =
-      zone === "graveyard"
-        ? (gameState.players[playerId]?.graveyard ?? [])
-        : gameState.exile.filter((id) => gameState.objects[id]?.owner === playerId);
-
-    return ids.map((id) => gameState.objects[id]).filter(Boolean);
-  }, [gameState, zone, playerId]);
+    if (!objects) return [];
+    return zoneIds.map((id) => objects[id]).filter(Boolean);
+  }, [objects, zoneIds]);
 
   const isMyZone = playerId === currentPlayerId;
-  const hasPriority = gameState?.waiting_for?.type === "Priority"
-    && gameState.waiting_for.data.player === currentPlayerId;
+  const hasPriority = waitingFor?.type === "Priority"
+    && waitingFor.data.player === currentPlayerId;
 
-  const waitingFor = gameState?.waiting_for;
   const isHumanTargetSelection =
     (waitingFor?.type === "TargetSelection" || waitingFor?.type === "TriggerTargetSelection")
     && waitingFor.data.player === currentPlayerId;
-  const currentLegalTargets: TargetRef[] = isHumanTargetSelection
-    ? waitingFor.data.selection.current_legal_targets
-    : [];
+  const currentLegalTargets = useMemo(() => {
+    const targets = new Set<number>();
+    if (!isHumanTargetSelection) return targets;
+    for (const target of waitingFor.data.selection.current_legal_targets) {
+      if ("Object" in target) {
+        targets.add(target.Object);
+      }
+    }
+    return targets;
+  }, [isHumanTargetSelection, waitingFor]);
 
   return (
     <ModalPanelShell
@@ -74,8 +73,7 @@ export function ZoneViewer({ zone, playerId, onClose }: ZoneViewerProps) {
             {cards.map((obj) => {
               const canCastAdventure = zone === "exile" && isMyZone && hasPriority
                 && hasAdventureCreaturePermission(obj);
-              const isValidTarget = isHumanTargetSelection
-                && isObjectATarget(currentLegalTargets, obj.id);
+              const isValidTarget = currentLegalTargets.has(obj.id);
               return (
                 <ZoneCard
                   key={obj.id}

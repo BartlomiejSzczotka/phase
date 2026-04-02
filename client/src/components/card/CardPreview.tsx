@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { GameObject } from "../../adapter/types.ts";
 import { useCardImage } from "../../hooks/useCardImage.ts";
@@ -12,6 +12,18 @@ import {
   isGrantedKeyword,
   sortKeywords,
 } from "../../viewmodel/keywordProps.ts";
+
+let lastPointerPosition: { x: number; y: number } | null = null;
+
+if (typeof window !== "undefined") {
+  window.addEventListener(
+    "mousemove",
+    (event) => {
+      lastPointerPosition = { x: event.clientX, y: event.clientY };
+    },
+    { passive: true },
+  );
+}
 
 interface CardPreviewProps {
   cardName: string | null;
@@ -83,7 +95,9 @@ function CardPreviewInner({
     tokenFilters: isToken ? { power: obj?.power, toughness: obj?.toughness, colors: obj?.color } : undefined,
   });
   const classLevel = obj?.class_level;
-  const [pointerPosition, setPointerPosition] = useState<{ x: number; y: number } | null>(null);
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const pointerRef = useRef<{ x: number; y: number } | null>(null);
+  const frameRef = useRef<number | null>(null);
   const altHeld = useUiStore((s) => s.altHeld);
   const [ctrlHeld, setCtrlHeld] = useState(false);
   const [isMobile, setIsMobile] = useState(
@@ -101,10 +115,6 @@ function CardPreviewInner({
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
 
-    function handlePointerMove(event: MouseEvent) {
-      setPointerPosition({ x: event.clientX, y: event.clientY });
-    }
-
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Control") setCtrlHeld(true);
     }
@@ -113,11 +123,9 @@ function CardPreviewInner({
       if (event.key === "Control") setCtrlHeld(false);
     }
 
-    window.addEventListener("mousemove", handlePointerMove);
     window.addEventListener("keydown", handleKeyDown);
     window.addEventListener("keyup", handleKeyUp);
     return () => {
-      window.removeEventListener("mousemove", handlePointerMove);
       window.removeEventListener("keydown", handleKeyDown);
       window.removeEventListener("keyup", handleKeyUp);
     };
@@ -132,20 +140,6 @@ function CardPreviewInner({
     faceIndex: 1,
   });
 
-  // Mobile overlay mode: centered with backdrop
-  if (isMobile) {
-    return (
-      <MobilePreviewOverlay
-        cardName={cardName}
-        backFaceName={backFaceName}
-        faceIndex={faceIndex}
-        obj={obj}
-        onDismiss={() => inspectObject(null)}
-      />
-    );
-  }
-
-  // Desktop mode: cursor-following or fixed position
   const activeSrc = showBackFace ? backFaceImgResult.src : src;
   const activeLoading = showBackFace ? backFaceImgResult.isLoading : isLoading;
   const displayName = showBackFace ? backFaceName! : cardName;
@@ -160,40 +154,94 @@ function CardPreviewInner({
   const viewportWidth = typeof window === "undefined" ? 1440 : window.innerWidth;
   const viewportHeight = typeof window === "undefined" ? 900 : window.innerHeight;
   const gap = 20;
-
-  const cursorStyle: React.CSSProperties | null = pointerPosition
-    ? {
-        left:
-          pointerPosition.x > viewportWidth / 2
-            ? Math.max(16, pointerPosition.x - previewWidth - gap)
-            : Math.min(pointerPosition.x + gap, viewportWidth - previewWidth - 16),
-      }
-    : null;
-
   const margin = 16;
+  const defaultDesktopStyle: React.CSSProperties = {
+    right: "calc(env(safe-area-inset-right) + 1rem + var(--game-right-rail-offset, 0px))",
+    top: "calc(env(safe-area-inset-top) + var(--game-top-overlay-offset, 0px) + 1rem)",
+  };
+
+  useEffect(() => {
+    if (typeof window === "undefined" || position || isMobile) return undefined;
+
+    pointerRef.current = lastPointerPosition;
+
+    const applyPreviewPosition = () => {
+      frameRef.current = null;
+      const preview = previewRef.current;
+      const pointer = pointerRef.current;
+      if (!preview || !pointer) return;
+
+      const left =
+        pointer.x > viewportWidth / 2
+          ? Math.max(16, pointer.x - previewWidth - gap)
+          : Math.min(pointer.x + gap, viewportWidth - previewWidth - 16);
+      const top = altHeld
+        ? margin
+        : Math.min(
+            Math.max(margin, pointer.y - previewHeight / 2),
+            viewportHeight - previewHeight - margin,
+          );
+
+      preview.style.right = "auto";
+      preview.style.left = `${left}px`;
+      preview.style.top = `${top}px`;
+    };
+
+    const schedulePositionUpdate = () => {
+      if (frameRef.current != null) return;
+      frameRef.current = window.requestAnimationFrame(applyPreviewPosition);
+    };
+
+    const handlePointerMove = (event: MouseEvent) => {
+      pointerRef.current = { x: event.clientX, y: event.clientY };
+      schedulePositionUpdate();
+    };
+
+    window.addEventListener("mousemove", handlePointerMove);
+    schedulePositionUpdate();
+
+    return () => {
+      window.removeEventListener("mousemove", handlePointerMove);
+      if (frameRef.current != null) {
+        window.cancelAnimationFrame(frameRef.current);
+        frameRef.current = null;
+      }
+    };
+  }, [
+    altHeld,
+    gap,
+    isMobile,
+    margin,
+    position,
+    previewHeight,
+    previewWidth,
+    viewportHeight,
+    viewportWidth,
+  ]);
+
+  // Mobile overlay mode: centered with backdrop
+  if (isMobile) {
+    return (
+      <MobilePreviewOverlay
+        cardName={cardName}
+        backFaceName={backFaceName}
+        faceIndex={faceIndex}
+        obj={obj}
+        onDismiss={() => inspectObject(null)}
+      />
+    );
+  }
 
   const style: React.CSSProperties = position
     ? {
         left: Math.min(position.x + 16, window.innerWidth - 488),
         top: Math.min(position.y - 200, window.innerHeight - 736),
       }
-    : cursorStyle
-      ? altHeld
-        ? { ...cursorStyle, top: margin }
-        : {
-            ...cursorStyle,
-            top: Math.min(
-              Math.max(margin, pointerPosition!.y - previewHeight / 2),
-              viewportHeight - previewHeight - margin,
-            ),
-          }
-    : {
-        right: "calc(env(safe-area-inset-right) + 1rem + var(--game-right-rail-offset, 0px))",
-        top: "calc(env(safe-area-inset-top) + var(--game-top-overlay-offset, 0px) + 1rem)",
-      };
+    : defaultDesktopStyle;
 
   return (
     <div
+      ref={previewRef}
       className="fixed z-[100] pointer-events-none"
       style={style}
       data-card-preview

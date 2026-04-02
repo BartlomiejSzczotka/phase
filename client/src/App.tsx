@@ -8,9 +8,13 @@ import { useFeedInitialization } from "./hooks/useFeedInitialization";
 import { useHostingSession } from "./hooks/useHostingSession";
 import { ensurePreload, subscribePreload } from "./startup/preloadAssets";
 import { MenuPage } from "./pages/MenuPage";
-import { GamePage } from "./pages/GamePage";
-import { GameSetupPage } from "./pages/GameSetupPage";
 
+const GamePage = lazy(() =>
+  import("./pages/GamePage").then((m) => ({ default: m.GamePage })),
+);
+const GameSetupPage = lazy(() =>
+  import("./pages/GameSetupPage").then((m) => ({ default: m.GameSetupPage })),
+);
 const MultiplayerPage = lazy(() => import("./pages/MultiplayerPage").then((m) => ({ default: m.MultiplayerPage })));
 const DeckBuilderPage = lazy(() => import("./pages/DeckBuilderPage").then((m) => ({ default: m.DeckBuilderPage })));
 const MyDecksPage = lazy(() => import("./pages/MyDecksPage").then((m) => ({ default: m.MyDecksPage })));
@@ -33,14 +37,13 @@ function AppContent() {
   const [loadLabel, setLoadLabel] = useState("Loading...");
   const location = useLocation();
 
-  // Run startup preload: WASM init (0–50%) → SFX preload (50–100%)
+  // Run startup preload for shell-safe assets only.
   useEffect(() => {
     if (!showSplash) return;
 
     const unsub = subscribePreload((p) => {
       setProgress(p.percent);
-      if (p.phase === "wasm") setLoadLabel("Initializing engine...");
-      else if (p.phase === "audio") setLoadLabel("Loading audio...");
+      if (p.phase === "audio") setLoadLabel("Loading audio...");
       else setLoadLabel("Ready");
     });
     ensurePreload();

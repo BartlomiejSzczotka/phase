@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 
 import { useCardImage } from "../../hooks/useCardImage.ts";
@@ -14,14 +15,17 @@ interface OpponentHandProps {
 export function OpponentHand({ showCards = false }: OpponentHandProps) {
   const myId = usePlayerId();
   const focusedOpponent = useUiStore((s) => s.focusedOpponent);
-  const gameState = useGameStore((s) => s.gameState);
-  const opponents = gameState
-    ? (gameState.seat_order ?? gameState.players.map((p) => p.id)).filter(
-        (id) => id !== myId && !(gameState.eliminated_players ?? []).includes(id),
-      )
-    : [];
+  const seatOrder = useGameStore((s) => s.gameState?.seat_order);
+  const playerIds = useGameStore((s) => s.gameState?.players.map((player) => player.id));
+  const eliminatedPlayers = useGameStore((s) => s.gameState?.eliminated_players);
+  const players = useGameStore((s) => s.gameState?.players);
+  const opponents = useMemo(() => {
+    const orderedPlayers = seatOrder ?? playerIds ?? [];
+    const eliminated = new Set(eliminatedPlayers ?? []);
+    return orderedPlayers.filter((id) => id !== myId && !eliminated.has(id));
+  }, [eliminatedPlayers, myId, playerIds, seatOrder]);
   const opponentId = focusedOpponent ?? opponents[0] ?? (myId === 0 ? 1 : 0);
-  const opponent = gameState?.players[opponentId];
+  const opponent = players?.[opponentId];
   const objects = useGameStore((s) => s.gameState?.objects);
   const revealedCards = useGameStore((s) => s.gameState?.revealed_cards);
 

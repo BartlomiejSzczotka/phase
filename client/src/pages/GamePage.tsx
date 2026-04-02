@@ -371,11 +371,16 @@ function GamePageContent({
   const navigate = useNavigate();
   const containerRef = useRef<HTMLDivElement>(null);
 
-  const gameState = useGameStore((s) => s.gameState);
   const waitingFor = useGameStore((s) => s.waitingFor);
   const dispatch = useGameDispatch();
   const inspectedObjectId = useUiStore((s) => s.inspectedObjectId);
-  const objects = gameState?.objects;
+  const objects = useGameStore((s) => s.gameState?.objects);
+  const seatOrder = useGameStore((s) => s.gameState?.seat_order);
+  const playerIds = useGameStore((s) => s.gameState?.players.map((player) => player.id));
+  const eliminatedPlayers = useGameStore((s) => s.gameState?.eliminated_players);
+  const turnNumber = useGameStore((s) => s.gameState?.turn_number);
+  const engineWaitingFor = useGameStore((s) => s.gameState?.waiting_for);
+  const deckPools = useGameStore((s) => s.gameState?.deck_pools);
   const [showAiHand, setShowAiHand] = useState(false);
   const [showDebugBounds, setShowDebugBounds] = useState(false);
   const [viewingZone, setViewingZone] = useState<{
@@ -389,14 +394,10 @@ function GamePageContent({
   const adapter = useGameStore((s) => s.adapter);
   const focusedOpponent = useUiStore((s) => s.focusedOpponent);
   const opponents = useMemo(() => {
-    if (!gameState) return [];
-    const seatOrder =
-      gameState.seat_order ?? gameState.players.map((p) => p.id);
-    const eliminated = gameState.eliminated_players ?? [];
-    return seatOrder.filter(
-      (id) => id !== playerId && !eliminated.includes(id),
-    );
-  }, [gameState, playerId]);
+    const orderedPlayers = seatOrder ?? playerIds ?? [];
+    const eliminated = new Set(eliminatedPlayers ?? []);
+    return orderedPlayers.filter((id) => id !== playerId && !eliminated.has(id));
+  }, [eliminatedPlayers, playerId, playerIds, seatOrder]);
   const activeOpponentId =
     focusedOpponent ?? opponents[0] ?? (playerId === 0 ? 1 : 0);
 
@@ -404,12 +405,12 @@ function GamePageContent({
 
   // Update battlefield music phase based on turn progression
   useEffect(() => {
-    if (!gameState?.turn_number) return;
-    const turn = gameState.turn_number;
+    if (!turnNumber) return;
+    const turn = turnNumber;
     const bp = audioManager.getPhaseBreakpoints();
     const phase = turn >= bp.late ? "late" : turn >= bp.mid ? "mid" : "early";
     audioManager.setBattlefieldPhase(phase);
-  }, [gameState?.turn_number]);
+  }, [turnNumber]);
 
   const handleConcede = useCallback(() => {
     if (adapter && adapter instanceof WebSocketAdapter) {
@@ -475,8 +476,8 @@ function GamePageContent({
 
   // Auto-open graveyard/exile viewer when the engine is waiting for a target in that zone
   useEffect(() => {
-    if (!gameState) return;
-    const wf = gameState.waiting_for;
+    if (!objects) return;
+    const wf = engineWaitingFor;
     if (
       (wf?.type !== "TargetSelection" && wf?.type !== "TriggerTargetSelection")
       || wf.data.player !== playerId
@@ -486,7 +487,7 @@ function GamePageContent({
     // Find the first legal target whose engine-provided zone is Graveyard or Exile
     for (const t of legalTargets) {
       if (!("Object" in t)) continue;
-      const obj = gameState.objects[t.Object];
+      const obj = objects[t.Object];
       if (!obj) continue;
       if (obj.zone === "Graveyard" || obj.zone === "Exile") {
         const zone = obj.zone === "Graveyard" ? "graveyard" : "exile";
@@ -494,7 +495,7 @@ function GamePageContent({
         return;
       }
     }
-  }, [gameState, playerId]);
+  }, [engineWaitingFor, objects, playerId]);
 
   const handleDeclareCompanion = useCallback(
     (cardIndex: number | null) => {
@@ -522,8 +523,8 @@ function GamePageContent({
   );
 
   const handleSubmitSideboard = useCallback(() => {
-    if (!gameState?.deck_pools) return;
-    const pool = gameState.deck_pools.find(
+    if (!deckPools) return;
+    const pool = deckPools.find(
       (deckPool) => deckPool.player === playerId,
     );
     if (!pool) return;
@@ -548,7 +549,7 @@ function GamePageContent({
         sideboard: toSortedCounts(pool.current_sideboard),
       },
     });
-  }, [dispatch, gameState, playerId]);
+  }, [deckPools, dispatch, playerId]);
 
   const handleChoosePlayDraw = useCallback(
     (playFirst: boolean) => {

@@ -260,7 +260,6 @@ const HandCard = memo(function HandCard({
 
   return (
     <motion.div
-      layout
       data-card-hover
       initial={{ opacity: 0, y: 40 }}
       animate={{

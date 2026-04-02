@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 
-import { get_card_face_data, get_card_parse_details } from "@wasm/engine";
-import { ensureCardDatabase } from "../services/cardData";
+import {
+  getCardFaceData,
+  getCardParseDetails,
+} from "../services/engineRuntime";
 
 /**
  * Engine-parsed card face data returned from WASM.
@@ -35,8 +37,8 @@ export interface ParsedItem {
  * Looks up a card's engine-parsed face data from the WASM card database.
  * Returns null while loading or if the card is not found.
  *
- * The card database must already be loaded (via ensureCardDatabase) — this hook
- * ensures that as a prerequisite, then calls get_card_face_data() for the lookup.
+ * The card database must already be loaded before lookup — the engine runtime
+ * wrapper ensures that as a prerequisite, then performs the query.
  */
 export function useEngineCardData(cardName: string | null): EngineCardFace | null {
   const [data, setData] = useState<EngineCardFace | null>(null);
@@ -49,9 +51,8 @@ export function useEngineCardData(cardName: string | null): EngineCardFace | nul
 
     let cancelled = false;
 
-    ensureCardDatabase().then(() => {
+    getCardFaceData(cardName).then((result) => {
       if (cancelled) return;
-      const result = get_card_face_data(cardName);
       setData(result ?? null);
     });
 
@@ -79,9 +80,8 @@ export function useCardParseDetails(cardName: string | null): ParsedItem[] | nul
 
     let cancelled = false;
 
-    ensureCardDatabase().then(() => {
+    getCardParseDetails(cardName).then((result) => {
       if (cancelled) return;
-      const result = get_card_parse_details(cardName);
       setItems(result ?? null);
     });
 
