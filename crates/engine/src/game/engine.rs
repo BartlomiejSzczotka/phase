@@ -189,9 +189,13 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
     // RevealTop reveals (e.g. Goblin Guide) are momentary — shown for one state update.
     // RevealHand reveals (e.g. Thoughtseize) persist through the RevealChoice interaction.
     // ManifestDread reveals persist through ManifestDreadChoice (cards come from WaitingFor).
+    // CR 701.20b: DigChoice reveals (reveal-dig, e.g. Satyr Wayfinder) persist through
+    // the selection — revealed cards remain public while the player chooses.
     if !matches!(
         state.waiting_for,
-        WaitingFor::RevealChoice { .. } | WaitingFor::ManifestDreadChoice { .. }
+        WaitingFor::RevealChoice { .. }
+            | WaitingFor::ManifestDreadChoice { .. }
+            | WaitingFor::DigChoice { .. }
     ) {
         state.revealed_cards.clear();
     }

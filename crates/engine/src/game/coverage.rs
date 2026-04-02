@@ -956,6 +956,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             up_to,
             filter,
             rest_destination,
+            reveal,
         } => {
             d.push(("count".into(), fmt_qty(count)));
             if let Some(dest) = destination {
@@ -972,6 +973,9 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             }
             if let Some(rest) = rest_destination {
                 d.push(("rest_to".into(), fmt_zone(rest)));
+            }
+            if *reveal {
+                d.push(("reveal".into(), "true".into()));
             }
         }
         Effect::Bounce {

@@ -1373,7 +1373,7 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub last_created_token_ids: Vec<ObjectId>,
 
-    /// ObjectIds of cards revealed by the most recent RevealTop effect.
+    /// ObjectIds of cards revealed by the most recent RevealTop or reveal-Dig effect.
     /// Used by AbilityCondition::RevealedHasCardType and sub_ability target injection.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub last_revealed_ids: Vec<ObjectId>,

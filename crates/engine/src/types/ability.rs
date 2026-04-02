@@ -2142,6 +2142,9 @@ pub enum Effect {
         /// Where unchosen cards go (None = Graveyard, Some(Library) = bottom).
         #[serde(default)]
         rest_destination: Option<Zone>,
+        /// CR 701.20a vs CR 701.16a: True = cards are revealed (public), false = looked at (private).
+        #[serde(default)]
+        reveal: bool,
     },
     GainControl {
         #[serde(default = "default_target_filter_any")]

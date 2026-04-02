@@ -570,8 +570,15 @@ pub(super) fn parse_search_and_creation_ast(
             reveal: details.reveal,
         });
     }
-    if let Some((_, rest)) = nom_on_lower(text, lower, |input| {
-        value((), tag("look at the top ")).parse(input)
+    // CR 701.16a + CR 701.20a: "look at the top N" (private) and "reveal the top N" (public)
+    // both produce Dig — the reveal flag distinguishes visibility semantics.
+    if let Some((reveal, rest)) = nom_on_lower(text, lower, |input| {
+        alt((
+            value(false, tag("look at the top ")),
+            value(true, tag("reveal the top ")),
+            value(true, tag("reveals the top ")),
+        ))
+        .parse(input)
     }) {
         let rest_lower = &lower[lower.len() - rest.len()..];
         // Try numeric count first ("three cards"), then "x" as a variable
@@ -590,7 +597,7 @@ pub(super) fn parse_search_and_creation_ast(
         } else {
             QuantityExpr::Fixed { value: 1 }
         };
-        return Some(SearchCreationImperativeAst::Dig { count });
+        return Some(SearchCreationImperativeAst::Dig { count, reveal });
     }
     if let Some((_, _)) = nom_on_lower(text, lower, |input| value((), tag("create ")).parse(input))
     {
@@ -639,13 +646,14 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             count,
             reveal,
         },
-        SearchCreationImperativeAst::Dig { count } => Effect::Dig {
+        SearchCreationImperativeAst::Dig { count, reveal } => Effect::Dig {
             count,
             destination: None,
             keep_count: None,
             up_to: false,
             filter: TargetFilter::Any,
             rest_destination: None,
+            reveal,
         },
         SearchCreationImperativeAst::CopyTokenOf { target } => Effect::CopyTokenOf {
             target,
@@ -691,13 +699,13 @@ pub(super) fn parse_hand_reveal_ast(text: &str, lower: &str) -> Option<HandRevea
             } else {
                 TargetFilter::Any
             };
-            return Some(HandRevealImperativeAst::LookAtHand { target });
+            return Some(HandRevealImperativeAst::LookAt { target });
         }
 
         let (_, after_look_at) =
             nom_on_lower(text, lower, |input| value((), tag("look at ")).parse(input))?;
         let (target, _) = parse_target(after_look_at);
-        return Some(HandRevealImperativeAst::LookAtHand { target });
+        return Some(HandRevealImperativeAst::LookAt { target });
     }
 
     nom_on_lower(text, lower, |input| {
@@ -711,69 +719,39 @@ pub(super) fn parse_hand_reveal_ast(text: &str, lower: &str) -> Option<HandRevea
         if let Some((_, qty_text)) = lower.split_once("equal to ") {
             let qty_text = qty_text.trim_end_matches('.');
             if let Some(qty) = super::super::oracle_quantity::parse_quantity_ref(qty_text) {
-                return Some(HandRevealImperativeAst::RevealPartialHand {
+                return Some(HandRevealImperativeAst::RevealPartial {
                     count: crate::types::ability::QuantityExpr::Ref { qty },
                 });
             }
         }
     }
 
-    // Check for "the top [N] card(s) of [their/your] library" BEFORE the catch-all
-    // "hand" check — text like "reveals the top card...then puts it into their hand"
-    // contains "hand" as a destination, not as the reveal source.
-    if nom_primitives::scan_contains(lower, "the top ")
-        && nom_primitives::scan_contains(lower, "librar")
-    {
-        // Delegate to nom combinator (input already lowercase from lower).
-        let count =
-            if let Ok((_, (_, after_top))) = nom_primitives::split_once_on(lower, "the top ") {
-                nom_primitives::parse_number
-                    .parse(after_top)
-                    .map(|(_, n)| n)
-                    .unwrap_or(1)
-            } else {
-                1
-            };
-        return Some(HandRevealImperativeAst::RevealTop { count });
-    }
+    // "reveal the top N" is now handled by parse_search_and_creation_ast → Dig path.
+    // This function only handles hand-related reveals.
 
     if nom_primitives::scan_contains(lower, "hand") {
-        return Some(HandRevealImperativeAst::RevealHand);
+        return Some(HandRevealImperativeAst::RevealAll);
     }
 
-    // Fallback: reveal from top of library without explicit "library" mention
-    // Delegate to nom combinator (input already lowercase from lower).
-    let count = if let Ok((_, (_, after_top))) = nom_primitives::split_once_on(lower, "the top ") {
-        nom_primitives::parse_number
-            .parse(after_top)
-            .map(|(_, n)| n)
-            .unwrap_or(1)
-    } else {
-        1
-    };
-    Some(HandRevealImperativeAst::RevealTop { count })
+    None
 }
 
 pub(super) fn lower_hand_reveal_ast(ast: HandRevealImperativeAst) -> Effect {
     match ast {
-        HandRevealImperativeAst::LookAtHand { target } => Effect::RevealHand {
+        HandRevealImperativeAst::LookAt { target } => Effect::RevealHand {
             target,
             card_filter: TargetFilter::Any,
             count: None,
         },
-        HandRevealImperativeAst::RevealHand => Effect::RevealHand {
+        HandRevealImperativeAst::RevealAll => Effect::RevealHand {
             target: TargetFilter::Any,
             card_filter: TargetFilter::Any,
             count: None,
         },
-        HandRevealImperativeAst::RevealPartialHand { count } => Effect::RevealHand {
+        HandRevealImperativeAst::RevealPartial { count } => Effect::RevealHand {
             target: TargetFilter::Any,
             card_filter: TargetFilter::Any,
             count: Some(count),
-        },
-        HandRevealImperativeAst::RevealTop { count } => Effect::RevealTop {
-            player: TargetFilter::Controller,
-            count,
         },
     }
 }
@@ -1751,9 +1729,13 @@ pub(super) fn parse_imperative_family_ast(
         // Shuffle (CR 701.19)
         "shuffle" | "shuffles" => parse_shuffle_ast(text, lower).map(ImperativeFamilyAst::Shuffle),
 
-        // Reveal / look at hand (CR 701.16)
-        "reveal" => parse_hand_reveal_ast(text, lower)
-            .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::HandReveal(ast))),
+        // Reveal: "reveal the top N" → Dig (via search path), else hand reveal (CR 701.16, CR 701.20)
+        "reveal" | "reveals" => parse_search_and_creation_ast(text, lower)
+            .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::SearchCreation(ast)))
+            .or_else(|| {
+                parse_hand_reveal_ast(text, lower)
+                    .map(|ast| ImperativeFamilyAst::Structured(ImperativeAst::HandReveal(ast)))
+            }),
 
         // Choose (CR 700.2)
         "choose" => parse_choose_ast(text, lower)

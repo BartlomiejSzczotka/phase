@@ -4584,6 +4584,7 @@ mod tests {
                 up_to,
                 filter,
                 rest_destination,
+                ..
             } => {
                 assert_eq!(
                     *count,
@@ -4636,6 +4637,7 @@ mod tests {
                 up_to,
                 filter,
                 rest_destination,
+                ..
             } => {
                 assert_eq!(*count, QuantityExpr::Fixed { value: 5 });
                 assert_eq!(*destination, Some(Zone::Hand));
@@ -4647,6 +4649,66 @@ mod tests {
                     "filter should require creatures",
                 );
                 assert_eq!(*rest_destination, Some(Zone::Library));
+            }
+            other => {
+                panic!(
+                    "Expected Dig effect, got {:?}",
+                    std::mem::discriminant(other)
+                );
+            }
+        }
+    }
+
+    /// Satyr Wayfinder: "reveal the top four cards" → Dig with reveal=true,
+    /// continuation patches keep_count, filter, rest_destination from "you may put a land card
+    /// from among them into your hand. Put the rest into your graveyard."
+    #[test]
+    fn satyr_wayfinder_reveal_dig_from_among() {
+        let result = parse_with_keyword_names(
+            "When this creature enters, reveal the top four cards of your library. You may put a land card from among them into your hand. Put the rest into your graveyard.",
+            "Satyr Wayfinder",
+            &[],
+            &["Creature"],
+            &[],
+        );
+        assert_eq!(result.triggers.len(), 1, "should have one ETB trigger");
+        let execute = result.triggers[0]
+            .execute
+            .as_ref()
+            .expect("trigger should have execute");
+        match &*execute.effect {
+            Effect::Dig {
+                count,
+                destination,
+                keep_count,
+                up_to,
+                filter,
+                rest_destination,
+                reveal,
+            } => {
+                assert_eq!(
+                    count,
+                    &QuantityExpr::Fixed { value: 4 },
+                    "dig count should be 4"
+                );
+                assert!(
+                    reveal,
+                    "should be reveal=true for 'reveal the top' (CR 701.20a)"
+                );
+                assert_eq!(destination, &Some(Zone::Hand), "kept cards go to hand");
+                assert_eq!(keep_count, &Some(1), "keep up to 1 (a land card)");
+                assert!(up_to, "'you may' = up to");
+                assert!(
+                    matches!(filter, TargetFilter::Typed(TypedFilter { ref type_filters, .. })
+                        if type_filters.contains(&TypeFilter::Land)),
+                    "filter should require lands, got {:?}",
+                    filter,
+                );
+                assert_eq!(
+                    rest_destination,
+                    &Some(Zone::Graveyard),
+                    "rest go to graveyard"
+                );
             }
             other => {
                 panic!(

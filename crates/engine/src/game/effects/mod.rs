@@ -905,7 +905,10 @@ pub fn resolve_ability_chain(
                     // so "Otherwise, put that card into your hand" knows which card to move.
                     if else_resolved.targets.is_empty()
                         && !state.last_revealed_ids.is_empty()
-                        && matches!(ability.effect, Effect::RevealTop { .. })
+                        && matches!(
+                            ability.effect,
+                            Effect::RevealTop { .. } | Effect::Dig { reveal: true, .. }
+                        )
                     {
                         else_resolved.targets = state
                             .last_revealed_ids
@@ -1039,9 +1042,12 @@ pub fn resolve_ability_chain(
             resolve_ability_chain(state, &sub_with_context, events, depth + 1)?;
         } else if sub.targets.is_empty()
             && !state.last_revealed_ids.is_empty()
-            && matches!(ability.effect, Effect::RevealTop { .. })
+            && matches!(
+                ability.effect,
+                Effect::RevealTop { .. } | Effect::Dig { reveal: true, .. }
+            )
         {
-            // Inject revealed card IDs as targets for sub_abilities following RevealTop.
+            // Inject revealed card IDs as targets for sub_abilities following RevealTop/Dig(reveal).
             // Parallel to how continuations inject chosen cards as targets.
             let mut sub_with_targets = sub.as_ref().clone();
             sub_with_targets.targets = state

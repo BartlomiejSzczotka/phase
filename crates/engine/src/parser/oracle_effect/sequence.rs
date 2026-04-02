@@ -537,8 +537,7 @@ pub(super) fn apply_clause_continuation(
         ContinuationAst::PutRest { destination } => {
             // Absorbed into preceding Dig — sets rest_destination for unchosen cards.
             // If the Dig already has rest_destination set (e.g., by a preceding
-            // DigFromAmong), this is a no-op. Note: RevealTop has no rest_destination
-            // field, so this is silently skipped for RevealTop predecessors.
+            // DigFromAmong), this is a no-op.
             let Some(previous) = defs.last_mut() else {
                 return;
             };
@@ -882,8 +881,8 @@ pub(super) fn parse_followup_continuation_ast(
             })
         }
         // "put the rest on the bottom" / "put them back" / "put those cards into your graveyard"
-        // after Dig/RevealTop — sets rest_destination on the preceding Dig effect.
-        Effect::Dig { .. } | Effect::RevealTop { .. }
+        // after Dig — sets rest_destination on the preceding Dig effect.
+        Effect::Dig { .. }
             if nom_primitives::scan_contains(&lower, "put them back")
                 || nom_primitives::scan_contains(&lower, "put the rest")
                 || nom_primitives::scan_contains(&lower, "put those cards") =>
@@ -1199,6 +1198,7 @@ mod tests {
             up_to: false,
             filter: TargetFilter::Any,
             rest_destination: None,
+            reveal: false,
         }
     }
 

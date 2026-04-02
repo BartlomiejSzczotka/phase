@@ -10,29 +10,32 @@ pub fn resolve(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let (dig_num, keep_num, is_up_to, filter, kept_dest, rest_dest) = match &ability.effect {
-        Effect::Dig {
-            count,
-            keep_count,
-            up_to,
-            filter,
-            destination,
-            rest_destination,
-        } => {
-            let resolved_count =
-                resolve_quantity(state, count, ability.controller, ability.source_id).max(0)
-                    as usize;
-            (
-                resolved_count,
-                keep_count.unwrap_or(1) as usize,
-                *up_to,
-                filter.clone(),
-                *destination,
-                *rest_destination,
-            )
-        }
-        _ => (1, 1, false, TargetFilter::Any, None, None),
-    };
+    let (dig_num, keep_num, is_up_to, filter, kept_dest, rest_dest, is_reveal) =
+        match &ability.effect {
+            Effect::Dig {
+                count,
+                keep_count,
+                up_to,
+                filter,
+                destination,
+                rest_destination,
+                reveal,
+            } => {
+                let resolved_count =
+                    resolve_quantity(state, count, ability.controller, ability.source_id).max(0)
+                        as usize;
+                (
+                    resolved_count,
+                    keep_count.unwrap_or(1) as usize,
+                    *up_to,
+                    filter.clone(),
+                    *destination,
+                    *rest_destination,
+                    *reveal,
+                )
+            }
+            _ => (1, 1, false, TargetFilter::Any, None, None, false),
+        };
 
     let player = state
         .players
@@ -48,6 +51,24 @@ pub fn resolve(
 
     let cards: Vec<_> = player.library[..count].to_vec();
     let keep_count = keep_num.min(cards.len());
+
+    // CR 701.20a: If this is a reveal-dig, mark all cards as publicly revealed
+    // and emit CardsRevealed before the player makes their selection.
+    if is_reveal {
+        for &card_id in &cards {
+            state.revealed_cards.insert(card_id);
+        }
+        state.last_revealed_ids = cards.clone();
+        let card_names: Vec<String> = cards
+            .iter()
+            .filter_map(|id| state.objects.get(id).map(|o| o.name.clone()))
+            .collect();
+        events.push(GameEvent::CardsRevealed {
+            player: ability.controller,
+            card_ids: cards.clone(),
+            card_names,
+        });
+    }
 
     // Pre-compute selectable cards by evaluating the filter against each card.
     let selectable_cards = if matches!(filter, TargetFilter::Any) {
@@ -106,6 +127,7 @@ mod tests {
                 up_to: false,
                 filter: TargetFilter::Any,
                 rest_destination: None,
+                reveal: false,
             },
             vec![],
             ObjectId(100),

@@ -36,20 +36,18 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
             (HashSet::new(), HashSet::new())
         };
 
-    let (dig_visible, dig_cards): (HashSet<ObjectId>, HashSet<ObjectId>) =
-        if let WaitingFor::DigChoice {
-            player, ref cards, ..
-        } = filtered.waiting_for
-        {
-            let all_cards: HashSet<ObjectId> = cards.iter().copied().collect();
-            if player == viewer {
-                (all_cards.clone(), all_cards)
-            } else {
-                (HashSet::new(), all_cards)
-            }
+    let dig_visible: HashSet<ObjectId> = if let WaitingFor::DigChoice {
+        player, ref cards, ..
+    } = filtered.waiting_for
+    {
+        if player == viewer {
+            cards.iter().copied().collect()
         } else {
-            (HashSet::new(), HashSet::new())
-        };
+            HashSet::new()
+        }
+    } else {
+        HashSet::new()
+    };
 
     let effect_zone_hand_cards: HashSet<ObjectId> = if let WaitingFor::EffectZoneChoice {
         zone: Zone::Hand,
@@ -70,9 +68,12 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     for obj_id in all_library_ids {
         let visible = manifest_dread_visible.contains(&obj_id)
             || dig_visible.contains(&obj_id)
+            // CR 701.20b: Revealed cards are visible to all players. For reveal-digs
+            // ("reveal the top N"), dig cards are also in revealed_cards and must remain
+            // public during DigChoice. For private digs ("look at"), revealed_cards won't
+            // contain dig cards, so the exclusion still applies.
             || (state.revealed_cards.contains(&obj_id)
-                && !manifest_dread_cards.contains(&obj_id)
-                && !dig_cards.contains(&obj_id));
+                && !manifest_dread_cards.contains(&obj_id));
         if !visible && !effect_zone_hand_cards.contains(&obj_id) {
             hide_card(&mut filtered, obj_id);
         }

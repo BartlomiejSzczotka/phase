@@ -18,7 +18,8 @@ expression: result
         "filter": {
           "type": "Any"
         },
-        "rest_destination": null
+        "rest_destination": null,
+        "reveal": false
       },
       "cost": {
         "type": "Loyalty",

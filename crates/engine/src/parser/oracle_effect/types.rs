@@ -412,6 +412,8 @@ pub(super) enum SearchCreationImperativeAst {
     },
     Dig {
         count: QuantityExpr,
+        /// CR 701.20a vs CR 701.16a: True = revealed (public), false = looked at (private).
+        reveal: bool,
     },
     CopyTokenOf {
         target: TargetFilter,
@@ -453,16 +455,13 @@ pub(super) enum UtilityImperativeAst {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum HandRevealImperativeAst {
-    LookAtHand {
+    LookAt {
         target: TargetFilter,
     },
-    RevealHand,
+    RevealAll,
     /// "reveals a number of cards from their hand equal to X" (CR 701.20a).
-    RevealPartialHand {
+    RevealPartial {
         count: crate::types::ability::QuantityExpr,
-    },
-    RevealTop {
-        count: u32,
     },
 }
 

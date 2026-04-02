@@ -3197,6 +3197,30 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         }
     }
 
+    // CR 701.20a vs CR 701.16a: Demote reveal-Dig back to RevealTop when no DigFromAmong
+    // continuation patched it. An unpatched Dig { reveal: true, keep_count: None, filter: Any }
+    // is a simple "reveal the top N" with no player selection — it must resolve synchronously
+    // (via RevealTop) so that sub_ability chains like RevealedHasCardType evaluate inline.
+    for def in &mut defs {
+        if let Effect::Dig {
+            count,
+            keep_count: None,
+            filter: TargetFilter::Any,
+            reveal: true,
+            ..
+        } = &*def.effect
+        {
+            let count_val = match count {
+                QuantityExpr::Fixed { value } => *value as u32,
+                _ => 1,
+            };
+            *def.effect = Effect::RevealTop {
+                player: TargetFilter::Controller,
+                count: count_val,
+            };
+        }
+    }
+
     // CR 706 + CR 705: Consolidate die result table lines into their parent RollDie,
     // and coin flip conditional branches into their parent FlipCoin.
     consolidate_die_and_coin_defs(&mut defs, kind);
