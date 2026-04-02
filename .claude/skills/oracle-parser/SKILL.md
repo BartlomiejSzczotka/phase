@@ -153,6 +153,7 @@ parse_effect_clause()                    — entry point (oracle_effect/mod.rs)
 - **`TextPair`** provides dual-string case-bridging (subject-predicate decomposition, clause AST classification). `TextPair::strip_prefix` is correct for these structural operations.
 - **`oracle_classifier.rs`** owns reusable line-classification helpers such as trigger-prefix, static-pattern, and replacement-pattern detection. `oracle.rs` remains the priority router that calls them.
 - **`oracle_effect/conditions.rs`** owns leading-condition splitting and ability-condition helpers. `oracle_effect/mod.rs` remains the clause/effect orchestrator and re-exports `split_leading_conditional`.
+- **`oracle_effect/search.rs`** owns search/seek filter parsing helpers. `oracle_effect/mod.rs` re-exports the stable search helper surface used by imperative and continuation parsing.
 - **New parser code** MUST use nom combinators. `starts_with`/`strip_prefix` for parsing dispatch is NOT acceptable (see Rule Zero).
 
 ---
@@ -294,6 +295,7 @@ oracle_effect/
 ├── mod.rs          — Orchestrator: parse_effect_chain(), parse_effect_clause(), compound detection
 ├── conditions.rs   — Leading condition splitting and AbilityCondition extraction helpers
 ├── imperative.rs   — Imperative verb family parsing: parse_*_ast() + lower_*_ast()
+├── search.rs       — Search/seek parsing helpers: search filters, seek details, destinations
 ├── subject.rs      — Subject-predicate parsing: try_parse_subject_predicate_ast()
 ├── sequence.rs     — Clause boundary splitting and continuation absorption
 ├── token.rs        — Token creation: "create a 1/1 white Spirit token with flying"
@@ -573,6 +575,9 @@ rg -q "fn parse_effect_clause" crates/engine/src/parser/oracle_effect/mod.rs && 
 rg -q "fn parse_imperative_effect" crates/engine/src/parser/oracle_effect/mod.rs && \
 rg -q "fn split_leading_conditional" crates/engine/src/parser/oracle_effect/conditions.rs && \
 rg -q "fn strip_leading_general_conditional" crates/engine/src/parser/oracle_effect/conditions.rs && \
+rg -q "fn parse_search_library_details" crates/engine/src/parser/oracle_effect/search.rs && \
+rg -q "fn parse_seek_details" crates/engine/src/parser/oracle_effect/search.rs && \
+rg -q "fn parse_search_destination" crates/engine/src/parser/oracle_effect/search.rs && \
 rg -q "fn strip_subject_clause" crates/engine/src/parser/oracle_effect/subject.rs && \
 rg -q "fn try_parse_subject_predicate_ast" crates/engine/src/parser/oracle_effect/subject.rs && \
 rg -q "fn try_parse_targeted_controller_gain_life" crates/engine/src/parser/oracle_effect/subject.rs && \
