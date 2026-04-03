@@ -8,6 +8,7 @@ interface ImageMapEntry {
 type ImageMap = Record<string, ImageMapEntry[]>;
 
 let imageMapPromise: Promise<ImageMap | null> | null = null;
+let scryfallQueue: Promise<void> = Promise.resolve();
 
 function loadImageMap(): Promise<ImageMap | null> {
   if (!imageMapPromise) {
@@ -18,13 +19,14 @@ function loadImageMap(): Promise<ImageMap | null> {
   return imageMapPromise;
 }
 
-const SCRYFALL_DELAY_MS = 75;
+const SCRYFALL_DELAY_MS = 100;
 const NOT_FOUND_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const MAX_RETRIES = 3;
 const BASE_BACKOFF_MS = 1000;
 
 /** Cards that returned 404 from both exact and fuzzy lookup. */
 const notFoundCache = new Map<string, number>();
+const cardDataCache = new Map<string, Promise<ScryfallCard>>();
 
 export type ImageSize = "small" | "normal" | "large" | "art_crop";
 
@@ -52,7 +54,39 @@ interface ScryfallSearchResponse {
   has_more: boolean;
 }
 
-let lastRequestTime = 0;
+let nextRequestAt = 0;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function claimScryfallQueueSlot(): Promise<() => void> {
+  const prior = scryfallQueue.catch(() => undefined);
+  let release!: () => void;
+  scryfallQueue = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await prior;
+  return release;
+}
+
+function parseRetryDelayMs(retryAfter: string | null, attempt: number): number {
+  if (!retryAfter) {
+    return BASE_BACKOFF_MS * 2 ** attempt;
+  }
+
+  const retryAfterSeconds = Number.parseInt(retryAfter, 10);
+  if (Number.isFinite(retryAfterSeconds)) {
+    return retryAfterSeconds * 1000;
+  }
+
+  const retryAfterAt = Date.parse(retryAfter);
+  if (Number.isFinite(retryAfterAt)) {
+    return Math.max(0, retryAfterAt - Date.now());
+  }
+
+  return BASE_BACKOFF_MS * 2 ** attempt;
+}
 
 /**
  * Rate-limited fetch with 429 backoff and retry.
@@ -63,29 +97,41 @@ let lastRequestTime = 0;
  */
 async function rateLimitedFetch(
   url: string,
-  attempt: number = 0,
 ): Promise<Response> {
-  const now = Date.now();
-  const elapsed = now - lastRequestTime;
-  if (elapsed < SCRYFALL_DELAY_MS) {
-    await new Promise((resolve) =>
-      setTimeout(resolve, SCRYFALL_DELAY_MS - elapsed),
-    );
+  let attempt = 0;
+
+  while (true) {
+    const release = await claimScryfallQueueSlot();
+    try {
+      const delayMs = Math.max(0, nextRequestAt - Date.now());
+      if (delayMs > 0) {
+        await sleep(delayMs);
+      }
+
+      try {
+        const response = await fetch(url);
+        if (response.status === 429 && attempt < MAX_RETRIES) {
+          nextRequestAt = Date.now()
+            + parseRetryDelayMs(response.headers.get("Retry-After"), attempt);
+          attempt += 1;
+          continue;
+        }
+
+        nextRequestAt = Date.now() + SCRYFALL_DELAY_MS;
+        return response;
+      } catch (error) {
+        if (attempt >= MAX_RETRIES) {
+          throw error;
+        }
+
+        nextRequestAt = Date.now() + BASE_BACKOFF_MS * 2 ** attempt;
+        attempt += 1;
+        continue;
+      }
+    } finally {
+      release();
+    }
   }
-  lastRequestTime = Date.now();
-
-  const response = await fetch(url);
-
-  if (response.status === 429 && attempt < MAX_RETRIES) {
-    const retryAfter = response.headers.get("Retry-After");
-    const delayMs = retryAfter
-      ? parseInt(retryAfter, 10) * 1000
-      : BASE_BACKOFF_MS * 2 ** attempt;
-    await new Promise((resolve) => setTimeout(resolve, delayMs));
-    return rateLimitedFetch(url, attempt + 1);
-  }
-
-  return response;
 }
 
 /** Strip set code brackets (e.g. "Goblin Lackey [UZ]" → "Goblin Lackey"). */
@@ -101,23 +147,36 @@ export async function fetchCardData(cardName: string): Promise<ScryfallCard> {
     throw new Error(`Card not found (cached): "${name}"`);
   }
 
-  const exactUrl = `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(name)}`;
-  const exactResponse = await rateLimitedFetch(exactUrl);
-  if (exactResponse.ok) {
-    return exactResponse.json() as Promise<ScryfallCard>;
+  const cachedCard = cardDataCache.get(name);
+  if (cachedCard) {
+    return cachedCard;
   }
 
-  if (exactResponse.status !== 404) {
-    throw new Error(`Scryfall API error: ${exactResponse.status} for "${name}"`);
-  }
+  const cardPromise = (async () => {
+    const exactUrl = `https://api.scryfall.com/cards/named?exact=${encodeURIComponent(name)}`;
+    const exactResponse = await rateLimitedFetch(exactUrl);
+    if (exactResponse.ok) {
+      return exactResponse.json() as Promise<ScryfallCard>;
+    }
 
-  const fuzzyUrl = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(name)}`;
-  const fuzzyResponse = await rateLimitedFetch(fuzzyUrl);
-  if (!fuzzyResponse.ok) {
-    notFoundCache.set(name, Date.now());
-    throw new Error(`Scryfall API error: ${fuzzyResponse.status} for "${name}"`);
-  }
-  return fuzzyResponse.json() as Promise<ScryfallCard>;
+    if (exactResponse.status !== 404) {
+      throw new Error(`Scryfall API error: ${exactResponse.status} for "${name}"`);
+    }
+
+    const fuzzyUrl = `https://api.scryfall.com/cards/named?fuzzy=${encodeURIComponent(name)}`;
+    const fuzzyResponse = await rateLimitedFetch(fuzzyUrl);
+    if (!fuzzyResponse.ok) {
+      notFoundCache.set(name, Date.now());
+      throw new Error(`Scryfall API error: ${fuzzyResponse.status} for "${name}"`);
+    }
+    return fuzzyResponse.json() as Promise<ScryfallCard>;
+  })().catch((error) => {
+    cardDataCache.delete(name);
+    throw error;
+  });
+
+  cardDataCache.set(name, cardPromise);
+  return cardPromise;
 }
 
 function getImageUrl(
