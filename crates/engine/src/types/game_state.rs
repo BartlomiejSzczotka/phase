@@ -1098,6 +1098,9 @@ pub enum CastingVariant {
     /// CR 702.180a: Cast from graveyard for harmonize cost. On resolution, exiled
     /// instead of going anywhere else (unlike Escape which returns to graveyard).
     Harmonize,
+    /// CR 702.34a: Cast from graveyard for flashback cost. On resolution (or
+    /// whenever leaving the stack for any reason), exiled instead of going anywhere else.
+    Flashback,
     /// CR 601.2a: Cast from graveyard via a static permission source (e.g. Lurrus).
     /// Stores the granting permanent's ObjectId for once-per-turn tracking.
     /// CR 400.7: Zone change creates new ObjectId, naturally resetting permission.

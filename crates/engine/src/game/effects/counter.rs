@@ -114,12 +114,14 @@ pub fn resolve(
                 .rposition(|e| e.id == *obj_id || e.source_id == *obj_id);
             if let Some(idx) = stack_idx {
                 let is_spell = matches!(state.stack[idx].kind, StackEntryKind::Spell { .. });
-                // CR 702.138 + Harmonize: Spells cast via alt-cost keywords that exile on
-                // resolution must also exile when countered (they never return to graveyard).
+                // CR 702.34a / CR 702.180a: Flashback and Harmonize exile when leaving
+                // the stack for any reason, including when countered. Escape included for consistency.
                 let exiles_on_counter = matches!(
                     &state.stack[idx].kind,
                     StackEntryKind::Spell {
-                        casting_variant: CastingVariant::Harmonize | CastingVariant::Escape,
+                        casting_variant: CastingVariant::Harmonize
+                            | CastingVariant::Escape
+                            | CastingVariant::Flashback,
                         ..
                     }
                 );
@@ -128,7 +130,7 @@ pub fn resolve(
 
                 if is_spell {
                     // CR 608.2b: Countered spells go to graveyard, unless cast via an
-                    // alt-cost keyword that exiles on resolution (Harmonize, Escape).
+                    // alt-cost keyword that exiles on leaving the stack (Flashback, Harmonize).
                     let dest = if exiles_on_counter {
                         Zone::Exile
                     } else {
@@ -495,6 +497,49 @@ mod tests {
         assert!(
             state.transient_continuous_effects.is_empty(),
             "source_static should not apply when countering a spell"
+        );
+    }
+
+    #[test]
+    fn flashback_spell_exiles_when_countered() {
+        let mut state = GameState::new_two_player(42);
+        let obj_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Flashback Spell".to_string(),
+            Zone::Stack,
+        );
+        state.stack.push(StackEntry {
+            id: obj_id,
+            source_id: obj_id,
+            controller: PlayerId(1),
+            kind: StackEntryKind::Spell {
+                card_id: CardId(1),
+                ability: make_dummy_ability(obj_id, PlayerId(1)),
+                casting_variant: CastingVariant::Flashback,
+            },
+        });
+
+        let counter_ability = ResolvedAbility::new(
+            Effect::Counter {
+                target: TargetFilter::Any,
+                source_static: None,
+                unless_payment: None,
+            },
+            vec![TargetRef::Object(obj_id)],
+            ObjectId(100),
+            PlayerId(0),
+        );
+
+        let mut events = Vec::new();
+        resolve(&mut state, &counter_ability, &mut events).unwrap();
+
+        // CR 702.34a: Flashback spell should exile when countered, not go to graveyard.
+        assert_eq!(
+            state.objects[&obj_id].zone,
+            Zone::Exile,
+            "Flashback spell should be exiled when countered"
         );
     }
 }

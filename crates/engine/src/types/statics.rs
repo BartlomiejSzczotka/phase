@@ -190,7 +190,7 @@ pub enum StaticMode {
     Indestructible,
     /// Permanent cannot be destroyed (distinct from Indestructible).
     CantBeDestroyed,
-    /// CR 702.33: Flashback — allows casting from graveyard, exiled after resolution.
+    /// CR 702.34: Flashback — allows casting from graveyard, exiled after resolution.
     FlashBack,
     /// CR 702.18: Shroud — permanent cannot be the target of spells or abilities.
     Shroud,

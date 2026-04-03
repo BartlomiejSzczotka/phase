@@ -79,7 +79,7 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     // CR 113.6g: CantBeCountered — spell can't be countered by spells or abilities.
     registry.insert(StaticMode::CantBeCountered, handle_cant_be_countered);
     registry.insert(StaticMode::CantBeDestroyed, handle_cant_be_destroyed);
-    // CR 702.33: FlashBack — allows casting from graveyard, exiled after resolution.
+    // CR 702.34: FlashBack — allows casting from graveyard, exiled after resolution.
     registry.insert(StaticMode::FlashBack, handle_flashback);
     // CR 702.18: Shroud — permanent cannot be the target of spells or abilities.
     registry.insert(StaticMode::Shroud, handle_shroud);

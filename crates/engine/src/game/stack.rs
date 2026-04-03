@@ -81,7 +81,17 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
         if targeting::check_fizzle(&original_targets, &legal_targets) {
             // CR 608.2b: Fizzle — all targets illegal, spell is countered on resolution.
             if is_spell {
-                zones::move_to_zone(state, entry.id, Zone::Graveyard, events);
+                // CR 702.34a / CR 702.180a: Flashback and Harmonize exile when leaving
+                // the stack for any reason, including fizzle. Escape is included for consistency.
+                let dest = if matches!(
+                    casting_variant,
+                    CastingVariant::Flashback | CastingVariant::Harmonize | CastingVariant::Escape
+                ) {
+                    Zone::Exile
+                } else {
+                    Zone::Graveyard
+                };
+                zones::move_to_zone(state, entry.id, dest, events);
             }
             events.push(GameEvent::StackResolved {
                 object_id: entry.id,
@@ -105,6 +115,11 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
             } else {
                 Zone::Exile
             }
+        } else if casting_variant == CastingVariant::Flashback {
+            // CR 702.34a: If the flashback cost was paid, exile this card
+            // instead of putting it anywhere else any time it would leave the stack.
+            // Flashback only appears on instants/sorceries — unconditional exile is correct.
+            Zone::Exile
         } else if is_permanent_type(state, entry.id) {
             // CR 608.3: Permanent spells enter the battlefield.
             Zone::Battlefield
@@ -283,7 +298,9 @@ fn is_permanent_type(state: &GameState, object_id: ObjectId) -> bool {
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::{Effect, QuantityExpr, ResolvedAbility, TargetRef, TypedFilter};
+    use crate::types::ability::{
+        Effect, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef, TypedFilter,
+    };
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::CardId;
     use crate::types::keywords::Keyword;
@@ -873,6 +890,125 @@ mod tests {
         assert!(
             available.contains(&obj_id),
             "ExileWithAltCost should be immediately castable (no turn restriction)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Flashback zone routing (CR 702.34a)
+    // -----------------------------------------------------------------------
+
+    /// Helper: push a Flashback spell onto the stack and return its ObjectId.
+    fn push_flashback_spell(state: &mut GameState, effect: Effect) -> ObjectId {
+        let card_id = CardId(state.next_object_id);
+        let obj_id = create_object(
+            state,
+            card_id,
+            PlayerId(0),
+            "Flashback Spell".to_string(),
+            Zone::Stack,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Instant);
+        }
+        let resolved = ResolvedAbility::new(effect, vec![], obj_id, PlayerId(0));
+        state.stack.push(StackEntry {
+            id: obj_id,
+            source_id: obj_id,
+            controller: PlayerId(0),
+            kind: StackEntryKind::Spell {
+                card_id,
+                ability: resolved,
+                casting_variant: CastingVariant::Flashback,
+            },
+        });
+        obj_id
+    }
+
+    #[test]
+    fn flashback_spell_exiles_on_resolution() {
+        let mut state = setup();
+        let obj_id = push_flashback_spell(
+            &mut state,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+        );
+
+        let mut events = Vec::new();
+        resolve_top(&mut state, &mut events);
+
+        assert_eq!(
+            state.objects[&obj_id].zone,
+            Zone::Exile,
+            "Flashback spell should be exiled on resolution, not sent to graveyard"
+        );
+    }
+
+    #[test]
+    fn flashback_spell_exiles_on_fizzle() {
+        let mut state = setup();
+
+        // Create a target creature that we'll remove to cause fizzle
+        let target_id = create_object(
+            &mut state,
+            CardId(200),
+            PlayerId(1),
+            "Target Bear".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&target_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+        }
+        state.battlefield.push(target_id);
+
+        // Push a flashback spell targeting that creature
+        let card_id = CardId(state.next_object_id);
+        let spell_id = create_object(
+            &mut state,
+            card_id,
+            PlayerId(0),
+            "Flashback Bolt".to_string(),
+            Zone::Stack,
+        );
+        {
+            let obj = state.objects.get_mut(&spell_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Instant);
+        }
+        let resolved = ResolvedAbility::new(
+            Effect::DealDamage {
+                amount: QuantityExpr::Fixed { value: 3 },
+                target: TargetFilter::Any,
+                damage_source: None,
+            },
+            vec![TargetRef::Object(target_id)],
+            spell_id,
+            PlayerId(0),
+        );
+        state.stack.push(StackEntry {
+            id: spell_id,
+            source_id: spell_id,
+            controller: PlayerId(0),
+            kind: StackEntryKind::Spell {
+                card_id,
+                ability: resolved,
+                casting_variant: CastingVariant::Flashback,
+            },
+        });
+
+        // Remove the target to cause fizzle
+        zones::move_to_zone(&mut state, target_id, Zone::Graveyard, &mut Vec::new());
+
+        let mut events = Vec::new();
+        resolve_top(&mut state, &mut events);
+
+        assert_eq!(
+            state.objects[&spell_id].zone,
+            Zone::Exile,
+            "Flashback spell should be exiled on fizzle, not sent to graveyard"
         );
     }
 }

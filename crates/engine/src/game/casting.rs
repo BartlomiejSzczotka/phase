@@ -198,13 +198,14 @@ pub fn spell_objects_available_to_cast(state: &GameState, player: PlayerId) -> V
             .is_some_and(|obj| obj.owner != player && has_alt_cost_permission(obj))
     }));
 
-    // CR 702.138: Cards in graveyard with graveyard-cast keywords.
-    // Escape requires enough other graveyard cards to exile; Harmonize has no such restriction.
+    // CR 702.34 / CR 702.138 / CR 702.180: Cards in graveyard with graveyard-cast keywords.
+    // Escape requires enough other graveyard cards to exile; Flashback and Harmonize have no such restriction.
     objects.extend(player_data.graveyard.iter().filter(|&&obj_id| {
         state.objects.get(&obj_id).is_some_and(|obj| {
             obj.owner == player
                 && has_graveyard_cast_keyword(obj)
                 && (has_harmonize_keyword(obj)
+                    || has_flashback_keyword(obj)
                     || graveyard_has_enough_for_escape(state, player, obj_id))
         })
     }));
@@ -263,19 +264,29 @@ fn graveyard_has_enough_for_escape(
     other_cards >= needed as usize
 }
 
-/// CR 702.138: Check if an object has a keyword allowing it to be cast from graveyard.
+/// CR 702.180: Check if an object has the Harmonize keyword.
 fn has_harmonize_keyword(obj: &crate::game::game_object::GameObject) -> bool {
     obj.keywords
         .iter()
         .any(|k| matches!(k, crate::types::keywords::Keyword::Harmonize(_)))
 }
 
+/// CR 702.34: Check if an object has the Flashback keyword.
+fn has_flashback_keyword(obj: &crate::game::game_object::GameObject) -> bool {
+    obj.keywords
+        .iter()
+        .any(|k| matches!(k, crate::types::keywords::Keyword::Flashback(_)))
+}
+
+/// CR 702.34 / CR 702.138 / CR 702.180: Check if an object has any keyword
+/// allowing it to be cast from graveyard (Escape, Harmonize, or Flashback).
 fn has_graveyard_cast_keyword(obj: &crate::game::game_object::GameObject) -> bool {
     obj.keywords.iter().any(|k| {
         matches!(
             k,
             crate::types::keywords::Keyword::Escape { .. }
                 | crate::types::keywords::Keyword::Harmonize(_)
+                | crate::types::keywords::Keyword::Flashback(_)
         )
     })
 }
@@ -494,7 +505,7 @@ fn prepare_spell_cast(
     // CR 715.3d: Cards in exile with AdventureCreature or ExileWithAltCost permission.
     let has_exile_permission =
         obj.zone == Zone::Exile && has_exile_cast_permission(obj, state.turn_number);
-    // CR 702.138: Cards in graveyard with Escape keyword.
+    // CR 702.34 / CR 702.138 / CR 702.180: Cards in graveyard with graveyard-cast keywords.
     let has_escape = obj.zone == Zone::Graveyard && has_graveyard_cast_keyword(obj);
     // CR 601.2a + CR 117.1c: Graveyard cast via static permission (Lurrus, etc.).
     let graveyard_permission_src = if obj.zone == Zone::Graveyard && state.active_player == player {
@@ -637,14 +648,25 @@ fn prepare_spell_cast(
         None
     };
 
-    // Precedence: Escape > Harmonize > GraveyardPermission > Warp > Normal.
-    // No standard card has both Escape and Harmonize; if one did, Escape wins.
-    // Graveyard-keyword casts take priority over static permissions (card's own
-    // keyword overrides an external source's grant).
+    // CR 702.34a: Flashback — use flashback cost when casting from graveyard.
+    let flashback_cost = if obj.zone == Zone::Graveyard {
+        obj.keywords.iter().find_map(|k| match k {
+            crate::types::keywords::Keyword::Flashback(cost) => Some(cost.clone()),
+            _ => None,
+        })
+    } else {
+        None
+    };
+
+    // Precedence: Escape > Harmonize > Flashback > GraveyardPermission > Warp > Normal.
+    // No standard card has multiple graveyard-cast keywords; if one did, the card's own
+    // keyword overrides an external source's grant (GraveyardPermission).
     let casting_variant = if escape_cost.is_some() {
         CastingVariant::Escape
     } else if harmonize_cost.is_some() {
         CastingVariant::Harmonize
+    } else if flashback_cost.is_some() {
+        CastingVariant::Flashback
     } else if let Some((source, once_per_turn)) = graveyard_permission_src {
         CastingVariant::GraveyardPermission {
             source,
@@ -665,6 +687,7 @@ fn prepare_spell_cast(
     } else {
         escape_cost
             .or(harmonize_cost)
+            .or(flashback_cost)
             .or(alt_cost_from_exile)
             .or(warp_cost)
             .unwrap_or_else(|| obj.mana_cost.clone())
@@ -5112,5 +5135,138 @@ mod tests {
             &TargetFilter::SelfRef,
             source_id,
         ));
+    }
+
+    // -----------------------------------------------------------------------
+    // Flashback (CR 702.34)
+    // -----------------------------------------------------------------------
+
+    /// Create an instant in the graveyard with Flashback.
+    fn add_flashback_instant_to_graveyard(
+        state: &mut GameState,
+        player: PlayerId,
+        flashback_cost: ManaCost,
+        mana_cost: ManaCost,
+    ) -> ObjectId {
+        let card_id = CardId(state.next_object_id);
+        let obj_id = create_object(
+            state,
+            card_id,
+            player,
+            "Think Twice".to_string(),
+            Zone::Graveyard,
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Instant);
+        obj.base_card_types = obj.card_types.clone();
+        obj.mana_cost = mana_cost;
+        obj.keywords.push(Keyword::Flashback(flashback_cost));
+        // Give it a simple draw effect so it has an ability to cast
+        let ability = crate::types::ability::AbilityDefinition::new(
+            crate::types::ability::AbilityKind::Spell,
+            crate::types::ability::Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+        );
+        obj.abilities.push(ability.clone());
+        obj.base_abilities.push(ability);
+        obj_id
+    }
+
+    #[test]
+    fn flashback_card_appears_castable_from_graveyard() {
+        let mut state = setup_game_at_main_phase();
+        let flashback_cost = ManaCost::Cost {
+            generic: 2,
+            shards: vec![ManaCostShard::Blue],
+        };
+        let card_cost = ManaCost::Cost {
+            generic: 1,
+            shards: vec![ManaCostShard::Blue],
+        };
+        let obj_id =
+            add_flashback_instant_to_graveyard(&mut state, PlayerId(0), flashback_cost, card_cost);
+
+        let available = spell_objects_available_to_cast(&state, PlayerId(0));
+        assert!(
+            available.contains(&obj_id),
+            "Flashback card in graveyard should be castable"
+        );
+    }
+
+    #[test]
+    fn flashback_uses_flashback_cost_not_mana_cost() {
+        let mut state = setup_game_at_main_phase();
+        let flashback_cost = ManaCost::Cost {
+            generic: 5,
+            shards: vec![],
+        };
+        let card_cost = ManaCost::Cost {
+            generic: 1,
+            shards: vec![ManaCostShard::Blue],
+        };
+        let obj_id = add_flashback_instant_to_graveyard(
+            &mut state,
+            PlayerId(0),
+            flashback_cost.clone(),
+            card_cost,
+        );
+
+        let prepared = prepare_spell_cast(&state, PlayerId(0), obj_id).unwrap();
+        assert_eq!(
+            prepared.casting_variant,
+            CastingVariant::Flashback,
+            "Casting from graveyard with Flashback keyword should use CastingVariant::Flashback"
+        );
+        assert_eq!(
+            prepared.mana_cost, flashback_cost,
+            "Should use flashback cost, not card mana cost"
+        );
+    }
+
+    #[test]
+    fn flashback_card_in_hand_uses_normal_variant() {
+        let mut state = setup_game_at_main_phase();
+        let flashback_cost = ManaCost::Cost {
+            generic: 5,
+            shards: vec![],
+        };
+        let card_cost = ManaCost::Cost {
+            generic: 1,
+            shards: vec![ManaCostShard::Blue],
+        };
+        // Create in hand instead of graveyard
+        let card_id = CardId(state.next_object_id);
+        let obj_id = create_object(
+            &mut state,
+            card_id,
+            PlayerId(0),
+            "Think Twice".to_string(),
+            Zone::Hand,
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Instant);
+        obj.base_card_types = obj.card_types.clone();
+        obj.mana_cost = card_cost.clone();
+        obj.keywords.push(Keyword::Flashback(flashback_cost));
+        let ability = crate::types::ability::AbilityDefinition::new(
+            crate::types::ability::AbilityKind::Spell,
+            crate::types::ability::Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+            },
+        );
+        obj.abilities.push(ability.clone());
+        obj.base_abilities.push(ability);
+
+        let prepared = prepare_spell_cast(&state, PlayerId(0), obj_id).unwrap();
+        assert_eq!(
+            prepared.casting_variant,
+            CastingVariant::Normal,
+            "Flashback card in hand should use Normal variant"
+        );
+        assert_eq!(
+            prepared.mana_cost, card_cost,
+            "Should use card's mana cost when cast from hand"
+        );
     }
 }
