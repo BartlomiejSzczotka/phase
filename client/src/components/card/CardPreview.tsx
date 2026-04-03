@@ -88,9 +88,14 @@ function CardPreviewInner({
   const backParseDetails = useCardParseDetails(backFaceName);
 
   const isToken = obj?.card_id === 0;
+  // For transformed DFCs, the active face is the back (Scryfall faceIndex 1).
+  // The engine swaps obj.name to the active face, but Scryfall always indexes
+  // 0=front, 1=back regardless of search name — so we must flip the index.
+  const isTransformed = obj?.transformed ?? false;
+  const defaultFaceIndex = faceIndex ?? (isTransformed ? 1 : 0);
   const { src, isLoading } = useCardImage(cardName, {
     size: "normal",
-    faceIndex,
+    faceIndex: defaultFaceIndex,
     isToken,
     tokenFilters: isToken ? { power: obj?.power, toughness: obj?.toughness, colors: obj?.color } : undefined,
   });
@@ -131,18 +136,19 @@ function CardPreviewInner({
     };
   }, []);
 
-  // On desktop, Ctrl swaps to the back face
-  const showBackFace = !isMobile && ctrlHeld && backFaceName != null;
-  // Fetch back face image when Ctrl is held (hook must always be called, but with empty
+  // On desktop, Ctrl swaps to the other face (back face normally, front face if transformed)
+  const showOtherFace = !isMobile && ctrlHeld && backFaceName != null;
+  // Fetch other face image when Ctrl is held (hook must always be called, but with empty
   // string when not needed so useCardImage short-circuits without a network request)
-  const backFaceImgResult = useCardImage(showBackFace ? backFaceName! : "", {
+  const otherFaceIndex = isTransformed ? 0 : 1;
+  const otherFaceImgResult = useCardImage(showOtherFace ? backFaceName! : "", {
     size: "normal",
-    faceIndex: 1,
+    faceIndex: otherFaceIndex,
   });
 
-  const activeSrc = showBackFace ? backFaceImgResult.src : src;
-  const activeLoading = showBackFace ? backFaceImgResult.isLoading : isLoading;
-  const displayName = showBackFace ? backFaceName! : cardName;
+  const activeSrc = showOtherFace ? otherFaceImgResult.src : src;
+  const activeLoading = showOtherFace ? otherFaceImgResult.isLoading : isLoading;
+  const displayName = showOtherFace ? backFaceName! : cardName;
   const showInfoPanel = obj?.zone === "Battlefield";
   const infoPanelHeight = showInfoPanel ? 120 : 0;
   const previewWidth =
@@ -248,9 +254,9 @@ function CardPreviewInner({
     >
       {altHeld && (frontParseDetails || engineFrontFace) ? (
         <ParsedAbilitiesPanel
-          name={showBackFace ? (engineBackFace?.name ?? backFaceName ?? "") : (obj?.name ?? engineFrontFace?.name ?? frontFaceName)}
-          cardTypes={showBackFace ? engineBackFace?.card_type : (obj?.card_types ?? engineFrontFace?.card_type)}
-          parseDetails={showBackFace && backParseDetails ? backParseDetails : frontParseDetails}
+          name={showOtherFace ? (engineBackFace?.name ?? backFaceName ?? "") : (obj?.name ?? engineFrontFace?.name ?? frontFaceName)}
+          cardTypes={showOtherFace ? engineBackFace?.card_type : (obj?.card_types ?? engineFrontFace?.card_type)}
+          parseDetails={showOtherFace && backParseDetails ? backParseDetails : frontParseDetails}
           maxHeight={viewportHeight - margin * 2}
         />
       ) : (
@@ -261,7 +267,9 @@ function CardPreviewInner({
           obj={obj}
           isLoading={activeLoading}
           src={activeSrc}
-          backFaceHint={backFaceName != null && !showBackFace ? "Hold Ctrl for back face" : null}
+          backFaceHint={backFaceName != null && !showOtherFace
+            ? `Hold Ctrl for ${isTransformed ? "front" : "back"} face`
+            : null}
         />
       )}
     </div>
