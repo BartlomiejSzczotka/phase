@@ -321,7 +321,11 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             {
                 // CR 605.3b: Mana abilities resolve immediately without using the stack.
                 let ability_def = obj.abilities[ability_index].clone();
-                mana_abilities::activate_mana_ability(
+                let is_land = obj
+                    .card_types
+                    .core_types
+                    .contains(&crate::types::card_type::CoreType::Land);
+                let wf = mana_abilities::activate_mana_ability(
                     state,
                     source_id,
                     *player,
@@ -330,7 +334,17 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     &mut events,
                     crate::types::game_state::ManaAbilityResume::Priority,
                     None,
-                )?
+                )?;
+                // Track land mana taps for undo (UntapLandForMana), matching
+                // the TapLandForMana path so dual lands are undoable too.
+                if is_land {
+                    state
+                        .lands_tapped_for_mana
+                        .entry(*player)
+                        .or_default()
+                        .push(source_id);
+                }
+                wf
             } else if obj.loyalty.is_some()
                 && ability_index < obj.abilities.len()
                 && matches!(
@@ -3039,6 +3053,71 @@ mod tests {
                 player: PlayerId(0)
             }
         ));
+    }
+
+    #[test]
+    fn multi_mana_land_undoable_after_activate_ability() {
+        // Dual lands tapped via ActivateAbility should be undoable via UntapLandForMana.
+        let mut state = setup_game_at_main_phase();
+
+        let dual_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Watery Grave".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&dual_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.has_mana_ability = true;
+            obj.abilities.push(
+                AbilityDefinition::new(
+                    crate::types::ability::AbilityKind::Activated,
+                    crate::types::ability::Effect::Mana {
+                        produced: crate::types::ability::ManaProduction::Fixed {
+                            colors: vec![crate::types::mana::ManaColor::Black],
+                        },
+                        restrictions: vec![],
+                        expiry: None,
+                    },
+                )
+                .cost(crate::types::ability::AbilityCost::Tap),
+            );
+        }
+
+        // Tap for Black via ActivateAbility
+        apply(
+            &mut state,
+            GameAction::ActivateAbility {
+                source_id: dual_id,
+                ability_index: 0,
+            },
+        )
+        .unwrap();
+        assert!(state.objects[&dual_id].tapped);
+        assert_eq!(
+            state.players[0]
+                .mana_pool
+                .count_color(crate::types::mana::ManaType::Black),
+            1
+        );
+
+        // Undo via UntapLandForMana
+        apply(
+            &mut state,
+            GameAction::UntapLandForMana {
+                object_id: dual_id,
+            },
+        )
+        .unwrap();
+        assert!(!state.objects[&dual_id].tapped);
+        assert_eq!(
+            state.players[0]
+                .mana_pool
+                .count_color(crate::types::mana::ManaType::Black),
+            0
+        );
     }
 
     #[test]
