@@ -95,13 +95,13 @@ export function OpponentHud({ opponentName }: OpponentHudProps) {
           label={label}
           tone={hudTone}
           onClick={isValidTarget ? () => handlePlayerTarget(opponentId) : undefined}
-          trailing={(
+          trailing={opponentSpeed > 0 || opponentCompanion || isOnline ? (
             <>
               {opponentSpeed > 0 ? <StatusBadge label="Speed" value={opponentSpeed} tone={opponentSpeed >= 4 ? "amber" : "neutral"} /> : null}
               {opponentCompanion ? <StatusBadge label="Companion" /> : null}
               {isOnline ? <ConnectionDotInline disconnected={isDisconnected} /> : null}
             </>
-          )}
+          ) : undefined}
         >
           <div className="flex min-w-0 items-center gap-2">
             <LifeTotal playerId={opponentId} size="lg" hideLabel />

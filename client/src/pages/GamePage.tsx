@@ -659,7 +659,11 @@ function GamePageContent({
               <PlayerHud />
             </div>
           </div>
-          <PlayerHand />
+          <div className="flex items-end justify-center">
+            <ZoneHand zone="exile" />
+            <PlayerHand />
+            <ZoneHand zone="graveyard" />
+          </div>
           <div
             className="pointer-events-none absolute left-0 top-0 bottom-[calc(var(--card-h)*0.25)] sm:bottom-[calc(var(--card-h)*0.25)] md:bottom-[calc(var(--card-h)*0.35)] z-10 flex w-fit flex-col items-start justify-end gap-0.5 p-1 lg:gap-1 lg:p-3 [&>*]:pointer-events-auto [&>div>*]:pointer-events-auto"
             style={playerZoneRailStyle}
@@ -678,18 +682,14 @@ function GamePageContent({
                 onClick={() => setViewingZone({ zone: "graveyard", playerId })}
               />
               <LibraryPile playerId={playerId} />
-              <ZoneHand zone="exile" />
             </div>
           </div>
-          {/* Companion + graveyard castable zone — right side of hand, Arena-style */}
+          {/* Companion zone — right side, Arena-style */}
           <div
             className="pointer-events-none absolute right-0 top-0 bottom-[calc(var(--card-h)*0.15)] sm:bottom-[calc(var(--card-h)*0.25)] md:bottom-[calc(var(--card-h)*0.35)] z-10 flex w-fit flex-col items-end justify-end gap-0.5 p-1 lg:gap-1 lg:p-3 [&>*]:pointer-events-auto"
             style={playerZoneRailStyle}
           >
             <CompanionZone playerId={playerId} />
-            <div className="flex items-end gap-2">
-              <ZoneHand zone="graveyard" />
-            </div>
           </div>
         </div>
       </div>

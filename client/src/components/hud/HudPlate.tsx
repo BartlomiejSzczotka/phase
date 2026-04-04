@@ -37,12 +37,12 @@ export function HudPlate({
     >
       <div className="absolute inset-[1px] rounded-[16px] bg-gradient-to-b from-white/8 via-transparent to-black/10" />
       <div className="relative min-w-0">
-        <div className="mb-0.5 flex items-center">
+        <div className="mb-0.5 flex items-center justify-center">
           <span className="text-[9px] font-semibold uppercase tracking-[0.18em] text-white/68">
             {label}
           </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center justify-center gap-2">
           {children}
         </div>
       </div>
