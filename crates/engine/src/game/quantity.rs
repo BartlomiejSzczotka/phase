@@ -271,6 +271,7 @@ fn resolve_ref(
                     .map_or(0, |p| match zone {
                         ZoneRef::Library => p.library.len() as i32,
                         ZoneRef::Graveyard => p.graveyard.len() as i32,
+                        ZoneRef::Hand => p.hand.len() as i32,
                         ZoneRef::Exile => state
                             .exile
                             .iter()
@@ -281,14 +282,40 @@ fn resolve_ref(
                 0
             }
         }
-        // CR 604.3: Count distinct card types (CoreType) across graveyards.
-        QuantityRef::CardTypesInGraveyards { scope } => {
+        // CR 604.3: Count distinct card types (CoreType) across cards in a zone.
+        QuantityRef::DistinctCardTypesInZone { zone, scope } => {
             let mut seen = HashSet::new();
-            for player in scoped_players(state, scope, controller) {
-                for &obj_id in &player.graveyard {
-                    if let Some(obj) = state.objects.get(&obj_id) {
-                        for ct in &obj.card_types.core_types {
-                            seen.insert(*ct);
+            match zone {
+                ZoneRef::Exile => {
+                    for &obj_id in &state.exile {
+                        if let Some(obj) = state.objects.get(&obj_id) {
+                            let owner_matches = match scope {
+                                CountScope::Controller => obj.owner == controller,
+                                CountScope::All => true,
+                                CountScope::Opponents => obj.owner != controller,
+                            };
+                            if owner_matches {
+                                for ct in &obj.card_types.core_types {
+                                    seen.insert(*ct);
+                                }
+                            }
+                        }
+                    }
+                }
+                ZoneRef::Graveyard | ZoneRef::Library | ZoneRef::Hand => {
+                    for player in scoped_players(state, scope, controller) {
+                        let zone_ids = match zone {
+                            ZoneRef::Graveyard => &player.graveyard,
+                            ZoneRef::Library => &player.library,
+                            ZoneRef::Hand => &player.hand,
+                            ZoneRef::Exile => unreachable!(),
+                        };
+                        for &obj_id in zone_ids {
+                            if let Some(obj) = state.objects.get(&obj_id) {
+                                for ct in &obj.card_types.core_types {
+                                    seen.insert(*ct);
+                                }
+                            }
                         }
                     }
                 }
@@ -304,11 +331,12 @@ fn resolve_ref(
             let mut count = 0;
             // Per-player zones (graveyard, library)
             match zone {
-                ZoneRef::Graveyard | ZoneRef::Library => {
+                ZoneRef::Graveyard | ZoneRef::Library | ZoneRef::Hand => {
                     for player in scoped_players(state, scope, controller) {
                         let zone_ids = match zone {
                             ZoneRef::Graveyard => &player.graveyard,
                             ZoneRef::Library => &player.library,
+                            ZoneRef::Hand => &player.hand,
                             ZoneRef::Exile => unreachable!(),
                         };
                         for &obj_id in zone_ids {

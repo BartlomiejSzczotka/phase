@@ -429,9 +429,36 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
         value((), tag("gain control of ")).parse(input)
     }) {
         let (target_text, _) = super::strip_optional_target_prefix(rest);
-        let (target, _rem) = parse_target(target_text);
+        let (target, rem) = parse_target(target_text);
+        let rem_lower = rem.to_ascii_lowercase();
+        if tag::<_, _, VerboseError<&str>>(" during that player's next turn")
+            .parse(rem_lower.as_str())
+            .is_ok()
+        {
+            let rem = &rem[" during that player's next turn".len()..];
+            let rem_lower = rem.to_ascii_lowercase();
+            let (rem, grant_extra_turn_after) = if let Ok((rest, _)) = alt((
+                tag::<_, _, VerboseError<&str>>(
+                    ". after that turn, that player takes an extra turn",
+                ),
+                tag(" after that turn, that player takes an extra turn"),
+                tag("after that turn, that player takes an extra turn"),
+            ))
+            .parse(rem_lower.as_str())
+            {
+                (&rem[rem.len() - rest.len()..], true)
+            } else {
+                (rem, false)
+            };
+            #[cfg(debug_assertions)]
+            super::types::assert_no_compound_remainder(rem, text);
+            return Some(TargetedImperativeAst::ControlNextTurn {
+                target,
+                grant_extra_turn_after,
+            });
+        }
         #[cfg(debug_assertions)]
-        super::types::assert_no_compound_remainder(_rem, text);
+        super::types::assert_no_compound_remainder(rem, text);
         return Some(TargetedImperativeAst::GainControl { target });
     }
     // Earthbend: "earthbend [N] [target <type>]" → Animate with haste + is_earthbend
@@ -528,6 +555,13 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
             subject: TargetFilter::SelfRef,
         },
         TargetedImperativeAst::GainControl { target } => Effect::GainControl { target },
+        TargetedImperativeAst::ControlNextTurn {
+            target,
+            grant_extra_turn_after,
+        } => Effect::ControlNextTurn {
+            target,
+            grant_extra_turn_after,
+        },
         TargetedImperativeAst::Earthbend {
             target,
             power,

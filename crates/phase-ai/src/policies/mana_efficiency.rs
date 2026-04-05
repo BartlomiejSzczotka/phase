@@ -1,4 +1,5 @@
 use engine::game::keywords::has_flash;
+use engine::game::turn_control;
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
 use engine::types::game_state::GameState;
@@ -41,7 +42,7 @@ impl TacticalPolicy for ManaEfficiencyPolicy {
 }
 
 fn is_own_main_phase(ctx: &PolicyContext<'_>) -> bool {
-    ctx.state.active_player == ctx.ai_player
+    turn_control::turn_decision_maker(ctx.state) == ctx.ai_player
         && matches!(
             ctx.state.phase,
             Phase::PreCombatMain | Phase::PostCombatMain
@@ -200,6 +201,35 @@ mod tests {
             ManaEfficiencyPolicy.score(&ctx),
             0.0,
             "Should return 0.0 outside main phase"
+        );
+    }
+
+    #[test]
+    fn controlled_turn_counts_as_own_main_phase() {
+        let mut state = GameState::new_two_player(42);
+        state.phase = Phase::PreCombatMain;
+        state.active_player = PlayerId(1);
+        state.turn_decision_controller = Some(PlayerId(0));
+        add_land(&mut state, PlayerId(0), false);
+        add_land(&mut state, PlayerId(0), false);
+
+        let mut config = AiConfig::default();
+        config.profile.interaction_patience = 0.0;
+        let decision = make_priority_decision();
+        let candidate = make_pass_candidate(PlayerId(0));
+        let ctx = PolicyContext {
+            state: &state,
+            decision: &decision,
+            candidate: &candidate,
+            ai_player: PlayerId(0),
+            config: &config,
+            context: &crate::context::AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+
+        assert!(
+            ManaEfficiencyPolicy.score(&ctx) < 0.0,
+            "controlled turn should be treated as the AI's decision main phase"
         );
     }
 

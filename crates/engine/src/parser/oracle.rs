@@ -204,7 +204,8 @@ fn ability_word_to_condition(word: &str) -> Option<crate::types::ability::Static
         }),
         "delirium" => Some(StaticCondition::QuantityComparison {
             lhs: QuantityExpr::Ref {
-                qty: QuantityRef::CardTypesInGraveyards {
+                qty: QuantityRef::DistinctCardTypesInZone {
+                    zone: ZoneRef::Graveyard,
                     scope: CountScope::Controller,
                 },
             },

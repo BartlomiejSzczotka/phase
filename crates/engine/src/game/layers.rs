@@ -1001,7 +1001,7 @@ mod tests {
     use crate::types::ability::{
         AbilityDefinition, AbilityKind, BasicLandType, ChosenSubtypeKind, ContinuousModification,
         ControllerRef, CountScope, Duration, Effect, FilterProp, GainLifePlayer, QuantityExpr,
-        QuantityRef, StaticCondition, StaticDefinition, TargetFilter, TypeFilter,
+        QuantityRef, StaticCondition, StaticDefinition, TargetFilter, TypeFilter, ZoneRef,
     };
     use crate::types::card_type::CoreType;
     use crate::types::game_state::TransientContinuousEffect;
@@ -1944,7 +1944,8 @@ mod tests {
                     .modifications(vec![
                         ContinuousModification::SetDynamicPower {
                             value: QuantityExpr::Ref {
-                                qty: QuantityRef::CardTypesInGraveyards {
+                                qty: QuantityRef::DistinctCardTypesInZone {
+                                    zone: ZoneRef::Graveyard,
                                     scope: CountScope::All,
                                 },
                             },
@@ -1952,7 +1953,8 @@ mod tests {
                         ContinuousModification::SetDynamicToughness {
                             value: QuantityExpr::Offset {
                                 inner: Box::new(QuantityExpr::Ref {
-                                    qty: QuantityRef::CardTypesInGraveyards {
+                                    qty: QuantityRef::DistinctCardTypesInZone {
+                                        zone: ZoneRef::Graveyard,
                                         scope: CountScope::All,
                                     },
                                 }),

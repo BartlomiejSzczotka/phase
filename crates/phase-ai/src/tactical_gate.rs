@@ -51,7 +51,7 @@ struct TacticalFacts {
 impl TacticalFacts {
     fn derive(state: &GameState, ai_player: PlayerId) -> Self {
         let live_stack_response = !state.stack.is_empty();
-        let own_turn = state.active_player == ai_player;
+        let own_turn = engine::game::turn_control::turn_decision_maker(state) == ai_player;
         let window = if live_stack_response {
             TacticalWindow::StackResponse
         } else {

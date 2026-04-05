@@ -3565,10 +3565,27 @@ fn try_parse_cost_modification(text: &str, lower: &str) -> Option<StaticDefiniti
     let mut dynamic_count = if let Some((_, after_for_each)) = cost_tp.split_around("for each ") {
         // Strip trailing period/punctuation
         let count_text = after_for_each.original.trim_end_matches('.');
-        let (count_filter, _) = parse_type_phrase(count_text);
-        Some(QuantityRef::ObjectCount {
-            filter: count_filter,
-        })
+        super::oracle_quantity::parse_for_each_clause(count_text)
+            .or_else(|| {
+                parse_cda_quantity(count_text).and_then(|expr| match expr {
+                    QuantityExpr::Ref { qty } => Some(qty),
+                    _ => None,
+                })
+            })
+            .or_else(|| super::oracle_quantity::parse_quantity_ref(count_text))
+            .or_else(|| {
+                if let Some(prefixed) = count_text.strip_prefix("the number of ") {
+                    super::oracle_quantity::parse_quantity_ref(prefixed)
+                } else {
+                    None
+                }
+            })
+            .or_else(|| {
+                let (count_filter, _) = parse_type_phrase(count_text);
+                Some(QuantityRef::ObjectCount {
+                    filter: count_filter,
+                })
+            })
     } else {
         None
     };
@@ -3622,12 +3639,21 @@ fn try_parse_cost_modification(text: &str, lower: &str) -> Option<StaticDefiniti
         definition.condition = Some(first_qualified_spell_condition(filter));
     }
 
-    // Extract trailing "if [condition]" clause from cost modification lines.
-    // Pattern: "This spell costs {N} less to cast if you control a Wizard."
+    // Extract trailing "if [condition]" / "as long as [condition]" clause from
+    // cost modification lines.
+    // Patterns:
+    // - "This spell costs {N} less to cast if you control a Wizard."
+    // - "Spells you cast cost {1} less to cast as long as there are three or more Lesson cards in your graveyard."
     // Uses the shared nom condition combinator to handle the full class of conditions.
     if definition.condition.is_none() {
-        if let Some(if_pos) = lower.rfind(" if ") {
-            let cond_text = lower[if_pos + " if ".len()..].trim().trim_end_matches('.');
+        if let Some((cond_pos, marker)) = [" as long as ", " if "]
+            .into_iter()
+            .filter_map(|marker| lower.rfind(marker).map(|pos| (pos, marker)))
+            .max_by_key(|(pos, _)| *pos)
+        {
+            let cond_text = lower[cond_pos + marker.len()..]
+                .trim()
+                .trim_end_matches('.');
             if let Ok((rest, sc)) = nom_condition::parse_inner_condition(cond_text) {
                 if rest.trim().is_empty() || rest.trim() == "." {
                     definition.condition = Some(sc);
@@ -3854,7 +3880,7 @@ fn try_parse_scoped_must_attack_block(lower: &str, text: &str) -> Option<Vec<Sta
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ability::{CountScope, TypeFilter};
+    use crate::types::ability::{CountScope, TypeFilter, ZoneRef};
 
     #[test]
     fn static_bonesplitter() {
@@ -4252,6 +4278,31 @@ mod tests {
         };
         assert_eq!(amount, ManaCost::generic(1));
         assert_eq!(dynamic_count, Some(QuantityRef::Speed));
+    }
+
+    #[test]
+    fn static_noncreature_spells_cost_less_as_long_as_lesson_threshold() {
+        let def = parse_static_line(
+            "Noncreature spells you cast cost {1} less to cast as long as there are three or more Lesson cards in your graveyard.",
+        )
+        .unwrap();
+
+        assert!(matches!(def.mode, StaticMode::ReduceCost { .. }));
+        assert!(matches!(
+            def.condition,
+            Some(StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::ZoneCardCount {
+                            zone: ZoneRef::Graveyard,
+                            ref card_types,
+                            scope: CountScope::Controller,
+                        },
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 3 },
+            }) if card_types == &vec![TypeFilter::Subtype("Lesson".to_string())]
+        ));
     }
 
     // NOTE: static_enters_with_counters test moved to oracle_replacement tests —
@@ -4653,7 +4704,8 @@ mod tests {
             .modifications
             .contains(&ContinuousModification::SetDynamicPower {
                 value: QuantityExpr::Ref {
-                    qty: QuantityRef::CardTypesInGraveyards {
+                    qty: QuantityRef::DistinctCardTypesInZone {
+                        zone: ZoneRef::Graveyard,
                         scope: CountScope::All,
                     },
                 },
@@ -4663,7 +4715,8 @@ mod tests {
             .contains(&ContinuousModification::SetDynamicToughness {
                 value: QuantityExpr::Offset {
                     inner: Box::new(QuantityExpr::Ref {
-                        qty: QuantityRef::CardTypesInGraveyards {
+                        qty: QuantityRef::DistinctCardTypesInZone {
+                            zone: ZoneRef::Graveyard,
                             scope: CountScope::All,
                         },
                     }),
@@ -7063,5 +7116,24 @@ mod tests {
                 max: 1,
             }
         );
+    }
+
+    #[test]
+    fn spell_cost_reduction_uses_card_types_in_graveyard_quantity() {
+        let def = parse_static_line(
+            "This spell costs {1} less to cast for each card type among cards in your graveyard.",
+        )
+        .unwrap();
+        match def.mode {
+            StaticMode::ReduceCost {
+                dynamic_count:
+                    Some(QuantityRef::DistinctCardTypesInZone {
+                        zone: ZoneRef::Graveyard,
+                        scope,
+                    }),
+                ..
+            } => assert_eq!(scope, CountScope::Controller),
+            other => panic!("expected card-types-in-graveyard cost reduction, got {other:?}"),
+        }
     }
 }

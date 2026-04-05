@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo } from "react";
 
 import type { PlayerId } from "../../adapter/types.ts";
-import { usePlayerId } from "../../hooks/usePlayerId.ts";
+import { usePerspectivePlayerId } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useMultiplayerStore } from "../../stores/multiplayerStore.ts";
 import { usePreferencesStore } from "../../stores/preferencesStore.ts";
@@ -17,7 +17,7 @@ interface OpponentHudProps {
 }
 
 export function OpponentHud({ opponentName }: OpponentHudProps) {
-  const playerId = usePlayerId();
+  const playerId = usePerspectivePlayerId();
   const focusedOpponent = useUiStore((s) => s.focusedOpponent) as PlayerId | null;
   const setFocusedOpponent = useUiStore((s) => s.setFocusedOpponent);
   const followActiveOpponent = usePreferencesStore((s) => s.followActiveOpponent);

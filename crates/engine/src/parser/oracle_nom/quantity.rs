@@ -6,14 +6,16 @@
 
 use nom::branch::alt;
 use nom::bytes::complete::tag;
-use nom::combinator::{map, value};
+use nom::combinator::{map, opt, value};
+use nom::sequence::preceded;
 use nom::Parser;
 
 use super::error::OracleResult;
 use super::primitives::parse_number;
 use super::target::parse_type_filter_word;
 use crate::types::ability::{
-    ControllerRef, CountScope, QuantityExpr, QuantityRef, TargetFilter, TypedFilter, ZoneRef,
+    ControllerRef, CountScope, QuantityExpr, QuantityRef, TargetFilter, TypeFilter, TypedFilter,
+    ZoneRef,
 };
 
 /// Parse a quantity expression: either a fixed number or a dynamic reference.
@@ -32,9 +34,10 @@ pub fn parse_quantity(input: &str) -> OracleResult<'_, QuantityExpr> {
 pub fn parse_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
     alt((
         parse_the_number_of,
+        parse_distinct_card_types_in_zone,
         parse_life_total_ref,
-        parse_hand_size_ref,
-        parse_graveyard_size_ref,
+        parse_speed_ref,
+        parse_cards_in_zone_ref,
         parse_self_power_ref,
         parse_self_toughness_ref,
         parse_life_lost_ref,
@@ -60,6 +63,7 @@ fn parse_the_number_of(input: &str) -> OracleResult<'_, QuantityRef> {
 /// Parse the inner part after "the number of".
 fn parse_number_of_inner(input: &str) -> OracleResult<'_, QuantityRef> {
     alt((
+        parse_distinct_card_types_in_zone,
         parse_number_of_controlled_type,
         parse_number_of_cards_in_zone,
         parse_number_of_opponents,
@@ -93,58 +97,44 @@ fn parse_number_of_controlled_type(input: &str) -> OracleResult<'_, QuantityRef>
 
 /// Parse "cards in your graveyard" / "creature cards in your graveyard" after "the number of".
 fn parse_number_of_cards_in_zone(input: &str) -> OracleResult<'_, QuantityRef> {
-    // Optional type qualifier before "cards"
-    let (rest, type_opt) = match parse_type_filter_word(input) {
-        Ok((r, tf)) => {
-            if let Ok((r2, _)) =
-                tag::<_, _, nom_language::error::VerboseError<&str>>(" cards").parse(r)
-            {
-                (r2, vec![tf])
-            } else {
-                // No " cards" after type — not this pattern
-                return parse_cards_in_zone_direct(input);
-            }
+    parse_zone_card_count(input)
+}
+
+fn parse_zone_card_count(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, card_types) = if let Ok((typed_rest, typed_filters)) = parse_type_filter_list(input)
+    {
+        if let Ok((rest, _)) = parse_card_word(typed_rest) {
+            (rest, typed_filters)
+        } else {
+            let (rest, _) = parse_card_word(input)?;
+            (rest, Vec::new())
         }
-        Err(_) => {
-            let (r, _) = tag("cards").parse(input)?;
-            (r, Vec::new())
-        }
+    } else {
+        let (rest, _) = parse_card_word(input)?;
+        (rest, Vec::new())
     };
-
-    // Zone reference
-    let (rest, _) = tag(" in your ").parse(rest)?;
-    let (rest, zone) = alt((
-        value(ZoneRef::Graveyard, tag("graveyard")),
-        value(ZoneRef::Library, tag("library")),
-    ))
-    .parse(rest)?;
-
+    let (rest, _) = tag(" in ").parse(rest)?;
+    let (rest, (zone, scope)) = parse_scoped_zone_ref(rest)?;
     Ok((
         rest,
         QuantityRef::ZoneCardCount {
             zone,
-            card_types: type_opt,
-            scope: CountScope::Controller,
+            card_types,
+            scope,
         },
     ))
 }
 
-/// Direct "cards in your [zone]" parse when no type prefix matched.
-fn parse_cards_in_zone_direct(input: &str) -> OracleResult<'_, QuantityRef> {
-    let (rest, _) = tag("cards in your ").parse(input)?;
-    let (rest, zone) = alt((
-        value(ZoneRef::Graveyard, tag("graveyard")),
-        value(ZoneRef::Library, tag("library")),
-    ))
-    .parse(rest)?;
-    Ok((
-        rest,
-        QuantityRef::ZoneCardCount {
-            zone,
-            card_types: Vec::new(),
-            scope: CountScope::Controller,
-        },
-    ))
+fn parse_cards_in_zone_ref(input: &str) -> OracleResult<'_, QuantityRef> {
+    parse_zone_card_count(input)
+}
+
+fn parse_distinct_card_types_in_zone(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) = tag("card type").parse(input)?;
+    let (rest, _) = opt(tag("s")).parse(rest)?;
+    let (rest, _) = tag(" among cards in ").parse(rest)?;
+    let (rest, (zone, scope)) = parse_scoped_zone_ref(rest)?;
+    Ok((rest, QuantityRef::DistinctCardTypesInZone { zone, scope }))
 }
 
 /// Parse "opponents" / "opponents you have" after "the number of".
@@ -163,14 +153,65 @@ fn parse_life_total_ref(input: &str) -> OracleResult<'_, QuantityRef> {
     value(QuantityRef::LifeTotal, tag("your life total")).parse(input)
 }
 
-/// Parse "cards in your hand".
-fn parse_hand_size_ref(input: &str) -> OracleResult<'_, QuantityRef> {
-    value(QuantityRef::HandSize, tag("cards in your hand")).parse(input)
+fn parse_card_word(input: &str) -> OracleResult<'_, ()> {
+    value(
+        (),
+        alt((tag(" cards"), tag(" card"), tag("cards"), tag("card"))),
+    )
+    .parse(input)
 }
 
-/// Parse "cards in your graveyard".
-fn parse_graveyard_size_ref(input: &str) -> OracleResult<'_, QuantityRef> {
-    value(QuantityRef::GraveyardSize, tag("cards in your graveyard")).parse(input)
+fn parse_type_filter_list(input: &str) -> OracleResult<'_, Vec<TypeFilter>> {
+    let (mut rest, first) = parse_type_filter_word(input)?;
+    let mut filters = vec![first];
+    while let Ok((next_rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>(" and ").parse(rest)
+    {
+        let (after_type, next) = parse_type_filter_word(next_rest)?;
+        filters.push(next);
+        rest = after_type;
+    }
+    Ok((rest, filters))
+}
+
+fn parse_zone_ref_singular(input: &str) -> OracleResult<'_, ZoneRef> {
+    alt((
+        value(ZoneRef::Graveyard, tag("graveyard")),
+        value(ZoneRef::Exile, tag("exile")),
+        value(ZoneRef::Library, tag("library")),
+        value(ZoneRef::Hand, tag("hand")),
+    ))
+    .parse(input)
+}
+
+fn parse_zone_ref_plural(input: &str) -> OracleResult<'_, ZoneRef> {
+    alt((
+        value(ZoneRef::Graveyard, tag("graveyards")),
+        value(ZoneRef::Exile, tag("exiles")),
+        value(ZoneRef::Library, tag("libraries")),
+        value(ZoneRef::Hand, tag("hands")),
+    ))
+    .parse(input)
+}
+
+fn parse_scoped_zone_ref(input: &str) -> OracleResult<'_, (ZoneRef, CountScope)> {
+    alt((
+        map(preceded(tag("your "), parse_zone_ref_singular), |zone| {
+            (zone, CountScope::Controller)
+        }),
+        map(
+            preceded(
+                alt((tag("your opponents' "), tag("opponents' "))),
+                parse_zone_ref_plural,
+            ),
+            |zone| (zone, CountScope::Opponents),
+        ),
+        map(preceded(tag("all "), parse_zone_ref_plural), |zone| {
+            (zone, CountScope::All)
+        }),
+        map(parse_zone_ref_singular, |zone| (zone, CountScope::All)),
+    ))
+    .parse(input)
 }
 
 /// Parse "its power" / "~'s power" / "this creature's power".
@@ -367,12 +408,20 @@ pub fn parse_equal_to(input: &str) -> OracleResult<'_, QuantityExpr> {
 /// Returns a QuantityRef::ObjectCount with the matched filter.
 pub fn parse_for_each(input: &str) -> OracleResult<'_, QuantityRef> {
     let (rest, _) = tag("for each ").parse(input)?;
-    parse_for_each_inner(rest)
+    parse_for_each_clause_ref(rest)
 }
 
 /// Parse the inner content after "for each ".
-fn parse_for_each_inner(input: &str) -> OracleResult<'_, QuantityRef> {
-    // "[type] you control"
+pub fn parse_for_each_clause_ref(input: &str) -> OracleResult<'_, QuantityRef> {
+    alt((
+        parse_distinct_card_types_in_zone,
+        parse_zone_card_count,
+        parse_for_each_controlled_type,
+    ))
+    .parse(input)
+}
+
+fn parse_for_each_controlled_type(input: &str) -> OracleResult<'_, QuantityRef> {
     let (rest, tf) = parse_type_filter_word(input)?;
     let (rest, _) = tag(" you control").parse(rest)?;
     Ok((
@@ -420,7 +469,14 @@ mod tests {
     #[test]
     fn test_parse_quantity_ref_hand_size() {
         let (rest, q) = parse_quantity_ref("cards in your hand").unwrap();
-        assert_eq!(q, QuantityRef::HandSize);
+        assert_eq!(
+            q,
+            QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Hand,
+                card_types: Vec::new(),
+                scope: CountScope::Controller,
+            }
+        );
         assert_eq!(rest, "");
     }
 
@@ -434,8 +490,43 @@ mod tests {
     #[test]
     fn test_parse_quantity_ref_graveyard() {
         let (rest, q) = parse_quantity_ref("cards in your graveyard and").unwrap();
-        assert_eq!(q, QuantityRef::GraveyardSize);
+        assert_eq!(
+            q,
+            QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Graveyard,
+                card_types: Vec::new(),
+                scope: CountScope::Controller,
+            }
+        );
         assert_eq!(rest, " and");
+    }
+
+    #[test]
+    fn test_parse_quantity_ref_subtype_cards_in_graveyard() {
+        let (rest, q) = parse_quantity_ref("Lesson cards in your graveyard").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Graveyard,
+                card_types: vec![TypeFilter::Subtype("Lesson".to_string())],
+                scope: CountScope::Controller,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn test_parse_distinct_card_types_in_exile() {
+        let (rest, q) =
+            parse_quantity_ref("the number of card types among cards in exile").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::DistinctCardTypesInZone {
+                zone: ZoneRef::Exile,
+                scope: CountScope::All,
+            }
+        );
+        assert_eq!(rest, "");
     }
 
     #[test]

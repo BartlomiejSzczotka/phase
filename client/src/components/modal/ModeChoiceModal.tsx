@@ -2,11 +2,11 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useMemo, useState } from "react";
 
 import type { ModalChoice } from "../../adapter/types.ts";
-import { usePlayerId } from "../../hooks/usePlayerId.ts";
+import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 
 export function ModeChoiceModal() {
-  const playerId = usePlayerId();
+  const canActForWaitingState = useCanActForWaitingState();
   const waitingFor = useGameStore((s) => s.waitingFor);
   const dispatch = useGameStore((s) => s.dispatch);
   const [selected, setSelected] = useState<number[]>([]);
@@ -21,7 +21,7 @@ export function ModeChoiceModal() {
         : [],
     [isAbilityMode, waitingFor],
   );
-  const isMyChoice = isModeChoice && waitingFor.data.player === playerId;
+  const isMyChoice = isModeChoice && canActForWaitingState;
 
   const toggleMode = useCallback(
     (index: number) => {

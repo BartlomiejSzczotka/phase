@@ -199,6 +199,7 @@ fn starts_prefix_clause(current_lower: &str) -> bool {
     // CR 611.2b: "For as long as [condition], [effect]" — duration prefix clause.
     alt((
         tag::<_, _, VerboseError<&str>>("until "),
+        tag("after "),
         tag("if "),
         tag("when "),
         tag("whenever "),
@@ -623,6 +624,18 @@ pub(super) fn apply_clause_continuation(
                 _ => {}
             }
         }
+        ContinuationAst::GrantExtraTurnAfterControlledTurn => {
+            let Some(previous) = defs.last_mut() else {
+                return;
+            };
+            if let Effect::ControlNextTurn {
+                grant_extra_turn_after,
+                ..
+            } = &mut *previous.effect
+            {
+                *grant_extra_turn_after = true;
+            }
+        }
     }
 }
 
@@ -646,6 +659,7 @@ pub(super) fn continuation_absorbs_current(
         ContinuationAst::SearchResultClauseHandled => true,
         ContinuationAst::EntersTappedAttacking => true,
         ContinuationAst::DigFromAmong { .. } => true,
+        ContinuationAst::GrantExtraTurnAfterControlledTurn => true,
     }
 }
 
@@ -996,6 +1010,12 @@ pub(super) fn parse_followup_continuation_ast(
             if nom_primitives::scan_contains(&lower, "enters tapped and attacking") =>
         {
             Some(ContinuationAst::EntersTappedAttacking)
+        }
+        Effect::ControlNextTurn { .. }
+            if nom_primitives::scan_contains(&lower, "after that turn")
+                && nom_primitives::scan_contains(&lower, "takes an extra turn") =>
+        {
+            Some(ContinuationAst::GrantExtraTurnAfterControlledTurn)
         }
         _ => None,
     }

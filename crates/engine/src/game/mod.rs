@@ -56,6 +56,7 @@ pub mod targeting;
 pub mod transform;
 pub(crate) mod trigger_matchers;
 pub mod triggers;
+pub mod turn_control;
 pub mod turns;
 pub mod visibility;
 pub mod zones;

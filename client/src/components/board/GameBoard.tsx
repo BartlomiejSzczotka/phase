@@ -3,7 +3,7 @@ import { useMemo } from "react";
 import type { PlayerId } from "../../adapter/types.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
-import { usePlayerId } from "../../hooks/usePlayerId.ts";
+import { useCanActForWaitingState, usePerspectivePlayerId, usePlayerId } from "../../hooks/usePlayerId.ts";
 import { sortCreaturesForBlockers } from "../../viewmodel/blockerSorting.ts";
 import {
   buildPlayerBattlefieldView,
@@ -19,7 +19,9 @@ export function GameBoard() {
   const canUndo = useGameStore((s) => s.stateHistory.length > 0);
   const undo = useGameStore((s) => s.undo);
   const blockerAssignments = useUiStore((s) => s.blockerAssignments);
-  const myId = usePlayerId();
+  const localPlayerId = usePlayerId();
+  const myId = usePerspectivePlayerId();
+  const canActForWaitingState = useCanActForWaitingState();
 
   // Track which opponent is focused (expanded) in multiplayer
   const focusedOpponent = useUiStore((s) => s.focusedOpponent) as PlayerId | null;
@@ -62,8 +64,8 @@ export function GameBoard() {
       }
     }
 
-    if (gameState?.lands_tapped_for_mana?.[myId]) {
-      for (const objectId of gameState.lands_tapped_for_mana[myId]) {
+    if (gameState?.lands_tapped_for_mana?.[localPlayerId]) {
+      for (const objectId of gameState.lands_tapped_for_mana[localPlayerId]) {
         undoableTapObjectIds.add(objectId);
       }
     }
@@ -112,12 +114,12 @@ export function GameBoard() {
     const playerCanAct =
       waitingFor != null
       && (
-        (waitingFor.type === "Priority" && waitingFor.data.player === myId)
-        || (waitingFor.type === "ManaPayment" && waitingFor.data.player === myId)
-        || (waitingFor.type === "UnlessPayment" && waitingFor.data.player === myId)
+        (waitingFor.type === "Priority" && canActForWaitingState)
+        || (waitingFor.type === "ManaPayment" && canActForWaitingState)
+        || (waitingFor.type === "UnlessPayment" && canActForWaitingState)
       );
 
-    if (waitingFor?.type === "Priority" && waitingFor.data.player === myId) {
+    if (waitingFor?.type === "Priority" && canActForWaitingState) {
       for (const action of legalActions) {
         if (action.type !== "ActivateAbility") continue;
         const object = gameState.objects[action.data.source_id];
@@ -151,7 +153,7 @@ export function GameBoard() {
       validAttackerIds,
       validTargetObjectIds,
     };
-  }, [gameState, legalActions, myId, waitingFor]);
+  }, [canActForWaitingState, gameState, legalActions, localPlayerId, myId, waitingFor]);
 
   if (!gameState) {
     return (

@@ -1,18 +1,18 @@
 import { AnimatePresence, motion } from "framer-motion";
 
 import type { GameAction, WaitingFor } from "../../adapter/types.ts";
-import { usePlayerId } from "../../hooks/usePlayerId.ts";
+import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 
 type ModalFaceChoice = Extract<WaitingFor, { type: "ModalFaceChoice" }>;
 
 export function ModalFaceModal() {
-  const playerId = usePlayerId();
+  const canActForWaitingState = useCanActForWaitingState();
   const waitingFor = useGameStore((s) => s.waitingFor);
   const dispatch = useGameStore((s) => s.dispatch);
 
   if (waitingFor?.type !== "ModalFaceChoice") return null;
-  if (waitingFor.data.player !== playerId) return null;
+  if (!canActForWaitingState) return null;
 
   const data = waitingFor.data as ModalFaceChoice["data"];
 

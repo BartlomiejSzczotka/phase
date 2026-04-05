@@ -65,7 +65,7 @@ import {
   useMultiplayerStore,
 } from "../stores/multiplayerStore.ts";
 import { GameProvider } from "../providers/GameProvider.tsx";
-import { usePlayerId } from "../hooks/usePlayerId.ts";
+import { useCanActForWaitingState, usePerspectivePlayerId, usePlayerId } from "../hooks/usePlayerId.ts";
 import { abilityChoiceLabel, additionalCostChoices } from "../viewmodel/costLabel.ts";
 import { gameButtonClass } from "../components/ui/buttonStyles.ts";
 
@@ -390,16 +390,18 @@ function GamePageContent({
   const [showPreferences, setShowPreferences] = useState(false);
 
   const playerId = usePlayerId();
+  const perspectivePlayerId = usePerspectivePlayerId();
+  const canActForWaitingState = useCanActForWaitingState();
   const opponentDisplayName = useMultiplayerStore((s) => s.opponentDisplayName);
   const adapter = useGameStore((s) => s.adapter);
   const focusedOpponent = useUiStore((s) => s.focusedOpponent);
   const opponents = useMemo(() => {
     const orderedPlayers = seatOrder ?? players?.map((player) => player.id) ?? [];
     const eliminated = new Set(eliminatedPlayers ?? []);
-    return orderedPlayers.filter((id) => id !== playerId && !eliminated.has(id));
-  }, [eliminatedPlayers, playerId, players, seatOrder]);
+    return orderedPlayers.filter((id) => id !== perspectivePlayerId && !eliminated.has(id));
+  }, [eliminatedPlayers, perspectivePlayerId, players, seatOrder]);
   const activeOpponentId =
-    focusedOpponent ?? opponents[0] ?? (playerId === 0 ? 1 : 0);
+    focusedOpponent ?? opponents[0] ?? (perspectivePlayerId === 0 ? 1 : 0);
 
   useAudioContext("battlefield");
 
@@ -480,7 +482,7 @@ function GamePageContent({
     const wf = engineWaitingFor;
     if (
       (wf?.type !== "TargetSelection" && wf?.type !== "TriggerTargetSelection")
-      || wf.data.player !== playerId
+      || !canActForWaitingState
     ) return;
 
     const legalTargets = wf.data.selection.current_legal_targets;
@@ -495,7 +497,7 @@ function GamePageContent({
         return;
       }
     }
-  }, [engineWaitingFor, objects, playerId]);
+  }, [canActForWaitingState, engineWaitingFor, objects]);
 
   const handleDeclareCompanion = useCallback(
     (cardIndex: number | null) => {
@@ -672,16 +674,16 @@ function GamePageContent({
             <div className="relative z-10">
               <ZoneIndicator
                 zone="exile"
-                playerId={playerId}
-                onClick={() => setViewingZone({ zone: "exile", playerId })}
+                playerId={perspectivePlayerId}
+                onClick={() => setViewingZone({ zone: "exile", playerId: perspectivePlayerId })}
               />
             </div>
             <div className="flex items-end gap-2">
               <GraveyardPile
-                playerId={playerId}
-                onClick={() => setViewingZone({ zone: "graveyard", playerId })}
+                playerId={perspectivePlayerId}
+                onClick={() => setViewingZone({ zone: "graveyard", playerId: perspectivePlayerId })}
               />
-              <LibraryPile playerId={playerId} />
+              <LibraryPile playerId={perspectivePlayerId} />
             </div>
           </div>
           {/* Companion zone — right side, Arena-style */}
@@ -689,7 +691,7 @@ function GamePageContent({
             className="pointer-events-none absolute right-0 top-0 bottom-[calc(var(--card-h)*0.15)] sm:bottom-[calc(var(--card-h)*0.25)] md:bottom-[calc(var(--card-h)*0.35)] z-10 flex w-fit flex-col items-end justify-end gap-0.5 p-1 lg:gap-1 lg:p-3 [&>*]:pointer-events-auto"
             style={playerZoneRailStyle}
           >
-            <CompanionZone playerId={playerId} />
+            <CompanionZone playerId={perspectivePlayerId} />
           </div>
         </div>
       </div>
@@ -836,11 +838,11 @@ function GamePageContent({
       {/* WaitingFor-driven prompt overlays (only for human player) */}
       {waitingFor != null &&
         (waitingFor.type === "TargetSelection" || waitingFor.type === "TriggerTargetSelection" || waitingFor.type === "CopyTargetChoice" || waitingFor.type === "ExploreChoice" || waitingFor.type === "TapCreaturesForManaAbility") &&
-        waitingFor.data.player === playerId && <TargetingOverlay />}
+        canActForWaitingState && <TargetingOverlay />}
       {waitingFor?.type === "ManaPayment" &&
-        waitingFor.data.player === playerId && <ManaPaymentUI />}
+        canActForWaitingState && <ManaPaymentUI />}
       {waitingFor?.type === "ReplacementChoice" &&
-        waitingFor.data.player === playerId && <ReplacementModal />}
+        canActForWaitingState && <ReplacementModal />}
       <ModeChoiceModal />
       <AdventureCastModal />
       <ModalFaceModal />
@@ -854,25 +856,25 @@ function GamePageContent({
 
       {/* Optional additional cost choice (kicker, blight, "or pay") */}
       {waitingFor?.type === "OptionalCostChoice" &&
-        waitingFor.data.player === playerId && (
+        canActForWaitingState && (
           <OptionalCostModal />
         )}
 
       {/* Defiler cycle — optional life payment for mana reduction */}
       {waitingFor?.type === "DefilerPayment" &&
-        waitingFor.data.player === playerId && (
+        canActForWaitingState && (
           <DefilerPaymentModal />
         )}
 
       {/* Optional effect choice ("You may X") / Opponent may choice */}
       {(waitingFor?.type === "OptionalEffectChoice" || waitingFor?.type === "OpponentMayChoice") &&
-        waitingFor.data.player === playerId && (
+        canActForWaitingState && (
           <OptionalEffectModal />
         )}
 
       {/* Unless payment choice ("Counter unless you pay {X}") */}
       {waitingFor?.type === "UnlessPayment" &&
-        waitingFor.data.player === playerId && (
+        canActForWaitingState && (
           <UnlessPaymentModal />
         )}
 

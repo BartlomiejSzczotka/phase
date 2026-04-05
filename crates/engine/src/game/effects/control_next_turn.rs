@@ -1,0 +1,81 @@
+use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility, TargetRef};
+use crate::types::events::GameEvent;
+use crate::types::game_state::{GameState, ScheduledTurnControl};
+
+pub fn resolve(
+    state: &mut GameState,
+    ability: &ResolvedAbility,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EffectError> {
+    let Effect::ControlNextTurn {
+        grant_extra_turn_after,
+        ..
+    } = &ability.effect
+    else {
+        return Err(EffectError::MissingParam(
+            "expected ControlNextTurn effect".into(),
+        ));
+    };
+
+    let Some(TargetRef::Player(target_player)) = ability.targets.first() else {
+        return Err(EffectError::InvalidParam(
+            "ControlNextTurn requires a player target".into(),
+        ));
+    };
+
+    state
+        .scheduled_turn_controls
+        .retain(|scheduled| scheduled.target_player != *target_player);
+    state.scheduled_turn_controls.push(ScheduledTurnControl {
+        target_player: *target_player,
+        controller: ability.controller,
+        grant_extra_turn_after: *grant_extra_turn_after,
+    });
+
+    events.push(GameEvent::EffectResolved {
+        kind: EffectKind::ControlNextTurn,
+        source_id: ability.source_id,
+    });
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::identifiers::ObjectId;
+    use crate::types::player::PlayerId;
+
+    #[test]
+    fn resolve_overwrites_prior_scheduled_control_for_same_target() {
+        let mut state = GameState::new_two_player(42);
+        state.scheduled_turn_controls.push(ScheduledTurnControl {
+            target_player: PlayerId(1),
+            controller: PlayerId(0),
+            grant_extra_turn_after: false,
+        });
+
+        let ability = ResolvedAbility::new(
+            Effect::ControlNextTurn {
+                target: crate::types::ability::TargetFilter::Player,
+                grant_extra_turn_after: true,
+            },
+            vec![TargetRef::Player(PlayerId(1))],
+            ObjectId(100),
+            PlayerId(1),
+        );
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(state.scheduled_turn_controls.len(), 1);
+        assert_eq!(
+            state.scheduled_turn_controls[0],
+            ScheduledTurnControl {
+                target_player: PlayerId(1),
+                controller: PlayerId(1),
+                grant_extra_turn_after: true,
+            }
+        );
+    }
+}

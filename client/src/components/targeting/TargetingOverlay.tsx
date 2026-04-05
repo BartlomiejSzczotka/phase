@@ -1,12 +1,12 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect } from "react";
 
-import { usePlayerId } from "../../hooks/usePlayerId.ts";
+import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 
 export function TargetingOverlay() {
-  const playerId = usePlayerId();
+  const canActForWaitingState = useCanActForWaitingState();
   const waitingFor = useGameStore((s) => s.waitingFor);
   const dispatch = useGameStore((s) => s.dispatch);
   const objects = useGameStore((s) => s.gameState?.objects);
@@ -62,7 +62,7 @@ export function TargetingOverlay() {
   if (!isTargetSelection && !isCopyTargetChoice && !isExploreChoice && !isTapCreatureChoice) return null;
 
   // Only show targeting UI for the human player
-  if (waitingFor.data.player !== playerId) return null;
+  if (!canActForWaitingState) return null;
 
   return (
     <AnimatePresence>

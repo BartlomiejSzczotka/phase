@@ -20,7 +20,7 @@ use crate::parser::oracle_target::{parse_target, parse_type_phrase};
 use crate::parser::oracle_util::parse_number;
 use crate::types::ability::{
     AggregateFunction, CountScope, ObjectProperty, PlayerFilter, QuantityExpr, QuantityRef,
-    TargetFilter, TypeFilter, ZoneRef,
+    TargetFilter, ZoneRef,
 };
 use crate::types::mana::ManaColor;
 
@@ -36,7 +36,7 @@ pub(crate) fn parse_quantity_ref(text: &str) -> Option<QuantityRef> {
     // Try nom combinator first for simple exact-match patterns.
     if let Ok((rest, qty)) = nom_quantity::parse_quantity_ref.parse(trimmed) {
         if rest.is_empty() {
-            return Some(qty);
+            return Some(canonicalize_quantity_ref(qty));
         }
     }
 
@@ -132,6 +132,22 @@ pub(crate) fn parse_quantity_ref(text: &str) -> Option<QuantityRef> {
     None
 }
 
+pub(crate) fn canonicalize_quantity_ref(qty: QuantityRef) -> QuantityRef {
+    match qty {
+        QuantityRef::ZoneCardCount {
+            zone: ZoneRef::Hand,
+            card_types,
+            scope: CountScope::Controller,
+        } if card_types.is_empty() => QuantityRef::HandSize,
+        QuantityRef::ZoneCardCount {
+            zone: ZoneRef::Graveyard,
+            card_types,
+            scope: CountScope::Controller,
+        } if card_types.is_empty() => QuantityRef::GraveyardSize,
+        other => other,
+    }
+}
+
 /// Parse color names from a devotion phrase like "black", "black and red".
 fn parse_devotion_colors(text: &str) -> Vec<ManaColor> {
     text.split(" and ")
@@ -190,96 +206,15 @@ pub(crate) fn parse_cda_quantity(text: &str) -> Option<QuantityExpr> {
         }
     }
 
+    if let Ok((rest, qty)) = nom_quantity::parse_quantity_ref.parse(text) {
+        if rest.is_empty() {
+            return Some(QuantityExpr::Ref {
+                qty: canonicalize_quantity_ref(qty),
+            });
+        }
+    }
+
     // "the number of card types among cards in all graveyards"
-    if text.contains("card types among cards in all graveyards") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::CardTypesInGraveyards {
-                scope: CountScope::All,
-            },
-        });
-    }
-    if text.contains("card types among cards in your graveyard") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::CardTypesInGraveyards {
-                scope: CountScope::Controller,
-            },
-        });
-    }
-
-    // "the number of basic land types among lands you control" (Domain)
-    if text.contains("basic land types among lands you control") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::BasicLandTypeCount,
-        });
-    }
-
-    // "the number of cards in your hand"
-    if text.contains("cards in your hand") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::HandSize,
-        });
-    }
-
-    // CR 103.4: "your starting life total" — must precede "your life total" check
-    // because contains("your life total") would also match "your starting life total".
-    if text.contains("your starting life total") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::StartingLifeTotal,
-        });
-    }
-
-    // "your life total"
-    if text.contains("your life total") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::LifeTotal,
-        });
-    }
-
-    if text.contains("your speed") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::Speed,
-        });
-    }
-
-    // "the number of {type} cards in your graveyard" — MUST be checked before the
-    // untyped "cards in your graveyard" pattern to avoid matching "instant and sorcery
-    // cards in your graveyard" as untyped.
-    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("the number of ").parse(text) {
-        if let Some(type_text) = rest.strip_suffix(" cards in your graveyard") {
-            if let Some(card_types) = parse_cda_type_filters(type_text) {
-                return Some(QuantityExpr::Ref {
-                    qty: QuantityRef::ZoneCardCount {
-                        zone: ZoneRef::Graveyard,
-                        card_types,
-                        scope: CountScope::Controller,
-                    },
-                });
-            }
-        }
-        if let Some(type_text) = rest.strip_suffix(" cards in all graveyards") {
-            if let Some(card_types) = parse_cda_type_filters(type_text) {
-                return Some(QuantityExpr::Ref {
-                    qty: QuantityRef::ZoneCardCount {
-                        zone: ZoneRef::Graveyard,
-                        card_types,
-                        scope: CountScope::All,
-                    },
-                });
-            }
-        }
-    }
-
-    // "the number of cards in your graveyard" (untyped — all cards)
-    if text == "the number of cards in your graveyard" || text.contains("cards in your graveyard") {
-        return Some(QuantityExpr::Ref {
-            qty: QuantityRef::ZoneCardCount {
-                zone: ZoneRef::Graveyard,
-                card_types: vec![],
-                scope: CountScope::Controller,
-            },
-        });
-    }
-
     // "the number of cards in your opponents' graveyards" / "cards in opponents' graveyards"
     if text.contains("cards in your opponents' graveyards")
         || text.contains("cards in opponents' graveyards")
@@ -338,25 +273,6 @@ pub(crate) fn parse_cda_quantity(text: &str) -> Option<QuantityExpr> {
 
     None
 }
-
-/// Map a type phrase to one or more `TypeFilter` entries for CDA zone card counting.
-/// Returns a Vec to support combined types like "instant and sorcery".
-fn parse_cda_type_filters(text: &str) -> Option<Vec<TypeFilter>> {
-    match text.trim() {
-        "creature" => Some(vec![TypeFilter::Creature]),
-        "instant" => Some(vec![TypeFilter::Instant]),
-        "sorcery" => Some(vec![TypeFilter::Sorcery]),
-        "land" => Some(vec![TypeFilter::Land]),
-        "artifact" => Some(vec![TypeFilter::Artifact]),
-        "enchantment" => Some(vec![TypeFilter::Enchantment]),
-        "planeswalker" => Some(vec![TypeFilter::Planeswalker]),
-        "instant and sorcery" | "instant or sorcery" => {
-            Some(vec![TypeFilter::Instant, TypeFilter::Sorcery])
-        }
-        _ => None,
-    }
-}
-
 /// Parse event-context quantity references from Oracle text fragments.
 /// Returns None for unrecognized patterns (caller falls back to Variable).
 pub(crate) fn parse_event_context_quantity(text: &str) -> Option<QuantityExpr> {
@@ -463,6 +379,12 @@ fn is_event_context_referent(prefix: &str) -> bool {
 pub(crate) fn parse_for_each_clause(clause: &str) -> Option<QuantityRef> {
     let clause = clause.trim().trim_end_matches('.');
 
+    if let Ok((rest, qty)) = nom_quantity::parse_for_each_clause_ref.parse(clause) {
+        if rest.is_empty() {
+            return Some(qty);
+        }
+    }
+
     // "card put into a graveyard this way" / "creature card exiled this way" / etc.
     // "this way" references objects from the preceding effect's tracked set.
     if clause.contains("this way") {
@@ -566,6 +488,7 @@ pub(crate) fn parse_for_each_clause(clause: &str) -> Option<QuantityRef> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ability::TypeFilter;
     use crate::types::mana::ManaColor;
 
     #[test]
@@ -965,18 +888,26 @@ mod tests {
     #[test]
     fn for_each_card_in_hand_via_quantity_ref() {
         let qty = parse_for_each_clause("card in your hand").unwrap();
-        assert!(
-            matches!(qty, QuantityRef::HandSize),
-            "Expected HandSize, got {qty:?}"
+        assert_eq!(
+            qty,
+            QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Hand,
+                card_types: vec![],
+                scope: CountScope::Controller,
+            }
         );
     }
 
     #[test]
     fn for_each_card_in_graveyard() {
         let qty = parse_for_each_clause("card in your graveyard").unwrap();
-        assert!(
-            matches!(qty, QuantityRef::GraveyardSize),
-            "Expected GraveyardSize, got {qty:?}"
+        assert_eq!(
+            qty,
+            QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Graveyard,
+                card_types: vec![],
+                scope: CountScope::Controller,
+            }
         );
     }
 
@@ -1058,21 +989,25 @@ mod tests {
     #[test]
     fn cda_untyped_graveyard_count_still_works() {
         let result = parse_cda_quantity("the number of cards in your graveyard");
-        let qty = result.expect("Should parse untyped graveyard count");
-        match qty {
-            QuantityExpr::Ref {
-                qty:
-                    QuantityRef::ZoneCardCount {
-                        card_types, zone, ..
-                    },
-            } => {
-                assert_eq!(zone, ZoneRef::Graveyard);
-                assert!(
-                    card_types.is_empty(),
-                    "Untyped should have empty card_types"
-                );
-            }
-            other => panic!("Expected ZoneCardCount, got {other:?}"),
-        }
+        assert_eq!(
+            result,
+            Some(QuantityExpr::Ref {
+                qty: QuantityRef::GraveyardSize,
+            })
+        );
+    }
+
+    #[test]
+    fn cda_distinct_card_types_in_hand() {
+        let result = parse_cda_quantity("the number of card types among cards in your hand");
+        assert_eq!(
+            result,
+            Some(QuantityExpr::Ref {
+                qty: QuantityRef::DistinctCardTypesInZone {
+                    zone: ZoneRef::Hand,
+                    scope: CountScope::Controller,
+                },
+            })
+        );
     }
 }

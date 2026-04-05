@@ -1,6 +1,7 @@
 use engine::game::combat;
 use engine::game::filter::matches_target_filter;
 use engine::game::mana_abilities;
+use engine::game::turn_control;
 use engine::types::ability::{
     AbilityCost, Effect, QuantityExpr, ReplacementMode, TargetFilter, TargetRef,
 };
@@ -136,7 +137,7 @@ fn score_pre_cast(ctx: &PolicyContext<'_>) -> f64 {
             && matches!(effect_polarity(e), EffectPolarity::Beneficial)
     });
     if has_pump {
-        let own_turn = ctx.state.active_player == ctx.ai_player;
+        let own_turn = turn_control::turn_decision_maker(ctx.state) == ctx.ai_player;
         if !own_turn
             && matches!(
                 ctx.state.phase,

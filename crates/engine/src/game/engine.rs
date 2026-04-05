@@ -36,6 +36,7 @@ use super::priority;
 use super::public_state::{
     bump_state_revision, finalize_public_state, mark_public_state_all_dirty, sync_waiting_for,
 };
+use super::turn_control;
 use super::turns;
 use super::zones;
 
@@ -208,7 +209,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
 
     // CancelAutoPass works from any WaitingFor state (player may cancel during interactive choices)
     if matches!(action, GameAction::CancelAutoPass) {
-        if let Some(player) = state.waiting_for.acting_player() {
+        if let Some(player) = turn_control::authorized_submitter(state) {
             state.auto_pass.remove(&player);
         }
         return Ok(ActionResult {
@@ -219,7 +220,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
     }
 
     // Any deliberate player action (not auto-pass-related or a simple pass) cancels their auto-pass
-    if let Some(player) = state.waiting_for.acting_player() {
+    if let Some(player) = turn_control::authorized_submitter(state) {
         match &action {
             GameAction::SetAutoPass { .. } | GameAction::PassPriority => {}
             _ => {
@@ -230,7 +231,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
 
     // Clear manual mana-tap tracking when the player commits to a non-mana action.
     // ActivateAbility is handled per-arm (only non-mana abilities clear tracking).
-    if let Some(player) = state.waiting_for.acting_player() {
+    if let Some(player) = turn_control::authorized_submitter(state) {
         match &action {
             GameAction::PassPriority
             | GameAction::PlayLand { .. }
@@ -246,7 +247,9 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
     // Validate and process action against current WaitingFor
     let waiting_for = match (&state.waiting_for.clone(), action) {
         (WaitingFor::Priority { player }, GameAction::PassPriority) => {
-            if state.priority_player != *player {
+            if state.priority_player
+                != turn_control::authorized_submitter_for_player(state, *player)
+            {
                 return Err(EngineError::NotYourPriority);
             }
             // Track stack growth during combat damage: process_combat_damage_triggers
@@ -262,7 +265,9 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             wf
         }
         (WaitingFor::Priority { player }, GameAction::PlayLand { object_id, card_id }) => {
-            if state.priority_player != *player {
+            if state.priority_player
+                != turn_control::authorized_submitter_for_player(state, *player)
+            {
                 return Err(EngineError::NotYourPriority);
             }
             state.cancelled_casts.clear();
@@ -271,22 +276,26 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             handle_play_land(state, object_id, card_id, &mut events)?
         }
         (WaitingFor::Priority { player }, GameAction::TapLandForMana { object_id }) => {
-            if state.priority_player != *player {
+            if state.priority_player
+                != turn_control::authorized_submitter_for_player(state, *player)
+            {
                 return Err(EngineError::NotYourPriority);
             }
             let wf = handle_tap_land_for_mana(state, object_id, &mut events)?;
             state
                 .lands_tapped_for_mana
-                .entry(*player)
+                .entry(state.priority_player)
                 .or_default()
                 .push(object_id);
             wf
         }
         (WaitingFor::Priority { player }, GameAction::UntapLandForMana { object_id }) => {
-            if state.priority_player != *player {
+            if state.priority_player
+                != turn_control::authorized_submitter_for_player(state, *player)
+            {
                 return Err(EngineError::NotYourPriority);
             }
-            handle_untap_land_for_mana(state, *player, object_id, &mut events)?;
+            handle_untap_land_for_mana(state, state.priority_player, object_id, &mut events)?;
             WaitingFor::Priority { player: *player }
         }
         (
@@ -295,7 +304,9 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 object_id, card_id, ..
             },
         ) => {
-            if state.priority_player != *player {
+            if state.priority_player
+                != turn_control::authorized_submitter_for_player(state, *player)
+            {
                 return Err(EngineError::NotYourPriority);
             }
             casting::handle_cast_spell(state, *player, object_id, card_id, &mut events)?
@@ -308,7 +319,9 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 ability_index,
             },
         ) => {
-            if state.priority_player != *player {
+            if state.priority_player
+                != turn_control::authorized_submitter_for_player(state, *player)
+            {
                 return Err(EngineError::NotYourPriority);
             }
             // Check if this is a mana ability -- resolve instantly without the stack
@@ -340,7 +353,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 if is_land {
                     state
                         .lands_tapped_for_mana
-                        .entry(*player)
+                        .entry(state.priority_player)
                         .or_default()
                         .push(source_id);
                 }
@@ -398,7 +411,9 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             },
             GameAction::ChooseModalFace { back_face },
         ) => {
-            if state.priority_player != *player {
+            if state.priority_player
+                != turn_control::authorized_submitter_for_player(state, *player)
+            {
                 return Err(EngineError::NotYourPriority);
             }
             if let Some(obj) = state.objects.get_mut(object_id) {
@@ -904,7 +919,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             handle_tap_land_for_mana(state, object_id, &mut events)?;
             state
                 .lands_tapped_for_mana
-                .entry(*player)
+                .entry(state.priority_player)
                 .or_default()
                 .push(object_id);
             WaitingFor::ManaPayment {
@@ -919,7 +934,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             },
             GameAction::UntapLandForMana { object_id },
         ) => {
-            handle_untap_land_for_mana(state, *player, object_id, &mut events)?;
+            handle_untap_land_for_mana(state, state.priority_player, object_id, &mut events)?;
             WaitingFor::ManaPayment {
                 player: *player,
                 convoke_mode: *convoke_mode,
@@ -1054,7 +1069,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             },
             GameAction::ChooseTarget { target },
         ) => {
-            if state.waiting_for.acting_player() != Some(*player) {
+            if turn_control::authorized_submitter(state) != Some(*player) {
                 return Err(EngineError::WrongPlayer);
             }
             let chosen = match target {
@@ -1191,7 +1206,9 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             }
         }
         (WaitingFor::Priority { player }, GameAction::PlayFaceDown { object_id, card_id }) => {
-            if state.priority_player != *player {
+            if state.priority_player
+                != turn_control::authorized_submitter_for_player(state, *player)
+            {
                 return Err(EngineError::NotYourPriority);
             }
             let p = *player;
@@ -1208,7 +1225,9 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             WaitingFor::Priority { player: p }
         }
         (WaitingFor::Priority { player }, GameAction::TurnFaceUp { object_id }) => {
-            if state.priority_player != *player {
+            if state.priority_player
+                != turn_control::authorized_submitter_for_player(state, *player)
+            {
                 return Err(EngineError::NotYourPriority);
             }
             let p = *player;
@@ -1650,7 +1669,8 @@ fn handle_play_land(
     // CR 305.2 + CR 505.6b: Validate land limit.
     // Base limit is max_lands_per_turn (normally 1), plus any additional drops
     // from static abilities like Exploration or Azusa.
-    let additional = super::static_abilities::additional_land_drops(state, state.priority_player);
+    let player = turn_control::turn_resource_owner(state);
+    let additional = super::static_abilities::additional_land_drops(state, player);
     let effective_limit = state.max_lands_per_turn.saturating_add(additional);
     if state.lands_played_this_turn >= effective_limit {
         return Err(EngineError::ActionNotAllowed(
@@ -1659,7 +1679,6 @@ fn handle_play_land(
     }
 
     // Validate that object_id exists in hand or graveyard (with permission) and matches card_id
-    let player = state.priority_player;
     let player_data = state
         .players
         .iter()
@@ -1712,7 +1731,7 @@ fn handle_play_land(
         if is_modal && front_is_land && back_is_land {
             // Both faces are lands — player must choose which face to put into play
             return Ok(WaitingFor::ModalFaceChoice {
-                player: state.priority_player,
+                player,
                 object_id,
                 card_id,
             });
@@ -1776,11 +1795,7 @@ fn handle_play_land(
             state.lands_played_this_turn += 1;
             // CR 604.2: Record once-per-turn graveyard play permission usage.
             record_graveyard_play_permission(state, gy_permission_source);
-            if let Some(p) = state
-                .players
-                .iter_mut()
-                .find(|p| p.id == state.priority_player)
-            {
+            if let Some(p) = state.players.iter_mut().find(|p| p.id == player) {
                 p.lands_played_this_turn += 1;
             }
             state.priority_passes.clear();
@@ -1788,7 +1803,7 @@ fn handle_play_land(
 
             events.push(GameEvent::LandPlayed {
                 object_id,
-                player_id: state.priority_player,
+                player_id: player,
             });
 
             return Ok(super::replacement::replacement_choice_waiting_for(
@@ -1801,12 +1816,12 @@ fn handle_play_land(
     state.lands_played_this_turn += 1;
     // CR 604.2: Record once-per-turn graveyard play permission usage.
     record_graveyard_play_permission(state, gy_permission_source);
-    let player = state
+    let player_data = state
         .players
         .iter_mut()
-        .find(|p| p.id == state.priority_player)
+        .find(|p| p.id == player)
         .expect("priority player exists");
-    player.lands_played_this_turn += 1;
+    player_data.lands_played_this_turn += 1;
 
     // Reset priority passes (action was taken)
     state.priority_passes.clear();
@@ -1814,13 +1829,11 @@ fn handle_play_land(
 
     events.push(GameEvent::LandPlayed {
         object_id,
-        player_id: state.priority_player,
+        player_id: player,
     });
 
     // Player retains priority after playing a land
-    Ok(WaitingFor::Priority {
-        player: state.priority_player,
-    })
+    Ok(WaitingFor::Priority { player })
 }
 
 pub(super) fn handle_tap_land_for_mana(
@@ -1828,6 +1841,7 @@ pub(super) fn handle_tap_land_for_mana(
     object_id: ObjectId,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    let player = turn_control::turn_resource_owner(state);
     let obj = state
         .objects
         .get(&object_id)
@@ -1839,7 +1853,7 @@ pub(super) fn handle_tap_land_for_mana(
             "Object is not on the battlefield".to_string(),
         ));
     }
-    if obj.controller != state.priority_player {
+    if obj.controller != player {
         return Err(EngineError::NotYourPriority);
     }
     if !obj
@@ -1857,8 +1871,7 @@ pub(super) fn handle_tap_land_for_mana(
         ));
     }
 
-    let mana_options =
-        mana_sources::activatable_land_mana_options(state, object_id, obj.controller);
+    let mana_options = mana_sources::activatable_land_mana_options(state, object_id, player);
     if mana_options.is_empty() {
         return Err(EngineError::ActionNotAllowed(
             "Land has no activatable mana ability".to_string(),
@@ -1883,14 +1896,7 @@ pub(super) fn handle_tap_land_for_mana(
     });
 
     if let Some(ability_def) = ability_to_resolve {
-        mana_abilities::resolve_mana_ability(
-            state,
-            object_id,
-            state.priority_player,
-            &ability_def,
-            events,
-            None,
-        )?;
+        mana_abilities::resolve_mana_ability(state, object_id, player, &ability_def, events, None)?;
     } else {
         // Legacy fallback for subtype-only lands.
         let obj = state.objects.get_mut(&object_id).unwrap();
@@ -1903,15 +1909,13 @@ pub(super) fn handle_tap_land_for_mana(
             state,
             object_id,
             mana_option.mana_type,
-            state.priority_player,
+            player,
             true,
             events,
         );
     }
 
-    Ok(WaitingFor::Priority {
-        player: state.priority_player,
-    })
+    Ok(WaitingFor::Priority { player })
 }
 
 /// CR 605.3b: Reverse a manual land tap — untap source and remove its mana from pool.

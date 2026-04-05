@@ -6,17 +6,25 @@ use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
 use super::players;
+use super::turn_control;
 
 /// Returns a filtered copy of the game state for the given viewer.
 /// Hides all opponents' hand contents and all library contents except where the
 /// viewer is explicitly allowed to see them.
 pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState {
     let mut filtered = state.clone();
+    let can_view_private_for_player = |player: PlayerId| {
+        player == viewer
+            || (player == state.active_player
+                && turn_control::viewer_controls_active_turn(state, viewer))
+    };
 
     let opponents = players::opponents(state, viewer);
     let opp_hand_ids: Vec<ObjectId> = opponents
         .iter()
-        .flat_map(|&opp| filtered.players[opp.0 as usize].hand.iter().copied())
+        .copied()
+        .filter(|&opp| !can_view_private_for_player(opp))
+        .flat_map(|opp| filtered.players[opp.0 as usize].hand.iter().copied())
         .collect();
     for obj_id in opp_hand_ids {
         if !state.revealed_cards.contains(&obj_id) {
@@ -27,7 +35,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     let (manifest_dread_visible, manifest_dread_cards): (HashSet<ObjectId>, HashSet<ObjectId>) =
         if let WaitingFor::ManifestDreadChoice { player, ref cards } = filtered.waiting_for {
             let all_cards: HashSet<ObjectId> = cards.iter().copied().collect();
-            if player == viewer {
+            if can_view_private_for_player(player) {
                 (all_cards.clone(), all_cards)
             } else {
                 (HashSet::new(), all_cards)
@@ -40,7 +48,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         player, ref cards, ..
     } = filtered.waiting_for
     {
-        if player == viewer {
+        if can_view_private_for_player(player) {
             cards.iter().copied().collect()
         } else {
             HashSet::new()
@@ -48,6 +56,20 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     } else {
         HashSet::new()
     };
+
+    let search_visible: HashSet<ObjectId> =
+        if let WaitingFor::SearchChoice {
+            player, ref cards, ..
+        } = filtered.waiting_for
+        {
+            if can_view_private_for_player(player) {
+                cards.iter().copied().collect()
+            } else {
+                HashSet::new()
+            }
+        } else {
+            HashSet::new()
+        };
 
     let effect_zone_hand_cards: HashSet<ObjectId> = if let WaitingFor::EffectZoneChoice {
         zone: Zone::Hand,
@@ -68,6 +90,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     for obj_id in all_library_ids {
         let visible = manifest_dread_visible.contains(&obj_id)
             || dig_visible.contains(&obj_id)
+            || search_visible.contains(&obj_id)
             // CR 701.20b: Revealed cards are visible to all players. For reveal-digs
             // ("reveal the top N"), dig cards are also in revealed_cards and must remain
             // public during DigChoice. For private digs ("look at"), revealed_cards won't
@@ -80,7 +103,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
     }
 
     if let WaitingFor::ManifestDreadChoice { player, ref cards } = state.waiting_for {
-        if player != viewer {
+        if !can_view_private_for_player(player) {
             filtered.waiting_for = WaitingFor::ManifestDreadChoice {
                 player,
                 cards: cards.iter().map(|_| ObjectId(0)).collect(),
@@ -99,7 +122,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         source_id,
     } = state.waiting_for
     {
-        if player != viewer {
+        if !can_view_private_for_player(player) {
             filtered.waiting_for = WaitingFor::DigChoice {
                 player,
                 cards: cards.iter().map(|_| ObjectId(0)).collect(),
@@ -118,10 +141,44 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         ref hand_cards,
     } = state.waiting_for
     {
-        if player != viewer {
+        if !can_view_private_for_player(player) {
             filtered.waiting_for = WaitingFor::LearnChoice {
                 player,
                 hand_cards: hand_cards.iter().map(|_| ObjectId(0)).collect(),
+            };
+        }
+    }
+
+    if let WaitingFor::SearchChoice {
+        player,
+        ref cards,
+        count,
+        reveal,
+    } = state.waiting_for
+    {
+        if !can_view_private_for_player(player) {
+            filtered.waiting_for = WaitingFor::SearchChoice {
+                player,
+                cards: cards.iter().map(|_| ObjectId(0)).collect(),
+                count,
+                reveal,
+            };
+        }
+    }
+
+    if let WaitingFor::ChooseFromZoneChoice {
+        player,
+        ref cards,
+        count,
+        source_id,
+    } = state.waiting_for
+    {
+        if !can_view_private_for_player(player) {
+            filtered.waiting_for = WaitingFor::ChooseFromZoneChoice {
+                player,
+                cards: cards.iter().map(|_| ObjectId(0)).collect(),
+                count,
+                source_id,
             };
         }
     }
@@ -142,7 +199,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         owner_library,
     } = state.waiting_for
     {
-        if player != viewer && zone == Zone::Hand {
+        if !can_view_private_for_player(player) && zone == Zone::Hand {
             filtered.waiting_for = WaitingFor::EffectZoneChoice {
                 player,
                 cards: cards.iter().map(|_| ObjectId(0)).collect(),
@@ -166,7 +223,8 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
         .lands_tapped_for_mana
         .retain(|pid, _| *pid == viewer);
 
-    if filtered.pending_cast.is_some() && filtered.waiting_for.acting_player() != Some(viewer) {
+    if filtered.pending_cast.is_some() && turn_control::authorized_submitter(state) != Some(viewer)
+    {
         filtered.pending_cast = None;
     }
 
@@ -198,5 +256,101 @@ fn hide_card(state: &mut GameState, obj_id: ObjectId) {
         obj.replacement_definitions.clear();
         obj.static_definitions.clear();
         obj.casting_permissions.clear();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::zones::create_object;
+    use crate::types::format::FormatConfig;
+    use crate::types::identifiers::CardId;
+    use crate::types::zones::Zone;
+
+    #[test]
+    fn search_choice_is_visible_to_turn_controller() {
+        let mut state = GameState::new_two_player(42);
+        let card_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Hidden Tutor Target".to_string(),
+            Zone::Library,
+        );
+        state.active_player = PlayerId(1);
+        state.turn_decision_controller = Some(PlayerId(0));
+        state.waiting_for = WaitingFor::SearchChoice {
+            player: PlayerId(1),
+            cards: vec![card_id],
+            count: 1,
+            reveal: false,
+        };
+
+        let filtered = filter_state_for_viewer(&state, PlayerId(0));
+
+        match filtered.waiting_for {
+            WaitingFor::SearchChoice { cards, .. } => assert_eq!(cards, vec![card_id]),
+            other => panic!("expected SearchChoice, got {other:?}"),
+        }
+        assert_eq!(
+            filtered.objects.get(&card_id).map(|obj| obj.name.as_str()),
+            Some("Hidden Tutor Target")
+        );
+    }
+
+    #[test]
+    fn search_choice_is_hidden_from_non_controller() {
+        let mut state = GameState::new(FormatConfig::standard(), 3, 42);
+        let card_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Hidden Tutor Target".to_string(),
+            Zone::Library,
+        );
+        state.active_player = PlayerId(1);
+        state.turn_decision_controller = Some(PlayerId(0));
+        state.waiting_for = WaitingFor::SearchChoice {
+            player: PlayerId(1),
+            cards: vec![card_id],
+            count: 1,
+            reveal: false,
+        };
+
+        let filtered = filter_state_for_viewer(&state, PlayerId(2));
+
+        match filtered.waiting_for {
+            WaitingFor::SearchChoice { cards, .. } => assert_eq!(cards, vec![ObjectId(0)]),
+            other => panic!("expected SearchChoice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn choose_from_zone_choice_is_hidden_from_non_controller() {
+        let mut state = GameState::new(FormatConfig::standard(), 3, 42);
+        let card_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Tracked Card".to_string(),
+            Zone::Exile,
+        );
+        state.active_player = PlayerId(1);
+        state.turn_decision_controller = Some(PlayerId(0));
+        state.waiting_for = WaitingFor::ChooseFromZoneChoice {
+            player: PlayerId(1),
+            cards: vec![card_id],
+            count: 1,
+            source_id: ObjectId(99),
+        };
+
+        let filtered = filter_state_for_viewer(&state, PlayerId(2));
+
+        match filtered.waiting_for {
+            WaitingFor::ChooseFromZoneChoice { cards, .. } => {
+                assert_eq!(cards, vec![ObjectId(0)])
+            }
+            other => panic!("expected ChooseFromZoneChoice, got {other:?}"),
+        }
     }
 }

@@ -12,6 +12,7 @@ use crate::types::zones::Zone;
 use super::combat;
 use super::combat_damage;
 use super::day_night;
+use super::turn_control;
 use super::zones;
 
 const PHASE_ORDER: [Phase; 12] = [
@@ -66,7 +67,7 @@ pub fn advance_phase(state: &mut GameState, events: &mut Vec<GameEvent>) {
     }
 
     // CR 117.3a: Active player receives priority at the beginning of most steps and phases.
-    state.priority_player = state.active_player;
+    state.priority_player = turn_control::turn_decision_maker(state);
     state.priority_passes.clear();
     state.priority_pass_count = 0;
     state.players_attacked_this_step.clear();
@@ -78,6 +79,24 @@ pub fn advance_phase(state: &mut GameState, events: &mut Vec<GameEvent>) {
 
 /// Begin the next player's turn (CR 500.1 / CR 101.4 seat order).
 pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
+    let completed_player = state.active_player;
+    if state.turn_decision_controller.is_some() {
+        let mut grant_extra_turn_after = false;
+        state.scheduled_turn_controls.retain(|scheduled| {
+            if scheduled.target_player != completed_player {
+                return true;
+            }
+            if Some(scheduled.controller) == state.turn_decision_controller {
+                grant_extra_turn_after |= scheduled.grant_extra_turn_after;
+            }
+            false
+        });
+        if grant_extra_turn_after {
+            state.extra_turns.push(completed_player);
+        }
+        state.turn_decision_controller = None;
+    }
+
     state.turn_number += 1;
 
     // CR 500.7: Check for extra turns (LIFO — pop from end, most recent first)
@@ -91,8 +110,17 @@ pub fn start_next_turn(state: &mut GameState, events: &mut Vec<GameEvent>) {
     // CR 500: Track per-player turn count for "your Nth turn of the game" conditions.
     state.players[state.active_player.0 as usize].turns_taken += 1;
 
+    if let Some(scheduled) = state
+        .scheduled_turn_controls
+        .iter()
+        .rfind(|scheduled| scheduled.target_player == state.active_player)
+        .copied()
+    {
+        state.turn_decision_controller = Some(scheduled.controller);
+    }
+
     // Reset priority
-    state.priority_player = state.active_player;
+    state.priority_player = turn_control::turn_decision_maker(state);
     state.priority_passes.clear();
     state.priority_pass_count = 0;
 
@@ -1424,5 +1452,67 @@ mod tests {
 
         // Normal seat order advance
         assert_eq!(state.active_player, PlayerId(1));
+    }
+
+    #[test]
+    fn controlled_turn_uses_controller_then_grants_extra_turn_afterward() {
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+        state.turn_number = 1;
+        state
+            .scheduled_turn_controls
+            .push(crate::types::game_state::ScheduledTurnControl {
+                target_player: PlayerId(1),
+                controller: PlayerId(0),
+                grant_extra_turn_after: true,
+            });
+
+        let mut events = Vec::new();
+        start_next_turn(&mut state, &mut events);
+
+        assert_eq!(state.active_player, PlayerId(1));
+        assert_eq!(state.turn_decision_controller, Some(PlayerId(0)));
+        assert_eq!(state.priority_player, PlayerId(0));
+        assert_eq!(state.scheduled_turn_controls.len(), 1);
+
+        start_next_turn(&mut state, &mut events);
+
+        assert_eq!(state.active_player, PlayerId(1));
+        assert_eq!(state.turn_decision_controller, None);
+        assert_eq!(state.priority_player, PlayerId(1));
+        assert!(state.scheduled_turn_controls.is_empty());
+    }
+
+    #[test]
+    fn newest_scheduled_control_for_target_takes_precedence() {
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+        state.turn_number = 1;
+        state
+            .scheduled_turn_controls
+            .push(crate::types::game_state::ScheduledTurnControl {
+                target_player: PlayerId(1),
+                controller: PlayerId(0),
+                grant_extra_turn_after: false,
+            });
+        state
+            .scheduled_turn_controls
+            .push(crate::types::game_state::ScheduledTurnControl {
+                target_player: PlayerId(1),
+                controller: PlayerId(1),
+                grant_extra_turn_after: false,
+            });
+
+        let mut events = Vec::new();
+        start_next_turn(&mut state, &mut events);
+
+        assert_eq!(state.active_player, PlayerId(1));
+        assert_eq!(state.turn_decision_controller, Some(PlayerId(1)));
+
+        start_next_turn(&mut state, &mut events);
+
+        assert_eq!(state.active_player, PlayerId(0));
+        assert_eq!(state.turn_decision_controller, None);
+        assert!(state.scheduled_turn_controls.is_empty());
     }
 }

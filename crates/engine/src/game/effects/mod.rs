@@ -33,6 +33,7 @@ pub mod clash;
 pub mod cleanup;
 pub mod collect_evidence;
 pub mod connive;
+pub mod control_next_turn;
 pub mod copy_spell;
 pub mod counter;
 pub mod counters;
@@ -227,6 +228,7 @@ pub fn resolve_effect(
         Effect::Goad { .. } => goad::resolve(state, ability, events),
         Effect::ExchangeControl => exchange_control::resolve(state, ability, events),
         Effect::Attach { .. } => attach::resolve(state, ability, events),
+        Effect::ControlNextTurn { .. } => control_next_turn::resolve(state, ability, events),
         Effect::Surveil { .. } => surveil::resolve(state, ability, events),
         Effect::Fight { .. } => fight::resolve(state, ability, events),
         Effect::Bounce { .. } => bounce::resolve(state, ability, events),

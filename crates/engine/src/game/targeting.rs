@@ -1,7 +1,7 @@
 use crate::types::ability::{FilterProp, TargetFilter, TargetRef, TypedFilter};
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
-use crate::types::keywords::{HexproofFilter, Keyword, ProtectionTarget};
+use crate::types::keywords::{HexproofFilter, Keyword};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 use std::collections::HashSet;
@@ -514,33 +514,16 @@ fn is_protected_from(
     source_id: ObjectId,
     state: &GameState,
 ) -> bool {
+    let Some(source_obj) = state.objects.get(&source_id) else {
+        return false;
+    };
+
     for kw in &obj.keywords {
-        match kw {
-            Keyword::Protection(ProtectionTarget::Color(color)) => {
-                if let Some(source_obj) = state.objects.get(&source_id) {
-                    if source_obj.color.contains(color) {
-                        return true;
-                    }
-                }
+        if let Keyword::Protection(protection) = kw {
+            if crate::game::keywords::source_matches_protection_target(protection, obj, source_obj)
+            {
+                return true;
             }
-            Keyword::Protection(ProtectionTarget::Multicolored) => {
-                if let Some(source_obj) = state.objects.get(&source_id) {
-                    if source_obj.color.len() > 1 {
-                        return true;
-                    }
-                }
-            }
-            // CR 702.16: ChosenColor resolves from the protected permanent's chosen_attributes
-            Keyword::Protection(ProtectionTarget::ChosenColor) => {
-                if let Some(color) = obj.chosen_color() {
-                    if let Some(source_obj) = state.objects.get(&source_id) {
-                        if source_obj.color.contains(&color) {
-                            return true;
-                        }
-                    }
-                }
-            }
-            _ => {}
         }
     }
     false
@@ -559,26 +542,11 @@ fn hexproof_filter_matches(
     match filter {
         HexproofFilter::Color(color) => source_obj.color.contains(color),
         HexproofFilter::CardType(type_name) => {
-            use crate::types::card_type::CoreType;
-            let core = &source_obj.card_types.core_types;
-            match type_name.as_str() {
-                "artifacts" | "artifact" => core.contains(&CoreType::Artifact),
-                "creatures" | "creature" => core.contains(&CoreType::Creature),
-                "enchantments" | "enchantment" => core.contains(&CoreType::Enchantment),
-                "instants" | "instant" => core.contains(&CoreType::Instant),
-                "sorceries" | "sorcery" => core.contains(&CoreType::Sorcery),
-                "planeswalkers" | "planeswalker" => core.contains(&CoreType::Planeswalker),
-                "lands" | "land" => core.contains(&CoreType::Land),
-                _ => false,
-            }
+            crate::game::keywords::source_matches_card_type(source_obj, type_name)
         }
-        HexproofFilter::Quality(quality) => match quality.as_str() {
-            // CR 702.11d: "monocolored" = source has exactly one color
-            "monocolored" => source_obj.color.len() == 1,
-            // CR 702.11d: "multicolored" = source has two or more colors
-            "multicolored" => source_obj.color.len() > 1,
-            _ => false,
-        },
+        HexproofFilter::Quality(quality) => {
+            crate::game::keywords::source_matches_quality(source_obj, quality)
+        }
     }
 }
 
@@ -671,6 +639,7 @@ mod tests {
     use crate::types::card_type::CoreType;
     use crate::types::game_state::CastingVariant;
     use crate::types::identifiers::CardId;
+    use crate::types::keywords::ProtectionTarget;
     use crate::types::zones::Zone;
 
     fn setup_with_creatures() -> (GameState, ObjectId, ObjectId) {
@@ -1544,5 +1513,36 @@ mod tests {
         }
         let obj = state.objects.get(&c1).unwrap();
         assert!(can_target(obj, PlayerId(0), multi_id, &state));
+    }
+
+    #[test]
+    fn protection_from_instants_blocks_targeting() {
+        let (mut state, _c0, c1) = setup_with_creatures();
+        state
+            .objects
+            .get_mut(&c1)
+            .unwrap()
+            .keywords
+            .push(Keyword::Protection(ProtectionTarget::CardType(
+                "instants".to_string(),
+            )));
+
+        let source_id = create_object(
+            &mut state,
+            CardId(102),
+            PlayerId(0),
+            "Shock".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Instant);
+
+        let obj = state.objects.get(&c1).unwrap();
+        assert!(!can_target(obj, PlayerId(0), source_id, &state));
     }
 }

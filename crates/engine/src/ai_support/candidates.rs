@@ -1092,6 +1092,12 @@ pub fn candidate_actions(state: &GameState) -> Vec<CandidateAction> {
         }
     }
 
+    for action in &mut actions {
+        action.metadata.actor = action.metadata.actor.map(|player| {
+            crate::game::turn_control::authorized_submitter_for_player(state, player)
+        });
+    }
+
     actions
 }
 

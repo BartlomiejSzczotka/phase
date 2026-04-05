@@ -7,7 +7,7 @@ import { ManaCostPips } from "../mana/ManaCostPips.tsx";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { useLongPress } from "../../hooks/useLongPress.ts";
-import { usePlayerId } from "../../hooks/usePlayerId.ts";
+import { useCanActForWaitingState, usePerspectivePlayerId } from "../../hooks/usePlayerId.ts";
 import { dispatchAction } from "../../game/dispatch.ts";
 import type { GameAction, ManaCost, ObjectId } from "../../adapter/types.ts";
 import { collectObjectActions } from "../../viewmodel/cardActionChoice.ts";
@@ -22,7 +22,7 @@ function getHandOverlap(handSize: number): string {
 }
 
 export function PlayerHand() {
-  const playerId = usePlayerId();
+  const playerId = usePerspectivePlayerId();
   const handContainerRef = useRef<HTMLDivElement | null>(null);
   const player = useGameStore((s) => s.gameState?.players[playerId]);
   const objects = useGameStore((s) => s.gameState?.objects);
@@ -43,8 +43,9 @@ export function PlayerHand() {
     return null;
   });
 
+  const canActForWaitingState = useCanActForWaitingState();
   const hasPriority = useGameStore((s) =>
-    s.waitingFor?.type === "Priority" && s.waitingFor.data.player === playerId,
+    canActForWaitingState && s.waitingFor?.type === "Priority",
   );
 
   // Build a set of object_ids that have PlayLand or CastSpell legal actions.

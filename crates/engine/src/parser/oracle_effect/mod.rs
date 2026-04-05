@@ -1520,6 +1520,34 @@ fn try_parse_verb_and_target<'a>(
     {
         let (target_text, _) = strip_optional_target_prefix(rest);
         let (target, rem) = parse_target(target_text);
+        let rem_lower = rem.to_ascii_lowercase();
+        if tag::<_, _, VerboseError<&str>>(" during that player's next turn")
+            .parse(rem_lower.as_str())
+            .is_ok()
+        {
+            let rem = &rem[" during that player's next turn".len()..];
+            let rem_lower = rem.to_ascii_lowercase();
+            let (rem, grant_extra_turn_after) = if let Ok((rest, _)) = alt((
+                tag::<_, _, VerboseError<&str>>(
+                    ". after that turn, that player takes an extra turn",
+                ),
+                tag(" after that turn, that player takes an extra turn"),
+                tag("after that turn, that player takes an extra turn"),
+            ))
+            .parse(rem_lower.as_str())
+            {
+                (&rem[rem.len() - rest.len()..], true)
+            } else {
+                (rem, false)
+            };
+            return Some((
+                TargetedImperativeAst::ControlNextTurn {
+                    target,
+                    grant_extra_turn_after,
+                },
+                rem,
+            ));
+        }
         return Some((TargetedImperativeAst::GainControl { target }, rem));
     }
     // Earthbend: "earthbend [N] [target <type>]" → Animate with haste + is_earthbend

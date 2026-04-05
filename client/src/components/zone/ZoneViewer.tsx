@@ -6,7 +6,7 @@ import { ModalPanelShell } from "../ui/ModalPanelShell.tsx";
 import { useLongPress } from "../../hooks/useLongPress.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
-import { usePlayerId } from "../../hooks/usePlayerId.ts";
+import { useCanActForWaitingState, usePerspectivePlayerId } from "../../hooks/usePlayerId.ts";
 import { useGameDispatch } from "../../hooks/useGameDispatch.ts";
 import { getPlayerZoneIds } from "../../viewmodel/gameStateView.ts";
 
@@ -31,7 +31,8 @@ export function ZoneViewer({ zone, playerId, onClose }: ZoneViewerProps) {
   const waitingFor = useGameStore((s) => s.waitingFor);
   const dispatch = useGameStore((s) => s.dispatch);
   const dispatchAction = useGameDispatch();
-  const currentPlayerId = usePlayerId();
+  const currentPlayerId = usePerspectivePlayerId();
+  const canActForWaitingState = useCanActForWaitingState();
   const zoneIds = useMemo(
     () => getPlayerZoneIds(gameState, zone, playerId),
     [gameState, playerId, zone],
@@ -43,12 +44,11 @@ export function ZoneViewer({ zone, playerId, onClose }: ZoneViewerProps) {
   }, [objects, zoneIds]);
 
   const isMyZone = playerId === currentPlayerId;
-  const hasPriority = waitingFor?.type === "Priority"
-    && waitingFor.data.player === currentPlayerId;
+  const hasPriority = waitingFor?.type === "Priority" && canActForWaitingState;
 
   const isHumanTargetSelection =
     (waitingFor?.type === "TargetSelection" || waitingFor?.type === "TriggerTargetSelection")
-    && waitingFor.data.player === currentPlayerId;
+    && canActForWaitingState;
   const currentLegalTargets = useMemo(() => {
     const targets = new Set<number>();
     if (!isHumanTargetSelection) return targets;

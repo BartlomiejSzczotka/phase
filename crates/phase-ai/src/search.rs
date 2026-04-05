@@ -376,8 +376,8 @@ fn prefer_land_drop(
         return None;
     };
 
-    if *player != ai_player
-        || state.active_player != ai_player
+    if engine::game::turn_control::authorized_submitter_for_player(state, *player) != ai_player
+        || state.active_player != *player
         || !matches!(
             state.phase,
             engine::types::phase::Phase::PreCombatMain

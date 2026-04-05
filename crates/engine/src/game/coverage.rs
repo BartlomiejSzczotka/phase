@@ -437,6 +437,7 @@ fn fmt_zone_ref(z: &ZoneRef) -> &'static str {
         ZoneRef::Graveyard => "graveyard",
         ZoneRef::Exile => "exile",
         ZoneRef::Library => "library",
+        ZoneRef::Hand => "hand",
     }
 }
 
@@ -482,8 +483,12 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
             let c: Vec<_> = colors.iter().map(fmt_mana_color_full).collect();
             format!("devotion to {}", c.join("/"))
         }
-        QuantityRef::CardTypesInGraveyards { scope } => {
-            format!("card types in {} graveyards", fmt_count_scope(scope))
+        QuantityRef::DistinctCardTypesInZone { zone, scope } => {
+            format!(
+                "card types in {} {}",
+                fmt_count_scope(scope),
+                fmt_zone_ref(zone)
+            )
         }
         QuantityRef::ZoneCardCount {
             zone,
@@ -1199,6 +1204,15 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         }
         Effect::ExtraTurn { target } => {
             d.push(("player".into(), fmt_target(target)));
+        }
+        Effect::ControlNextTurn {
+            target,
+            grant_extra_turn_after,
+        } => {
+            d.push(("player".into(), fmt_target(target)));
+            if *grant_extra_turn_after {
+                d.push(("extra turn after".into(), "yes".into()));
+            }
         }
         Effect::AdditionalCombatPhase {
             with_main_phase, ..
@@ -3177,7 +3191,7 @@ fn quantity_ref_variant_name(qref: &QuantityRef) -> &'static str {
         QuantityRef::TargetPower => "TargetPower",
         QuantityRef::TargetLifeTotal => "TargetLifeTotal",
         QuantityRef::Devotion { .. } => "Devotion",
-        QuantityRef::CardTypesInGraveyards { .. } => "CardTypesInGraveyards",
+        QuantityRef::DistinctCardTypesInZone { .. } => "DistinctCardTypesInZone",
         QuantityRef::ZoneCardCount { .. } => "ZoneCardCount",
         QuantityRef::BasicLandTypeCount => "BasicLandTypeCount",
         QuantityRef::TrackedSetSize => "TrackedSetSize",
@@ -3263,7 +3277,7 @@ fn resolver_handled_features() -> HashSet<&'static str> {
         "quantity_ref:TargetPower",
         "quantity_ref:TargetLifeTotal",
         "quantity_ref:Devotion",
-        "quantity_ref:CardTypesInGraveyards",
+        "quantity_ref:DistinctCardTypesInZone",
         "quantity_ref:ZoneCardCount",
         "quantity_ref:BasicLandTypeCount",
         "quantity_ref:TrackedSetSize",

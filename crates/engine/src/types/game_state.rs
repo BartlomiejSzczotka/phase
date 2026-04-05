@@ -1148,6 +1148,8 @@ pub struct GameState {
     pub phase: Phase,
     pub players: Vec<Player>,
     pub priority_player: PlayerId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_decision_controller: Option<PlayerId>,
 
     // Central object store
     pub objects: HashMap<ObjectId, GameObject>,
@@ -1240,6 +1242,8 @@ pub struct GameState {
     /// Most recently created extra turn is taken first (pop from end).
     #[serde(default)]
     pub extra_turns: Vec<PlayerId>,
+    #[serde(default)]
+    pub scheduled_turn_controls: Vec<ScheduledTurnControl>,
 
     /// CR 500.8: Extra phases granted by effects, stored as a LIFO stack.
     /// Most recently created phase occurs first (pop from end).
@@ -1519,6 +1523,14 @@ pub struct PendingReplacement {
     pub is_optional: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ScheduledTurnControl {
+    pub target_player: PlayerId,
+    pub controller: PlayerId,
+    #[serde(default)]
+    pub grant_extra_turn_after: bool,
+}
+
 impl GameState {
     /// Create a new game with the given format configuration and player count.
     pub fn new(config: FormatConfig, player_count: u8, seed: u64) -> Self {
@@ -1537,6 +1549,7 @@ impl GameState {
             phase: Phase::Untap,
             players,
             priority_player: PlayerId(0),
+            turn_decision_controller: None,
             objects: HashMap::new(),
             next_object_id: 1,
             battlefield: Vec::new(),
@@ -1570,6 +1583,7 @@ impl GameState {
             next_tracked_set_id: 1,
             commander_cast_count: HashMap::new(),
             extra_turns: Vec::new(),
+            scheduled_turn_controls: Vec::new(),
             extra_phases: Vec::new(),
             seat_order,
             format_config: config,
@@ -1692,6 +1706,7 @@ impl PartialEq for GameState {
             && self.phase == other.phase
             && self.players == other.players
             && self.priority_player == other.priority_player
+            && self.turn_decision_controller == other.turn_decision_controller
             && self.objects.len() == other.objects.len()
             && self.next_object_id == other.next_object_id
             && self.battlefield == other.battlefield
@@ -1718,6 +1733,9 @@ impl PartialEq for GameState {
             && self.tracked_object_sets == other.tracked_object_sets
             && self.next_tracked_set_id == other.next_tracked_set_id
             && self.commander_cast_count == other.commander_cast_count
+            && self.extra_turns == other.extra_turns
+            && self.scheduled_turn_controls == other.scheduled_turn_controls
+            && self.extra_phases == other.extra_phases
             && self.seat_order == other.seat_order
             && self.format_config == other.format_config
             && self.eliminated_players == other.eliminated_players

@@ -4,6 +4,7 @@ use crate::types::player::PlayerId;
 
 use super::derived::derive_display_state;
 use super::layers::evaluate_layers;
+use super::turn_control;
 
 /// Finalize outward-facing game state before it leaves the engine boundary.
 ///
@@ -12,7 +13,7 @@ use super::layers::evaluate_layers;
 /// state used by the frontend.
 pub fn finalize_public_state(state: &mut GameState) {
     if let WaitingFor::Priority { player } = state.waiting_for {
-        state.priority_player = player;
+        state.priority_player = turn_control::authorized_submitter_for_player(state, player);
     }
     if state.layers_dirty {
         evaluate_layers(state);
@@ -24,7 +25,7 @@ pub fn finalize_public_state(state: &mut GameState) {
 pub fn sync_waiting_for(state: &mut GameState, waiting_for: &WaitingFor) {
     state.waiting_for = waiting_for.clone();
     if let WaitingFor::Priority { player } = waiting_for {
-        state.priority_player = *player;
+        state.priority_player = turn_control::authorized_submitter_for_player(state, *player);
     }
 }
 

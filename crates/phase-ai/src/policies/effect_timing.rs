@@ -1,4 +1,5 @@
 use engine::game::players;
+use engine::game::turn_control;
 use engine::types::ability::{Effect, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
@@ -111,7 +112,7 @@ fn burn_score(ctx: &PolicyContext<'_>) -> f64 {
 }
 
 fn counterspell_score(ctx: &PolicyContext<'_>) -> f64 {
-    let is_own_turn = ctx.state.active_player == ctx.ai_player;
+    let is_own_turn = turn_control::turn_decision_maker(ctx.state) == ctx.ai_player;
     let patience = ctx.config.profile.interaction_patience;
     let intent_bonus = match ctx.strategic_intent() {
         StrategicIntent::PreserveAdvantage => 0.15,

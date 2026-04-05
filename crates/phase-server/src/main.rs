@@ -704,7 +704,7 @@ async fn handle_client_message(
                         let (legal_actions, spell_costs_all) =
                             engine_legal_actions_with_costs(&session.state);
                         let auto_pass = engine_auto_pass(&session.state, &legal_actions);
-                        let actor = server_core::acting_player(&session.state.waiting_for);
+                        let actor = server_core::acting_player(&session.state);
                         let player_names = session.display_names.clone();
 
                         // Send GameStarted to the joiner
@@ -813,7 +813,7 @@ async fn handle_client_message(
                             None => vec![],
                         };
                         let session = mgr.sessions.get(&game_code).unwrap();
-                        let actor = server_core::acting_player(&session.state.waiting_for);
+                        let actor = server_core::acting_player(&session.state);
                         let eliminated = session.state.eliminated_players.clone();
                         let player_count = session.player_count;
                         let game_over_winner = match &session.state.waiting_for {
@@ -1036,7 +1036,7 @@ async fn handle_client_message(
                             let (legal_actions_all, spell_costs_all) =
                                 engine_legal_actions_with_costs(&session.state);
                             let auto_pass = engine_auto_pass(&session.state, &legal_actions_all);
-                            let actor = server_core::acting_player(&session.state.waiting_for);
+                            let actor = server_core::acting_player(&session.state);
                             let is_actor = actor == Some(player);
                             let player_legals = if is_actor { legal_actions_all } else { vec![] };
 
@@ -1134,7 +1134,7 @@ async fn handle_client_message(
                         let actor = {
                             let mgr = state.lock().await;
                             let session = mgr.sessions.get(&game_code).unwrap();
-                            server_core::acting_player(&session.state.waiting_for)
+                            server_core::acting_player(&session.state)
                         };
                         let filtered = server_core::filter_state_for_player(&raw_state, player);
                         let is_actor = actor == Some(player);
@@ -1303,7 +1303,7 @@ async fn handle_client_message(
                     let (legal_actions, spell_costs_all) =
                         engine_legal_actions_with_costs(&session.state);
                     let auto_pass = engine_auto_pass(&session.state, &legal_actions);
-                    let actor = server_core::acting_player(&session.state.waiting_for);
+                    let actor = server_core::acting_player(&session.state);
                     let player_names = session.display_names.clone();
 
                     let is_actor = actor == Some(PlayerId(0));
@@ -1365,7 +1365,7 @@ async fn handle_client_message(
                     let actor = {
                         let mgr = state.lock().await;
                         let session = mgr.sessions.get(&game_code).unwrap();
-                        server_core::acting_player(&session.state.waiting_for)
+                        server_core::acting_player(&session.state)
                     };
                     let filtered = server_core::filter_state_for_player(&raw_state, PlayerId(0));
                     {
@@ -1538,7 +1538,7 @@ async fn handle_client_message(
                         let (legal_actions, spell_costs_all) =
                             engine_legal_actions_with_costs(&session.state);
                         let auto_pass = engine_auto_pass(&session.state, &legal_actions);
-                        let actor = server_core::acting_player(&session.state.waiting_for);
+                        let actor = server_core::acting_player(&session.state);
 
                         // Find first opponent name for backward compat
                         let joiner_opp_name =

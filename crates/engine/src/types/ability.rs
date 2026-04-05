@@ -348,6 +348,7 @@ pub enum ZoneRef {
     Graveyard,
     Exile,
     Library,
+    Hand,
 }
 
 /// Who gains life from a GainLife effect.
@@ -1155,10 +1156,9 @@ pub enum QuantityRef {
     TargetZoneCardCount { zone: ZoneRef },
     /// CR 700.5: Devotion to one or more colors.
     Devotion { colors: Vec<ManaColor> },
-    /// CR 604.3: Count distinct card types (CoreType) across graveyards.
-    /// Scope controls which players' graveyards are counted.
-    /// Tarmogoyf: scope=All. "card types in your graveyard": scope=Controller.
-    CardTypesInGraveyards { scope: CountScope },
+    /// CR 604.3: Count distinct card types (CoreType) across cards in a zone.
+    /// Scope controls which players' zones are counted.
+    DistinctCardTypesInZone { zone: ZoneRef, scope: CountScope },
     /// CR 604.3: Count cards in a zone matching optional type filters.
     /// Empty card_types means all cards. Multiple entries = OR (any match).
     /// "creature cards in your graveyard" → zone=Graveyard, card_types=[Creature], scope=Controller
@@ -2168,6 +2168,12 @@ pub enum Effect {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
     },
+    ControlNextTurn {
+        #[serde(default = "default_target_filter_any")]
+        target: TargetFilter,
+        #[serde(default)]
+        grant_extra_turn_after: bool,
+    },
     Attach {
         #[serde(default = "default_target_filter_any")]
         target: TargetFilter,
@@ -2895,6 +2901,7 @@ impl Effect {
             | Effect::Mill { target, .. }
             | Effect::ChangeZone { target, .. }
             | Effect::GainControl { target, .. }
+            | Effect::ControlNextTurn { target, .. }
             | Effect::Attach { target, .. }
             | Effect::Fight { target, .. }
             | Effect::Bounce { target, .. }
@@ -3042,6 +3049,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::ChangeZoneAll { .. } => "ChangeZoneAll",
         Effect::Dig { .. } => "Dig",
         Effect::GainControl { .. } => "GainControl",
+        Effect::ControlNextTurn { .. } => "ControlNextTurn",
         Effect::Attach { .. } => "Attach",
         Effect::Surveil { .. } => "Surveil",
         Effect::Fight { .. } => "Fight",
@@ -3173,6 +3181,7 @@ pub enum EffectKind {
     ChangeZoneAll,
     Dig,
     GainControl,
+    ControlNextTurn,
     Attach,
     AttachAll,
     Surveil,
@@ -3303,6 +3312,7 @@ impl From<&Effect> for EffectKind {
             Effect::ChangeZoneAll { .. } => EffectKind::ChangeZoneAll,
             Effect::Dig { .. } => EffectKind::Dig,
             Effect::GainControl { .. } => EffectKind::GainControl,
+            Effect::ControlNextTurn { .. } => EffectKind::ControlNextTurn,
             Effect::Attach { .. } => EffectKind::Attach,
             Effect::Surveil { .. } => EffectKind::Surveil,
             Effect::Fight { .. } => EffectKind::Fight,

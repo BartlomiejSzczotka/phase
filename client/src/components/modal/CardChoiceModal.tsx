@@ -6,7 +6,7 @@ import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { useGameDispatch } from "../../hooks/useGameDispatch.ts";
 import type { ManaCost, ObjectId, TargetFilter, WaitingFor } from "../../adapter/types.ts";
-import { usePlayerId } from "../../hooks/usePlayerId.ts";
+import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { ChoiceOverlay, ConfirmButton, ScrollableCardStrip } from "./ChoiceOverlay.tsx";
 import { NamedChoiceModal } from "./NamedChoiceModal.tsx";
 import { DungeonChoiceModal, RoomChoiceModal } from "./DungeonChoiceModal.tsx";
@@ -37,89 +37,89 @@ const SCRY_CARD_IMAGE_CLASS = "";
  * Renders based on the WaitingFor type.
  */
 export function CardChoiceModal() {
-  const playerId = usePlayerId();
+  const canActForWaitingState = useCanActForWaitingState();
   const waitingFor = useGameStore((s) => s.waitingFor);
 
   if (!waitingFor) return null;
 
   switch (waitingFor.type) {
     case "ScryChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <ScryModal data={waitingFor.data} />;
     case "DigChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <DigModal data={waitingFor.data} />;
     case "SurveilChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <SurveilModal data={waitingFor.data} />;
     case "RevealChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <RevealModal data={waitingFor.data} />;
     case "SearchChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <SearchModal data={waitingFor.data} />;
     case "ChooseFromZoneChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <ChooseFromZoneModal data={waitingFor.data} />;
     case "EffectZoneChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <EffectZoneModal data={waitingFor.data} />;
     case "NamedChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <NamedChoiceModal data={waitingFor.data} />;
     case "DiscardToHandSize":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <DiscardModal data={waitingFor.data} />;
     case "DiscardForCost":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <DiscardModal data={waitingFor.data} title="Discard as additional cost" />;
     case "SacrificeForCost":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <SacrificeModal data={waitingFor.data} />;
     case "CrewVehicle":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <CrewModal data={waitingFor.data} />;
     case "ExileFromGraveyardForCost":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <ExileFromGraveyardModal data={waitingFor.data} />;
     case "CollectEvidenceChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <CollectEvidenceModal data={waitingFor.data} />;
     case "HarmonizeTapChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <HarmonizeTapModal data={waitingFor.data} />;
     case "ChooseLegend":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <LegendChoiceModal data={waitingFor.data} />;
     case "ConniveDiscard":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <DiscardModal data={waitingFor.data} title={`Connive \u2014 Discard ${waitingFor.data.count === 1 ? "a card" : `${waitingFor.data.count} cards`}`} />;
     case "DiscardChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <DiscardModal data={waitingFor.data} title={waitingFor.data.up_to ? `Discard up to ${waitingFor.data.count} cards` : `Discard ${waitingFor.data.count === 1 ? "a card" : `${waitingFor.data.count} cards`}`} />;
     case "WardDiscardChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <DiscardModal data={{ ...waitingFor.data, count: 1 }} title="Ward \u2014 Discard a card" />;
     case "WardSacrificeChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <WardSacrificeModal data={waitingFor.data} />;
     case "AssignCombatDamage":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <DamageAssignmentModal data={waitingFor.data} />;
     case "DistributeAmong":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <DistributeAmongModal data={waitingFor.data} />;
     case "RetargetChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <RetargetChoiceModal data={waitingFor.data} />;
     case "ManifestDreadChoice":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <ManifestDreadModal data={waitingFor.data} />;
     case "ChooseDungeon":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <DungeonChoiceModal data={waitingFor.data} />;
     case "ChooseDungeonRoom":
-      if (waitingFor.data.player !== playerId) return null;
+      if (!canActForWaitingState) return null;
       return <RoomChoiceModal data={waitingFor.data} />;
     default:
       return null;

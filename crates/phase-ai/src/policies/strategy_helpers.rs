@@ -12,7 +12,7 @@ use crate::eval::{evaluate_creature, threat_level};
 use super::context::PolicyContext;
 
 pub(crate) fn is_own_main_phase(ctx: &PolicyContext<'_>) -> bool {
-    ctx.state.active_player == ctx.ai_player
+    engine::game::turn_control::turn_decision_maker(ctx.state) == ctx.ai_player
         && ctx.state.stack.is_empty()
         && matches!(
             ctx.state.phase,

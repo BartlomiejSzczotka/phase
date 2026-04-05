@@ -43,7 +43,7 @@ pub(crate) fn should_play_now_with_facts(
                     | Phase::DeclareBlockers
                     | Phase::CombatDamage
             );
-            let is_own_turn = state.active_player == player;
+            let is_own_turn = engine::game::turn_control::turn_decision_maker(state) == player;
             let immediate_effects = facts.immediate_effects();
             let has_destroy = immediate_effects
                 .iter()

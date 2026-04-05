@@ -12,6 +12,7 @@ use nom::Parser;
 
 use super::error::OracleResult;
 use super::primitives::parse_color;
+use crate::parser::oracle_util::parse_subtype;
 use crate::types::ability::{ControllerRef, FilterProp, TargetFilter, TypeFilter, TypedFilter};
 use crate::types::card_type::Supertype;
 use crate::types::mana::ManaColor;
@@ -135,8 +136,8 @@ fn parse_type_list(input: &str) -> OracleResult<'_, Vec<TypeFilter>> {
 
 /// Parse a single type filter word (singular or plural).
 ///
-/// Uses a manual lookup to avoid deep nom `alt` nesting which causes
-/// stack overflow in debug builds.
+/// Uses a manual lookup for core/card types to avoid deep nom `alt` nesting which causes
+/// stack overflow in debug builds, then falls back to the shared subtype table.
 pub fn parse_type_filter_word(input: &str) -> OracleResult<'_, TypeFilter> {
     // Table of (prefix, TypeFilter) — longest-match-first within shared prefixes.
     static TYPE_WORDS: &[(&str, TypeFilter)] = &[
@@ -168,6 +169,10 @@ pub fn parse_type_filter_word(input: &str) -> OracleResult<'_, TypeFilter> {
         if let Some(rest) = input.strip_prefix(word) {
             return Ok((rest, tf.clone()));
         }
+    }
+
+    if let Some((subtype, consumed)) = parse_subtype(input) {
+        return Ok((&input[consumed..], TypeFilter::Subtype(subtype)));
     }
 
     Err(nom::Err::Error(nom_language::error::VerboseError {

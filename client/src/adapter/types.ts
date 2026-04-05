@@ -645,6 +645,7 @@ export interface GameState {
   phase: Phase;
   players: Player[];
   priority_player: PlayerId;
+  turn_decision_controller?: PlayerId | null;
   objects: Record<string, GameObject>;
   next_object_id: number;
   battlefield: ObjectId[];
@@ -685,6 +686,11 @@ export interface GameState {
   command_zone?: ObjectId[];
   auto_pass?: Record<number, AutoPassMode>;
   lands_tapped_for_mana?: Record<number, number[]>;
+  scheduled_turn_controls?: Array<{
+    target_player: PlayerId;
+    controller: PlayerId;
+    grant_extra_turn_after?: boolean;
+  }>;
 }
 
 export type AutoPassMode =

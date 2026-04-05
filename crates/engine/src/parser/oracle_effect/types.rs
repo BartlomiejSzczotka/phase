@@ -171,6 +171,8 @@ pub(super) enum ContinuationAst {
     /// Absorbs into preceding CopyTokenOf, Token, or ChangeZone by setting
     /// enters_attacking and tapped/enter_tapped flags.
     EntersTappedAttacking,
+    /// "After that turn, that player takes an extra turn." after a controlled-turn effect.
+    GrantExtraTurnAfterControlledTurn,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -388,6 +390,10 @@ pub(super) enum TargetedImperativeAst {
     },
     GainControl {
         target: TargetFilter,
+    },
+    ControlNextTurn {
+        target: TargetFilter,
+        grant_extra_turn_after: bool,
     },
     /// Earthbend: animate target land into a creature with haste (emits Earthbend event).
     Earthbend {

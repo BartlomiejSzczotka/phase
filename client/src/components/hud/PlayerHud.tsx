@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 
-import { usePlayerId } from "../../hooks/usePlayerId.ts";
+import { usePerspectivePlayerId } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { LifeTotal } from "../controls/LifeTotal.tsx";
 import { ManaPoolSummary } from "./ManaPoolSummary.tsx";
@@ -9,7 +9,7 @@ import { StatusBadge } from "./HudBadges.tsx";
 import { HudPlate } from "./HudPlate.tsx";
 
 export function PlayerHud() {
-  const playerId = usePlayerId();
+  const playerId = usePerspectivePlayerId();
   const isMyTurn = useGameStore((s) => s.gameState?.active_player === playerId);
   const speed = useGameStore((s) => s.gameState?.players[playerId]?.speed ?? 0);
   const waitingFor = useGameStore((s) => s.waitingFor);

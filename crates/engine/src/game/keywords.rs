@@ -115,32 +115,52 @@ pub fn has_indestructible(obj: &GameObject) -> bool {
 pub fn protection_prevents_from(target: &GameObject, source: &GameObject) -> bool {
     for kw in &target.keywords {
         if let Keyword::Protection(ref pt) = kw {
-            match pt {
-                ProtectionTarget::Color(color) => {
-                    if source.color.contains(color) {
-                        return true;
-                    }
-                }
-                ProtectionTarget::Multicolored => {
-                    if source.color.len() > 1 {
-                        return true;
-                    }
-                }
-                // CR 702.16: ChosenColor resolves from the target permanent's chosen_attributes
-                ProtectionTarget::ChosenColor => {
-                    if let Some(color) = target.chosen_color() {
-                        if source.color.contains(&color) {
-                            return true;
-                        }
-                    }
-                }
-                ProtectionTarget::CardType(_) | ProtectionTarget::Quality(_) => {
-                    // Not yet implemented for damage prevention
-                }
+            if source_matches_protection_target(pt, target, source) {
+                return true;
             }
         }
     }
     false
+}
+
+pub fn source_matches_protection_target(
+    protection: &ProtectionTarget,
+    protected: &GameObject,
+    source: &GameObject,
+) -> bool {
+    match protection {
+        ProtectionTarget::Color(color) => source.color.contains(color),
+        ProtectionTarget::CardType(type_name) => source_matches_card_type(source, type_name),
+        ProtectionTarget::Quality(quality) => source_matches_quality(source, quality),
+        ProtectionTarget::Multicolored => source.color.len() > 1,
+        ProtectionTarget::ChosenColor => protected
+            .chosen_color()
+            .is_some_and(|color| source.color.contains(&color)),
+    }
+}
+
+pub fn source_matches_card_type(source: &GameObject, type_name: &str) -> bool {
+    use crate::types::card_type::CoreType;
+
+    let core = &source.card_types.core_types;
+    match type_name {
+        "artifacts" | "artifact" => core.contains(&CoreType::Artifact),
+        "creatures" | "creature" => core.contains(&CoreType::Creature),
+        "enchantments" | "enchantment" => core.contains(&CoreType::Enchantment),
+        "instants" | "instant" => core.contains(&CoreType::Instant),
+        "sorceries" | "sorcery" => core.contains(&CoreType::Sorcery),
+        "planeswalkers" | "planeswalker" => core.contains(&CoreType::Planeswalker),
+        "lands" | "land" => core.contains(&CoreType::Land),
+        _ => false,
+    }
+}
+
+pub fn source_matches_quality(source: &GameObject, quality: &str) -> bool {
+    match quality {
+        "monocolored" => source.color.len() == 1,
+        "multicolored" => source.color.len() > 1,
+        _ => false,
+    }
 }
 
 /// Batch parse keyword strings into typed Keyword values.
@@ -564,6 +584,24 @@ mod tests {
         assert!(has_hexproof(&obj));
         assert!(has_shroud(&obj));
         assert!(has_indestructible(&obj));
+    }
+
+    #[test]
+    fn protection_from_instants_prevents_damage() {
+        let mut protected = make_obj();
+        protected
+            .keywords
+            .push(Keyword::Protection(ProtectionTarget::CardType(
+                "instants".to_string(),
+            )));
+
+        let mut source = make_obj();
+        source
+            .card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Instant);
+
+        assert!(protection_prevents_from(&protected, &source));
     }
 
     #[test]

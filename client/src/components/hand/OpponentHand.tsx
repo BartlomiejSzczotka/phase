@@ -5,7 +5,7 @@ import { useCardImage } from "../../hooks/useCardImage.ts";
 import { useCardHover } from "../../hooks/useCardHover.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
-import { usePlayerId } from "../../hooks/usePlayerId.ts";
+import { usePerspectivePlayerId } from "../../hooks/usePlayerId.ts";
 import type { ObjectId } from "../../adapter/types.ts";
 
 interface OpponentHandProps {
@@ -13,7 +13,7 @@ interface OpponentHandProps {
 }
 
 export function OpponentHand({ showCards = false }: OpponentHandProps) {
-  const myId = usePlayerId();
+  const myId = usePerspectivePlayerId();
   const focusedOpponent = useUiStore((s) => s.focusedOpponent);
   const seatOrder = useGameStore((s) => s.gameState?.seat_order);
   const eliminatedPlayers = useGameStore((s) => s.gameState?.eliminated_players);

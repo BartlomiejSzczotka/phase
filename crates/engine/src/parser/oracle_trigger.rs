@@ -6424,4 +6424,29 @@ mod tests {
         assert!(cleaned.contains("put a storage counter"));
         assert_eq!(cond.unwrap(), TriggerCondition::SourceIsTapped);
     }
+
+    #[test]
+    fn cast_trigger_lowers_to_control_next_turn_effect() {
+        let def = parse_trigger_line(
+            "When you cast this spell, you gain control of target opponent during that player's next turn. After that turn, that player takes an extra turn.",
+            "Emrakul, the Promised End",
+        );
+        assert_eq!(def.mode, TriggerMode::SpellCast);
+        let execute = def.execute.expect("expected execute ability");
+        match execute.effect.as_ref() {
+            Effect::ControlNextTurn {
+                target,
+                grant_extra_turn_after,
+            } => {
+                assert!(*grant_extra_turn_after);
+                assert_eq!(
+                    target,
+                    &TargetFilter::Typed(
+                        TypedFilter::default().controller(ControllerRef::Opponent)
+                    )
+                );
+            }
+            other => panic!("expected ControlNextTurn effect, got {other:?}"),
+        }
+    }
 }

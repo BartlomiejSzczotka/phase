@@ -12,9 +12,10 @@ use nom::Parser;
 
 use super::error::OracleResult;
 use super::primitives::{parse_mana_cost, parse_number};
+use super::quantity as nom_quantity;
 use crate::parser::oracle_target::parse_type_phrase;
 use crate::types::ability::{
-    Comparator, ControllerRef, CountScope, QuantityExpr, QuantityRef, StaticCondition, TargetFilter,
+    Comparator, ControllerRef, QuantityExpr, QuantityRef, StaticCondition, TargetFilter,
 };
 
 /// Parse a condition phrase from Oracle text.
@@ -879,34 +880,14 @@ fn parse_there_are_conditions(input: &str) -> OracleResult<'_, StaticCondition> 
     let (rest, _) = tag("there are ").parse(input)?;
     let (rest, n) = parse_number(rest)?;
     let (rest, _) = tag(" or more ").parse(rest)?;
-
-    // Delirium: "card types among cards in your graveyard"
-    if let Ok((rest, _)) = tag::<_, _, nom_language::error::VerboseError<&str>>(
-        "card types among cards in your graveyard",
-    )
-    .parse(rest)
-    {
-        return Ok((
-            rest,
-            make_quantity_ge(
-                QuantityRef::CardTypesInGraveyards {
-                    scope: CountScope::Controller,
-                },
-                n,
-            ),
-        ));
-    }
-
-    // General: "[anything] in your graveyard" — use take_until to consume the
-    // descriptor, then match the "in your graveyard" suffix.
-    // Covers: "cards", "creature cards", "land cards", "instant and/or sorcery cards",
-    // "permanent cards", "historic cards", "mana values among cards".
-    // All map to GraveyardSize (typed qualification is a runtime concern).
-    let (rest, _descriptor) =
-        take_until::<_, _, nom_language::error::VerboseError<&str>>("in your graveyard")
-            .parse(rest)?;
-    let (rest, _) = tag("in your graveyard").parse(rest)?;
-    Ok((rest, make_quantity_ge(QuantityRef::GraveyardSize, n)))
+    let (rest, qty) = nom_quantity::parse_quantity_ref.parse(rest)?;
+    Ok((
+        rest,
+        make_quantity_ge(
+            crate::parser::oracle_quantity::canonicalize_quantity_ref(qty),
+            n,
+        ),
+    ))
 }
 
 /// Parse "an opponent controls more [type] than you" → QuantityComparison.
@@ -1030,6 +1011,7 @@ fn parse_unless_condition(input: &str) -> OracleResult<'_, StaticCondition> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::ability::TypeFilter;
     use crate::types::mana::ManaCost;
 
     #[test]
@@ -1461,12 +1443,38 @@ mod tests {
             StaticCondition::QuantityComparison {
                 lhs:
                     QuantityExpr::Ref {
-                        qty: QuantityRef::CardTypesInGraveyards { .. },
+                        qty: QuantityRef::DistinctCardTypesInZone { .. },
                     },
                 comparator: Comparator::GE,
                 rhs: QuantityExpr::Fixed { value: 4 },
             } => {}
-            other => panic!("expected CardTypesInGraveyards GE 4, got {other:?}"),
+            other => panic!("expected DistinctCardTypesInZone GE 4, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_there_are_subtype_cards_in_graveyard() {
+        let (rest, c) =
+            parse_inner_condition("there are three or more Lesson cards in your graveyard")
+                .unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::ZoneCardCount {
+                                zone: crate::types::ability::ZoneRef::Graveyard,
+                                card_types,
+                                scope: crate::types::ability::CountScope::Controller,
+                            },
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 3 },
+            } => {
+                assert_eq!(card_types, vec![TypeFilter::Subtype("Lesson".to_string())]);
+            }
+            other => panic!("expected Lesson graveyard count GE 3, got {other:?}"),
         }
     }
 

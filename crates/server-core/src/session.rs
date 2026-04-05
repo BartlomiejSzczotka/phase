@@ -10,7 +10,7 @@ use engine::game::finalize_public_state;
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
 use engine::types::format::FormatConfig;
-use engine::types::game_state::{GameState, WaitingFor};
+use engine::types::game_state::GameState;
 use engine::types::identifiers::ObjectId;
 use engine::types::log::GameLogEntry;
 use engine::types::mana::ManaCost;
@@ -37,8 +37,8 @@ pub type ActionResult = (
 );
 
 /// Returns the player who must act for the given WaitingFor, or None if the game is over.
-pub fn acting_player(waiting_for: &WaitingFor) -> Option<PlayerId> {
-    waiting_for.acting_player()
+pub fn acting_player(state: &GameState) -> Option<PlayerId> {
+    engine::game::turn_control::authorized_submitter(state)
 }
 
 pub struct GameSession {
@@ -507,7 +507,7 @@ impl SessionManager {
         }
 
         // Validate it's this player's turn to act
-        let current_actor = acting_player(&session.state.waiting_for);
+        let current_actor = acting_player(&session.state);
         match current_actor {
             None => {
                 warn!(game = %game_code, player = ?player, reason = "game_over", "action rejected");
@@ -660,6 +660,7 @@ mod tests {
     use engine::game::deck_loading::DeckEntry;
     use engine::types::card::CardFace;
     use engine::types::card_type::CardType;
+    use engine::types::game_state::WaitingFor;
     use engine::types::mana::ManaCost;
 
     fn make_deck() -> PlayerDeckPayload {

@@ -1,7 +1,7 @@
 import { AnimatePresence, motion } from "framer-motion";
 
 import type { GameAction, ManaCost, WaitingFor } from "../../adapter/types.ts";
-import { usePlayerId } from "../../hooks/usePlayerId.ts";
+import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { SHARD_ABBREVIATION } from "../../viewmodel/costLabel.ts";
 import { ManaSymbol } from "../mana/ManaSymbol.tsx";
@@ -27,12 +27,12 @@ function ManaCostSymbols({ cost }: { cost: ManaCost }) {
 }
 
 export function WarpCostModal() {
-  const playerId = usePlayerId();
+  const canActForWaitingState = useCanActForWaitingState();
   const waitingFor = useGameStore((s) => s.waitingFor);
   const dispatch = useGameStore((s) => s.dispatch);
 
   if (waitingFor?.type !== "WarpCostChoice") return null;
-  if (waitingFor.data.player !== playerId) return null;
+  if (!canActForWaitingState) return null;
 
   const data = waitingFor.data as WarpCostChoice["data"];
 
