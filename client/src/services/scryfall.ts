@@ -135,7 +135,7 @@ async function rateLimitedFetch(
 }
 
 /** Strip set code brackets (e.g. "Goblin Lackey [UZ]" → "Goblin Lackey"). */
-function normalizeCardName(name: string): string {
+export function normalizeCardName(name: string): string {
   return name.replace(/\s*\[[^\]]*\]\s*$/, "").trim();
 }
 
