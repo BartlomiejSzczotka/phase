@@ -1,4 +1,5 @@
 [alias]
+release-local = "release --workspace --execute --no-confirm --no-publish --no-push"
 wasm = "build --package engine-wasm --target wasm32-unknown-unknown --profile wasm-dev"
 wasm-release = "build --package engine-wasm --target wasm32-unknown-unknown --release"
 test-all = "nextest run --workspace --exclude phase-tauri"
