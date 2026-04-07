@@ -2496,6 +2496,46 @@ fn inject_subject_target(effect: &mut Effect, subject: &SubjectPhraseAst) {
         } if *fight_subject == TargetFilter::SelfRef => {
             *fight_subject = subject_filter;
         }
+        // Object-targeting effects: inject subject filter only when the sentinel
+        // is `TargetFilter::Any` (not Controller — these target objects, not players).
+        Effect::Pump { target, .. }
+        | Effect::DealDamage { target, .. }
+        | Effect::Destroy { target, .. }
+        | Effect::Regenerate { target, .. }
+        | Effect::Counter { target, .. }
+        | Effect::Tap { target, .. }
+        | Effect::Untap { target, .. }
+        | Effect::AddCounter { target, .. }
+        | Effect::RemoveCounter { target, .. }
+        | Effect::Sacrifice { target, .. }
+        | Effect::DiscardCard { target, .. }
+        | Effect::ChangeZone { target, .. }
+        | Effect::GainControl { target, .. }
+        | Effect::ControlNextTurn { target, .. }
+        | Effect::Attach { target, .. }
+        | Effect::Bounce { target, .. }
+        | Effect::SwitchPT { target, .. }
+        | Effect::CopySpell { target, .. }
+        | Effect::CopyTokenOf { target, .. }
+        | Effect::BecomeCopy { target, .. }
+        | Effect::ChooseCard { target, .. }
+        | Effect::PutCounter { target, .. }
+        | Effect::MultiplyCounter { target, .. }
+        | Effect::DoublePT { target, .. }
+        | Effect::MoveCounters { target, .. }
+        | Effect::Animate { target, .. }
+        | Effect::Transform { target, .. }
+        | Effect::RevealHand { target, .. }
+        | Effect::TargetOnly { target, .. }
+        | Effect::PreventDamage { target, .. }
+        | Effect::Exploit { target, .. }
+        | Effect::CastFromZone { target, .. }
+        | Effect::PutOnTopOrBottom { target, .. }
+        | Effect::Double { target, .. }
+            if *target == TargetFilter::Any =>
+        {
+            *target = subject_filter;
+        }
         _ => {}
     }
 }
@@ -9916,6 +9956,27 @@ mod tests {
             ),
             "expected Draw 1, got: {:?}",
             def.effect
+        );
+    }
+
+    #[test]
+    fn inject_subject_target_pump() {
+        // Subject-predicate path: "~ gets +2/+2 until end of turn"
+        // The subject "~" is stripped, "gets +2/+2 until end of turn" is parsed as
+        // imperative Pump with TargetFilter::Any, then inject_subject_target should
+        // replace Any with SelfRef from the subject.
+        let clause =
+            parse_effect_clause("~ gets +2/+2 until end of turn", &ParseContext::default());
+        assert!(
+            matches!(
+                clause.effect,
+                Effect::Pump {
+                    target: TargetFilter::SelfRef,
+                    ..
+                }
+            ),
+            "expected Pump with SelfRef target, got: {:?}",
+            clause.effect
         );
     }
 }
