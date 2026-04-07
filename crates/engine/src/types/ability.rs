@@ -2653,6 +2653,12 @@ pub enum Effect {
         #[serde(default)]
         forced_to: Option<TargetFilter>,
     },
+    /// CR 701.40a: Manifest — put the top card of the controller's library onto
+    /// the battlefield face down as a 2/2 creature with no text, no name, no
+    /// subtypes, and no mana cost. Count determines how many cards to manifest.
+    Manifest {
+        count: QuantityExpr,
+    },
     /// CR 701.62a: Manifest dread — look at top 2 cards of library, manifest one,
     /// put the rest into graveyard. Uses interactive WaitingFor::ManifestDreadChoice.
     ManifestDread,
@@ -3018,6 +3024,7 @@ impl Effect {
             | Effect::GiftDelivery { .. }
             | Effect::ExchangeControl
             | Effect::ChangeTargets { .. }
+            | Effect::Manifest { .. }
             | Effect::ManifestDread
             | Effect::LoseTheGame
             | Effect::WinTheGame
@@ -3153,6 +3160,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Monstrosity { .. } => "Monstrosity",
         Effect::Bolster { .. } => "Bolster",
         Effect::Adapt { .. } => "Adapt",
+        Effect::Manifest { .. } => "Manifest",
         Effect::ManifestDread => "ManifestDread",
         Effect::ExtraTurn { .. } => "ExtraTurn",
         Effect::AdditionalCombatPhase { .. } => "AdditionalCombatPhase",
@@ -3286,6 +3294,7 @@ pub enum EffectKind {
     Monstrosity,
     Bolster,
     Adapt,
+    Manifest,
     ManifestDread,
     ExtraTurn,
     AdditionalCombatPhase,
@@ -3420,6 +3429,7 @@ impl From<&Effect> for EffectKind {
             Effect::Monstrosity { .. } => EffectKind::Monstrosity,
             Effect::Bolster { .. } => EffectKind::Bolster,
             Effect::Adapt { .. } => EffectKind::Adapt,
+            Effect::Manifest { .. } => EffectKind::Manifest,
             Effect::ManifestDread => EffectKind::ManifestDread,
             Effect::ExtraTurn { .. } => EffectKind::ExtraTurn,
             Effect::AdditionalCombatPhase { .. } => EffectKind::AdditionalCombatPhase,

@@ -1309,6 +1309,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::WinTheGame
         | Effect::RingTemptsYou
         | Effect::GrantCastingPermission { .. }
+        | Effect::Manifest { .. }
         | Effect::ManifestDread
         | Effect::RuntimeHandled { .. }
         | Effect::ChangeTargets { .. }

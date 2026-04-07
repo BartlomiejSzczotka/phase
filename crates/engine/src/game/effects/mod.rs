@@ -65,6 +65,7 @@ pub mod investigate;
 pub mod learn;
 pub mod life;
 pub mod mana;
+pub mod manifest;
 pub mod manifest_dread;
 pub mod mill;
 pub mod monstrosity;
@@ -301,6 +302,7 @@ pub fn resolve_effect(
         Effect::Monstrosity { .. } => monstrosity::resolve(state, ability, events),
         Effect::Adapt { .. } => adapt::resolve(state, ability, events),
         Effect::Bolster { .. } => bolster::resolve(state, ability, events),
+        Effect::Manifest { .. } => manifest::resolve(state, ability, events),
         Effect::ManifestDread => manifest_dread::resolve(state, ability, events),
         Effect::ExtraTurn { .. } => extra_turn::resolve(state, ability, events),
         Effect::Double { .. } => double::resolve(state, ability, events),

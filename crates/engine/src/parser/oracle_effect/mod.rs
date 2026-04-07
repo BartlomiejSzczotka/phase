@@ -6210,6 +6210,54 @@ mod tests {
     }
 
     #[test]
+    fn effect_manifest_top_card() {
+        let e = parse_effect("Manifest the top card of your library");
+        assert!(
+            matches!(
+                e,
+                Effect::Manifest {
+                    count: QuantityExpr::Fixed { value: 1 }
+                }
+            ),
+            "expected Manifest {{ count: 1 }}, got: {e:?}"
+        );
+    }
+
+    #[test]
+    fn effect_manifest_top_two_cards() {
+        let e = parse_effect("Manifest the top two cards of your library");
+        assert!(
+            matches!(
+                e,
+                Effect::Manifest {
+                    count: QuantityExpr::Fixed { value: 2 }
+                }
+            ),
+            "expected Manifest {{ count: 2 }}, got: {e:?}"
+        );
+    }
+
+    #[test]
+    fn effect_look_at_that_many_cards() {
+        let e = parse_effect("Look at that many cards from the top of your library");
+        match e {
+            Effect::Dig { count, reveal, .. } => {
+                assert!(
+                    matches!(
+                        count,
+                        QuantityExpr::Ref {
+                            qty: QuantityRef::EventContextAmount
+                        }
+                    ),
+                    "expected EventContextAmount, got: {count:?}"
+                );
+                assert!(!reveal, "should not be reveal");
+            }
+            other => panic!("expected Dig, got: {other:?}"),
+        }
+    }
+
+    #[test]
     fn effect_unimplemented_fallback() {
         let e = parse_effect("Fateseal 2");
         assert!(matches!(e, Effect::Unimplemented { .. }));

@@ -226,6 +226,10 @@ pub(super) enum ImperativeFamilyAst {
     Clash,
     /// CR 701.48a: Learn.
     Learn,
+    /// CR 701.40a: Manifest the top card(s) of library.
+    Manifest {
+        count: QuantityExpr,
+    },
     /// CR 701.62a: Manifest dread.
     ManifestDread,
     BecomeMonarch,

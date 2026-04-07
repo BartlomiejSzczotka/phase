@@ -637,6 +637,26 @@ pub(super) fn parse_search_and_creation_ast(
         };
         return Some(SearchCreationImperativeAst::Dig { count, reveal });
     }
+    // CR 701.16a: "look at that many cards from the top of your library" — variable-count dig
+    // where "that many" references the result of a previous effect (e.g., damage dealt).
+    if let Some((reveal, _)) = nom_on_lower(text, lower, |input| {
+        alt((
+            value(
+                false,
+                tag("look at that many cards from the top of your library"),
+            ),
+            value(
+                true,
+                tag("reveal that many cards from the top of your library"),
+            ),
+        ))
+        .parse(input)
+    }) {
+        let count = QuantityExpr::Ref {
+            qty: QuantityRef::EventContextAmount,
+        };
+        return Some(SearchCreationImperativeAst::Dig { count, reveal });
+    }
     if let Some((_, _)) = nom_on_lower(text, lower, |input| value((), tag("create ")).parse(input))
     {
         return match try_parse_token(lower, text) {
@@ -1835,10 +1855,26 @@ pub(super) fn parse_imperative_family_ast(
         "investigate" => Some(ImperativeFamilyAst::Investigate),
         // CR 701.48a: "learn"
         "learn" => Some(ImperativeFamilyAst::Learn),
-        // CR 701.62a: "manifest dread"
+        // CR 701.62a: "manifest dread" / CR 701.40a: "manifest the top card of your library"
         "manifest" => {
-            if lower == "manifest dread" {
+            if tag::<_, _, VerboseError<&str>>("manifest dread")
+                .parse(lower)
+                .is_ok()
+            {
                 Some(ImperativeFamilyAst::ManifestDread)
+            } else if let Ok((rest, _)) =
+                tag::<_, _, VerboseError<&str>>("manifest the top ").parse(lower)
+            {
+                // CR 701.40a: "manifest the top card of your library"
+                // or "manifest the top N cards of your library"
+                let count = if rest.starts_with("card ") {
+                    QuantityExpr::Fixed { value: 1 }
+                } else if let Ok((_, n)) = nom_primitives::parse_number.parse(rest) {
+                    QuantityExpr::Fixed { value: n as i32 }
+                } else {
+                    QuantityExpr::Fixed { value: 1 }
+                };
+                Some(ImperativeFamilyAst::Manifest { count })
             } else {
                 None
             }
@@ -2338,6 +2374,7 @@ fn lower_imperative_family_effect(ast: ImperativeFamilyAst) -> Effect {
         }
         ImperativeFamilyAst::Investigate => Effect::Investigate,
         ImperativeFamilyAst::Learn => Effect::Learn,
+        ImperativeFamilyAst::Manifest { count } => Effect::Manifest { count },
         ImperativeFamilyAst::ManifestDread => Effect::ManifestDread,
         ImperativeFamilyAst::BecomeMonarch => Effect::BecomeMonarch,
         ImperativeFamilyAst::VentureIntoDungeon => Effect::VentureIntoDungeon,
