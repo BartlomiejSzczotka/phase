@@ -219,6 +219,18 @@ pub fn resolve(
         .collect();
 
     if targeted_objects.is_empty() {
+        // CR 115.6: "Up to one target" — if the player chose zero targets during
+        // targeting, the effect resolves doing nothing. Don't fall through to the
+        // untargeted zone-scan path (which is for genuinely untargeted effects like
+        // "sacrifice a creature" where the choice happens at resolution).
+        if ability.optional_targeting {
+            events.push(GameEvent::EffectResolved {
+                kind: EffectKind::from(&ability.effect),
+                source_id: ability.source_id,
+            });
+            return Ok(());
+        }
+
         let scan_zone = origin
             .or_else(|| target_filter.extract_in_zone())
             .unwrap_or(Zone::Battlefield);
@@ -1372,6 +1384,58 @@ mod tests {
         assert_eq!(
             state.objects.get(&graveyard_card).unwrap().zone,
             Zone::Exile
+        );
+    }
+
+    #[test]
+    fn optional_targeting_with_zero_targets_resolves_as_noop() {
+        // CR 115.6: "up to one target" with 0 chosen should not fall through
+        // to the untargeted zone-scan path.
+        let mut state = GameState::new_two_player(42);
+        let creature = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Bystander".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&creature)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let mut ability = ResolvedAbility::new(
+            Effect::ChangeZone {
+                origin: Some(Zone::Battlefield),
+                destination: Zone::Exile,
+                target: TargetFilter::Typed(crate::types::ability::TypedFilter::creature()),
+                owner_library: false,
+                enter_transformed: false,
+                under_your_control: false,
+                enter_tapped: false,
+                enters_attacking: false,
+                up_to: false,
+            },
+            vec![], // zero targets chosen
+            ObjectId(900),
+            PlayerId(0),
+        );
+        ability.optional_targeting = true;
+
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // Creature should remain on the battlefield — not exiled, not offered as a choice.
+        assert_eq!(
+            state.objects.get(&creature).unwrap().zone,
+            Zone::Battlefield
+        );
+        assert!(
+            !matches!(state.waiting_for, WaitingFor::EffectZoneChoice { .. }),
+            "should not prompt for zone choice when optional targeting chose 0"
         );
     }
 }
