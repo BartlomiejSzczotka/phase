@@ -1491,6 +1491,18 @@ fn parse_clause_ast(text: &str, ctx: &ParseContext) -> ClauseAst {
         };
     }
 
+    // CR 701.24b: "each player who searched their library this way shuffles" —
+    // redundant shuffle after a search effect (search already includes a shuffle).
+    // Parse as a bare shuffle to avoid Unimplemented.
+    {
+        let lower = text.to_lowercase();
+        if lower.contains("who searched") && lower.ends_with("shuffles") {
+            return ClauseAst::Imperative {
+                text: "shuffle".to_string(),
+            };
+        }
+    }
+
     if let Some(ast) = try_parse_subject_predicate_ast(text, ctx) {
         return ast;
     }
@@ -1568,6 +1580,24 @@ fn lower_imperative_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause
     // CR 608.2c: Compound damage actions: "~ deals 3 damage to any target and you gain 3 life"
     if let Some(clause) = try_split_damage_compound(text, ctx) {
         return clause;
+    }
+
+    // CR 609.4b: "spend mana as though it were mana of any color to cast ..." /
+    // "mana of any type can be spent to cast ..." — grants any-color mana permission
+    // for a cast-from-exile card. Produce a GenericEffect with SpendManaAsAnyColor static.
+    // Variants: "spend colorless mana as though..." / "mana of any color to cast..."
+    {
+        let lower = text.to_lowercase();
+        if lower.contains("as though it were mana of any color")
+            || lower.contains("mana of any type can be spent to cast")
+        {
+            return parsed_clause(Effect::GenericEffect {
+                static_abilities: vec![StaticDefinition::new(StaticMode::SpendManaAsAnyColor)
+                    .description(text.to_string())],
+                duration: None,
+                target: Some(TargetFilter::Controller),
+            });
+        }
     }
 
     let (stripped, duration) = strip_trailing_duration(text);

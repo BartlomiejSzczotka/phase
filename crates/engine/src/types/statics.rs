@@ -298,6 +298,9 @@ pub enum StaticMode {
     /// CR 609.4b: "You may spend mana as though it were mana of any color."
     /// Allows the controller to pay colored mana costs with mana of any color.
     SpendManaAsAnyColor,
+    /// CR 702.3b: Allows creatures with defender to attack despite having the keyword.
+    /// "can attack as though it didn't have defender" overrides the defender restriction.
+    CanAttackWithDefender,
     /// CR 510.1a: This creature assigns no combat damage.
     /// Used for creatures like Ornithopter of Paradise and various Walls that can
     /// attack/block but deal 0 combat damage.
@@ -443,6 +446,7 @@ impl fmt::Display for StaticMode {
             }
             StaticMode::SkipStep { step } => write!(f, "SkipStep({step:?})"),
             StaticMode::SpendManaAsAnyColor => write!(f, "SpendManaAsAnyColor"),
+            StaticMode::CanAttackWithDefender => write!(f, "CanAttackWithDefender"),
             StaticMode::AssignNoCombatDamage => write!(f, "AssignNoCombatDamage"),
             // Fallback
             StaticMode::Other(s) => write!(f, "{s}"),
@@ -560,6 +564,7 @@ impl FromStr for StaticMode {
             "MayPlayAdditionalLand" => StaticMode::MayPlayAdditionalLand,
             "CantWinTheGame" => StaticMode::CantWinTheGame,
             "CantLoseTheGame" => StaticMode::CantLoseTheGame,
+            "CanAttackWithDefender" => StaticMode::CanAttackWithDefender,
             // Parameterized
             other => {
                 if let Some(inner) = other

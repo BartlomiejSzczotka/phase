@@ -270,6 +270,20 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         return defs.into_iter().next();
     }
 
+    // CR 702.3b: "[subject] can attack as though they/it didn't have defender"
+    // Static grant of CanAttackWithDefender to a class of creatures.
+    if lower.contains("can attack as though") && lower.contains("didn't have defender") {
+        if let Some(pos) = lower.find(" can attack") {
+            let subject = text[..pos].trim();
+            let (affected, _) = super::oracle_target::parse_type_phrase(subject);
+            return Some(
+                StaticDefinition::new(StaticMode::CanAttackWithDefender)
+                    .affected(affected)
+                    .description(text.to_string()),
+            );
+        }
+    }
+
     // --- "Each creature you control [with condition] assigns combat damage equal to its toughness" ---
     // CR 510.1c: Doran-class effects that cause creatures to use toughness for combat damage.
     if let Some(def) = parse_assigns_damage_from_toughness(&lower, &text) {
@@ -2795,15 +2809,22 @@ fn parse_enchanted_equipped_predicate(
     // --- Non-standard keyword phrasings (check before continuous grants) ---
 
     // CR 702.10: "can attack as though it had haste" → AddKeyword(Haste)
-    if pred_lower.contains("can attack as though it had haste")
-        || pred_lower.contains("can attack as though it didn't have defender")
-    {
+    if pred_lower.contains("can attack as though it had haste") {
         return Some(
             StaticDefinition::continuous()
                 .affected(affected)
                 .modifications(vec![ContinuousModification::AddKeyword {
                     keyword: Keyword::Haste,
                 }])
+                .description(description.to_string()),
+        );
+    }
+
+    // CR 702.3b: "can attack as though it didn't have defender" → CanAttackWithDefender
+    if pred_lower.contains("can attack as though it didn't have defender") {
+        return Some(
+            StaticDefinition::new(StaticMode::CanAttackWithDefender)
+                .affected(affected)
                 .description(description.to_string()),
         );
     }

@@ -4335,6 +4335,9 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
             StaticMode::CantBeBlockedExceptBy { .. } => {
                 effective_lower.contains("can't be blocked")
             }
+            StaticMode::CanAttackWithDefender => {
+                effective_lower.contains("as though it didn't have defender")
+            }
             _ => false,
         });
 
@@ -4350,6 +4353,9 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
                     StaticMode::MustBeBlocked => {
                         effective_lower.contains("able to block")
                             && effective_lower.contains("do so")
+                    }
+                    StaticMode::CanAttackWithDefender => {
+                        effective_lower.contains("as though it didn't have defender")
                     }
                     _ => false,
                 })

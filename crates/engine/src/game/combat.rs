@@ -224,9 +224,24 @@ pub fn validate_attackers(state: &GameState, attacker_ids: &[ObjectId]) -> Resul
             return Err(format!("{:?} is tapped", id));
         }
 
-        // CR 702.3b: Defender — a creature with defender can't attack.
+        // CR 702.3b: Defender — a creature with defender can't attack,
+        // unless overridden by CanAttackWithDefender (e.g., Assault Formation).
         if obj.has_keyword(&Keyword::Defender) {
-            return Err(format!("{:?} has Defender", id));
+            let can_attack_with_defender = obj
+                .static_definitions
+                .iter()
+                .any(|sd| sd.mode == StaticMode::CanAttackWithDefender)
+                || crate::game::static_abilities::check_static_ability(
+                    state,
+                    StaticMode::CanAttackWithDefender,
+                    &crate::game::static_abilities::StaticCheckContext {
+                        target_id: Some(id),
+                        ..Default::default()
+                    },
+                );
+            if !can_attack_with_defender {
+                return Err(format!("{:?} has Defender", id));
+            }
         }
         if obj.static_definitions.iter().any(|sd| {
             matches!(
@@ -696,9 +711,23 @@ pub fn declare_attackers(
         if obj.tapped {
             continue;
         }
-        // CR 702.3b: Defender — creature can't attack.
+        // CR 702.3b: Defender — creature can't attack (unless overridden).
         if obj.has_keyword(&Keyword::Defender) {
-            continue;
+            let can_attack_with_defender = obj
+                .static_definitions
+                .iter()
+                .any(|sd| sd.mode == StaticMode::CanAttackWithDefender)
+                || crate::game::static_abilities::check_static_ability(
+                    state,
+                    StaticMode::CanAttackWithDefender,
+                    &crate::game::static_abilities::StaticCheckContext {
+                        target_id: Some(obj_id),
+                        ..Default::default()
+                    },
+                );
+            if !can_attack_with_defender {
+                continue;
+            }
         }
         // CR 302.6: Summoning sickness — reuse existing helper.
         if has_summoning_sickness(obj, state.turn_number) {
@@ -978,7 +1007,19 @@ pub fn get_valid_attacker_ids(state: &GameState) -> Vec<ObjectId> {
             if obj.controller == active
                 && obj.card_types.core_types.contains(&CoreType::Creature)
                 && !obj.tapped
-                && !obj.has_keyword(&Keyword::Defender)
+                && (!obj.has_keyword(&Keyword::Defender)
+                    || obj
+                        .static_definitions
+                        .iter()
+                        .any(|sd| sd.mode == StaticMode::CanAttackWithDefender)
+                    || crate::game::static_abilities::check_static_ability(
+                        state,
+                        StaticMode::CanAttackWithDefender,
+                        &crate::game::static_abilities::StaticCheckContext {
+                            target_id: Some(*id),
+                            ..Default::default()
+                        },
+                    ))
                 && !obj.static_definitions.iter().any(|sd| {
                     matches!(
                         sd.mode,
@@ -1241,7 +1282,19 @@ pub fn has_potential_attackers(state: &GameState) -> bool {
                 obj.controller == active
                     && obj.card_types.core_types.contains(&CoreType::Creature)
                     && !obj.tapped
-                    && !obj.has_keyword(&Keyword::Defender)
+                    && (!obj.has_keyword(&Keyword::Defender)
+                        || obj
+                            .static_definitions
+                            .iter()
+                            .any(|sd| sd.mode == StaticMode::CanAttackWithDefender)
+                        || crate::game::static_abilities::check_static_ability(
+                            state,
+                            StaticMode::CanAttackWithDefender,
+                            &crate::game::static_abilities::StaticCheckContext {
+                                target_id: Some(*id),
+                                ..Default::default()
+                            },
+                        ))
                     && !obj.static_definitions.iter().any(|sd| {
                         matches!(
                             sd.mode,

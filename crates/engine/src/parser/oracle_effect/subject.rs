@@ -26,6 +26,18 @@ pub(super) fn try_parse_subject_predicate_ast(text: &str, ctx: &ParseContext) ->
         return None;
     }
 
+    // CR 702.3b: "can attack [this turn] as though it didn't have defender" —
+    // must intercept before continuous clause parsing which would incorrectly
+    // extract "defender" as an AddKeyword from "didn't have defender".
+    if let Some(clause) = try_parse_can_attack_with_defender(text, ctx) {
+        return Some(subject_predicate_ast_from_clause(
+            text,
+            clause,
+            |effect, duration, _sub_ability| PredicateAst::Restriction { effect, duration },
+            ctx,
+        ));
+    }
+
     if let Some(clause) = try_parse_subject_continuous_clause(text, ctx) {
         return Some(subject_predicate_ast_from_clause(
             text,
@@ -226,6 +238,42 @@ fn try_parse_subject_restriction_clause(
     };
     let application = parse_subject_application(subject, ctx)?;
     build_restriction_clause(application, predicate)
+}
+
+/// CR 702.3b: "[subject] can attack [this turn] as though it didn't have defender"
+/// Produces a GenericEffect with CanAttackWithDefender static mode.
+fn try_parse_can_attack_with_defender(
+    text: &str,
+    ctx: &ParseContext,
+) -> Option<ParsedEffectClause> {
+    let lower = text.to_lowercase();
+    let tp = TextPair::new(text, &lower);
+    let pos = tp.find(" can attack")?;
+    if !lower.contains("as though it didn't have defender") {
+        return None;
+    }
+    let subject = text[..pos].trim();
+    let application = parse_subject_application(subject, ctx)?;
+    // Determine duration: "this turn" implies UntilEndOfTurn.
+    let duration = if lower.contains("this turn") {
+        Some(Duration::UntilEndOfTurn)
+    } else {
+        None
+    };
+    Some(ParsedEffectClause {
+        effect: Effect::GenericEffect {
+            static_abilities: vec![StaticDefinition::new(StaticMode::CanAttackWithDefender)
+                .affected(application.affected)
+                .description(text.to_string())],
+            duration: duration.clone(),
+            target: application.target,
+        },
+        duration,
+        sub_ability: None,
+        distribute: None,
+        multi_target: None,
+        condition: None,
+    })
 }
 
 pub(super) fn parse_subject_application(
@@ -1083,26 +1131,32 @@ pub(super) fn deconjugate_verb(text: &str) -> String {
 
 pub(crate) fn starts_with_subject_prefix(lower: &str) -> bool {
     alt((
-        value((), tag::<_, _, VerboseError<&str>>("all ")),
-        value((), tag("an opponent ")),
-        value((), tag("defending player ")),
-        value((), tag("each of ")),
-        value((), tag("each opponent ")),
-        value((), tag("each player ")),
-        value((), tag("each ")),
-        value((), tag("enchanted ")),
-        value((), tag("equipped ")),
-        value((), tag("it ")),
-        value((), tag("its controller ")),
-        value((), tag("target ")),
-        value((), tag("that ")),
-        value((), tag("the chosen ")),
-        value((), tag("the player ")),
-        value((), tag("they ")),
-        value((), tag("this ")),
-        value((), tag("those ")),
-        value((), tag("up to ")),
-        value((), tag("you ")),
+        alt((
+            value((), tag::<_, _, VerboseError<&str>>("all ")),
+            value((), tag("an opponent ")),
+            value((), tag("defending player ")),
+            value((), tag("each of ")),
+            value((), tag("each opponent ")),
+            value((), tag("each player ")),
+            value((), tag("each ")),
+            value((), tag("enchanted ")),
+            value((), tag("equipped ")),
+            value((), tag("it ")),
+            value((), tag("its controller ")),
+        )),
+        alt((
+            value((), tag::<_, _, VerboseError<&str>>("its owner ")),
+            value((), tag("~'s owner ")),
+            value((), tag("target ")),
+            value((), tag("that ")),
+            value((), tag("the chosen ")),
+            value((), tag("the player ")),
+            value((), tag("they ")),
+            value((), tag("this ")),
+            value((), tag("those ")),
+            value((), tag("up to ")),
+            value((), tag("you ")),
+        )),
     ))
     .parse(lower)
     .is_ok()
