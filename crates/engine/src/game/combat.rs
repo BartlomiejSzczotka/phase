@@ -4,6 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use super::game_object::GameObject;
 use super::players;
+use crate::game::filter::matches_target_filter;
+use crate::parser::oracle_target::parse_target;
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
@@ -343,6 +345,19 @@ pub fn validate_blockers(
             ));
         }
 
+        // CR 509.1b: "can't be blocked except by X" — blocker must match the exception filter.
+        for sd in &attacker.static_definitions {
+            if let StaticMode::CantBeBlockedExceptBy { filter } = &sd.mode {
+                let (target_filter, _) = parse_target(filter);
+                if !matches_target_filter(state, blocker_id, &target_filter, attacker_id) {
+                    return Err(format!(
+                        "{:?} cannot block {:?} (can't be blocked except by {})",
+                        blocker_id, attacker_id, filter
+                    ));
+                }
+            }
+        }
+
         // CR 702.16e: Protection — a creature with protection can't be blocked by
         // creatures with the specified quality.
         for kw in &attacker.keywords {
@@ -538,7 +553,7 @@ pub fn validate_blockers(
                 obj.controller == defending_player
                     && obj.card_types.core_types.contains(&CoreType::Creature)
                     && !obj.tapped
-                    && can_block_pair(obj, attacker)
+                    && can_block_pair(state, *id, attacker_id)
             });
 
             if has_available_blocker {
@@ -604,10 +619,7 @@ pub fn validate_blockers(
             }
             // Check if this creature could legally block any attacker attacking its controller
             let can_block_any = combat.attackers.iter().any(|ai| {
-                let Some(atk) = state.objects.get(&ai.object_id) else {
-                    return false;
-                };
-                ai.defending_player == obj.controller && can_block_pair(obj, atk)
+                ai.defending_player == obj.controller && can_block_pair(state, obj_id, ai.object_id)
             });
             if can_block_any {
                 return Err(format!("{:?} must block if able (CR 509.1c)", obj_id));
@@ -972,7 +984,13 @@ pub fn get_valid_attacker_ids(state: &GameState) -> Vec<ObjectId> {
 
 /// Check per-pair blocking legality (evasion abilities, CR 509.1b).
 /// Does NOT check menace (which is a multi-blocker constraint).
-fn can_block_pair(blocker: &GameObject, attacker: &GameObject) -> bool {
+fn can_block_pair(state: &GameState, blocker_id: ObjectId, attacker_id: ObjectId) -> bool {
+    let Some(blocker) = state.objects.get(&blocker_id) else {
+        return false;
+    };
+    let Some(attacker) = state.objects.get(&attacker_id) else {
+        return false;
+    };
     if blocker.static_definitions.iter().any(|sd| {
         matches!(
             sd.mode,
@@ -987,6 +1005,15 @@ fn can_block_pair(blocker: &GameObject, attacker: &GameObject) -> bool {
         .any(|sd| sd.mode == StaticMode::CantBeBlocked)
     {
         return false;
+    }
+    // CR 509.1b: "can't be blocked except by X" — blocker must match the exception filter.
+    for sd in &attacker.static_definitions {
+        if let StaticMode::CantBeBlockedExceptBy { filter } = &sd.mode {
+            let (target_filter, _) = parse_target(filter);
+            if !matches_target_filter(state, blocker_id, &target_filter, attacker_id) {
+                return false;
+            }
+        }
     }
     for kw in &attacker.keywords {
         match kw {
@@ -1084,13 +1111,7 @@ pub fn get_valid_block_targets(state: &GameState) -> HashMap<ObjectId, Vec<Objec
             .attackers
             .iter()
             .filter(|a| a.defending_player == blocker_controller)
-            .filter(|a| {
-                state
-                    .objects
-                    .get(&a.object_id)
-                    .map(|attacker| can_block_pair(blocker, attacker))
-                    .unwrap_or(false)
-            })
+            .filter(|a| can_block_pair(state, blocker_id, a.object_id))
             .map(|a| a.object_id)
             .collect();
         if !valid_targets.is_empty() {
@@ -2355,6 +2376,37 @@ mod tests {
         );
         // In a 2-player game, player 1 is the only valid attack target, so this is fine.
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn cant_be_blocked_except_by_enforces_filter() {
+        use crate::types::ability::StaticDefinition;
+        use crate::types::statics::StaticMode;
+
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Phantom Warrior", 2, 2);
+        state
+            .objects
+            .get_mut(&attacker)
+            .unwrap()
+            .static_definitions
+            .push(StaticDefinition::new(StaticMode::CantBeBlockedExceptBy {
+                filter: "creatures with flying".to_string(),
+            }));
+
+        let ground_blocker = create_creature(&mut state, PlayerId(1), "Bear", 2, 2);
+        let flying_blocker = create_creature(&mut state, PlayerId(1), "Bird", 1, 1);
+        state
+            .objects
+            .get_mut(&flying_blocker)
+            .unwrap()
+            .keywords
+            .push(Keyword::Flying);
+
+        // Ground creature cannot block (doesn't match "creatures with flying")
+        assert!(validate_blockers(&state, &[(ground_blocker, attacker)]).is_err());
+        // Flying creature can block (matches the exception filter)
+        assert!(validate_blockers(&state, &[(flying_blocker, attacker)]).is_ok());
     }
 
     #[test]
