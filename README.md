@@ -12,17 +12,17 @@
 
 <!-- coverage-badges:start -->
 <p align="center">
-  <img alt="Card Coverage" src="https://img.shields.io/badge/card_coverage-81%25-green">
-  <img alt="Keywords" src="https://img.shields.io/badge/keywords-168%2F168-brightgreen">
-  <img alt="Cards" src="https://img.shields.io/badge/cards-27948%2F34502-green">
+  <img alt="Card Coverage" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fpub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev%2Fbadges%2Fcoverage.json">
+  <img alt="Keywords" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fpub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev%2Fbadges%2Fkeywords.json">
+  <img alt="Cards" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fpub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev%2Fbadges%2Fcards.json">
   <br/>
-  <img alt="Pauper" src="https://img.shields.io/badge/Pauper-93%25-brightgreen">
-  <img alt="Pioneer" src="https://img.shields.io/badge/Pioneer-88%25-green">
-  <img alt="Modern" src="https://img.shields.io/badge/Modern-87%25-green">
-  <img alt="Standard" src="https://img.shields.io/badge/Standard-87%25-green">
-  <img alt="Legacy" src="https://img.shields.io/badge/Legacy-85%25-green">
-  <img alt="Vintage" src="https://img.shields.io/badge/Vintage-85%25-green">
-  <img alt="Commander" src="https://img.shields.io/badge/Commander-84%25-green">
+  <img alt="Pauper" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fpub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev%2Fbadges%2Fformat-pauper.json">
+  <img alt="Pioneer" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fpub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev%2Fbadges%2Fformat-pioneer.json">
+  <img alt="Modern" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fpub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev%2Fbadges%2Fformat-modern.json">
+  <img alt="Standard" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fpub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev%2Fbadges%2Fformat-standard.json">
+  <img alt="Legacy" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fpub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev%2Fbadges%2Fformat-legacy.json">
+  <img alt="Vintage" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fpub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev%2Fbadges%2Fformat-vintage.json">
+  <img alt="Commander" src="https://img.shields.io/endpoint?url=https%3A%2F%2Fpub-fc5b5c2c6e774356ae3e730bb0326394.r2.dev%2Fbadges%2Fformat-commander.json">
 </p>
 <!-- coverage-badges:end -->
 
