@@ -91,6 +91,10 @@ pub struct CardFace {
     /// (legendary creature, legendary planeswalker, or "can be your commander").
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub brawl_commander: bool,
+    /// Parser diagnostic warnings — silent fallbacks, ignored remainders, bare filters.
+    /// Populated at build time by the Oracle parser warning accumulator.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parse_warnings: Vec<String>,
     /// Diagnostic metadata (forge source counts, etc.). Omitted from JSON when empty.
     #[serde(default, skip_serializing_if = "CardMetadata::is_empty")]
     pub metadata: CardMetadata,

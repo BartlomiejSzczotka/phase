@@ -20,21 +20,22 @@ use nom_language::error::VerboseError;
 use super::oracle_nom::bridge::nom_on_lower;
 use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_quantity::{parse_cda_quantity, parse_for_each_clause};
-use super::oracle_target::{parse_event_context_ref, parse_target};
+use super::oracle_target::{parse_event_context_ref, parse_target, parse_type_phrase};
 use super::oracle_util::{
     contains_possessive, has_unconsumed_conditional, parse_mana_symbols, starts_with_possessive,
     strip_after, TextPair,
 };
 use crate::database::mtgjson::parse_mtgjson_mana_cost;
 use crate::parser::oracle_effect::subject::parse_subject_application;
+use crate::parser::oracle_warnings::push_warning;
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, AbilityKind, CardPlayMode, CastingPermission, ChoiceType,
-    ConjureCard, ContinuousModification, DamageSource, DelayedTriggerCondition, Duration, Effect,
-    FilterProp, GameRestriction, MultiTargetSpec, PlayerFilter, PtValue, QuantityExpr, QuantityRef,
-    RestrictionExpiry, RestrictionPlayerScope, RoundingMode, StaticCondition, StaticDefinition,
-    TargetFilter, TypeFilter, TypedFilter, UnlessCost, ZoneRef,
+    ConjureCard, ContinuousModification, ControllerRef, DamageSource, DelayedTriggerCondition,
+    Duration, Effect, FilterProp, GameRestriction, MultiTargetSpec, PlayerFilter, PtValue,
+    QuantityExpr, QuantityRef, RestrictionExpiry, RestrictionPlayerScope, RoundingMode,
+    StaticCondition, StaticDefinition, TargetFilter, TypeFilter, TypedFilter, UnlessCost, ZoneRef,
 };
-use crate::types::card_type::CoreType;
+use crate::types::card_type::{CoreType, Supertype};
 use crate::types::game_state::{DistributionUnit, RetargetScope};
 use crate::types::identifiers::{ObjectId, TrackedSetId};
 use crate::types::mana::ManaCost;
@@ -163,7 +164,8 @@ fn parse_delayed_subject_keyword(
         value(TargetFilter::ParentTarget, tag("the token")),
         value(TargetFilter::ParentTarget, tag("that ")),
         value(TargetFilter::ParentTarget, tag("target ")),
-        // SelfRef references
+        // SelfRef references — "~" is the normalized self-reference marker
+        value(TargetFilter::SelfRef, tag("~ ")),
         value(TargetFilter::SelfRef, tag("this creature")),
         value(TargetFilter::SelfRef, tag("this permanent")),
         value(TargetFilter::SelfRef, tag("this artifact")),
@@ -198,6 +200,16 @@ fn scan_delayed_subject(text: &str) -> Option<TargetFilter> {
         }
     })
     .is_some()
+    {
+        return Some(TargetFilter::SelfRef);
+    }
+    // CR 603.7c: When the condition text doesn't start with an indefinite article
+    // ("a"/"an"), it's a definite self-reference — either "~" (normalized), a card
+    // name (un-normalized), or a definite noun phrase describing the source object
+    // (e.g., "the pandorica becomes untapped"). Indefinite articles indicate a
+    // different object class ("a creature dealt damage this way"), not the source.
+    if tag::<_, _, VerboseError<&str>>("a ").parse(text).is_err()
+        && tag::<_, _, VerboseError<&str>>("an ").parse(text).is_err()
     {
         return Some(TargetFilter::SelfRef);
     }
@@ -439,7 +451,13 @@ fn try_parse_inline_delayed_trigger(tp: TextPair) -> Option<ParsedEffectClause> 
 /// "it"/"this creature"/"this permanent"/"this artifact" → SelfRef (source object).
 /// "target creature" → ParentTarget (named target in the condition).
 fn parse_delayed_subject_filter(condition_text: &str) -> TargetFilter {
-    scan_delayed_subject(condition_text).unwrap_or(TargetFilter::Any)
+    scan_delayed_subject(condition_text).unwrap_or_else(|| {
+        push_warning(format!(
+            "target-fallback: unrecognized delayed subject '{}'",
+            condition_text
+        ));
+        TargetFilter::Any
+    })
 }
 
 /// CR 601.2f: Parse "the next spell you cast this turn costs {N} less to cast".
@@ -1300,8 +1318,16 @@ fn try_parse_mass_forced_block(tp: TextPair) -> Option<ParsedEffectClause> {
         .trim();
 
     // Remaining text is the block target: "target creature", "~", "it", etc.
+    // May be compound: "~ or enchanted creature" → Or union.
     let target_text = &rest.original[..before_temporal.len()];
-    let (target, _) = parse_target(target_text);
+    let (target, remainder) = parse_target(target_text);
+    let (target, remainder) = refine_damage_target_remainder(target, remainder);
+    if !remainder.trim().is_empty() {
+        push_warning(format!(
+            "ignored-remainder: '{}' after target parse in must-block",
+            remainder.trim()
+        ));
+    }
 
     Some(ParsedEffectClause {
         effect: Effect::GenericEffect {
@@ -1431,7 +1457,13 @@ fn try_parse_put_on_top_or_bottom(tp: TextPair) -> Option<ParsedEffectClause> {
     // Strip "'s owner puts it on ..." suffix, parse the target prefix.
     if let Some(idx) = tp.find("'s owner puts it") {
         let target_text = &tp.original[..idx];
-        let (filter, _) = parse_target(target_text);
+        let (filter, remainder) = parse_target(target_text);
+        if !remainder.trim().is_empty() {
+            push_warning(format!(
+                "ignored-remainder: '{}' after target parse in owner-puts-it",
+                remainder.trim()
+            ));
+        }
         return Some(parsed_clause(Effect::PutOnTopOrBottom { target: filter }));
     }
 
@@ -1445,7 +1477,13 @@ fn try_parse_put_on_top_or_bottom(tp: TextPair) -> Option<ParsedEffectClause> {
         let rest = TextPair::new(rest_orig, rest_lower);
         if let Some(idx) = rest.find(" puts it") {
             let target_text = &rest.original[..idx];
-            let (filter, _) = parse_target(target_text);
+            let (filter, remainder) = parse_target(target_text);
+            if !remainder.trim().is_empty() {
+                push_warning(format!(
+                    "ignored-remainder: '{}' after target parse in owner-puts-it",
+                    remainder.trim()
+                ));
+            }
             return Some(parsed_clause(Effect::PutOnTopOrBottom { target: filter }));
         }
     }
@@ -1712,9 +1750,24 @@ fn try_parse_for_each_effect(text: &str) -> Option<ParsedEffectClause> {
         let (_, counter_type) = nom_primitives::parse_counter_type.parse(ct_start).ok()?;
         let counter_on_end = before.len() + "counter on ".len();
         let after_counter_on = base_tp.original[counter_on_end..].trim();
-        let target = parse_subject_application(after_counter_on, &ParseContext::default())
+        // Strip clause separators (", then") that leak into the counter target text.
+        let after_counter_on_lower = after_counter_on.to_lowercase();
+        let counter_target_text = if let Ok((_, before_sep)) =
+            take_until::<_, _, VerboseError<&str>>(", then").parse(after_counter_on_lower.as_str())
+        {
+            &after_counter_on[..before_sep.len()]
+        } else {
+            after_counter_on
+        };
+        let target = parse_subject_application(counter_target_text, &ParseContext::default())
             .map(|app| app.affected)
-            .unwrap_or(TargetFilter::Any);
+            .unwrap_or_else(|| {
+                push_warning(format!(
+                    "target-fallback: unrecognized counter target '{}'",
+                    after_counter_on
+                ));
+                TargetFilter::Any
+            });
         return Some(parsed_clause(Effect::PutCounter {
             counter_type,
             count: quantity,
@@ -2342,10 +2395,116 @@ fn try_split_targeted_compound(text: &str, ctx: &ParseContext) -> Option<ParsedE
 /// Uses `parse_target`'s unconsumed remainder as the compound boundary oracle —
 /// this correctly handles compound filter phrases like "you own and control"
 /// because `parse_target` consumes them as part of the target filter.
+/// Detect "deals N damage to each [opponent/player] and each [type] they control".
+///
+/// This compound target pattern deals damage to BOTH players and objects with a single
+/// amount. It produces DamageEachPlayer as the primary effect with a DamageAll sub_ability.
+/// Cards: Goblin Chainwhirler, Kumano Faces Kakkazan, etc.
+fn try_parse_compound_player_object_damage(lower: &str) -> Option<ParsedEffectClause> {
+    // Extract the damage verb + amount using the same entry logic as try_parse_damage_with_remainder.
+    // structural: not dispatch — positional search for verb in variable-length subject prefix
+    let pos = lower.find("deals ").or_else(|| lower.find("deal "))?;
+    let verb_len = if tag::<_, _, VerboseError<&str>>("deals ")
+        .parse(&lower[pos..])
+        .is_ok()
+    {
+        6
+    } else {
+        5
+    };
+    let after_lower = &lower[pos + verb_len..];
+
+    // Parse amount: "N damage to "
+    let (qty, after_amount) =
+        super::oracle_util::parse_count_expr(after_lower).and_then(|(qty, rest)| {
+            let (rest, _) = tag::<_, _, VerboseError<&str>>("damage").parse(rest).ok()?;
+            let rest = rest.trim_start();
+            let (rest, _) = tag::<_, _, VerboseError<&str>>("to ").parse(rest).ok()?;
+            Some((qty, rest))
+        })?;
+
+    // Match: "each [opponent/player] and each [type phrase] they control"
+    let (after_each, _) = tag::<_, _, VerboseError<&str>>("each ")
+        .parse(after_amount)
+        .ok()?;
+    let (after_player, player_filter) = alt((
+        value(
+            PlayerFilter::Opponent,
+            tag::<_, _, VerboseError<&str>>("opponent"),
+        ),
+        value(PlayerFilter::All, tag("player")),
+    ))
+    .parse(after_each)
+    .ok()?;
+
+    // " and each " connector
+    let (after_and_each, _) = tag::<_, _, VerboseError<&str>>(" and each ")
+        .parse(after_player)
+        .ok()?;
+
+    // Strip "they control" suffix to get the type phrase
+    // "creature and planeswalker they control" or "planeswalker they control"
+    let type_phrase_lower = after_and_each
+        .strip_suffix(" they control")
+        .or_else(|| after_and_each.strip_suffix(" they control."))?
+        .trim();
+    if type_phrase_lower.is_empty() {
+        return None;
+    }
+
+    // Use parse_target on "each [type]" to get the correct typed filter with controller
+    let target_text = format!("each {type_phrase_lower}");
+    let (mut object_filter, _rem) = parse_target(&target_text);
+
+    // Set controller to Opponent to match "they control" (where "they" = opponents).
+    // The filter may be a single Typed or an Or of multiple Typed filters.
+    fn set_opponent_controller(filter: &mut TargetFilter) {
+        match filter {
+            TargetFilter::Typed(tf) => {
+                tf.controller = Some(ControllerRef::Opponent);
+            }
+            TargetFilter::Or { filters } => {
+                for f in filters.iter_mut() {
+                    set_opponent_controller(f);
+                }
+            }
+            _ => {}
+        }
+    }
+    set_opponent_controller(&mut object_filter);
+
+    let sub_ability = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::DamageAll {
+            amount: qty.clone(),
+            target: object_filter,
+        },
+    );
+
+    Some(ParsedEffectClause {
+        effect: Effect::DamageEachPlayer {
+            amount: qty,
+            player_filter,
+        },
+        duration: None,
+        sub_ability: Some(Box::new(sub_ability)),
+        distribute: None,
+        multi_target: None,
+        condition: None,
+    })
+}
+
 fn try_split_damage_compound(text: &str, ctx: &ParseContext) -> Option<ParsedEffectClause> {
     let lower = text.to_lowercase();
     if !scan_contains_phrase(&lower, "and") {
         return None;
+    }
+
+    // CR 120.2a: Compound player+object damage — "each opponent and each [type] they control"
+    // must be detected before the general compound splitter, because the "and" here connects
+    // two damage targets (not two independent effects).
+    if let Some(clause) = try_parse_compound_player_object_damage(&lower) {
+        return Some(clause);
     }
 
     let (primary_effect, remainder) = try_parse_damage_with_remainder(text, &lower)?;
@@ -3218,6 +3377,34 @@ fn try_parse_binary_choice(rest: &str) -> Option<Vec<String>> {
     Some(vec![capitalize(left), capitalize(right)])
 }
 
+/// Refine a damage target based on remainder text left after `parse_target`.
+/// Handles common patterns:
+/// - "'s controller" → `ParentTargetController` (CR 608.2c)
+/// - "or planeswalker" / "or blocking creature" → union with additional type
+fn refine_damage_target_remainder(target: TargetFilter, remainder: &str) -> (TargetFilter, &str) {
+    let trimmed = remainder.trim();
+    // CR 608.2c: "'s controller" — redirect damage to the controller of the target
+    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("'s controller").parse(trimmed) {
+        return (TargetFilter::ParentTargetController, rest);
+    }
+    // "or <target>" — expand target to union: "creature or planeswalker",
+    // "creature or blocking creature", "~ or enchanted creature", etc.
+    // Uses parse_target (not parse_type_phrase) to handle special patterns
+    // like "enchanted creature" that aren't plain type phrases.
+    if let Ok((after_or, _)) = tag::<_, _, VerboseError<&str>>("or ").parse(trimmed) {
+        let (additional, type_rem) = parse_target(after_or);
+        if !matches!(additional, TargetFilter::Any) {
+            return (
+                TargetFilter::Or {
+                    filters: vec![target, additional],
+                },
+                type_rem,
+            );
+        }
+    }
+    (target, remainder)
+}
+
 fn parse_choose_filter(lower: &str) -> TargetFilter {
     // Extract type info between "choose" and "card from it"
     // Handle both "choose X" and "you choose X" forms
@@ -3229,12 +3416,60 @@ fn parse_choose_filter(lower: &str) -> TargetFilter {
     .parse(lower)
     .map(|(rest, _)| rest)
     .unwrap_or(lower);
+
+    // "one of them/those [cards]" — selection reference to parent target set
+    if tag::<_, _, VerboseError<&str>>("one of th")
+        .parse(after_choose)
+        .is_ok()
+    {
+        return TargetFilter::ParentTarget;
+    }
+
     let before_card = after_choose.split("card").next().unwrap_or("");
     let cleaned = before_card
         .trim()
         .trim_start_matches("a ")
         .trim_start_matches("an ")
         .trim();
+
+    // Intentional: bare article "a [card]" or empty string means any card — not a parse failure
+    if cleaned.is_empty() || cleaned == "a" {
+        return TargetFilter::Any;
+    }
+
+    // structural: not dispatch — segmenting pre-extracted type string on comma separator
+    // Comma-separated negation: "noncreature, nonland" → intersection of negations
+    if cleaned.contains(", ") {
+        let comma_parts: Vec<&str> = cleaned.split(", ").collect();
+        let mut tf = TypedFilter::card();
+        let mut all_resolved = true;
+        for part in &comma_parts {
+            if let Some(TargetFilter::Typed(part_tf)) = type_str_to_target_filter(part.trim()) {
+                // Merge Non(...) type filters and properties, skip the Card base
+                for t in part_tf.type_filters {
+                    if !matches!(t, TypeFilter::Card) {
+                        tf = tf.with_type(t);
+                    }
+                }
+                for p in part_tf.properties {
+                    tf.properties.push(p);
+                }
+            } else {
+                all_resolved = false;
+                break;
+            }
+        }
+        if all_resolved {
+            return TargetFilter::Typed(tf);
+        }
+    }
+
+    // Try full type phrase parsing first — handles compound patterns like
+    // "green or white creature", "nonland permanent", "spirit or arcane"
+    let (phrase_filter, phrase_rem) = parse_type_phrase(cleaned);
+    if !matches!(phrase_filter, TargetFilter::Any) && phrase_rem.trim().is_empty() {
+        return phrase_filter;
+    }
 
     let parts: Vec<&str> = cleaned.split(" or ").collect();
     if parts.len() > 1 {
@@ -3252,10 +3487,15 @@ fn parse_choose_filter(lower: &str) -> TargetFilter {
     if let Some(f) = type_str_to_target_filter(cleaned) {
         return f;
     }
+    push_warning(format!(
+        "target-fallback: unrecognized type string '{}'",
+        cleaned
+    ));
     TargetFilter::Any
 }
 
 fn type_str_to_target_filter(s: &str) -> Option<TargetFilter> {
+    // Simple core types
     let card_type = match s {
         "artifact" => Some(TypeFilter::Artifact),
         "creature" => Some(TypeFilter::Creature),
@@ -3264,9 +3504,94 @@ fn type_str_to_target_filter(s: &str) -> Option<TargetFilter> {
         "sorcery" => Some(TypeFilter::Sorcery),
         "planeswalker" => Some(TypeFilter::Planeswalker),
         "land" => Some(TypeFilter::Land),
+        "permanent" => Some(TypeFilter::Permanent),
         _ => None,
     };
-    card_type.map(|ct| TargetFilter::Typed(TypedFilter::new(ct)))
+    if let Some(ct) = card_type {
+        return Some(TargetFilter::Typed(TypedFilter::new(ct)));
+    }
+
+    // CR 205.4b: Negated types — "nonland", "noncreature", etc.
+    if let Some(negated) = s.strip_prefix("non") {
+        // Card type negation
+        let inner = match negated {
+            "creature" => Some(TypeFilter::Creature),
+            "land" => Some(TypeFilter::Land),
+            "artifact" => Some(TypeFilter::Artifact),
+            "enchantment" => Some(TypeFilter::Enchantment),
+            "instant" => Some(TypeFilter::Instant),
+            "sorcery" => Some(TypeFilter::Sorcery),
+            "planeswalker" => Some(TypeFilter::Planeswalker),
+            _ => None,
+        };
+        if let Some(inner) = inner {
+            return Some(TargetFilter::Typed(
+                TypedFilter::card().with_type(TypeFilter::Non(Box::new(inner))),
+            ));
+        }
+        // CR 205.4a: Supertype negation — "nonbasic", "nonlegendary", "nonsnow"
+        let super_prop = match negated {
+            "basic" => Some(FilterProp::NotSupertype {
+                value: Supertype::Basic,
+            }),
+            "legendary" => Some(FilterProp::NotSupertype {
+                value: Supertype::Legendary,
+            }),
+            "snow" => Some(FilterProp::NotSupertype {
+                value: Supertype::Snow,
+            }),
+            _ => None,
+        };
+        if let Some(prop) = super_prop {
+            return Some(TargetFilter::Typed(
+                TypedFilter::card().properties(vec![prop]),
+            ));
+        }
+        return None;
+    }
+
+    // structural: not dispatch — splitting pre-extracted type string at word boundary
+    // Compound: "nonland permanent", "nonbasic land"
+    if let Some(pos) = s.find(' ') {
+        let (first, rest) = s.split_at(pos);
+        let rest = rest.trim();
+        // Handle "nonbasic land", "nonlegendary" as supertype negation + type
+        if let Some(negated_super) = first.strip_prefix("non") {
+            let super_prop = match negated_super {
+                "basic" => Some(FilterProp::NotSupertype {
+                    value: Supertype::Basic,
+                }),
+                "legendary" => Some(FilterProp::NotSupertype {
+                    value: Supertype::Legendary,
+                }),
+                "snow" => Some(FilterProp::NotSupertype {
+                    value: Supertype::Snow,
+                }),
+                _ => None,
+            };
+            if let Some(prop) = super_prop {
+                // Recurse for the base type
+                if let Some(TargetFilter::Typed(base_tf)) = type_str_to_target_filter(rest) {
+                    return Some(TargetFilter::Typed(base_tf.properties(vec![prop])));
+                }
+            }
+        }
+        // "nonland permanent" etc. — negated type modifier + base type
+        // Only merge Non(...) filters from the negation part, not the Card base
+        if let Some(TargetFilter::Typed(neg_tf)) = type_str_to_target_filter(first) {
+            if let Some(TargetFilter::Typed(base_tf)) = type_str_to_target_filter(rest) {
+                let mut combined = base_tf;
+                for tf in neg_tf.type_filters {
+                    if matches!(tf, TypeFilter::Non(_)) {
+                        combined = combined.with_type(tf);
+                    }
+                }
+                return Some(TargetFilter::Typed(combined));
+            }
+        }
+    }
+
+    None
 }
 
 /// Extract card type filter from a sub-ability sentence containing "card from it/among".
@@ -5054,10 +5379,14 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
                 {
                     // "each player" → DamageEachPlayer (per-player varying damage)
                     // "each creature" → DamageAll (uniform damage to objects)
+                    // "each foe" — archaic synonym for opponent (friend/foe cards)
                     if scan_contains_phrase(target_phrase, "player")
                         || scan_contains_phrase(target_phrase, "opponent")
+                        || scan_contains_phrase(target_phrase, "foe")
                     {
-                        let player_filter = if scan_contains_phrase(target_phrase, "opponent") {
+                        let player_filter = if scan_contains_phrase(target_phrase, "opponent")
+                            || scan_contains_phrase(target_phrase, "foe")
+                        {
                             PlayerFilter::Opponent
                         } else {
                             PlayerFilter::All
@@ -5070,7 +5399,14 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
                             "",
                         ));
                     }
-                    let (filter, _) = parse_target(target_phrase);
+                    let (filter, remainder) = parse_target(target_phrase);
+                    let (filter, remainder) = refine_damage_target_remainder(filter, remainder);
+                    if !remainder.trim().is_empty() {
+                        push_warning(format!(
+                            "ignored-remainder: '{}' after target parse in damage-all",
+                            remainder.trim()
+                        ));
+                    }
                     return Some((
                         Effect::DamageAll {
                             amount: qty,
@@ -5090,7 +5426,14 @@ fn try_parse_damage_with_remainder<'a>(text: &'a str, lower: &str) -> Option<(Ef
                         "",
                     ));
                 } else {
-                    let (target, _) = parse_target(target_phrase);
+                    let (target, remainder) = parse_target(target_phrase);
+                    let (target, remainder) = refine_damage_target_remainder(target, remainder);
+                    if !remainder.trim().is_empty() {
+                        push_warning(format!(
+                            "ignored-remainder: '{}' after target parse in deal-damage",
+                            remainder.trim()
+                        ));
+                    }
                     return Some((
                         Effect::DealDamage {
                             amount: qty,
@@ -5905,19 +6248,75 @@ mod tests {
     }
 
     #[test]
-    fn try_split_damage_compound_multi_target_not_split() {
-        // "each opponent and each creature" is a multi-phrase target, not a compound.
+    fn try_split_damage_compound_player_and_object_target() {
         // Goblin Chainwhirler: "deals 1 damage to each opponent and each creature
-        // and planeswalker they control"
+        // and planeswalker they control" → DamageEachPlayer + DamageAll(Creature|Planeswalker)
         let ctx = ParseContext::default();
         let result = try_split_damage_compound(
             "deal 1 damage to each opponent and each creature and planeswalker they control",
             &ctx,
         );
+        let clause = result.expect("compound player+object damage should parse");
         assert!(
-            result.is_none(),
-            "multi-target 'and' should not trigger compound split"
+            matches!(
+                clause.effect,
+                Effect::DamageEachPlayer {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player_filter: PlayerFilter::Opponent,
+                }
+            ),
+            "primary should be DamageEachPlayer(Opponent), got: {:?}",
+            clause.effect
         );
+        let sub = clause
+            .sub_ability
+            .expect("should have DamageAll sub_ability");
+        match &*sub.effect {
+            Effect::DamageAll { amount, target } => {
+                assert!(matches!(amount, QuantityExpr::Fixed { value: 1 }));
+                match target {
+                    TargetFilter::Or { filters } => {
+                        assert_eq!(filters.len(), 2);
+                        // Both inner filters should have controller=Opponent
+                        for f in filters {
+                            match f {
+                                TargetFilter::Typed(tf) => {
+                                    assert_eq!(tf.controller, Some(ControllerRef::Opponent));
+                                }
+                                other => panic!("expected Typed in Or, got: {other:?}"),
+                            }
+                        }
+                    }
+                    other => panic!("expected Or filter, got: {other:?}"),
+                }
+            }
+            other => panic!("sub_ability should be DamageAll, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn try_split_damage_compound_player_and_planeswalker() {
+        // Kumano Faces Kakkazan: "deals 1 damage to each opponent and each planeswalker they control"
+        let ctx = ParseContext::default();
+        let result = try_split_damage_compound(
+            "deal 1 damage to each opponent and each planeswalker they control",
+            &ctx,
+        );
+        let clause = result.expect("compound player+object damage should parse");
+        assert!(matches!(clause.effect, Effect::DamageEachPlayer { .. }));
+        let sub = clause
+            .sub_ability
+            .expect("should have DamageAll sub_ability");
+        match &*sub.effect {
+            Effect::DamageAll { target, .. } => match target {
+                TargetFilter::Typed(tf) => {
+                    assert!(tf.type_filters.contains(&TypeFilter::Planeswalker));
+                    assert_eq!(tf.controller, Some(ControllerRef::Opponent));
+                }
+                other => panic!("expected Typed filter, got: {other:?}"),
+            },
+            other => panic!("sub_ability should be DamageAll, got: {other:?}"),
+        }
     }
 
     #[test]

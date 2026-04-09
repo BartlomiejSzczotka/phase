@@ -127,30 +127,97 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
             // CR 608.2n: Non-permanent spells are put into owner's graveyard.
             Zone::Graveyard
         };
-        zones::move_to_zone(state, entry.id, dest, events);
-
-        // CR 603.4: Propagate cast_from_zone to the permanent so ETB triggers
-        // can evaluate conditions like "if you cast it from your hand".
         if dest == Zone::Battlefield {
-            if let Some(obj) = state.objects.get_mut(&entry.id) {
-                obj.cast_from_zone = ability.context.cast_from_zone;
-            }
-            // CR 614.1c: Apply pending ETB counters from delayed triggers
-            // (e.g., "that creature enters with an additional +1/+1 counter").
-            let pending: Vec<_> = state
-                .pending_etb_counters
-                .iter()
-                .filter(|(oid, _, _)| *oid == entry.id)
-                .map(|(_, ct, n)| (ct.clone(), *n))
-                .collect();
-            if !pending.is_empty() {
-                if let Some(obj) = state.objects.get_mut(&entry.id) {
-                    super::engine_replacement::apply_etb_counters(obj, &pending, events);
+            // CR 614.1c + CR 608.3: Route battlefield entry through the replacement
+            // pipeline so ETB replacements (saga lore counters, enter-tapped, etc.) fire.
+            let proposed = crate::types::proposed_event::ProposedEvent::zone_change(
+                entry.id,
+                Zone::Stack,
+                Zone::Battlefield,
+                None,
+            );
+
+            match super::replacement::replace_event(state, proposed, events) {
+                super::replacement::ReplacementResult::Execute(event) => {
+                    if let crate::types::proposed_event::ProposedEvent::ZoneChange {
+                        object_id,
+                        to,
+                        enter_tapped,
+                        enter_with_counters,
+                        controller_override,
+                        ..
+                    } = event
+                    {
+                        zones::move_to_zone(state, object_id, to, events);
+                        if let Some(obj) = state.objects.get_mut(&object_id) {
+                            if enter_tapped {
+                                obj.tapped = true;
+                            }
+                            if let Some(new_controller) = controller_override {
+                                obj.controller = new_controller;
+                            }
+                            // CR 614.1c: Apply counters from replacement pipeline
+                            // (e.g., saga lore counters per CR 714.3a).
+                            super::engine_replacement::apply_etb_counters(
+                                obj,
+                                &enter_with_counters,
+                                events,
+                            );
+                        }
+                        // CR 614.1c: Apply pending ETB counters from delayed triggers
+                        // (e.g., "that creature enters with an additional +1/+1 counter").
+                        let pending: Vec<_> = state
+                            .pending_etb_counters
+                            .iter()
+                            .filter(|(oid, _, _)| *oid == object_id)
+                            .map(|(_, ct, n)| (ct.clone(), *n))
+                            .collect();
+                        if !pending.is_empty() {
+                            if let Some(obj) = state.objects.get_mut(&object_id) {
+                                super::engine_replacement::apply_etb_counters(
+                                    obj, &pending, events,
+                                );
+                            }
+                            state
+                                .pending_etb_counters
+                                .retain(|(oid, _, _)| *oid != object_id);
+                        }
+                    }
+                    // CR 603.4: Propagate cast_from_zone to the permanent so ETB triggers
+                    // can evaluate conditions like "if you cast it from your hand".
+                    if let Some(obj) = state.objects.get_mut(&entry.id) {
+                        obj.cast_from_zone = ability.context.cast_from_zone;
+                    }
                 }
-                state
-                    .pending_etb_counters
-                    .retain(|(oid, _, _)| *oid != entry.id);
+                super::replacement::ReplacementResult::Prevented => {
+                    // CR 608.3e: Permanent spell's ETB was fully prevented —
+                    // the card goes to owner's graveyard instead.
+                    zones::move_to_zone(state, entry.id, Zone::Graveyard, events);
+                }
+                super::replacement::ReplacementResult::NeedsChoice(player) => {
+                    // A replacement needs player choice (e.g., Clone "enter as a copy").
+                    // Store context so handle_replacement_choice can complete post-resolution.
+                    state.pending_spell_resolution =
+                        Some(crate::types::game_state::PendingSpellResolution {
+                            object_id: entry.id,
+                            controller: entry.controller,
+                            casting_variant,
+                            cast_from_zone: ability.context.cast_from_zone,
+                            spell_targets: spell_targets.clone(),
+                        });
+                    state.waiting_for =
+                        super::replacement::replacement_choice_waiting_for(player, state);
+                    // Emit StackResolved now — the spell has left the stack even though
+                    // the replacement choice is pending.
+                    events.push(GameEvent::StackResolved {
+                        object_id: entry.id,
+                    });
+                    state.current_trigger_event = None;
+                    return;
+                }
             }
+        } else {
+            zones::move_to_zone(state, entry.id, dest, events);
         }
 
         // CR 715.3d: When an Adventure spell resolves to exile, restore the creature face
@@ -191,71 +258,15 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
             // create a delayed trigger to exile it at end step with WarpExile permission.
             // Only triggers on the initial Warp cast (CastingVariant::Warp), NOT on re-casts
             // from exile (which use CastingVariant::Normal and stay permanently).
-            let has_warp = if casting_variant == CastingVariant::Warp {
-                state.objects.get(&entry.id).is_some_and(|obj| {
+            if casting_variant == CastingVariant::Warp {
+                let has_warp = state.objects.get(&entry.id).is_some_and(|obj| {
                     obj.keywords
                         .iter()
                         .any(|k| matches!(k, crate::types::keywords::Keyword::Warp(_)))
-                })
-            } else {
-                false
-            };
-            if has_warp {
-                use crate::types::ability::{
-                    AbilityDefinition, AbilityKind, CastingPermission, DelayedTriggerCondition,
-                    Effect, ResolvedAbility,
-                };
-                use crate::types::phase::Phase;
-
-                // Build the exile effect with chained GrantCastingPermission.
-                // CR 702.185a: WarpExile uses the card's normal mana cost (not the warp cost).
-                // The cost field is not stored — casting.rs falls through to obj.mana_cost.
-                let exile_def = AbilityDefinition::new(
-                    AbilityKind::Spell,
-                    Effect::ChangeZone {
-                        origin: Some(Zone::Battlefield),
-                        destination: Zone::Exile,
-                        target: crate::types::ability::TargetFilter::SelfRef,
-                        owner_library: false,
-                        enter_transformed: false,
-                        under_your_control: false,
-                        enter_tapped: false,
-                        enters_attacking: false,
-                        up_to: false,
-                    },
-                )
-                .sub_ability(AbilityDefinition::new(
-                    AbilityKind::Spell,
-                    Effect::GrantCastingPermission {
-                        // CR 702.185a: "after the current turn has ended"
-                        permission: CastingPermission::WarpExile {
-                            castable_after_turn: state.turn_number,
-                        },
-                        target: crate::types::ability::TargetFilter::SelfRef,
-                    },
-                ));
-
-                let mut delayed_ability =
-                    ResolvedAbility::new(*exile_def.effect, vec![], entry.id, entry.controller);
-                if let Some(sub) = exile_def.sub_ability {
-                    delayed_ability = delayed_ability.sub_ability(ResolvedAbility::new(
-                        *sub.effect,
-                        vec![],
-                        entry.id,
-                        entry.controller,
-                    ));
+                });
+                if has_warp {
+                    create_warp_delayed_trigger(state, entry.id, entry.controller);
                 }
-
-                // CR 603.7c: Delayed trigger fires once at next end step
-                state
-                    .delayed_triggers
-                    .push(crate::types::game_state::DelayedTrigger {
-                        condition: DelayedTriggerCondition::AtNextPhase { phase: Phase::End },
-                        ability: delayed_ability,
-                        controller: entry.controller,
-                        source_id: entry.id,
-                        one_shot: true,
-                    });
             }
         }
     }
@@ -308,6 +319,66 @@ fn is_permanent_type(state: &GameState, object_id: ObjectId) -> bool {
                 | CoreType::Land
         )
     })
+}
+
+/// CR 702.185a: Create the Warp delayed trigger that exiles the permanent at end step
+/// and grants WarpExile casting permission. Shared between resolve_top (Execute path)
+/// and engine_replacement (NeedsChoice path).
+pub(crate) fn create_warp_delayed_trigger(
+    state: &mut GameState,
+    object_id: ObjectId,
+    controller: crate::types::player::PlayerId,
+) {
+    use crate::types::ability::{
+        AbilityDefinition, AbilityKind, CastingPermission, DelayedTriggerCondition, Effect,
+        ResolvedAbility,
+    };
+    use crate::types::phase::Phase;
+
+    let exile_def = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::ChangeZone {
+            origin: Some(Zone::Battlefield),
+            destination: Zone::Exile,
+            target: crate::types::ability::TargetFilter::SelfRef,
+            owner_library: false,
+            enter_transformed: false,
+            under_your_control: false,
+            enter_tapped: false,
+            enters_attacking: false,
+            up_to: false,
+        },
+    )
+    .sub_ability(AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::GrantCastingPermission {
+            permission: CastingPermission::WarpExile {
+                castable_after_turn: state.turn_number,
+            },
+            target: crate::types::ability::TargetFilter::SelfRef,
+        },
+    ));
+
+    let mut delayed_ability =
+        ResolvedAbility::new(*exile_def.effect, vec![], object_id, controller);
+    if let Some(sub) = exile_def.sub_ability {
+        delayed_ability = delayed_ability.sub_ability(ResolvedAbility::new(
+            *sub.effect,
+            vec![],
+            object_id,
+            controller,
+        ));
+    }
+
+    state
+        .delayed_triggers
+        .push(crate::types::game_state::DelayedTrigger {
+            condition: DelayedTriggerCondition::AtNextPhase { phase: Phase::End },
+            ability: delayed_ability,
+            controller,
+            source_id: object_id,
+            one_shot: true,
+        });
 }
 
 #[cfg(test)]

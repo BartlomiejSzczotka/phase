@@ -18,6 +18,7 @@ pub mod oracle_static;
 pub mod oracle_target;
 pub mod oracle_trigger;
 pub mod oracle_util;
+pub mod oracle_warnings;
 
 pub use oracle::parse_oracle_text;
 

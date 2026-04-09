@@ -271,6 +271,7 @@ mod tests {
             casting_restrictions: vec![],
             casting_options: vec![],
             solve_condition: None,
+            parse_warnings: vec![],
             brawl_commander: false,
             metadata: Default::default(),
         }
@@ -315,6 +316,7 @@ mod tests {
             casting_restrictions: vec![],
             casting_options: vec![],
             solve_condition: None,
+            parse_warnings: vec![],
             brawl_commander: false,
             metadata: Default::default(),
         }

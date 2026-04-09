@@ -12,6 +12,7 @@ use super::{resolve_it_pronoun, ParseContext};
 use crate::parser::oracle_nom::bridge::nom_on_lower;
 use crate::parser::oracle_nom::primitives as nom_primitives;
 use crate::parser::oracle_static::parse_continuous_modifications;
+use crate::parser::oracle_warnings::push_warning;
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, Chooser, ContinuousModification, ControllerRef, Duration,
     Effect, GainLifePlayer, LibraryPosition, MultiTargetSpec, PaymentCost, PreventionAmount,
@@ -238,6 +239,9 @@ pub(super) fn lower_numeric_imperative_ast(ast: NumericImperativeAst) -> Effect 
             amount,
             target: None,
         },
+        // CR 608.2c: Pump uses TargetFilter::Any as a sentinel — callers
+        // (inject_subject_target, thread_for_each_subject) replace it with the
+        // parsed subject's target. No warning here; Any is an expected intermediate.
         NumericImperativeAst::Pump { power, toughness } => Effect::Pump {
             power,
             toughness,
@@ -755,10 +759,17 @@ pub(super) fn parse_hand_reveal_ast(text: &str, lower: &str) -> Option<HandRevea
         && nom_primitives::scan_contains(lower, "hand")
     {
         if contains_possessive(lower, "look at", "hand") {
-            // CR 603.7c: "that player's hand" resolves to the player from the triggering event.
-            let target = if nom_primitives::scan_contains(lower, "that player's hand") {
+            // CR 603.7c: "that player's hand" / "their hand" resolves to the player
+            // from the triggering event or prior instruction context.
+            let target = if nom_primitives::scan_contains(lower, "that player's hand")
+                || nom_primitives::scan_contains(lower, "their hand")
+            {
                 TargetFilter::TriggeringPlayer
             } else {
+                push_warning(format!(
+                    "target-fallback: unrecognized look-at target in '{}'",
+                    lower
+                ));
                 TargetFilter::Any
             };
             return Some(HandRevealImperativeAst::LookAt { target });
@@ -1368,6 +1379,13 @@ fn parse_remove_from_combat_ast(lower: &str) -> Option<TargetFilter> {
                 // parse_target returns Any when it doesn't recognize the phrase —
                 // bail out to avoid false matches.
                 return None;
+            }
+            // structural: not dispatch — mirrors guard above for warning diagnostic
+            if matches!(tf, TargetFilter::Any) && subject.starts_with("target") {
+                push_warning(format!(
+                    "target-fallback: 'target' prefix but unrecognized filter in '{}'",
+                    subject
+                ));
             }
             tf
         }

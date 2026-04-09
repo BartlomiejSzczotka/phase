@@ -402,6 +402,11 @@ pub const SELF_REF_TYPE_PHRASES: &[&str] = &[
     "this vehicle",
     "this planeswalker",
     "this battle",
+    // Enchantment subtypes used as self-references (193+ Saga cards, 28 Class, 16 Case, 4 Room)
+    "this saga",
+    "this class",
+    "this case",
+    "this room",
 ];
 
 /// CR 201.5: Self-reference phrases recognized by parsers but NOT safe for `~` normalization.

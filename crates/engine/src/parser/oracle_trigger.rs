@@ -17,6 +17,7 @@ use super::oracle_util::{
     parse_ordinal, parse_subtype, strip_after, strip_reminder_text, TextPair,
     SELF_REF_PARSE_ONLY_PHRASES,
 };
+use crate::parser::oracle_warnings::push_warning;
 use crate::types::ability::{
     AbilityKind, Comparator, ControllerRef, DamageKindFilter, FilterProp, NinjutsuVariant,
     QuantityExpr, QuantityRef, StaticCondition, TargetFilter, TriggerCondition, TriggerConstraint,
@@ -445,7 +446,13 @@ fn static_condition_to_trigger_condition(sc: &StaticCondition) -> Option<Trigger
             }),
             // Negate an IsPresent → ObjectCount == 0
             StaticCondition::IsPresent { filter } => {
-                let f = filter.clone().unwrap_or(TargetFilter::Any);
+                let f = filter.clone().unwrap_or_else(|| {
+                    push_warning(
+                        "bare-filter: NegatedIsPresent has no filter, defaulting to Any"
+                            .to_string(),
+                    );
+                    TargetFilter::Any
+                });
                 Some(TriggerCondition::QuantityComparison {
                     lhs: QuantityExpr::Ref {
                         qty: QuantityRef::ObjectCount { filter: f },

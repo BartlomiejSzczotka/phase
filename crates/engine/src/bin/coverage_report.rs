@@ -121,6 +121,46 @@ fn main() {
         );
     }
 
+    // Print parse warnings grouped by category
+    {
+        let mut warnings_by_category: std::collections::BTreeMap<String, Vec<String>> =
+            std::collections::BTreeMap::new();
+        for (_key, face) in db.face_iter() {
+            for warning in &face.parse_warnings {
+                let category = warning.split(':').next().unwrap_or("unknown").to_string();
+                warnings_by_category
+                    .entry(category)
+                    .or_default()
+                    .push(face.name.clone());
+            }
+        }
+        if !warnings_by_category.is_empty() {
+            let total: usize = warnings_by_category.values().map(|v| v.len()).sum();
+            eprintln!();
+            eprintln!(
+                "Parse warnings: {} warnings across {} categories",
+                total,
+                warnings_by_category.len()
+            );
+            for (category, cards) in &warnings_by_category {
+                let unique: std::collections::BTreeSet<&str> =
+                    cards.iter().map(|s| s.as_str()).collect();
+                eprintln!(
+                    "  {} — {} warnings ({} cards)",
+                    category,
+                    cards.len(),
+                    unique.len()
+                );
+                for card in unique.iter().take(5) {
+                    eprintln!("    {}", card);
+                }
+                if unique.len() > 5 {
+                    eprintln!("    ... and {} more", unique.len() - 5);
+                }
+            }
+        }
+    }
+
     // Print top gaps with format breakdown, independence ratio, and oracle patterns
     if !summary.top_gaps.is_empty() {
         eprintln!();

@@ -13,6 +13,7 @@ use super::super::oracle_target::parse_type_phrase;
 use super::super::oracle_util::{parse_comparison_suffix, TextPair};
 use super::counter::normalize_counter_type;
 use super::{parse_effect_chain, scan_contains_phrase};
+use crate::parser::oracle_warnings::push_warning;
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, AbilityKind, Comparator, ControllerRef, Duration, Effect,
     FilterProp, NinjutsuVariant, QuantityExpr, QuantityRef, StaticCondition, TargetFilter,
@@ -769,7 +770,12 @@ fn static_condition_to_ability_condition(sc: &StaticCondition) -> Option<Ability
         StaticCondition::HasMaxSpeed => Some(AbilityCondition::HasMaxSpeed),
         StaticCondition::SourceEnteredThisTurn => None,
         StaticCondition::IsPresent { filter } => {
-            let filter = filter.clone().unwrap_or(TargetFilter::Any);
+            let filter = filter.clone().unwrap_or_else(|| {
+                push_warning(
+                    "bare-filter: IsPresent condition has no filter, defaulting to Any".to_string(),
+                );
+                TargetFilter::Any
+            });
             Some(AbilityCondition::QuantityCheck {
                 lhs: QuantityExpr::Ref {
                     qty: QuantityRef::ObjectCount { filter },
@@ -793,7 +799,13 @@ fn static_condition_to_ability_condition(sc: &StaticCondition) -> Option<Ability
                 rhs: rhs.clone(),
             }),
             StaticCondition::IsPresent { filter } => {
-                let filter = filter.clone().unwrap_or(TargetFilter::Any);
+                let filter = filter.clone().unwrap_or_else(|| {
+                    push_warning(
+                        "bare-filter: NegatedIsPresent has no filter, defaulting to Any"
+                            .to_string(),
+                    );
+                    TargetFilter::Any
+                });
                 Some(AbilityCondition::QuantityCheck {
                     lhs: QuantityExpr::Ref {
                         qty: QuantityRef::ObjectCount { filter },

@@ -477,6 +477,7 @@ mod tests {
             casting_options: Vec::<SpellCastingOption>::new(),
             solve_condition: None::<SolveCondition>,
             strive_cost: None,
+            parse_warnings: vec![],
             brawl_commander: false,
             metadata: Default::default(),
         }

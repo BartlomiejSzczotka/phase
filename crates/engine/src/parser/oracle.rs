@@ -18,6 +18,7 @@ use crate::types::zones::Zone;
 
 use super::oracle_nom::bridge::{nom_on_lower, split_once_on_lower};
 use super::oracle_nom::primitives::scan_contains;
+use super::oracle_warnings::{clear_warnings, take_warnings};
 
 use super::oracle_casting::{
     parse_additional_cost_line, parse_casting_restriction_line, parse_spell_casting_option_line,
@@ -86,6 +87,9 @@ pub struct ParsedAbilities {
     /// "This spell costs {X} more to cast for each target beyond the first."
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strive_cost: Option<ManaCost>,
+    /// Diagnostic warnings from silent fallback patterns during parsing.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub parse_warnings: Vec<String>,
 }
 
 fn definition_grants_flashback(def: &AbilityDefinition) -> bool {
@@ -368,6 +372,7 @@ pub fn parse_oracle_text(
     types: &[String],
     subtypes: &[String],
 ) -> ParsedAbilities {
+    clear_warnings();
     let is_spell = types.iter().any(|t| t == "Instant" || t == "Sorcery");
 
     let mut result = ParsedAbilities {
@@ -382,6 +387,7 @@ pub fn parse_oracle_text(
         casting_options: Vec::new(),
         solve_condition: None,
         strive_cost: None,
+        parse_warnings: Vec::new(),
     };
 
     let lines: Vec<&str> = oracle_text.split('\n').collect();
@@ -398,7 +404,10 @@ pub fn parse_oracle_text(
 
     // CR 716: Pre-parse Class level sections into level-gated abilities.
     if subtypes.iter().any(|s| s == "Class") {
-        return parse_class_oracle_text(&lines, card_name, mtgjson_keyword_names, result);
+        let mut class_result =
+            parse_class_oracle_text(&lines, card_name, mtgjson_keyword_names, result);
+        class_result.parse_warnings = take_warnings();
+        return class_result;
     }
 
     // CR 711: Pre-parse leveler LEVEL blocks into counter-gated static abilities.
@@ -1399,6 +1408,7 @@ pub fn parse_oracle_text(
         i += 1;
     }
 
+    result.parse_warnings = take_warnings();
     result
 }
 

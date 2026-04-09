@@ -91,6 +91,7 @@ pub(crate) fn execute_zone_move(
                 to,
                 enter_transformed: should_transform,
                 enter_tapped: should_tap,
+                enter_with_counters,
                 controller_override: ctrl_override,
                 ..
             } = event
@@ -122,6 +123,34 @@ pub(crate) fn execute_zone_move(
                         if let Some(obj) = state.objects.get_mut(&object_id) {
                             obj.controller = new_controller;
                         }
+                    }
+                }
+                // CR 614.1c: Apply counters from replacement pipeline (e.g., saga lore counters).
+                if to == Zone::Battlefield {
+                    if let Some(obj) = state.objects.get_mut(&object_id) {
+                        crate::game::engine_replacement::apply_etb_counters(
+                            obj,
+                            &enter_with_counters,
+                            events,
+                        );
+                    }
+                    // CR 614.1c: Apply pending ETB counters from delayed triggers
+                    // (e.g., "that creature enters with an additional +1/+1 counter").
+                    let pending: Vec<_> = state
+                        .pending_etb_counters
+                        .iter()
+                        .filter(|(oid, _, _)| *oid == object_id)
+                        .map(|(_, ct, n)| (ct.clone(), *n))
+                        .collect();
+                    if !pending.is_empty() {
+                        if let Some(obj) = state.objects.get_mut(&object_id) {
+                            crate::game::engine_replacement::apply_etb_counters(
+                                obj, &pending, events,
+                            );
+                        }
+                        state
+                            .pending_etb_counters
+                            .retain(|(oid, _, _)| *oid != object_id);
                     }
                 }
                 // CR 401.3: If an object is put into a library (not at a specific

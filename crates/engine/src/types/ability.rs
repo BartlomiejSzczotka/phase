@@ -813,6 +813,8 @@ pub enum SharedQuality {
 pub enum FilterProp {
     Token,
     Attacking,
+    /// CR 509.1a: Matches creatures that are blocking.
+    Blocking,
     /// CR 509.1h: Matches attacking creatures with no blockers assigned.
     Unblocked,
     Tapped,

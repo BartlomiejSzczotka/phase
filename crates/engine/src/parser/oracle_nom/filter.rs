@@ -65,6 +65,7 @@ pub fn parse_property_filter(input: &str) -> OracleResult<'_, FilterProp> {
         value(FilterProp::Tapped, tag("tapped")),
         value(FilterProp::Untapped, tag("untapped")),
         value(FilterProp::Attacking, tag("attacking")),
+        value(FilterProp::Blocking, tag("blocking")),
         value(FilterProp::Token, tag("token")),
         value(FilterProp::FaceDown, tag("face down")),
         value(FilterProp::Unblocked, tag("unblocked")),

@@ -231,6 +231,7 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
         match prop {
             FilterProp::Token => parts.push("token".into()),
             FilterProp::Attacking => parts.push("attacking".into()),
+            FilterProp::Blocking => parts.push("blocking".into()),
             FilterProp::Unblocked => parts.push("unblocked".into()),
             FilterProp::Tapped => parts.push("tapped".into()),
             FilterProp::Untapped => parts.push("untapped".into()),
@@ -5957,6 +5958,7 @@ mod tests {
             casting_restrictions: vec![],
             casting_options: vec![],
             solve_condition: None,
+            parse_warnings: vec![],
             brawl_commander: false,
             metadata: Default::default(),
         }

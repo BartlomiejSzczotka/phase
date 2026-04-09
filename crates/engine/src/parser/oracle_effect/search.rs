@@ -7,6 +7,7 @@ use super::super::oracle_target::{parse_mana_value_suffix, parse_type_phrase};
 use super::super::oracle_util::{contains_possessive, strip_after};
 use super::types::{SearchLibraryDetails, SeekDetails};
 use super::{capitalize, scan_contains_phrase};
+use crate::parser::oracle_warnings::push_warning;
 use crate::types::ability::{
     FilterProp, QuantityExpr, QuantityRef, TargetFilter, TypeFilter, TypedFilter,
 };
@@ -125,6 +126,7 @@ pub(super) fn parse_search_filter(text: &str) -> TargetFilter {
         .unwrap_or(type_text)
         .trim();
 
+    // Intentional: "a card" means any card type — no warning needed.
     if type_text == "card" || type_text.is_empty() {
         return TargetFilter::Any;
     }
@@ -276,6 +278,10 @@ pub(super) fn parse_search_filter(text: &str) -> TargetFilter {
                     }
                 };
             }
+            push_warning(format!(
+                "target-fallback: unrecognized search filter '{}'",
+                other
+            ));
             return TargetFilter::Any;
         }
     };
@@ -337,7 +343,13 @@ fn parse_search_filter_suffixes(text: &str, properties: &mut Vec<FilterProp>) {
                 "creature" => TargetFilter::Typed(TypedFilter::creature()),
                 "enchantment" => TargetFilter::Typed(TypedFilter::new(TypeFilter::Enchantment)),
                 "artifact" => TargetFilter::Typed(TypedFilter::new(TypeFilter::Artifact)),
-                _ => TargetFilter::Any,
+                _ => {
+                    push_warning(format!(
+                        "target-fallback: unrecognized inner type '{}' in different-name filter",
+                        inner_type
+                    ));
+                    TargetFilter::Any
+                }
             };
             properties.push(FilterProp::DifferentNameFrom {
                 filter: Box::new(inner_filter),

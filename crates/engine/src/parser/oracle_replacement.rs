@@ -862,13 +862,22 @@ fn parse_creature_die_exile_replacement(
         .trim_end_matches(" instead")
         .trim();
 
-    let execute = if effect_text_trimmed == "exile it" || effect_text_trimmed == "exile that card" {
+    let execute = if effect_text_trimmed == "exile it"
+        || effect_text_trimmed == "exile that card"
+        || effect_text_trimmed == "exile that creature"
+    {
+        // The anaphoric "it"/"that card"/"that creature" refers to the object whose
+        // event is being replaced. In the replacement pipeline, the execute effect's
+        // ChangeZone is used only for zone redirection (destination extraction) —
+        // the affected object is already known from the ProposedEvent. SelfRef is
+        // semantically correct: "exile the same object this replacement is modifying,"
+        // consistent with how ETB-tapped replacements use SelfRef for their Tap execute.
         AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::ChangeZone {
                 destination: Zone::Exile,
                 origin: None,
-                target: TargetFilter::Any,
+                target: TargetFilter::SelfRef,
                 owner_library: false,
                 enter_transformed: false,
                 under_your_control: false,
@@ -930,13 +939,18 @@ fn parse_graveyard_exile_replacement(
         None
     };
 
+    // The anaphoric "it"/"that card" refers to the object whose zone change is being
+    // replaced. SelfRef is semantically correct: "exile the same object this replacement
+    // is modifying," consistent with the ETB-tapped pattern. The replacement pipeline
+    // extracts only the destination zone from this ChangeZone — the affected object
+    // is already known from the ProposedEvent.
     let mut def = ReplacementDefinition::new(ReplacementEvent::Moved)
         .execute(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::ChangeZone {
                 destination: Zone::Exile,
                 origin: None,
-                target: TargetFilter::Any,
+                target: TargetFilter::SelfRef,
                 owner_library: false,
                 enter_transformed: false,
                 under_your_control: false,
@@ -2151,6 +2165,7 @@ mod tests {
             *def.execute.as_ref().unwrap().effect,
             Effect::ChangeZone {
                 destination: Zone::Exile,
+                target: TargetFilter::SelfRef,
                 ..
             }
         ));
@@ -2178,9 +2193,36 @@ mod tests {
             *def.execute.as_ref().unwrap().effect,
             Effect::ChangeZone {
                 destination: Zone::Exile,
+                target: TargetFilter::SelfRef,
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn creature_die_exile_anaphoric_target() {
+        // "exile it instead" should resolve the anaphoric "it" to SelfRef (the replaced object)
+        let def = parse_replacement_line(
+            "If a nontoken creature would die, exile it instead.",
+            "Kalitas, Traitor of Ghet",
+        )
+        .unwrap();
+        assert_eq!(def.event, ReplacementEvent::Destroy);
+        assert!(matches!(
+            *def.execute.as_ref().unwrap().effect,
+            Effect::ChangeZone {
+                destination: Zone::Exile,
+                target: TargetFilter::SelfRef,
+                ..
+            }
+        ));
+        // valid_card should be a nontoken creature filter
+        match &def.valid_card {
+            Some(TargetFilter::Typed(tf)) => {
+                assert!(tf.type_filters.contains(&TypeFilter::Creature));
+            }
+            other => panic!("Expected Typed filter, got {other:?}"),
+        }
     }
 
     #[test]

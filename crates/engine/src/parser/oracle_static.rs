@@ -22,6 +22,7 @@ use super::oracle_util::{
     parse_mana_symbols, parse_number, parse_subtype, strip_after, strip_reminder_text, TextPair,
     SELF_REF_PARSE_ONLY_PHRASES, SELF_REF_TYPE_PHRASES,
 };
+use crate::parser::oracle_warnings::push_warning;
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, BasicLandType, CardPlayMode, ChosenSubtypeKind, Comparator,
     ContinuousModification, ControllerRef, FilterProp, QuantityExpr, QuantityRef, StaticCondition,
@@ -934,6 +935,10 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     if nom_primitives::scan_contains(tp.lower, "can't cast spells from") {
         let zones = parse_zone_names_from_tp(&tp);
         let affected = if zones.is_empty() {
+            push_warning(
+                "target-fallback: no zones parsed for casting prohibition, defaulting to Any"
+                    .to_string(),
+            );
             TargetFilter::Any
         } else {
             TargetFilter::Typed(TypedFilter {
@@ -4481,7 +4486,7 @@ fn try_parse_hand_cast_free_permission(text: &str, lower: &str) -> Option<Static
         return None;
     }
 
-    // "spells" with no qualifier → Any filter (Omniscience)
+    // Intentional: "spells" with no qualifier → Any filter (Omniscience) — no warning needed.
     if filter_text == "spells" {
         return Some(
             StaticDefinition::new(StaticMode::CastFromHandFree)
@@ -4503,7 +4508,13 @@ fn try_parse_hand_cast_free_permission(text: &str, lower: &str) -> Option<Static
         Cow::Borrowed(filter_text)
     };
 
-    let (filter, _) = parse_type_phrase(&cleaned);
+    let (filter, remainder) = parse_type_phrase(&cleaned);
+    if !remainder.trim().is_empty() {
+        push_warning(format!(
+            "ignored-remainder: '{}' after type parse in cast-from-hand-free",
+            remainder.trim()
+        ));
+    }
 
     Some(
         StaticDefinition::new(StaticMode::CastFromHandFree)

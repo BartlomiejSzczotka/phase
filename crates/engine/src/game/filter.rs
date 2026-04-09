@@ -491,6 +491,7 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         // All remaining props require on-battlefield or stack state unavailable from a snapshot.
         FilterProp::Token
         | FilterProp::Attacking
+        | FilterProp::Blocking
         | FilterProp::Unblocked
         | FilterProp::Tapped
         | FilterProp::Untapped
@@ -555,6 +556,11 @@ fn matches_filter_prop(
                 .iter()
                 .any(|attacker| attacker.object_id == object_id)
         }),
+        // CR 509.1a: A creature is blocking if it was declared as a blocker.
+        FilterProp::Blocking => state
+            .combat
+            .as_ref()
+            .is_some_and(|combat| combat.blocker_to_attacker.contains_key(&object_id)),
         // CR 509.1h: Unblocked = attacking creature that was never assigned blockers.
         // unblocked_attackers checks the permanent `blocked` flag, not the current blocker list.
         FilterProp::Unblocked => combat::unblocked_attackers(state).contains(&object_id),

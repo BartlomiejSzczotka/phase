@@ -844,11 +844,15 @@ fn try_parse_set_life_total(
             return None;
         };
 
+    // CR 119.5: Use the parsed target if targeted ("target player's life total"),
+    // otherwise fall back to the subject's affected filter ("each player's life total"
+    // → affected=Any which correctly targets all players for a life-setting effect).
+    let target = application
+        .target
+        .clone()
+        .unwrap_or_else(|| application.affected.clone());
     Some(ParsedEffectClause {
-        effect: Effect::SetLifeTotal {
-            target: application.target.clone().unwrap_or(TargetFilter::Any),
-            amount,
-        },
+        effect: Effect::SetLifeTotal { target, amount },
         duration: None,
         sub_ability: None,
         distribute: None,

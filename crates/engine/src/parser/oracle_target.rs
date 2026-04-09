@@ -236,6 +236,26 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
         }
     }
 
+    // CR 608.2c: "the player" / "the opponent" — definite anaphoric reference to a
+    // previously-mentioned player in the same instruction sequence.
+    if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("the player").parse(lower.as_str())
+    {
+        return (
+            TargetFilter::ParentTarget,
+            &text[lower.len() - rest.len()..],
+        );
+    }
+    // "himself" / "herself" — archaic self-reference (e.g., "deals damage to himself")
+    if let Ok((rest, _)) = alt((
+        tag::<_, _, nom_language::error::VerboseError<&str>>("himself"),
+        tag("herself"),
+    ))
+    .parse(lower.as_str())
+    {
+        return (TargetFilter::SelfRef, &text[lower.len() - rest.len()..]);
+    }
+
     // "each opponent"
     if let Some((_, rest)) = nom_on_lower(text, &lower, |input| {
         value(
@@ -269,6 +289,22 @@ pub fn parse_target(text: &str) -> (TargetFilter, &str) {
         return (
             TargetFilter::ExiledBySource,
             &text[text.len() - after_type.len()..],
+        );
+    }
+
+    // "each of those creatures/permanents/cards" → TrackedSet reference
+    if let Ok((rest, _)) = alt((
+        tag::<_, _, nom_language::error::VerboseError<&str>>("each of those creatures"),
+        tag("each of those permanents"),
+        tag("each of those cards"),
+    ))
+    .parse(lower.as_str())
+    {
+        return (
+            TargetFilter::TrackedSet {
+                id: TrackedSetId(0),
+            },
+            &text[lower.len() - rest.len()..],
         );
     }
 
@@ -416,10 +452,20 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
         }
     }
 
-    // CR 509.1h: Consume combat status prefixes (unblocked, attacking)
+    // CR 509.1h: Consume combat status prefixes (unblocked, attacking, blocking).
+    // Handles "or" compound: "attacking or blocking creature" → [Attacking, Blocking].
     while let Some((prop, consumed)) = parse_combat_status_prefix(&lower[pos..]) {
         properties.push(prop);
         pos += consumed;
+        // Check for "or " followed by another combat status prefix
+        if let Ok((after_or, _)) =
+            tag::<_, _, nom_language::error::VerboseError<&str>>("or ").parse(&lower[pos..])
+        {
+            if let Some((next_prop, next_consumed)) = parse_combat_status_prefix(after_or) {
+                properties.push(next_prop);
+                pos += "or ".len() + next_consumed;
+            }
+        }
     }
 
     // CR 205.4a: Parse supertype prefix: "legendary", "basic", "snow"
@@ -1017,6 +1063,7 @@ pub(crate) fn parse_combat_status_prefix(text: &str) -> Option<(FilterProp, usiz
             prop,
             FilterProp::Unblocked
                 | FilterProp::Attacking
+                | FilterProp::Blocking
                 | FilterProp::Tapped
                 | FilterProp::Untapped
                 | FilterProp::FaceDown

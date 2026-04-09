@@ -24,6 +24,7 @@ pub(super) fn handle_replacement_choice(
                 enter_tapped,
                 enter_with_counters,
                 controller_override,
+                enter_transformed,
                 ..
             } = event
             {
@@ -56,10 +57,29 @@ pub(super) fn handle_replacement_choice(
                         }
                     }
                 }
+                // CR 712.14a: Apply transformation if entering the battlefield transformed.
+                if enter_transformed && to == Zone::Battlefield {
+                    if let Some(obj) = state.objects.get(&object_id) {
+                        if obj.back_face.is_some() && !obj.transformed {
+                            let _ = crate::game::transform::transform_permanent(
+                                state, object_id, events,
+                            );
+                        }
+                    }
+                }
                 if to == Zone::Battlefield || from == Zone::Battlefield {
                     state.layers_dirty = true;
                 }
                 zone_change_object_id = Some(object_id);
+
+                // CR 608.3: Complete post-resolution work for pending spell resolution.
+                // Always consume pending_spell_resolution to prevent stale context leaking
+                // when a replacement redirects the destination away from Battlefield.
+                if let Some(ctx) = state.pending_spell_resolution.take() {
+                    if to == Zone::Battlefield {
+                        apply_pending_spell_resolution(state, &ctx);
+                    }
+                }
             }
 
             let mut waiting_for = WaitingFor::Priority {
@@ -87,6 +107,11 @@ pub(super) fn handle_replacement_choice(
             super::replacement::replacement_choice_waiting_for(player, state),
         ),
         super::replacement::ReplacementResult::Prevented => {
+            // CR 608.3e: If the ETB was prevented during spell resolution,
+            // the permanent goes to the graveyard instead.
+            if let Some(ctx) = state.pending_spell_resolution.take() {
+                zones::move_to_zone(state, ctx.object_id, Zone::Graveyard, events);
+            }
             state.pending_continuation = None;
             Ok(WaitingFor::Priority {
                 player: state.active_player,
@@ -181,6 +206,49 @@ pub(super) fn apply_post_replacement_effect(
     match &state.waiting_for {
         WaitingFor::Priority { .. } => None,
         wf => Some(wf.clone()),
+    }
+}
+
+/// CR 608.3: Complete post-resolution work for a permanent spell whose ETB
+/// went through the replacement pipeline and required a player choice.
+/// Applies cast_from_zone, aura attachment, and warp delayed triggers.
+fn apply_pending_spell_resolution(
+    state: &mut GameState,
+    ctx: &crate::types::game_state::PendingSpellResolution,
+) {
+    use crate::types::game_state::CastingVariant;
+
+    // CR 603.4: Propagate cast_from_zone so ETB triggers can evaluate
+    // conditions like "if you cast it from your hand".
+    if let Some(obj) = state.objects.get_mut(&ctx.object_id) {
+        obj.cast_from_zone = ctx.cast_from_zone;
+    }
+
+    // CR 303.4f: Aura resolving to battlefield attaches to its target.
+    let is_aura = state
+        .objects
+        .get(&ctx.object_id)
+        .map(|obj| obj.card_types.subtypes.iter().any(|s| s == "Aura"))
+        .unwrap_or(false);
+    if is_aura {
+        if let Some(crate::types::ability::TargetRef::Object(target_id)) = ctx.spell_targets.first()
+        {
+            if state.battlefield.contains(target_id) {
+                effects::attach::attach_to(state, ctx.object_id, *target_id);
+            }
+        }
+    }
+
+    // CR 702.185a: Warp delayed trigger setup.
+    if ctx.casting_variant == CastingVariant::Warp {
+        let has_warp = state.objects.get(&ctx.object_id).is_some_and(|obj| {
+            obj.keywords
+                .iter()
+                .any(|k| matches!(k, crate::types::keywords::Keyword::Warp(_)))
+        });
+        if has_warp {
+            super::stack::create_warp_delayed_trigger(state, ctx.object_id, ctx.controller);
+        }
     }
 }
 

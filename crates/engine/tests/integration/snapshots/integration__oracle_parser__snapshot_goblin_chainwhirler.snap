@@ -1,6 +1,5 @@
 ---
-source: crates/engine/tests/oracle_parser.rs
-assertion_line: 140
+source: crates/engine/tests/integration/oracle_parser.rs
 expression: result
 ---
 {
@@ -11,20 +10,57 @@ expression: result
       "execute": {
         "kind": "Spell",
         "effect": {
-          "type": "DamageAll",
+          "type": "DamageEachPlayer",
           "amount": {
             "type": "Fixed",
             "value": 1
           },
-          "target": {
-            "type": "Typed",
-            "type_filters": [],
-            "controller": "Opponent",
-            "properties": []
+          "player_filter": {
+            "type": "Opponent"
           }
         },
         "cost": null,
-        "sub_ability": null,
+        "sub_ability": {
+          "kind": "Spell",
+          "effect": {
+            "type": "DamageAll",
+            "amount": {
+              "type": "Fixed",
+              "value": 1
+            },
+            "target": {
+              "type": "Or",
+              "filters": [
+                {
+                  "type": "Typed",
+                  "type_filters": [
+                    "Creature"
+                  ],
+                  "controller": "Opponent",
+                  "properties": []
+                },
+                {
+                  "type": "Typed",
+                  "type_filters": [
+                    "Planeswalker"
+                  ],
+                  "controller": "Opponent",
+                  "properties": []
+                }
+              ]
+            }
+          },
+          "cost": null,
+          "sub_ability": null,
+          "duration": null,
+          "description": null,
+          "target_prompt": null,
+          "sorcery_speed": false,
+          "condition": null,
+          "optional_targeting": false,
+          "optional": false,
+          "forward_result": false
+        },
         "duration": null,
         "description": null,
         "target_prompt": null,

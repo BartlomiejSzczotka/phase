@@ -2,6 +2,15 @@
 /* eslint-disable */
 
 /**
+ * Clear the game state without dropping the WASM instance or card database.
+ *
+ * Used by the singleton adapter to reset between game sessions. Any in-flight
+ * AI computation that calls `with_state()` after this will return an error
+ * immediately rather than running a full search on stale state.
+ */
+export function clear_game_state(): void;
+
+/**
  * Create a default 2-player game state.
  */
 export function create_initial_state(): any;
@@ -139,6 +148,7 @@ export interface InitOutput {
     readonly get_legal_actions_js: () => any;
     readonly init_panic_hook: () => void;
     readonly create_initial_state: () => any;
+    readonly clear_game_state: () => void;
     readonly __wbindgen_malloc: (a: number, b: number) => number;
     readonly __wbindgen_realloc: (a: number, b: number, c: number, d: number) => number;
     readonly __wbindgen_exn_store: (a: number) => void;
