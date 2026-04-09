@@ -3489,6 +3489,7 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
                 && nom_primitives::scan_contains(&enters_lower, "enter tapped and attacking")
             {
                 if let Some(prev) = defs.last() {
+                    // These are the only effects with `enters_attacking` + `tapped`/`enter_tapped` fields.
                     let can_patch = matches!(
                         &*prev.effect,
                         Effect::CopyTokenOf { .. }

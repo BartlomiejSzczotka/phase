@@ -92,6 +92,8 @@ pub fn parse_with_property(input: &str) -> OracleResult<'_, FilterProp> {
 fn parse_with_inner(input: &str) -> OracleResult<'_, FilterProp> {
     alt((
         parse_with_power_constraint,
+        // "with greater power" — relative to source (e.g., "can't be blocked by creatures with greater power")
+        value(FilterProp::PowerGTSource, tag("greater power")),
         parse_with_toughness_constraint,
         parse_with_counter_property,
     ))

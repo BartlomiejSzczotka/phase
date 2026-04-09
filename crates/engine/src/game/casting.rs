@@ -1,6 +1,7 @@
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, CardPlayMode, ChoiceType, Effect, GameRestriction,
-    QuantityExpr, ResolvedAbility, RestrictionPlayerScope, TargetFilter, TargetRef,
+    QuantityExpr, ResolvedAbility, RestrictionPlayerScope, StaticDefinition, TargetFilter,
+    TargetRef,
 };
 use crate::types::events::GameEvent;
 use crate::types::game_state::{
@@ -9,7 +10,7 @@ use crate::types::game_state::{
 };
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::keywords::{FlashbackCost, Keyword, KeywordKind};
-use crate::types::mana::{ManaCost, SpellMeta};
+use crate::types::mana::{ManaCost, ManaSpellGrant, SpellMeta};
 use crate::types::player::PlayerId;
 use crate::types::statics::{CastingProhibitionCondition, CastingProhibitionScope, StaticMode};
 use crate::types::zones::Zone;
@@ -1701,10 +1702,6 @@ fn apply_mana_spell_grants(
     spell_id: ObjectId,
     spent_units: &[crate::types::mana::ManaUnit],
 ) {
-    use crate::types::ability::StaticDefinition;
-    use crate::types::mana::ManaSpellGrant;
-    use crate::types::statics::StaticMode;
-
     let has_cant_be_countered = spent_units
         .iter()
         .any(|u| u.grants.contains(&ManaSpellGrant::CantBeCountered));

@@ -1260,9 +1260,21 @@ pub(crate) fn check_trigger_condition(
             .is_some_and(|obj| obj.cast_from_zone.is_some()),
         // CR 601.2: "if it wasn't cast" / "if none of them were cast" — true when
         // the entering creature was NOT cast (ninjutsu, reanimation, flicker, etc.).
-        TriggerCondition::WasNotCast => source_id
-            .and_then(|id| state.objects.get(&id))
-            .is_some_and(|obj| obj.cast_from_zone.is_none()),
+        // For batch-enters triggers (e.g., Satoru, the Infiltrator), the trigger source
+        // is the permanent with the ability, not the entering creature. We must check
+        // the entering object from the trigger event, falling back to source_id for
+        // self-referential ETB triggers where source == entering creature.
+        TriggerCondition::WasNotCast => {
+            let entering_id = trigger_event
+                .and_then(|e| match e {
+                    GameEvent::ZoneChanged { object_id, .. } => Some(*object_id),
+                    _ => None,
+                })
+                .or(source_id);
+            entering_id
+                .and_then(|id| state.objects.get(&id))
+                .is_some_and(|obj| obj.cast_from_zone.is_none())
+        }
         // CR 508.1: "if it's attacking" — true when the trigger source is in combat.attackers.
         TriggerCondition::SourceIsAttacking => {
             let sid = source_id.unwrap_or(ObjectId(0));

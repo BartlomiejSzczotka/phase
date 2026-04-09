@@ -9,7 +9,7 @@ use crate::types::ability::{
     Effect, ManaProduction, ManaSpendRestriction, QuantityExpr, QuantityRef,
 };
 use crate::types::keywords::KeywordKind;
-use crate::types::mana::ManaColor;
+use crate::types::mana::{ManaColor, ManaSpellGrant};
 
 use super::super::oracle_quantity::parse_cda_quantity;
 use super::super::oracle_util::{parse_mana_production, parse_number, TextPair};
@@ -532,10 +532,7 @@ pub(super) fn all_mana_colors() -> Vec<ManaColor> {
 /// Returns `(restriction, grants)` where grants are properties conferred to the spell.
 pub(crate) fn parse_mana_spend_restriction(
     lower: &str,
-) -> Option<(
-    ManaSpendRestriction,
-    Vec<crate::types::mana::ManaSpellGrant>,
-)> {
+) -> Option<(ManaSpendRestriction, Vec<ManaSpellGrant>)> {
     let (_, base) = nom_on_lower(lower, lower, |i| {
         value((), tag("spend this mana only ")).parse(i)
     })?;
@@ -661,8 +658,7 @@ pub(crate) fn parse_mana_spend_restriction(
 /// producing a standalone clause like "that spell can't be countered".
 pub(super) fn parse_mana_spell_grant(
     lower: &str,
-) -> Option<Vec<crate::types::mana::ManaSpellGrant>> {
-    use crate::types::mana::ManaSpellGrant;
+) -> Option<Vec<ManaSpellGrant>> {
     let trimmed = lower.trim().trim_end_matches('.');
     // Use nom tag for matching
     if value::<_, _, nom_language::error::VerboseError<&str>, _>(
@@ -686,9 +682,7 @@ pub(super) fn parse_mana_spell_grant(
 /// Returns the text before the grant clause and the list of grants found.
 /// Uses suffix stripping (structural, not dispatch) since the grant clause
 /// is always a fixed trailing phrase.
-fn extract_spell_grants(text: &str) -> (&str, Vec<crate::types::mana::ManaSpellGrant>) {
-    use crate::types::mana::ManaSpellGrant;
-
+fn extract_spell_grants(text: &str) -> (&str, Vec<ManaSpellGrant>) {
     let lower = text.to_lowercase();
     // structural: not dispatch — suffix stripping of fixed trailing clause
     for suffix in [
