@@ -878,6 +878,28 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
         return clause;
     }
 
+    // CR 701.20a: "reveal it" / "reveal them" — standalone reveal of a referenced object
+    // (e.g., the card looked at via a dig effect). Maps to RevealTop { count: 1 }.
+    if let Ok((rest, _)) = alt((
+        tag::<_, _, VerboseError<&str>>("reveal "),
+        tag("reveals "),
+    ))
+    .parse(tp.lower)
+    {
+        if alt((
+            value((), tag::<_, _, VerboseError<&str>>("it")),
+            value((), tag("them")),
+        ))
+        .parse(rest.trim_end_matches('.'))
+        .is_ok()
+        {
+            return parsed_clause(Effect::RevealTop {
+                player: TargetFilter::Controller,
+                count: 1,
+            });
+        }
+    }
+
     // CR 122.3: "cast that card by paying an amount of {E} equal to its mana value"
     // → GrantCastingPermission with ExileWithEnergyCost
     if scan_contains_phrase(tp.lower, "by paying an amount of {e}")
@@ -8285,6 +8307,7 @@ mod tests {
             Some(AbilityCondition::RevealedHasCardType {
                 card_type: CoreType::Land,
                 negated: false,
+                additional_filter: None,
             })
         );
         assert!(matches!(
@@ -8360,6 +8383,7 @@ mod tests {
                 assert!(sub.condition == Some(AbilityCondition::RevealedHasCardType {
                     card_type: CoreType::Land,
                     negated: false,
+                    additional_filter: None,
                 }));
                 assert!(matches!(
                     *sub.effect,
@@ -8389,6 +8413,7 @@ mod tests {
             Some(AbilityCondition::RevealedHasCardType {
                 card_type: CoreType::Land,
                 negated: true,
+                additional_filter: None,
             })
         );
     }
@@ -10092,6 +10117,58 @@ mod tests {
             first.condition.is_some(),
             "should have RevealedHasCardType condition, got: {:?}",
             first
+        );
+    }
+
+    #[test]
+    fn creature_card_of_the_chosen_type_conditional() {
+        // Herald's Horn pattern: "look at top, if it's a creature card of the chosen type,
+        // you may reveal it and put it into your hand."
+        let chain = parse_effect_chain(
+            "look at the top card of your library. If it's a creature card of the chosen type, you may reveal it and put it into your hand.",
+            crate::types::ability::AbilityKind::Spell,
+        );
+        // First effect: Dig (look at top 1, private)
+        assert!(
+            matches!(*chain.effect, Effect::Dig { .. }),
+            "expected Dig, got: {:?}",
+            chain.effect
+        );
+        // Sub-ability chain should have the conditional
+        let sub = chain
+            .sub_ability
+            .as_ref()
+            .expect("should have sub_ability after Dig");
+        assert_eq!(
+            sub.condition,
+            Some(AbilityCondition::RevealedHasCardType {
+                card_type: CoreType::Creature,
+                negated: false,
+                additional_filter: Some(FilterProp::IsChosenCreatureType),
+            }),
+            "condition should check creature type + chosen type"
+        );
+        // The sub-ability should be optional ("you may")
+        assert!(sub.optional, "should be optional (you may)");
+        // Walk the sub-ability chain to find ChangeZone to Hand
+        let mut found_change_zone = false;
+        let mut current = Some(sub.as_ref());
+        while let Some(def) = current {
+            if matches!(
+                &*def.effect,
+                Effect::ChangeZone {
+                    destination: Zone::Hand,
+                    ..
+                }
+            ) {
+                found_change_zone = true;
+                break;
+            }
+            current = def.sub_ability.as_deref();
+        }
+        assert!(
+            found_change_zone,
+            "should have ChangeZone to Hand in sub-ability chain"
         );
     }
 

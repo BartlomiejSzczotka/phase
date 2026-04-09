@@ -15,7 +15,7 @@ use super::counter::normalize_counter_type;
 use super::{parse_effect_chain, scan_contains_phrase};
 use crate::types::ability::{
     AbilityCondition, AbilityDefinition, AbilityKind, Comparator, ControllerRef, Duration, Effect,
-    NinjutsuVariant, QuantityExpr, QuantityRef, StaticCondition, TargetFilter,
+    FilterProp, NinjutsuVariant, QuantityExpr, QuantityRef, StaticCondition, TargetFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::zones::Zone;
@@ -307,10 +307,28 @@ pub(super) fn strip_card_type_conditional(text: &str) -> (Option<AbilityConditio
     let type_word = type_str.rsplit(' ').next().unwrap_or(type_str);
     let capitalized = format!("{}{}", &type_word[..1].to_uppercase(), &type_word[1..]);
     if let Ok(card_type) = CoreType::from_str(&capitalized) {
+        // CR 205.3m: Consume optional "of the chosen type" suffix after " card".
+        let (after_type, additional_filter) =
+            if let Ok((rest_after_chosen, _)) = tag::<_, _, VerboseError<&str>>(
+                " of the chosen type",
+            )
+            .parse(after_type)
+            {
+                (
+                    rest_after_chosen,
+                    Some(FilterProp::IsChosenCreatureType),
+                )
+            } else {
+                (after_type, None)
+            };
         let remainder = after_type.strip_prefix(", ").unwrap_or(after_type);
         let offset = text.len() - remainder.len();
         return (
-            Some(AbilityCondition::RevealedHasCardType { card_type, negated }),
+            Some(AbilityCondition::RevealedHasCardType {
+                card_type,
+                negated,
+                additional_filter,
+            }),
             text[offset..].to_string(),
         );
     }
@@ -332,7 +350,11 @@ fn parse_its_a_type_condition(condition_text: &str) -> Option<AbilityCondition> 
     let type_word = type_str.rsplit(' ').next().unwrap_or(type_str);
     let capitalized = format!("{}{}", &type_word[..1].to_uppercase(), &type_word[1..]);
     let card_type = CoreType::from_str(&capitalized).ok()?;
-    Some(AbilityCondition::RevealedHasCardType { card_type, negated })
+    Some(AbilityCondition::RevealedHasCardType {
+        card_type,
+        negated,
+        additional_filter: None,
+    })
 }
 
 pub(super) fn try_parse_type_setting(text: &str) -> Option<AbilityDefinition> {
@@ -859,6 +881,7 @@ pub(super) fn try_nom_condition_as_ability_condition(text: &str) -> Option<Abili
                 return Some(AbilityCondition::RevealedHasCardType {
                     card_type: CoreType::Land,
                     negated: !negated,
+                    additional_filter: None,
                 });
             }
             "instant" => Some(CoreType::Instant),
@@ -870,7 +893,11 @@ pub(super) fn try_nom_condition_as_ability_condition(text: &str) -> Option<Abili
             _ => None,
         };
         if let Some(card_type) = card_type {
-            return Some(AbilityCondition::RevealedHasCardType { card_type, negated });
+            return Some(AbilityCondition::RevealedHasCardType {
+                card_type,
+                negated,
+                additional_filter: None,
+            });
         }
     }
 

@@ -3931,7 +3931,14 @@ pub enum AbilityCondition {
     /// CR 608.2c: "If it's a [type] card" — gates sub_ability on the last revealed card's type.
     /// Evaluated at resolution time by inspecting `state.last_revealed_ids[0]`.
     /// `negated` handles "if it's a nonland card" patterns.
-    RevealedHasCardType { card_type: CoreType, negated: bool },
+    /// `additional_filter` holds optional extra filter properties (e.g., `IsChosenCreatureType`
+    /// for "creature card of the chosen type").
+    RevealedHasCardType {
+        card_type: CoreType,
+        negated: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        additional_filter: Option<FilterProp>,
+    },
     /// CR 400.7 + CR 608.2c: True when the source permanent did NOT enter the battlefield
     /// this turn. Used for "unless ~ entered this turn" exemptions (e.g., Moon-Circuit Hacker).
     SourceDidNotEnterThisTurn,

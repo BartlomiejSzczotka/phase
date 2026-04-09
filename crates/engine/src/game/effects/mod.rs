@@ -1134,8 +1134,14 @@ fn evaluate_condition(
         // CR 603.4: "If you cast it from [zone]" — check cast origin.
         AbilityCondition::CastFromZone { zone } => ability.context.cast_from_zone == Some(*zone),
         // CR 608.2c: "If it's a [type] card" — check the revealed card's type.
-        AbilityCondition::RevealedHasCardType { card_type, negated } => {
-            let matches = state
+        // CR 205.3m: Optional additional_filter checks extra properties like
+        // "of the chosen type" (IsChosenCreatureType).
+        AbilityCondition::RevealedHasCardType {
+            card_type,
+            negated,
+            additional_filter,
+        } => {
+            let type_matches = state
                 .last_revealed_ids
                 .first()
                 .and_then(|id| {
@@ -1145,6 +1151,34 @@ fn evaluate_condition(
                         .map(|obj| obj.card_types.core_types.contains(card_type))
                 })
                 .unwrap_or(false);
+            let filter_matches = match additional_filter {
+                // CR 205.3m: "of the chosen type" — check the revealed card's subtype
+                // against the source permanent's chosen creature type.
+                Some(FilterProp::IsChosenCreatureType) => {
+                    let source = state.objects.get(&ability.source_id);
+                    let revealed = state
+                        .last_revealed_ids
+                        .first()
+                        .and_then(|id| state.objects.get(id));
+                    match (source, revealed) {
+                        (Some(src), Some(obj)) => {
+                            src.chosen_creature_type().is_some_and(|chosen_type| {
+                                obj.card_types
+                                    .subtypes
+                                    .iter()
+                                    .any(|s| s.eq_ignore_ascii_case(chosen_type))
+                            })
+                        }
+                        _ => false,
+                    }
+                }
+                Some(_) => {
+                    // Other filter properties not yet supported for revealed card checks
+                    true
+                }
+                None => true,
+            };
+            let matches = type_matches && filter_matches;
             if *negated {
                 !matches
             } else {
