@@ -349,7 +349,7 @@ export interface ResolvedAbility {
 // ── Stack ────────────────────────────────────────────────────────────────
 
 export type StackEntryKind =
-  | { type: "Spell"; data: { card_id: CardId; ability: ResolvedAbility } }
+  | { type: "Spell"; data: { card_id: CardId; ability?: ResolvedAbility } }
   | { type: "ActivatedAbility"; data: { source_id: ObjectId; ability: ResolvedAbility } }
   | { type: "TriggeredAbility"; data: { source_id: ObjectId; ability: ResolvedAbility; description?: string } };
 

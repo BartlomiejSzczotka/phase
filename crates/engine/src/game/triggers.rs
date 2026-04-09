@@ -2837,14 +2837,14 @@ pub mod tests {
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id: CardId(1),
-                ability: ResolvedAbility::new(
+                ability: Some(ResolvedAbility::new(
                     Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
                     },
                     vec![],
                     spell_id,
                     PlayerId(0),
-                ),
+                )),
                 casting_variant: crate::types::game_state::CastingVariant::Normal,
             },
         });
@@ -3070,15 +3070,7 @@ pub mod tests {
             controller: PlayerId(1),
             kind: crate::types::game_state::StackEntryKind::Spell {
                 card_id: CardId(20),
-                ability: ResolvedAbility::new(
-                    Effect::Unimplemented {
-                        name: "Dummy".to_string(),
-                        description: None,
-                    },
-                    vec![],
-                    spell,
-                    PlayerId(1),
-                ),
+                ability: None,
                 casting_variant: crate::types::game_state::CastingVariant::Normal,
             },
         });
@@ -3148,15 +3140,7 @@ pub mod tests {
             controller: PlayerId(0),
             kind: crate::types::game_state::StackEntryKind::Spell {
                 card_id: CardId(20),
-                ability: ResolvedAbility::new(
-                    Effect::Unimplemented {
-                        name: "Dummy".to_string(),
-                        description: None,
-                    },
-                    vec![],
-                    spell,
-                    PlayerId(0),
-                ),
+                ability: None,
                 casting_variant: crate::types::game_state::CastingVariant::Normal,
             },
         });
@@ -3208,15 +3192,7 @@ pub mod tests {
             controller: PlayerId(1),
             kind: crate::types::game_state::StackEntryKind::Spell {
                 card_id: CardId(20),
-                ability: ResolvedAbility::new(
-                    Effect::Unimplemented {
-                        name: "Dummy".to_string(),
-                        description: None,
-                    },
-                    vec![],
-                    spell,
-                    PlayerId(1),
-                ),
+                ability: None,
                 casting_variant: crate::types::game_state::CastingVariant::Normal,
             },
         });
@@ -3267,15 +3243,7 @@ pub mod tests {
             controller: PlayerId(1),
             kind: crate::types::game_state::StackEntryKind::Spell {
                 card_id: CardId(20),
-                ability: ResolvedAbility::new(
-                    Effect::Unimplemented {
-                        name: "Dummy".to_string(),
-                        description: None,
-                    },
-                    vec![],
-                    spell,
-                    PlayerId(1),
-                ),
+                ability: None,
                 casting_variant: crate::types::game_state::CastingVariant::Normal,
             },
         });

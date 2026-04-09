@@ -254,14 +254,14 @@ mod tests {
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id: CardId(30),
-                ability: engine::types::ability::ResolvedAbility::new(
+                ability: Some(engine::types::ability::ResolvedAbility::new(
                     engine::types::ability::Effect::Draw {
                         count: engine::types::ability::QuantityExpr::Fixed { value: 1 },
                     },
                     Vec::new(),
                     spell,
                     PlayerId(0),
-                ),
+                )),
                 casting_variant: CastingVariant::Normal,
             },
         });

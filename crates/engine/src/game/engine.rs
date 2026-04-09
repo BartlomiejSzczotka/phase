@@ -1381,7 +1381,9 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             }
             // Update the copy's targets on the stack.
             if let Some(entry) = state.stack.iter_mut().find(|e| e.id == cid) {
-                entry.ability_mut().targets = targets;
+                if let Some(ability) = entry.ability_mut() {
+                    ability.targets = targets;
+                }
             }
             events.push(GameEvent::EffectResolved {
                 kind: crate::types::ability::EffectKind::CopySpell,
@@ -1524,7 +1526,9 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
 
             // Update targets on the stack entry.
             if idx < state.stack.len() {
-                state.stack[idx].ability_mut().targets = new_targets.clone();
+                if let Some(ability) = state.stack[idx].ability_mut() {
+                    ability.targets = new_targets.clone();
+                }
             } else {
                 return Err(EngineError::InvalidAction(
                     "Invalid stack entry index for retargeting".to_string(),
@@ -2851,15 +2855,7 @@ mod tests {
                 controller: PlayerId(0),
                 kind: StackEntryKind::Spell {
                     card_id: CardId(1),
-                    ability: ResolvedAbility::new(
-                        crate::types::ability::Effect::Unimplemented {
-                            name: String::new(),
-                            description: None,
-                        },
-                        vec![],
-                        id1,
-                        PlayerId(0),
-                    ),
+                    ability: None,
                     casting_variant: CastingVariant::Normal,
                 },
             },
@@ -2873,15 +2869,7 @@ mod tests {
                 controller: PlayerId(0),
                 kind: StackEntryKind::Spell {
                     card_id: CardId(2),
-                    ability: ResolvedAbility::new(
-                        crate::types::ability::Effect::Unimplemented {
-                            name: String::new(),
-                            description: None,
-                        },
-                        vec![],
-                        id2,
-                        PlayerId(0),
-                    ),
+                    ability: None,
                     casting_variant: CastingVariant::Normal,
                 },
             },
@@ -4383,15 +4371,7 @@ mod tests {
                 controller: PlayerId(1),
                 kind: crate::types::game_state::StackEntryKind::Spell {
                     card_id: CardId(99),
-                    ability: crate::types::ability::ResolvedAbility::new(
-                        crate::types::ability::Effect::Unimplemented {
-                            name: String::new(),
-                            description: None,
-                        },
-                        vec![],
-                        ObjectId(99),
-                        PlayerId(1),
-                    ),
+                    ability: None,
                     casting_variant: crate::types::game_state::CastingVariant::Normal,
                 },
             });
@@ -6346,15 +6326,7 @@ mod phase_trigger_regression_tests {
             controller: PlayerId(0),
             kind: crate::types::game_state::StackEntryKind::Spell {
                 card_id: CardId(300),
-                ability: ResolvedAbility::new(
-                    Effect::Unimplemented {
-                        name: "Creature".to_string(),
-                        description: None,
-                    },
-                    Vec::new(),
-                    creature_spell,
-                    PlayerId(0),
-                ),
+                ability: None,
                 casting_variant: crate::types::game_state::CastingVariant::Normal,
             },
         });

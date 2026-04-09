@@ -64,43 +64,53 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
             ..
         } => (ability.clone(), true, *casting_variant),
         StackEntryKind::ActivatedAbility { ability, .. } => {
-            (ability.clone(), false, CastingVariant::Normal)
+            (Some(ability.clone()), false, CastingVariant::Normal)
         }
         StackEntryKind::TriggeredAbility { ability, .. } => {
-            (ability.clone(), false, CastingVariant::Normal)
+            (Some(ability.clone()), false, CastingVariant::Normal)
         }
     };
 
     // Capture targets for Aura attachment after resolution
-    let spell_targets = ability.targets.clone();
+    let spell_targets = ability
+        .as_ref()
+        .map(|a| a.targets.clone())
+        .unwrap_or_default();
 
-    let original_targets = flatten_targets_in_chain(&ability);
-    if !original_targets.is_empty() {
-        let validated = validate_targets_in_chain(state, &ability);
-        let legal_targets = flatten_targets_in_chain(&validated);
-        if targeting::check_fizzle(&original_targets, &legal_targets) {
-            // CR 608.2b: Fizzle — all targets illegal, spell is countered on resolution.
-            if is_spell {
-                // CR 702.34a / CR 702.180a: Flashback and Harmonize exile when leaving
-                // the stack for any reason, including fizzle. Escape is included for consistency.
-                let dest = if matches!(
-                    casting_variant,
-                    CastingVariant::Flashback | CastingVariant::Harmonize | CastingVariant::Escape
-                ) {
-                    Zone::Exile
-                } else {
-                    Zone::Graveyard
-                };
-                zones::move_to_zone(state, entry.id, dest, events);
+    // Only run targeting validation and effect execution when an ability exists.
+    // Permanent spells with no spell ability (ability is None) skip straight to
+    // zone-change handling below.
+    if let Some(ref ability) = ability {
+        let original_targets = flatten_targets_in_chain(ability);
+        if !original_targets.is_empty() {
+            let validated = validate_targets_in_chain(state, ability);
+            let legal_targets = flatten_targets_in_chain(&validated);
+            if targeting::check_fizzle(&original_targets, &legal_targets) {
+                // CR 608.2b: Fizzle — all targets illegal, spell is countered on resolution.
+                if is_spell {
+                    // CR 702.34a / CR 702.180a: Flashback and Harmonize exile when leaving
+                    // the stack for any reason, including fizzle. Escape is included for consistency.
+                    let dest = if matches!(
+                        casting_variant,
+                        CastingVariant::Flashback
+                            | CastingVariant::Harmonize
+                            | CastingVariant::Escape
+                    ) {
+                        Zone::Exile
+                    } else {
+                        Zone::Graveyard
+                    };
+                    zones::move_to_zone(state, entry.id, dest, events);
+                }
+                events.push(GameEvent::StackResolved {
+                    object_id: entry.id,
+                });
+                return;
             }
-            events.push(GameEvent::StackResolved {
-                object_id: entry.id,
-            });
-            return;
+            execute_effect(state, &validated, events);
+        } else {
+            execute_effect(state, ability, events);
         }
-        execute_effect(state, &validated, events);
-    } else {
-        execute_effect(state, &ability, events);
     }
 
     // CR 608.3: Determine destination zone for spells.
@@ -185,8 +195,12 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                     }
                     // CR 603.4: Propagate cast_from_zone to the permanent so ETB triggers
                     // can evaluate conditions like "if you cast it from your hand".
-                    if let Some(obj) = state.objects.get_mut(&entry.id) {
-                        obj.cast_from_zone = ability.context.cast_from_zone;
+                    // When ability is present, use its context; otherwise the object
+                    // already has cast_from_zone set during finalize_cast_to_stack.
+                    if let Some(ref ability) = ability {
+                        if let Some(obj) = state.objects.get_mut(&entry.id) {
+                            obj.cast_from_zone = ability.context.cast_from_zone;
+                        }
                     }
                 }
                 super::replacement::ReplacementResult::Prevented => {
@@ -197,12 +211,16 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                 super::replacement::ReplacementResult::NeedsChoice(player) => {
                     // A replacement needs player choice (e.g., Clone "enter as a copy").
                     // Store context so handle_replacement_choice can complete post-resolution.
+                    let cast_from_zone = ability
+                        .as_ref()
+                        .and_then(|a| a.context.cast_from_zone)
+                        .or_else(|| state.objects.get(&entry.id).and_then(|o| o.cast_from_zone));
                     state.pending_spell_resolution =
                         Some(crate::types::game_state::PendingSpellResolution {
                             object_id: entry.id,
                             controller: entry.controller,
                             casting_variant,
-                            cast_from_zone: ability.context.cast_from_zone,
+                            cast_from_zone,
                             spell_targets: spell_targets.clone(),
                         });
                     state.waiting_for =
@@ -430,7 +448,7 @@ mod tests {
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id: CardId(100),
-                ability: resolved,
+                ability: Some(resolved),
                 casting_variant: CastingVariant::Normal,
             },
         });
@@ -641,23 +659,13 @@ mod tests {
             .core_types
             .push(CoreType::Enchantment);
 
-        let resolved = ResolvedAbility::new(
-            Effect::Unimplemented {
-                name: "GlobalEnchantment".to_string(),
-                description: None,
-            },
-            vec![],
-            ench_id,
-            PlayerId(0),
-        );
-
         state.stack.push(StackEntry {
             id: ench_id,
             source_id: ench_id,
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id: CardId(60),
-                ability: resolved,
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });
@@ -744,7 +752,7 @@ mod tests {
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id: CardId(72),
-                ability,
+                ability: Some(ability),
                 casting_variant: CastingVariant::Normal,
             },
         });
@@ -806,22 +814,13 @@ mod tests {
         }
 
         // Push a stack entry as if cast via Warp
-        let resolved = ResolvedAbility::new(
-            Effect::Unimplemented {
-                name: "test".to_string(),
-                description: None,
-            },
-            vec![],
-            obj_id,
-            PlayerId(0),
-        );
         state.stack.push(StackEntry {
             id: obj_id,
             source_id: obj_id,
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id: CardId(1),
-                ability: resolved,
+                ability: None,
                 casting_variant: crate::types::game_state::CastingVariant::Warp,
             },
         });
@@ -1005,7 +1004,7 @@ mod tests {
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id,
-                ability: resolved,
+                ability: Some(resolved),
                 casting_variant: CastingVariant::Flashback,
             },
         });
@@ -1081,7 +1080,7 @@ mod tests {
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id,
-                ability: resolved,
+                ability: Some(resolved),
                 casting_variant: CastingVariant::Flashback,
             },
         });

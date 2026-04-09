@@ -311,14 +311,17 @@ fn should_reject_pump_window(
 
 fn hostile_stack_targets_own_creature(state: &GameState, ai_player: PlayerId) -> bool {
     state.stack.iter().any(|entry| {
-        entry.ability().targets.iter().any(|target| {
+        let Some(ability) = entry.ability() else {
+            return false;
+        };
+        ability.targets.iter().any(|target| {
             let TargetRef::Object(object_id) = target else {
                 return false;
             };
             state.objects.get(object_id).is_some_and(|object| {
                 object.controller == ai_player
                     && object.card_types.core_types.contains(&CoreType::Creature)
-                    && collect_ability_effects(entry.ability())
+                    && collect_ability_effects(ability)
                         .iter()
                         .any(|effect| matches!(effect_polarity(effect), EffectPolarity::Harmful))
             })
@@ -595,7 +598,7 @@ mod tests {
             source_id: ObjectId(201),
             controller: P0,
             kind: StackEntryKind::Spell {
-                ability: ResolvedAbility::new(
+                ability: Some(ResolvedAbility::new(
                     Effect::Destroy {
                         target: TargetFilter::Any,
                         cant_regenerate: false,
@@ -603,7 +606,7 @@ mod tests {
                     vec![TargetRef::Object(creature)],
                     ObjectId(201),
                     P0,
-                ),
+                )),
                 card_id: CardId(201),
                 casting_variant: Default::default(),
             },

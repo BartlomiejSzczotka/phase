@@ -1281,6 +1281,6 @@ mod tests {
             },
         );
 
-        assert!(check_spell_timing(&state, PlayerId(0), &obj, &ability, true).is_ok());
+        assert!(check_spell_timing(&state, PlayerId(0), &obj, Some(&ability), true).is_ok());
     }
 }

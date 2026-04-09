@@ -5396,7 +5396,9 @@ mod tests {
             ref spell_filter, ..
         } = def.mode
         {
-            let filter = spell_filter.as_ref().expect("Expected spell_filter with zone constraint");
+            let filter = spell_filter
+                .as_ref()
+                .expect("Expected spell_filter with zone constraint");
             match filter {
                 TargetFilter::Typed(tf) => {
                     assert!(
@@ -5424,8 +5426,7 @@ mod tests {
     #[test]
     fn static_spells_from_exile_cost_less() {
         // "Spells you cast from exile this turn cost {X} less to cast" (without "this turn" dynamic)
-        let def =
-            parse_static_line("Spells you cast from exile cost {1} less to cast.").unwrap();
+        let def = parse_static_line("Spells you cast from exile cost {1} less to cast.").unwrap();
         assert!(matches!(
             def.mode,
             StaticMode::ReduceCost {
@@ -5437,7 +5438,9 @@ mod tests {
             ref spell_filter, ..
         } = def.mode
         {
-            let filter = spell_filter.as_ref().expect("Expected spell_filter with zone constraint");
+            let filter = spell_filter
+                .as_ref()
+                .expect("Expected spell_filter with zone constraint");
             match filter {
                 TargetFilter::Typed(tf) => {
                     assert!(

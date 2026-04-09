@@ -1,6 +1,6 @@
 use crate::types::ability::{EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
-use crate::types::game_state::{CopyTargetSlot, GameState, StackEntryKind, WaitingFor};
+use crate::types::game_state::{CopyTargetSlot, GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::zones::Zone;
 
@@ -48,11 +48,10 @@ pub fn resolve(
     events.push(GameEvent::StackPushed { object_id: copy_id });
 
     // CR 707.10c: If the copy has targets, allow the controller to choose new ones.
-    let copy_targets = match &top_entry.kind {
-        StackEntryKind::Spell { ability: a, .. }
-        | StackEntryKind::ActivatedAbility { ability: a, .. }
-        | StackEntryKind::TriggeredAbility { ability: a, .. } => a.targets.clone(),
-    };
+    let copy_targets = top_entry
+        .ability()
+        .map(|a| a.targets.clone())
+        .unwrap_or_default();
 
     if !copy_targets.is_empty() {
         // Build target slots — each slot shows current target. Legal alternatives
@@ -109,7 +108,7 @@ mod tests {
             controller: owner,
             kind: StackEntryKind::Spell {
                 card_id,
-                ability,
+                ability: Some(ability),
                 casting_variant: variant,
             },
         });
@@ -168,12 +167,12 @@ mod tests {
             (
                 StackEntryKind::Spell {
                     card_id: c1,
-                    ability: a1,
+                    ability: Some(a1),
                     ..
                 },
                 StackEntryKind::Spell {
                     card_id: c2,
-                    ability: a2,
+                    ability: Some(a2),
                     ..
                 },
             ) => {
@@ -183,7 +182,7 @@ mod tests {
                     crate::types::ability::effect_variant_name(&a2.effect)
                 );
             }
-            _ => panic!("Expected both entries to be Spells"),
+            _ => panic!("Expected both entries to be Spells with abilities"),
         }
     }
 

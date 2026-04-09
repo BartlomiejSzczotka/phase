@@ -251,18 +251,6 @@ mod tests {
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
 
-    fn make_dummy_ability(source_id: ObjectId, controller: PlayerId) -> ResolvedAbility {
-        ResolvedAbility::new(
-            Effect::Unimplemented {
-                name: "Dummy".to_string(),
-                description: None,
-            },
-            vec![],
-            source_id,
-            controller,
-        )
-    }
-
     #[test]
     fn counter_removes_from_stack_and_moves_to_graveyard() {
         let mut state = GameState::new_two_player(42);
@@ -279,7 +267,7 @@ mod tests {
             controller: PlayerId(1),
             kind: StackEntryKind::Spell {
                 card_id: CardId(1),
-                ability: make_dummy_ability(obj_id, PlayerId(1)),
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });
@@ -331,7 +319,7 @@ mod tests {
             controller: PlayerId(1),
             kind: StackEntryKind::Spell {
                 card_id: CardId(1),
-                ability: make_dummy_ability(obj_id, PlayerId(1)),
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });
@@ -389,7 +377,15 @@ mod tests {
             controller: PlayerId(1),
             kind: StackEntryKind::TriggeredAbility {
                 source_id: source_permanent,
-                ability: make_dummy_ability(source_permanent, PlayerId(1)),
+                ability: ResolvedAbility::new(
+                    Effect::Unimplemented {
+                        name: "Dummy".to_string(),
+                        description: None,
+                    },
+                    vec![],
+                    source_permanent,
+                    PlayerId(1),
+                ),
                 condition: None,
                 trigger_event: None,
                 description: None,
@@ -471,7 +467,7 @@ mod tests {
             controller: PlayerId(1),
             kind: StackEntryKind::Spell {
                 card_id: CardId(1),
-                ability: make_dummy_ability(spell_id, PlayerId(1)),
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });
@@ -516,7 +512,7 @@ mod tests {
             controller: PlayerId(1),
             kind: StackEntryKind::Spell {
                 card_id: CardId(1),
-                ability: make_dummy_ability(obj_id, PlayerId(1)),
+                ability: None,
                 casting_variant: CastingVariant::Flashback,
             },
         });

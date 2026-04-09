@@ -95,7 +95,9 @@ fn score_pump_response(ctx: &PolicyContext<'_>, target_id: ObjectId) -> f64 {
 
     let has_opponent_pump = ctx.state.stack.iter().any(|entry| {
         entry.controller != ctx.ai_player && {
-            let ability = entry.ability();
+            let Some(ability) = entry.ability() else {
+                return false;
+            };
             let targets_this = ability
                 .targets
                 .iter()
@@ -127,7 +129,11 @@ pub(crate) fn assess_spell_impact(state: &GameState, entry: &StackEntry) -> f64 
 
             let mut score = mv * 0.3;
 
-            for effect in collect_ability_effects(entry.ability()) {
+            let effects = entry
+                .ability()
+                .map(|a| collect_ability_effects(a))
+                .unwrap_or_default();
+            for effect in effects {
                 score += match effect {
                     Effect::ExtraTurn { .. } => 5.0,
                     Effect::DestroyAll { .. }
@@ -162,7 +168,9 @@ pub(crate) fn assess_spell_impact(state: &GameState, entry: &StackEntry) -> f64 
 /// Check if any stack entry targets this object with a harmful effect.
 pub(crate) fn has_pending_removal(state: &GameState, target_id: ObjectId) -> bool {
     state.stack.iter().any(|entry| {
-        let ability = entry.ability();
+        let Some(ability) = entry.ability() else {
+            return false;
+        };
         let targets_this = ability
             .targets
             .iter()
@@ -186,7 +194,9 @@ pub(crate) fn will_target_die_from_stack(state: &GameState, target_id: ObjectId)
     let mut pending_damage: i32 = 0;
 
     for entry in state.stack.iter() {
-        let ability = entry.ability();
+        let Some(ability) = entry.ability() else {
+            continue;
+        };
         let targets_this = ability
             .targets
             .iter()
@@ -282,7 +292,7 @@ mod tests {
             source_id: ObjectId(999),
             controller: PlayerId(1),
             kind: StackEntryKind::Spell {
-                ability,
+                ability: Some(ability),
                 card_id: CardId(999),
                 casting_variant: Default::default(),
             },

@@ -1250,7 +1250,6 @@ mod tests {
 
     #[test]
     fn quiesce_resolves_creature_spell_on_stack() {
-        use engine::types::ability::{Effect, ResolvedAbility};
         use engine::types::game_state::{CastingVariant, StackEntry, StackEntryKind};
         use engine::types::mana::{ManaCost, ManaCostShard};
 
@@ -1297,14 +1296,7 @@ mod tests {
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id: CardId(200),
-                ability: ResolvedAbility::new(
-                    Effect::Draw {
-                        count: engine::types::ability::QuantityExpr::Fixed { value: 0 },
-                    },
-                    Vec::new(),
-                    creature_id,
-                    PlayerId(0),
-                ),
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });
@@ -1335,7 +1327,6 @@ mod tests {
 
     #[test]
     fn quiesced_leaf_eval_credits_pending_creature() {
-        use engine::types::ability::{Effect, ResolvedAbility};
         use engine::types::game_state::{CastingVariant, StackEntry, StackEntryKind};
         use engine::types::mana::{ManaCost, ManaCostShard};
 
@@ -1394,14 +1385,7 @@ mod tests {
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id: CardId(200),
-                ability: ResolvedAbility::new(
-                    Effect::Draw {
-                        count: engine::types::ability::QuantityExpr::Fixed { value: 0 },
-                    },
-                    Vec::new(),
-                    creature_in_hand,
-                    PlayerId(0),
-                ),
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });

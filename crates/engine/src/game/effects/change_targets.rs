@@ -47,7 +47,9 @@ pub fn resolve(
         // CR 115.7: Forced retarget — resolve the new target from the filter and apply directly.
         let new_targets = find_legal_targets(state, filter, ability.controller, ability.source_id);
         if let Some(new_target) = new_targets.into_iter().next() {
-            state.stack[stack_entry_index].ability_mut().targets = vec![new_target];
+            if let Some(stack_ability) = state.stack[stack_entry_index].ability_mut() {
+                stack_ability.targets = vec![new_target];
+            }
         }
         events.push(GameEvent::EffectResolved {
             kind: EffectKind::from(&ability.effect),
@@ -58,7 +60,14 @@ pub fn resolve(
 
     // Interactive retarget: present choices to the player.
     // CR 115.7a: The current targets of the targeted spell/ability become the starting point.
-    let stack_ability = state.stack[stack_entry_index].ability_mut().clone();
+    let Some(stack_ability) = state.stack[stack_entry_index].ability().cloned() else {
+        // Permanent spell with no ability — nothing to retarget.
+        events.push(GameEvent::EffectResolved {
+            kind: EffectKind::from(&ability.effect),
+            source_id: ability.source_id,
+        });
+        return Ok(());
+    };
     let current_targets = stack_ability.targets.clone();
 
     // CR 115.7: Enumerate legal new targets by extracting the target filter from

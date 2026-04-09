@@ -7,5 +7,8 @@ function collectTargets(ability: ResolvedAbility): TargetRef[] {
 }
 
 export function getStackEntryTargets(entry: StackEntry): TargetRef[] {
+  if (!("ability" in entry.kind.data) || !entry.kind.data.ability) {
+    return [];
+  }
   return collectTargets(entry.kind.data.ability);
 }

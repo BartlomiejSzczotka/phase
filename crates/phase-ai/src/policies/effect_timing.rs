@@ -89,9 +89,14 @@ fn removal_score(ctx: &PolicyContext<'_>) -> f64 {
     let pump_response = if !ctx.state.stack.is_empty()
         && ctx.state.stack.iter().any(|entry| {
             entry.controller != ctx.ai_player
-                && collect_ability_effects(entry.ability())
-                    .iter()
-                    .any(|e| matches!(e, Effect::Pump { .. } | Effect::DoublePT { .. }))
+                && entry
+                    .ability()
+                    .map(|a| {
+                        collect_ability_effects(a)
+                            .iter()
+                            .any(|e| matches!(e, Effect::Pump { .. } | Effect::DoublePT { .. }))
+                    })
+                    .unwrap_or(false)
         }) {
         0.5
     } else {
@@ -152,7 +157,9 @@ fn threatened_own_spell_value(state: &GameState, ai_player: PlayerId) -> f64 {
         if entry.controller == ai_player {
             continue;
         }
-        let ability = entry.ability();
+        let Some(ability) = entry.ability() else {
+            continue;
+        };
         let has_counter = collect_ability_effects(ability)
             .iter()
             .any(|e| matches!(e, Effect::Counter { .. }));

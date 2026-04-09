@@ -124,7 +124,6 @@ struct PreparedSpellCast {
     casting_variant: CastingVariant,
 }
 
-
 /// CR 101.2 + CR 601.2a: Temporary restrictions can limit which zones affected
 /// players may cast spells from.
 fn is_blocked_by_cast_only_from_zones(
@@ -811,9 +810,13 @@ fn prepare_spell_cast(
         effective_spell_keyword_kinds(state, player, object_id).contains(&KeywordKind::Flash);
     // CR 304.1: Instants can be cast any time a player has priority.
     // CR 301.1 / CR 306.1: Artifacts and planeswalkers are cast at sorcery speed.
-    if let Err(base_timing_error) =
-        restrictions::check_spell_timing(state, player, obj, ability_def.as_ref(), has_granted_flash)
-    {
+    if let Err(base_timing_error) = restrictions::check_spell_timing(
+        state,
+        player,
+        obj,
+        ability_def.as_ref(),
+        has_granted_flash,
+    ) {
         // CR 702.8a: Flash permits instant-speed casting.
         let Some(flash_cost) = flash_cost else {
             return Err(base_timing_error);
@@ -1146,18 +1149,23 @@ pub fn handle_adventure_choice(
 
     // Now proceed with normal casting using whichever face is active
     let prepared = prepare_spell_cast(state, player, object_id)?;
+    // Adventure spells always have a spell ability (the adventure face is an instant/sorcery).
+    let ability_def = prepared
+        .ability_def
+        .as_ref()
+        .expect("adventure spell must have ability_def");
 
     let resolved = {
         let mut r = ResolvedAbility::new(
-            *prepared.ability_def.effect.clone(),
+            *ability_def.effect.clone(),
             Vec::new(),
             prepared.object_id,
             player,
         );
-        if let Some(sub) = &prepared.ability_def.sub_ability {
+        if let Some(sub) = &ability_def.sub_ability {
             r = r.sub_ability(build_resolved_from_def(sub, prepared.object_id, player));
         }
-        if let Some(c) = prepared.ability_def.condition.clone() {
+        if let Some(c) = ability_def.condition.clone() {
             r = r.condition(c);
         }
         r
@@ -1215,7 +1223,7 @@ pub fn handle_adventure_choice(
         } else {
             CastingVariant::Adventure
         };
-        pending_adv.distribute = prepared.ability_def.distribute.clone();
+        pending_adv.distribute = ability_def.distribute.clone();
         return Ok(WaitingFor::TargetSelection {
             player,
             pending_cast: Box::new(pending_adv),
@@ -1392,50 +1400,77 @@ fn continue_with_prepared(
     prepared: PreparedSpellCast,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
-    // CR 601.2c: The player announcing a spell with modes chooses the mode(s).
-    if let Some(ref modal_choice) = prepared.modal {
-        // Cap max_choices to actual mode count
-        let mut capped = modal_choice.clone();
-        capped.max_choices = capped.max_choices.min(capped.mode_count);
-        let target_constraints = target_constraints_from_modal(&capped);
-
-        // Build a placeholder resolved ability -- will be replaced after mode selection
-        let placeholder = ResolvedAbility::new(
-            *prepared.ability_def.effect.clone(),
-            Vec::new(),
-            prepared.object_id,
-            player,
-        );
-        let mut pending_modal = PendingCast::new(
-            prepared.object_id,
-            prepared.card_id,
-            placeholder,
-            prepared.mana_cost.clone(),
-        );
-        pending_modal.casting_variant = prepared.casting_variant;
-        pending_modal.distribute = prepared.ability_def.distribute.clone();
-        pending_modal.target_constraints = target_constraints;
-        return Ok(WaitingFor::ModeChoice {
-            player,
-            modal: capped,
-            pending_cast: Box::new(pending_modal),
-        });
+    // Permanent spells with no spell ability skip modal/targeting/effect resolution
+    // and proceed directly to cost payment — unless they are Auras, which target
+    // via the Enchant keyword and need the Aura targeting path below.
+    if prepared.ability_def.is_none() {
+        let is_aura = state
+            .objects
+            .get(&prepared.object_id)
+            .map(|obj| obj.card_types.subtypes.iter().any(|s| s == "Aura"))
+            .unwrap_or(false);
+        if !is_aura {
+            return continue_with_no_ability(state, player, prepared, events);
+        }
     }
 
-    let resolved = {
+    // Build the resolved ability from the ability_def, or a placeholder for auras
+    // with no spell-level ability (aura targeting is via the Enchant keyword).
+    let resolved = if let Some(ref ability_def) = prepared.ability_def {
+        // CR 601.2c: The player announcing a spell with modes chooses the mode(s).
+        if let Some(ref modal_choice) = prepared.modal {
+            // Cap max_choices to actual mode count
+            let mut capped = modal_choice.clone();
+            capped.max_choices = capped.max_choices.min(capped.mode_count);
+            let target_constraints = target_constraints_from_modal(&capped);
+
+            // Build a placeholder resolved ability -- will be replaced after mode selection
+            let placeholder = ResolvedAbility::new(
+                *ability_def.effect.clone(),
+                Vec::new(),
+                prepared.object_id,
+                player,
+            );
+            let mut pending_modal = PendingCast::new(
+                prepared.object_id,
+                prepared.card_id,
+                placeholder,
+                prepared.mana_cost.clone(),
+            );
+            pending_modal.casting_variant = prepared.casting_variant;
+            pending_modal.distribute = ability_def.distribute.clone();
+            pending_modal.target_constraints = target_constraints;
+            return Ok(WaitingFor::ModeChoice {
+                player,
+                modal: capped,
+                pending_cast: Box::new(pending_modal),
+            });
+        }
+
         let mut r = ResolvedAbility::new(
-            *prepared.ability_def.effect.clone(),
+            *ability_def.effect.clone(),
             Vec::new(),
             prepared.object_id,
             player,
         );
-        if let Some(sub) = &prepared.ability_def.sub_ability {
+        if let Some(sub) = &ability_def.sub_ability {
             r = r.sub_ability(build_resolved_from_def(sub, prepared.object_id, player));
         }
-        if let Some(c) = prepared.ability_def.condition.clone() {
+        if let Some(c) = ability_def.condition.clone() {
             r = r.condition(c);
         }
         r
+    } else {
+        // Aura placeholder — will carry targets from Enchant keyword targeting
+        ResolvedAbility::new(
+            Effect::Unimplemented {
+                name: String::new(),
+                description: None,
+            },
+            Vec::new(),
+            prepared.object_id,
+            player,
+        )
     };
 
     // 5. Handle targeting -- ensure layers evaluated before target legality
@@ -1488,7 +1523,10 @@ fn continue_with_prepared(
                     prepared.mana_cost.clone(),
                 );
                 pending_aura.casting_variant = prepared.casting_variant;
-                pending_aura.distribute = prepared.ability_def.distribute.clone();
+                pending_aura.distribute = prepared
+                    .ability_def
+                    .as_ref()
+                    .and_then(|a| a.distribute.clone());
                 return Ok(WaitingFor::TargetSelection {
                     player,
                     pending_cast: Box::new(pending_aura),
@@ -1526,7 +1564,10 @@ fn continue_with_prepared(
             prepared.mana_cost.clone(),
         );
         pending_targets.casting_variant = prepared.casting_variant;
-        pending_targets.distribute = prepared.ability_def.distribute.clone();
+        pending_targets.distribute = prepared
+            .ability_def
+            .as_ref()
+            .and_then(|a| a.distribute.clone());
         return Ok(WaitingFor::TargetSelection {
             player,
             pending_cast: Box::new(pending_targets),
@@ -1542,6 +1583,42 @@ fn continue_with_prepared(
         prepared.object_id,
         prepared.card_id,
         resolved,
+        &prepared.mana_cost,
+        prepared.casting_variant,
+        events,
+    )
+}
+
+/// Fast path for permanent spells with no spell-level ability.
+/// Skips modal/targeting/effect — proceeds directly to cost payment.
+fn continue_with_no_ability(
+    state: &mut GameState,
+    player: PlayerId,
+    prepared: PreparedSpellCast,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    // Auras always have a spell ability (Enchant keyword generates targeting),
+    // so this path is only for non-Aura permanents.
+
+    // Build a placeholder resolved ability for cost-payment plumbing.
+    // The PendingCast infrastructure requires a ResolvedAbility; it carries no
+    // meaningful effect and will be discarded (pushed as `ability: None`) when
+    // finalize_cast_to_stack detects no Spell-kind AbilityDefinition on the object.
+    let placeholder = ResolvedAbility::new(
+        Effect::Unimplemented {
+            name: String::new(),
+            description: None,
+        },
+        Vec::new(),
+        prepared.object_id,
+        player,
+    );
+    check_additional_cost_or_pay(
+        state,
+        player,
+        prepared.object_id,
+        prepared.card_id,
+        placeholder,
         &prepared.mana_cost,
         prepared.casting_variant,
         events,
@@ -2971,15 +3048,7 @@ mod tests {
             controller: PlayerId(1),
             kind: StackEntryKind::Spell {
                 card_id: CardId(99),
-                ability: ResolvedAbility::new(
-                    Effect::Unimplemented {
-                        name: String::new(),
-                        description: None,
-                    },
-                    vec![],
-                    ObjectId(99),
-                    PlayerId(1),
-                ),
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });
@@ -3706,13 +3775,17 @@ mod tests {
         assert!(matches!(result, WaitingFor::Priority { .. }));
         assert_eq!(state.stack.len(), 1);
         // Verify the target was recorded on the stack entry
-        if let StackEntryKind::Spell { ability, .. } = &state.stack[0].kind {
+        if let StackEntryKind::Spell {
+            ability: Some(ability),
+            ..
+        } = &state.stack[0].kind
+        {
             assert_eq!(
                 ability.targets,
                 vec![crate::types::ability::TargetRef::Object(creature)]
             );
         } else {
-            panic!("Expected spell on stack");
+            panic!("Expected spell with ability on stack");
         }
     }
 
@@ -3786,13 +3859,17 @@ mod tests {
             handle_cast_spell(&mut state, PlayerId(0), aura_id, CardId(30), &mut events).unwrap();
         assert!(matches!(result, WaitingFor::Priority { .. }));
         assert_eq!(state.stack.len(), 1);
-        if let StackEntryKind::Spell { ability, .. } = &state.stack[0].kind {
+        if let StackEntryKind::Spell {
+            ability: Some(ability),
+            ..
+        } = &state.stack[0].kind
+        {
             assert_eq!(
                 ability.targets,
                 vec![crate::types::ability::TargetRef::Object(creature)]
             );
         } else {
-            panic!("Expected spell on stack");
+            panic!("Expected spell with ability on stack");
         }
     }
 
@@ -4231,7 +4308,10 @@ mod tests {
 
         // Verify the stack entry has a chained ability (sub_ability present)
         match &state.stack[0].kind {
-            StackEntryKind::Spell { ability, .. } => {
+            StackEntryKind::Spell {
+                ability: Some(ability),
+                ..
+            } => {
                 // First mode is Draw
                 assert!(matches!(
                     ability.effect,
@@ -4391,7 +4471,7 @@ mod tests {
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id: CardId(70),
-                ability: ResolvedAbility::new(
+                ability: Some(ResolvedAbility::new(
                     Effect::DealDamage {
                         amount: QuantityExpr::Fixed { value: 2 },
                         target: crate::types::ability::TargetFilter::Any,
@@ -4400,7 +4480,7 @@ mod tests {
                     vec![TargetRef::Player(PlayerId(1))],
                     obj_id,
                     PlayerId(0),
-                ),
+                )),
                 casting_variant: CastingVariant::Adventure,
             },
         });
@@ -4440,7 +4520,7 @@ mod tests {
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id: CardId(70),
-                ability: ResolvedAbility::new(
+                ability: Some(ResolvedAbility::new(
                     Effect::DealDamage {
                         amount: QuantityExpr::Fixed { value: 2 },
                         target: crate::types::ability::TargetFilter::Any,
@@ -4449,7 +4529,7 @@ mod tests {
                     vec![TargetRef::Player(PlayerId(1))],
                     obj_id,
                     PlayerId(0),
-                ),
+                )),
                 casting_variant: CastingVariant::Adventure,
             },
         });
@@ -5203,15 +5283,7 @@ mod tests {
             controller: PlayerId(1),
             kind: StackEntryKind::Spell {
                 card_id: CardId(123),
-                ability: ResolvedAbility::new(
-                    Effect::Unimplemented {
-                        name: "Creature".to_string(),
-                        description: None,
-                    },
-                    vec![],
-                    creature_spell,
-                    PlayerId(1),
-                ),
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });

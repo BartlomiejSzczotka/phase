@@ -365,14 +365,14 @@ mod tests {
             controller: PlayerId(1),
             kind: StackEntryKind::Spell {
                 card_id: CardId(500),
-                ability: ResolvedAbility::new(
+                ability: Some(ResolvedAbility::new(
                     Effect::Draw {
                         count: engine::types::ability::QuantityExpr::Fixed { value: 1 },
                     },
                     Vec::new(),
                     ObjectId(998),
                     PlayerId(1),
-                ),
+                )),
                 casting_variant: engine::types::game_state::CastingVariant::Normal,
             },
         });

@@ -1103,6 +1103,26 @@ pub(super) fn finalize_cast(
         events,
     );
 
+    // Determine whether this spell has a meaningful on-resolve ability.
+    // Permanent spells with no Spell-kind AbilityDefinition get a placeholder
+    // Unimplemented effect through the cost pipeline (from continue_with_no_ability).
+    // Only those become `ability: None` on the stack — they simply enter the
+    // battlefield on resolution. All other spells keep their ResolvedAbility.
+    let is_placeholder = matches!(
+        ability.effect,
+        crate::types::ability::Effect::Unimplemented { .. }
+    ) && ability.targets.is_empty();
+    let stack_ability = if !is_placeholder {
+        Some(ability)
+    } else {
+        // CR 603.4: For permanent spells with no spell ability, store cast_from_zone
+        // directly on the object since there's no ability context to carry it.
+        if let Some(obj) = state.objects.get_mut(&object_id) {
+            obj.cast_from_zone = Some(source_zone);
+        }
+        None
+    };
+
     // Move card from hand/command zone to stack zone
     zones::move_to_zone(state, object_id, Zone::Stack, events);
 
@@ -1120,7 +1140,7 @@ pub(super) fn finalize_cast(
             controller: player,
             kind: StackEntryKind::Spell {
                 card_id,
-                ability,
+                ability: stack_ability,
                 casting_variant,
             },
         },

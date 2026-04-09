@@ -435,15 +435,7 @@ mod tests {
             controller: PlayerId(1),
             kind: StackEntryKind::Spell {
                 card_id: CardId(99),
-                ability: ResolvedAbility::new(
-                    crate::types::ability::Effect::Unimplemented {
-                        name: "Dummy".to_string(),
-                        description: None,
-                    },
-                    vec![],
-                    ObjectId(99),
-                    PlayerId(1),
-                ),
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });

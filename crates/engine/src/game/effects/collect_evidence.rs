@@ -305,7 +305,13 @@ mod tests {
         assert_eq!(state.objects.get(&first).unwrap().zone, Zone::Exile);
         assert_eq!(state.objects.get(&second).unwrap().zone, Zone::Exile);
         let stack_entry = state.stack.last().expect("spell should be on stack");
-        assert!(stack_entry.ability().context.additional_cost_paid);
+        assert!(
+            stack_entry
+                .ability()
+                .expect("spell should have ability")
+                .context
+                .additional_cost_paid
+        );
         assert!(events.iter().any(|event| matches!(
             event,
             GameEvent::PlayerPerformedAction {

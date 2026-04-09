@@ -2005,7 +2005,9 @@ fn stack_entry_targets_only(
     let Some(entry) = entry else {
         return false;
     };
-    let ability = entry.ability();
+    let Some(ability) = entry.ability() else {
+        return false;
+    };
     // A spell with no targets doesn't "target only X" — it doesn't target at all.
     if ability.targets.is_empty() {
         return false;
@@ -2033,7 +2035,9 @@ fn stack_entry_targets_any(
     let Some(entry) = entry else {
         return false;
     };
-    let ability = entry.ability();
+    let Some(ability) = entry.ability() else {
+        return false;
+    };
     if ability.targets.is_empty() {
         return false;
     }
@@ -3042,14 +3046,14 @@ mod tests {
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id: CardId(100),
-                ability: ResolvedAbility::new(
+                ability: Some(ResolvedAbility::new(
                     crate::types::ability::Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
                     },
                     vec![],
                     spell_id,
                     PlayerId(0),
-                ),
+                )),
                 casting_variant: CastingVariant::Normal,
             },
         });

@@ -408,16 +408,16 @@ fn add_stack_spells(
         }
         // CR 115.7: "with a single target" — only match stack entries with exactly one target.
         if requires_single_target {
-            let ability = entry.ability();
-            if ability.targets.len() != 1 {
+            let targets = entry.ability().map(|a| &a.targets[..]).unwrap_or(&[]);
+            if targets.len() != 1 {
                 continue;
             }
         }
         // CR 115.9c: "that targets only [X]" — all targets must match the constraint filter.
         if let Some(ref constraint) = targets_only_constraint {
-            let ability = entry.ability();
-            if ability.targets.is_empty()
-                || !ability.targets.iter().all(|t| match t {
+            let targets = entry.ability().map(|a| &a.targets[..]).unwrap_or(&[]);
+            if targets.is_empty()
+                || !targets.iter().all(|t| match t {
                     TargetRef::Object(id) => {
                         super::filter::matches_target_filter(state, *id, constraint, source_id)
                     }
@@ -433,9 +433,9 @@ fn add_stack_spells(
         }
         // CR 115.9b: "that targets [X]" — at least one target must match (.any() semantics).
         if let Some(ref constraint) = targets_constraint {
-            let ability = entry.ability();
-            if ability.targets.is_empty()
-                || !ability.targets.iter().any(|t| match t {
+            let targets = entry.ability().map(|a| &a.targets[..]).unwrap_or(&[]);
+            if targets.is_empty()
+                || !targets.iter().any(|t| match t {
                     TargetRef::Object(id) => {
                         super::filter::matches_target_filter(state, *id, constraint, source_id)
                     }
@@ -1004,7 +1004,6 @@ mod tests {
     fn find_legal_targets_card_returns_stack_spells() {
         let (mut state, _c0, _c1, _land) = setup_with_typed_creatures();
         // Add a spell to the stack
-        use crate::types::ability::{Effect, ResolvedAbility};
         let spell_id = create_object(
             &mut state,
             CardId(100),
@@ -1018,15 +1017,7 @@ mod tests {
             controller: PlayerId(0),
             kind: crate::types::game_state::StackEntryKind::Spell {
                 card_id: CardId(100),
-                ability: ResolvedAbility::new(
-                    Effect::Unimplemented {
-                        name: "test".to_string(),
-                        description: None,
-                    },
-                    vec![],
-                    spell_id,
-                    PlayerId(0),
-                ),
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });
@@ -1050,7 +1041,6 @@ mod tests {
             .push(crate::types::card_type::CoreType::Artifact);
 
         // Add an artifact spell to the stack.
-        use crate::types::ability::{Effect, ResolvedAbility};
         let spell_id = create_object(
             &mut state,
             CardId(200),
@@ -1064,15 +1054,7 @@ mod tests {
             controller: PlayerId(1),
             kind: crate::types::game_state::StackEntryKind::Spell {
                 card_id: CardId(200),
-                ability: ResolvedAbility::new(
-                    Effect::Unimplemented {
-                        name: "test".to_string(),
-                        description: None,
-                    },
-                    vec![],
-                    spell_id,
-                    PlayerId(1),
-                ),
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });
@@ -1114,15 +1096,7 @@ mod tests {
             controller: PlayerId(1),
             kind: crate::types::game_state::StackEntryKind::Spell {
                 card_id: CardId(300),
-                ability: crate::types::ability::ResolvedAbility::new(
-                    Effect::Unimplemented {
-                        name: "test".to_string(),
-                        description: None,
-                    },
-                    vec![],
-                    spell_id,
-                    PlayerId(1),
-                ),
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });

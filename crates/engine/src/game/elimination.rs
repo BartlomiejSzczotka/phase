@@ -203,7 +203,6 @@ fn check_game_over(state: &mut GameState, events: &mut Vec<GameEvent>) {
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::ResolvedAbility;
     use crate::types::format::FormatConfig;
     use crate::types::game_state::{CastingVariant, StackEntry, StackEntryKind};
     use crate::types::identifiers::CardId;
@@ -311,15 +310,7 @@ mod tests {
             controller: PlayerId(0),
             kind: StackEntryKind::Spell {
                 card_id: CardId(1),
-                ability: ResolvedAbility::new(
-                    crate::types::ability::Effect::Unimplemented {
-                        name: "Dummy".to_string(),
-                        description: None,
-                    },
-                    vec![],
-                    obj_id,
-                    PlayerId(0),
-                ),
+                ability: None,
                 casting_variant: CastingVariant::Normal,
             },
         });
