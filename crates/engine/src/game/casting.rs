@@ -6239,4 +6239,152 @@ mod tests {
             }
         );
     }
+
+    /// CR 601.2f: Thalia, Guardian of Thraben raises noncreature spell costs by {1}.
+    /// When the AI has insufficient mana to pay the taxed cost, `can_cast_object_now`
+    /// must return false so the spell never appears in the candidate action list.
+    #[test]
+    fn raise_cost_static_prevents_unaffordable_noncreature_cast() {
+        use crate::ai_support::{candidate_actions, legal_actions};
+        use crate::game::derived::derive_display_state;
+        use crate::types::actions::GameAction;
+
+        let mut state = setup_game_at_main_phase();
+
+        // Thalia on the opponent's battlefield: "Noncreature spells cost {1} more to cast."
+        let thalia = create_object(
+            &mut state,
+            CardId(700),
+            PlayerId(1),
+            "Thalia, Guardian of Thraben".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&thalia).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.static_definitions.push(
+                parse_static_line("Noncreature spells cost {1} more to cast.")
+                    .expect("Thalia RaiseCost should parse"),
+            );
+            obj.base_static_definitions = obj.static_definitions.clone();
+        }
+
+        // One Mountain for player 0 — enough for {R} but not {1}{R}
+        add_basic_land(&mut state, CardId(701), "Mountain", "Mountain");
+
+        // Lightning Bolt in hand: costs {R}, but Thalia makes it {1}{R}
+        let bolt = create_object(
+            &mut state,
+            CardId(702),
+            PlayerId(0),
+            "Lightning Bolt".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&bolt).unwrap();
+            obj.card_types.core_types.push(CoreType::Instant);
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Red],
+                generic: 0,
+            };
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Fixed { value: 3 },
+                    target: TargetFilter::Any,
+                    damage_source: None,
+                },
+            ));
+        }
+
+        derive_display_state(&mut state);
+
+        // With Thalia's tax, Lightning Bolt costs {1}{R} but player has only 1 Mountain ({R}).
+        assert!(
+            !can_cast_object_now(&state, PlayerId(0), bolt),
+            "Lightning Bolt should NOT be castable — Thalia tax makes it {{1}}{{R}} with only 1 Mountain"
+        );
+
+        // Must not appear in candidate or legal actions
+        let candidates = candidate_actions(&state);
+        assert!(
+            !candidates.iter().any(|c| matches!(
+                &c.action,
+                GameAction::CastSpell { object_id, .. } if *object_id == bolt
+            )),
+            "Unaffordable spell must not appear in candidate_actions"
+        );
+
+        let actions = legal_actions(&state);
+        assert!(
+            !actions.iter().any(|a| matches!(
+                a,
+                GameAction::CastSpell { object_id, .. } if *object_id == bolt
+            )),
+            "Unaffordable spell must not appear in legal_actions"
+        );
+    }
+
+    /// CR 601.2f: With enough mana to cover Thalia's tax, the spell remains castable.
+    #[test]
+    fn raise_cost_static_allows_affordable_noncreature_cast() {
+        use crate::game::derived::derive_display_state;
+
+        let mut state = setup_game_at_main_phase();
+
+        // Thalia on opponent's battlefield
+        let thalia = create_object(
+            &mut state,
+            CardId(710),
+            PlayerId(1),
+            "Thalia, Guardian of Thraben".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&thalia).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.static_definitions.push(
+                parse_static_line("Noncreature spells cost {1} more to cast.")
+                    .expect("Thalia RaiseCost should parse"),
+            );
+            obj.base_static_definitions = obj.static_definitions.clone();
+        }
+
+        // Two Mountains — enough for {1}{R}
+        add_basic_land(&mut state, CardId(711), "Mountain", "Mountain");
+        add_basic_land(&mut state, CardId(712), "Mountain 2", "Mountain");
+
+        // Lightning Bolt: {R} → {1}{R} with Thalia
+        let bolt = create_object(
+            &mut state,
+            CardId(713),
+            PlayerId(0),
+            "Lightning Bolt".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&bolt).unwrap();
+            obj.card_types.core_types.push(CoreType::Instant);
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Red],
+                generic: 0,
+            };
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::DealDamage {
+                    amount: QuantityExpr::Fixed { value: 3 },
+                    target: TargetFilter::Any,
+                    damage_source: None,
+                },
+            ));
+        }
+
+        derive_display_state(&mut state);
+
+        // With 2 Mountains, {1}{R} is affordable
+        assert!(
+            can_cast_object_now(&state, PlayerId(0), bolt),
+            "Lightning Bolt should be castable with 2 Mountains (covers {{1}}{{R}} after Thalia tax)"
+        );
+    }
 }

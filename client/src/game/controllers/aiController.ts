@@ -54,9 +54,26 @@ export function createAIController(config: AIControllerConfig): AIController {
 
     if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
       debugLog(
-        `AI stuck: ${MAX_CONSECUTIVE_FAILURES} consecutive failures on ${waitingFor.type}, stopping retries`,
+        `AI stuck: ${MAX_CONSECUTIVE_FAILURES} consecutive failures on ${waitingFor.type}, dispatching fallback`,
         "warn",
       );
+      // Instead of freezing the game, dispatch a safe escape action.
+      // CancelCast during casting flow, PassPriority otherwise.
+      const hasPendingCast =
+        waitingFor.type === "ManaPayment" ||
+        waitingFor.type === "TargetSelection" ||
+        waitingFor.type === "ModeChoice" ||
+        waitingFor.type === "OptionalCostChoice";
+      const fallback: GameAction = hasPendingCast
+        ? { type: "CancelCast" }
+        : { type: "PassPriority" };
+      consecutiveFailures = 0;
+      dispatchAction(fallback).catch((e) => {
+        debugLog(
+          `AI fallback also failed: ${e instanceof Error ? e.message : String(e)}`,
+          "warn",
+        );
+      });
       return;
     }
 
@@ -89,6 +106,10 @@ export function createAIController(config: AIControllerConfig): AIController {
       try {
         const { gameState } = useGameStore.getState();
         const action = await actionPromise;
+        // Re-check active after await — the AI computation may have completed
+        // after stop() was called, and dispatching a stale action from the old
+        // game into a new game session would corrupt state.
+        if (!active) return;
         if (action == null) {
           debugLog(
             `AI getAiAction returned null for player ${playerId} (waitingFor: ${gameState?.waiting_for?.type ?? "none"})`,

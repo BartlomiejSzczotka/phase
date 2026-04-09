@@ -30,12 +30,28 @@ pub fn choose_action(
 ) -> Option<GameAction> {
     let scored = score_candidates(state, ai_player, config);
     if scored.is_empty() {
-        return None;
+        // No valid candidates from search — fall back to a safe escape action
+        // so the game never deadlocks waiting for the AI.
+        return fallback_action(state);
     }
     if scored.len() == 1 {
         return Some(scored[0].0.clone());
     }
     softmax_select_pairs(&scored, config.temperature, rng)
+}
+
+/// Produce a safe action when the AI has no scored candidates.
+/// During casting-related states, cancel the cast. During active play, pass priority.
+/// Returns None only for terminal states (GameOver) where no action is possible.
+fn fallback_action(state: &GameState) -> Option<GameAction> {
+    if matches!(state.waiting_for, WaitingFor::GameOver { .. }) {
+        return None;
+    }
+    if state.waiting_for.has_pending_cast() {
+        Some(GameAction::CancelCast)
+    } else {
+        Some(GameAction::PassPriority)
+    }
 }
 
 /// Score all candidate actions without selecting one.
@@ -144,7 +160,12 @@ pub fn score_candidates(
                     planner.evaluate_after_action(&sim, &mut services, &mut budget);
                 continuation_score + (ranked.score * tactical_weight)
             } else {
-                ranked.score
+                // Action failed simulation — heavily penalize so the AI prefers
+                // any valid alternative (e.g., CancelCast over a failing PassPriority
+                // during ManaPayment when the cost is unaffordable).
+                // Preserve tactical score as tiebreaker among equally-failing actions
+                // (e.g., target selection where simulation lacks full engine context).
+                ranked.score - 1000.0
             };
             (ranked.candidate.action, score)
         })

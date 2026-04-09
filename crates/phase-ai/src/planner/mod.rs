@@ -346,11 +346,18 @@ impl<'a> PlannerServices<'a> {
         state: &GameState,
         candidates: Vec<CandidateAction>,
     ) -> Vec<CandidateAction> {
+        // PassPriority is always legal during Priority (skip simulation for perf),
+        // but during ManaPayment it means "finalize payment" which can fail if the
+        // player can't actually pay the cost (e.g., Thalia tax makes it unaffordable).
+        let pass_always_valid = matches!(
+            state.waiting_for,
+            engine::types::game_state::WaitingFor::Priority { .. }
+        );
         candidates
             .into_iter()
             .filter(|candidate| match &candidate.action {
-                engine::types::actions::GameAction::PassPriority
-                | engine::types::actions::GameAction::ChooseTarget { .. } => true,
+                engine::types::actions::GameAction::PassPriority if pass_always_valid => true,
+                engine::types::actions::GameAction::ChooseTarget { .. } => true,
                 _ => {
                     let mut sim = state.clone();
                     apply(&mut sim, candidate.action.clone()).is_ok()
