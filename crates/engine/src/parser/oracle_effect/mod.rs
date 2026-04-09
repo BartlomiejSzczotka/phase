@@ -880,11 +880,8 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
 
     // CR 701.20a: "reveal it" / "reveal them" — standalone reveal of a referenced object
     // (e.g., the card looked at via a dig effect). Maps to RevealTop { count: 1 }.
-    if let Ok((rest, _)) = alt((
-        tag::<_, _, VerboseError<&str>>("reveal "),
-        tag("reveals "),
-    ))
-    .parse(tp.lower)
+    if let Ok((rest, _)) =
+        alt((tag::<_, _, VerboseError<&str>>("reveal "), tag("reveals "))).parse(tp.lower)
     {
         if alt((
             value((), tag::<_, _, VerboseError<&str>>("it")),
@@ -3482,6 +3479,93 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         } else {
             text
         };
+        // CR 508.4 / CR 614.1: "If [condition], they/those tokens/it enter(s) tapped and
+        // attacking" — conditional modifier on preceding Token/CopyTokenOf/ChangeZone.
+        // Model as an "instead" swap: the modified Token (with tapped+attacking set)
+        // replaces the original when the condition holds.
+        {
+            let enters_lower = text.to_lowercase();
+            if condition.is_some()
+                && nom_primitives::scan_contains(&enters_lower, "enter tapped and attacking")
+            {
+                if let Some(prev) = defs.last() {
+                    let can_patch = matches!(
+                        &*prev.effect,
+                        Effect::CopyTokenOf { .. }
+                            | Effect::Token { .. }
+                            | Effect::ChangeZone { .. }
+                    );
+                    if can_patch {
+                        let mut patched = defs.pop().unwrap();
+                        match &mut *patched.effect {
+                            Effect::CopyTokenOf {
+                                enters_attacking,
+                                tapped,
+                                ..
+                            } => {
+                                *enters_attacking = true;
+                                *tapped = true;
+                            }
+                            Effect::Token {
+                                enters_attacking,
+                                tapped,
+                                ..
+                            } => {
+                                *enters_attacking = true;
+                                *tapped = true;
+                            }
+                            Effect::ChangeZone {
+                                enters_attacking,
+                                enter_tapped,
+                                ..
+                            } => {
+                                *enters_attacking = true;
+                                *enter_tapped = true;
+                            }
+                            _ => {}
+                        }
+                        // Convert to "instead" swap: patched Token becomes the sub_ability
+                        // that fires when the condition holds; the original becomes else_ability
+                        // (the fallback when condition is false).
+                        let original = {
+                            let mut orig = patched.clone();
+                            match &mut *orig.effect {
+                                Effect::CopyTokenOf {
+                                    enters_attacking,
+                                    tapped,
+                                    ..
+                                } => {
+                                    *enters_attacking = false;
+                                    *tapped = false;
+                                }
+                                Effect::Token {
+                                    enters_attacking,
+                                    tapped,
+                                    ..
+                                } => {
+                                    *enters_attacking = false;
+                                    *tapped = false;
+                                }
+                                Effect::ChangeZone {
+                                    enters_attacking,
+                                    enter_tapped,
+                                    ..
+                                } => {
+                                    *enters_attacking = false;
+                                    *enter_tapped = false;
+                                }
+                                _ => {}
+                            }
+                            orig
+                        };
+                        patched.condition = condition;
+                        patched.else_ability = Some(Box::new(original));
+                        defs.push(patched);
+                        continue;
+                    }
+                }
+            }
+        }
         let (is_optional, opponent_may_scope, text) = strip_optional_effect_prefix(&text);
         let (repeat_for, text) = strip_for_each_prefix(&text);
         // CR 609.3: "twice" / "N times" suffix — same mechanism as "for each" prefix.
@@ -8553,6 +8637,85 @@ mod tests {
             })
         );
         assert_eq!(text, "draw a card");
+    }
+
+    #[test]
+    fn ninjutsu_variant_paid_sneak_non_instead() {
+        // CR 702.49: "if this spell's sneak cost was paid, [effect]" without "instead"
+        let (cond, text) = strip_additional_cost_conditional(
+            "if this spell's sneak cost was paid, they enter tapped and attacking",
+        );
+        assert_eq!(
+            cond,
+            Some(AbilityCondition::NinjutsuVariantPaid {
+                variant: NinjutsuVariant::Sneak,
+            })
+        );
+        assert_eq!(text, "they enter tapped and attacking");
+    }
+
+    #[test]
+    fn ninjutsu_variant_paid_ninjutsu_non_instead() {
+        // CR 702.49: "if its ninjutsu cost was paid, [effect]" without "instead"
+        let (cond, text) = strip_additional_cost_conditional(
+            "if its ninjutsu cost was paid, those tokens enter tapped and attacking",
+        );
+        assert_eq!(
+            cond,
+            Some(AbilityCondition::NinjutsuVariantPaid {
+                variant: NinjutsuVariant::Ninjutsu,
+            })
+        );
+        assert_eq!(text, "those tokens enter tapped and attacking");
+    }
+
+    #[test]
+    fn conditional_enter_tapped_attacking_patches_token() {
+        // CR 508.4 + CR 614.1d: "If sneak cost was paid, they enter tapped and attacking"
+        // should produce a conditional Token with enters_attacking and tapped set, with
+        // the original (unflagged) Token as else_ability.
+        let def = parse_effect_chain(
+            "Create three 1/1 white Ninja Turtle Spirit creature tokens. If this spell's sneak cost was paid, they enter tapped and attacking.",
+            AbilityKind::Spell,
+        );
+        // The def should be a Token with condition and else_ability
+        match &*def.effect {
+            Effect::Token {
+                enters_attacking,
+                tapped,
+                count,
+                ..
+            } => {
+                // When condition is met, tokens enter tapped and attacking
+                assert!(*enters_attacking, "Token should have enters_attacking=true");
+                assert!(*tapped, "Token should have tapped=true");
+                assert_eq!(*count, QuantityExpr::Fixed { value: 3 });
+            }
+            other => panic!("Expected Token effect, got {:?}", other),
+        }
+        assert_eq!(
+            def.condition,
+            Some(AbilityCondition::NinjutsuVariantPaid {
+                variant: NinjutsuVariant::Sneak,
+            }),
+            "Token should have NinjutsuVariantPaid condition"
+        );
+        // else_ability should be the same Token without tapped/attacking
+        let else_def = def.else_ability.as_ref().expect("Should have else_ability");
+        match &*else_def.effect {
+            Effect::Token {
+                enters_attacking,
+                tapped,
+                ..
+            } => {
+                assert!(
+                    !*enters_attacking,
+                    "Else Token should have enters_attacking=false"
+                );
+                assert!(!*tapped, "Else Token should have tapped=false");
+            }
+            other => panic!("Expected Token effect in else_ability, got {:?}", other),
+        }
     }
 
     #[test]

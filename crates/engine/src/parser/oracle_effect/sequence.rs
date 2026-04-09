@@ -558,9 +558,7 @@ pub(super) fn apply_clause_continuation(
                 grants.extend(new_grants);
             }
         }
-        ContinuationAst::ManaGrant {
-            grants: new_grants,
-        } => {
+        ContinuationAst::ManaGrant { grants: new_grants } => {
             let Some(previous) = defs.last_mut() else {
                 return;
             };
@@ -980,9 +978,7 @@ pub(super) fn parse_followup_continuation_ast(
             Some(ContinuationAst::RevealHandFilter { card_filter })
         }
         Effect::Mana { .. } => {
-            if let Some((restriction, grants)) =
-                super::mana::parse_mana_spend_restriction(&lower)
-            {
+            if let Some((restriction, grants)) = super::mana::parse_mana_spend_restriction(&lower) {
                 return Some(ContinuationAst::ManaRestriction {
                     restriction,
                     grants,
@@ -1105,6 +1101,13 @@ pub(super) fn parse_followup_continuation_ast(
         {
             Some(ContinuationAst::SuspectLastCreated)
         }
+        // CR 508.4 / CR 614.1: "they/those tokens enter tapped and attacking" (plural)
+        // after Token, CopyTokenOf, or ChangeZone — same as singular "enters" variant.
+        Effect::CopyTokenOf { .. } | Effect::Token { .. } | Effect::ChangeZone { .. }
+            if nom_primitives::scan_contains(&lower, "enter tapped and attacking") =>
+        {
+            Some(ContinuationAst::EntersTappedAttacking)
+        }
         // CR 701.19c + CR 608.2c: "It can't be regenerated" prevents regeneration shields;
         // later text modifies the preceding Destroy instruction per CR 608.2c.
         Effect::Destroy { .. } | Effect::DestroyAll { .. }
@@ -1175,10 +1178,12 @@ pub(super) fn parse_followup_continuation_ast(
         {
             parse_dig_from_among(&lower, text)
         }
-        // CR 508.4 / CR 614.1: "It/The token/He/She/Name enters tapped and attacking"
+        // CR 508.4 / CR 614.1: "It/The token enters tapped and attacking" (singular)
+        // or "They/Those tokens enter tapped and attacking" (plural)
         // after CopyTokenOf, Token, or ChangeZone effects.
         Effect::CopyTokenOf { .. } | Effect::Token { .. } | Effect::ChangeZone { .. }
-            if nom_primitives::scan_contains(&lower, "enters tapped and attacking") =>
+            if nom_primitives::scan_contains(&lower, "enters tapped and attacking")
+                || nom_primitives::scan_contains(&lower, "enter tapped and attacking") =>
         {
             Some(ContinuationAst::EntersTappedAttacking)
         }

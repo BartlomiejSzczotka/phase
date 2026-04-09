@@ -147,11 +147,31 @@ pub(super) fn strip_additional_cost_conditional(text: &str) -> (Option<AbilityCo
                 after.original.to_string(),
             );
         }
+        // CR 702.49: "if this spell's sneak cost was paid, [effect]" — non-"instead"
+        // variant that gates a sub-ability on sneak payment.
+        if let Some(after) = tp.strip_after("sneak cost was paid, ") {
+            return (
+                Some(AbilityCondition::NinjutsuVariantPaid {
+                    variant: NinjutsuVariant::Sneak,
+                }),
+                after.original.to_string(),
+            );
+        }
     }
     if body.is_none() && scan_contains_phrase(&lower, "ninjutsu cost was paid") {
         if let Some(after) = tp.strip_after("instead ") {
             return (
                 Some(AbilityCondition::NinjutsuVariantPaidInstead {
+                    variant: NinjutsuVariant::Ninjutsu,
+                }),
+                after.original.to_string(),
+            );
+        }
+        // CR 702.49: "if its ninjutsu cost was paid, [effect]" — non-"instead"
+        // variant that gates a sub-ability on ninjutsu payment.
+        if let Some(after) = tp.strip_after("ninjutsu cost was paid, ") {
+            return (
+                Some(AbilityCondition::NinjutsuVariantPaid {
                     variant: NinjutsuVariant::Ninjutsu,
                 }),
                 after.original.to_string(),
@@ -308,19 +328,13 @@ pub(super) fn strip_card_type_conditional(text: &str) -> (Option<AbilityConditio
     let capitalized = format!("{}{}", &type_word[..1].to_uppercase(), &type_word[1..]);
     if let Ok(card_type) = CoreType::from_str(&capitalized) {
         // CR 205.3m: Consume optional "of the chosen type" suffix after " card".
-        let (after_type, additional_filter) =
-            if let Ok((rest_after_chosen, _)) = tag::<_, _, VerboseError<&str>>(
-                " of the chosen type",
-            )
-            .parse(after_type)
-            {
-                (
-                    rest_after_chosen,
-                    Some(FilterProp::IsChosenCreatureType),
-                )
-            } else {
-                (after_type, None)
-            };
+        let (after_type, additional_filter) = if let Ok((rest_after_chosen, _)) =
+            tag::<_, _, VerboseError<&str>>(" of the chosen type").parse(after_type)
+        {
+            (rest_after_chosen, Some(FilterProp::IsChosenCreatureType))
+        } else {
+            (after_type, None)
+        };
         let remainder = after_type.strip_prefix(", ").unwrap_or(after_type);
         let offset = text.len() - remainder.len();
         return (
