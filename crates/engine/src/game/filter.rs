@@ -17,6 +17,7 @@ use crate::types::game_state::{GameState, SpellCastRecord};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaColor;
 use crate::types::player::PlayerId;
+use crate::types::zones::Zone;
 
 /// CR 608.2c: Resolve contextual parent-target exclusions before a mass-effect scan.
 ///
@@ -327,6 +328,97 @@ pub fn spell_record_matches_filter(
         | TargetFilter::DefendingPlayer
         | TargetFilter::HasChosenName
         | TargetFilter::Named { .. } => false,
+    }
+}
+
+/// Check whether a spell object being cast matches a target filter.
+///
+/// Unlike [`spell_record_matches_filter`], this preserves the spell's current zone
+/// and interprets `ControllerRef` relative to the current caster rather than the
+/// object's stored controller.
+pub fn spell_object_matches_filter(
+    spell_obj: &GameObject,
+    caster: PlayerId,
+    filter: &TargetFilter,
+    source_controller: PlayerId,
+) -> bool {
+    let record = SpellCastRecord {
+        core_types: spell_obj.card_types.core_types.clone(),
+        supertypes: spell_obj.card_types.supertypes.clone(),
+        subtypes: spell_obj.card_types.subtypes.clone(),
+        keywords: spell_obj.keywords.clone(),
+        colors: spell_obj.color.clone(),
+        mana_value: spell_obj.mana_cost.mana_value(),
+    };
+    spell_object_matches_filter_inner(&record, spell_obj.zone, caster, filter, source_controller)
+}
+
+fn spell_object_matches_filter_inner(
+    record: &SpellCastRecord,
+    zone: Zone,
+    caster: PlayerId,
+    filter: &TargetFilter,
+    source_controller: PlayerId,
+) -> bool {
+    match filter {
+        TargetFilter::Any => true,
+        TargetFilter::Typed(TypedFilter {
+            type_filters,
+            controller,
+            properties,
+        }) => {
+            if let Some(ctrl) = controller {
+                match ctrl {
+                    ControllerRef::You if caster != source_controller => return false,
+                    ControllerRef::Opponent if caster == source_controller => return false,
+                    _ => {}
+                }
+            }
+
+            type_filters
+                .iter()
+                .all(|type_filter| spell_record_matches_type_filter(record, type_filter))
+                && properties
+                    .iter()
+                    .all(|prop| spell_object_matches_property(record, zone, prop))
+        }
+        TargetFilter::Or { filters } => filters.iter().any(|inner| {
+            spell_object_matches_filter_inner(record, zone, caster, inner, source_controller)
+        }),
+        TargetFilter::And { filters } => filters.iter().all(|inner| {
+            spell_object_matches_filter_inner(record, zone, caster, inner, source_controller)
+        }),
+        TargetFilter::Not { filter: inner } => {
+            !spell_object_matches_filter_inner(record, zone, caster, inner, source_controller)
+        }
+        TargetFilter::None
+        | TargetFilter::Player
+        | TargetFilter::Controller
+        | TargetFilter::SelfRef
+        | TargetFilter::StackAbility
+        | TargetFilter::StackSpell
+        | TargetFilter::SpecificObject { .. }
+        | TargetFilter::AttachedTo
+        | TargetFilter::LastCreated
+        | TargetFilter::TrackedSet { .. }
+        | TargetFilter::ExiledBySource
+        | TargetFilter::TriggeringSpellController
+        | TargetFilter::TriggeringSpellOwner
+        | TargetFilter::TriggeringPlayer
+        | TargetFilter::TriggeringSource
+        | TargetFilter::ParentTarget
+        | TargetFilter::ParentTargetController
+        | TargetFilter::DefendingPlayer
+        | TargetFilter::HasChosenName
+        | TargetFilter::Named { .. } => false,
+    }
+}
+
+fn spell_object_matches_property(record: &SpellCastRecord, zone: Zone, prop: &FilterProp) -> bool {
+    match prop {
+        FilterProp::InZone { zone: required } => zone == *required,
+        FilterProp::InAnyZone { zones } => zones.contains(&zone),
+        _ => spell_record_matches_property(record, prop),
     }
 }
 
@@ -1542,5 +1634,38 @@ mod tests {
         };
         assert!(matches_target_filter(&state, bolt, &filter, source));
         assert!(!matches_target_filter(&state, growth, &filter, source));
+    }
+
+    #[test]
+    fn spell_object_filter_uses_caster_and_zone() {
+        let mut state = setup();
+        let spell_id = create_object(
+            &mut state,
+            CardId(300),
+            PlayerId(1),
+            "Borrowed Spell".to_string(),
+            Zone::Exile,
+        );
+        let spell = state.objects.get_mut(&spell_id).unwrap();
+        spell.card_types.core_types.push(CoreType::Sorcery);
+
+        let filter = TargetFilter::Typed(
+            TypedFilter::new(TypeFilter::Sorcery)
+                .controller(ControllerRef::You)
+                .properties(vec![FilterProp::InZone { zone: Zone::Exile }]),
+        );
+
+        assert!(spell_object_matches_filter(
+            spell,
+            PlayerId(0),
+            &filter,
+            PlayerId(0),
+        ));
+        assert!(!spell_object_matches_filter(
+            spell,
+            PlayerId(1),
+            &filter,
+            PlayerId(0),
+        ));
     }
 }

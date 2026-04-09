@@ -131,6 +131,7 @@ const STATIC_CONTAINS_PATTERNS: &[&str] = &[
     "can't cast spells with",
     "can't cast spells of the chosen",
     "can't draw more than",
+    "can't draw cards",
     "can cast spells only during",
     "activated abilities can't be activated",
     "skip your ",

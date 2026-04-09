@@ -5,7 +5,7 @@ use crate::game::sba;
 use crate::game::triggers;
 use crate::types::ability::TargetRef;
 use crate::types::events::GameEvent;
-use crate::types::game_state::{DamageSlot, GameState, WaitingFor};
+use crate::types::game_state::{CombatDamageAssignmentMode, DamageSlot, GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::keywords::Keyword;
 use crate::types::player::PlayerId;
@@ -200,22 +200,33 @@ fn collect_damage_assignments(state: &mut GameState, sub_step: SubStep) -> Optio
         };
 
         // CR 510.1c: Check if interactive assignment is needed (2+ blockers).
-        if needs_interactive_assignment(&combat, attacker_info.object_id) {
+        if needs_interactive_assignment(obj, &combat, attacker_info) {
             // Pause iteration — player must choose damage division.
             if let Some(c) = &mut state.combat {
                 c.damage_step_index = Some(i);
             }
 
+            let blocker_ids = combat
+                .blocker_assignments
+                .get(&attacker_info.object_id)
+                .cloned()
+                .unwrap_or_default();
             let blockers: Vec<DamageSlot> = combat
                 .blocker_assignments
                 .get(&attacker_info.object_id)
-                .unwrap()
-                .iter()
+                .into_iter()
+                .flatten()
                 .map(|&bid| DamageSlot {
                     blocker_id: bid,
                     lethal_minimum: lethal_damage_needed(state, bid, has_deathtouch),
                 })
                 .collect();
+            let assignment_modes = combat_damage_assignment_modes(
+                obj,
+                attacker_info.blocked,
+                !blocker_ids.is_empty(),
+                trample,
+            );
 
             // The player who assigns damage is the attacker's controller.
             let controller = state
@@ -236,6 +247,7 @@ fn collect_damage_assignments(state: &mut GameState, sub_step: SubStep) -> Optio
                 attacker_id: attacker_info.object_id,
                 total_damage: power,
                 blockers,
+                assignment_modes,
                 trample,
                 defending_player: attacker_info.defending_player,
                 attack_target: attacker_info.attack_target.clone(),
@@ -350,12 +362,23 @@ fn distribute_blocker_damage(
 /// CR 510.1c: Check if an attacker needs interactive damage assignment.
 /// Returns true when there are 2+ blockers — the attacking player should choose
 /// how to divide damage. Single-blocker and unblocked scenarios are auto-assigned.
-pub(crate) fn needs_interactive_assignment(combat: &CombatState, attacker_id: ObjectId) -> bool {
-    combat
+pub(crate) fn needs_interactive_assignment(
+    obj: &GameObject,
+    combat: &CombatState,
+    attacker_info: &crate::game::combat::AttackerInfo,
+) -> bool {
+    let blocker_count = combat
         .blocker_assignments
-        .get(&attacker_id)
-        .map(|b| b.len() >= 2)
-        .unwrap_or(false)
+        .get(&attacker_info.object_id)
+        .map_or(0, Vec::len);
+
+    if obj.assigns_damage_as_though_unblocked && attacker_info.blocked {
+        let has_trample = obj.has_keyword(&Keyword::Trample)
+            || obj.has_keyword(&Keyword::TrampleOverPlaneswalkers);
+        return blocker_count > 0 || !has_trample;
+    }
+
+    blocker_count >= 2
 }
 
 /// CR 702.19c: Compute effective PW loyalty threshold for trample-over-PW,
@@ -424,6 +447,38 @@ fn assign_trample_over_pw_excess(
         });
     }
     result
+}
+
+fn combat_damage_assignment_modes(
+    obj: &GameObject,
+    blocked: bool,
+    has_blockers: bool,
+    trample: Option<TrampleKind>,
+) -> Vec<CombatDamageAssignmentMode> {
+    if obj.assigns_damage_as_though_unblocked && blocked && (has_blockers || trample.is_none()) {
+        vec![
+            CombatDamageAssignmentMode::Normal,
+            CombatDamageAssignmentMode::AsThoughUnblocked,
+        ]
+    } else {
+        vec![CombatDamageAssignmentMode::Normal]
+    }
+}
+
+pub(crate) fn assign_damage_as_though_unblocked(
+    state: &GameState,
+    attacker_info: &crate::game::combat::AttackerInfo,
+    power: u32,
+    trample: Option<TrampleKind>,
+) -> Vec<DamageAssignment> {
+    let is_over_pw = trample == Some(TrampleKind::OverPlaneswalkers);
+    match attacker_info.resolve_damage_target(state, is_over_pw) {
+        Some(target) => vec![DamageAssignment {
+            target,
+            amount: power,
+        }],
+        None => Vec::new(),
+    }
 }
 
 /// Auto-assign damage for unblocked or single-blocker attackers.
@@ -756,6 +811,85 @@ mod tests {
         assert_eq!(state.objects[&attacker].damage_marked, 0);
         // No player damage
         assert_eq!(state.players[1].life, 20);
+    }
+
+    #[test]
+    fn blocked_attacker_with_unblocked_option_waits_for_assignment_choice() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Thorn Elemental", 5, 5);
+        state
+            .objects
+            .get_mut(&attacker)
+            .unwrap()
+            .assigns_damage_as_though_unblocked = true;
+        let blocker_a = create_creature(&mut state, PlayerId(1), "Wall A", 2, 2);
+        let blocker_b = create_creature(&mut state, PlayerId(1), "Wall B", 2, 2);
+        setup_combat(
+            &mut state,
+            vec![attacker],
+            vec![(attacker, vec![blocker_a, blocker_b])],
+        );
+
+        let mut events = Vec::new();
+        let waiting = resolve_combat_damage(&mut state, &mut events);
+
+        match waiting {
+            Some(WaitingFor::AssignCombatDamage {
+                total_damage,
+                blockers,
+                assignment_modes,
+                ..
+            }) => {
+                assert_eq!(total_damage, 5);
+                assert_eq!(blockers.len(), 2);
+                assert_eq!(
+                    assignment_modes,
+                    vec![
+                        CombatDamageAssignmentMode::Normal,
+                        CombatDamageAssignmentMode::AsThoughUnblocked,
+                    ]
+                );
+            }
+            other => panic!("Expected AssignCombatDamage choice, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn single_blocker_with_unblocked_option_waits_for_assignment_choice() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Thorn Elemental", 5, 5);
+        state
+            .objects
+            .get_mut(&attacker)
+            .unwrap()
+            .assigns_damage_as_though_unblocked = true;
+        let blocker = create_creature(&mut state, PlayerId(1), "Wall", 0, 4);
+        setup_combat(&mut state, vec![attacker], vec![(attacker, vec![blocker])]);
+
+        let mut events = Vec::new();
+        let waiting = resolve_combat_damage(&mut state, &mut events);
+
+        // CR 510.1c: Single blocker would normally auto-assign, but the
+        // assigns-damage-as-though-unblocked flag forces interactive choice.
+        match waiting {
+            Some(WaitingFor::AssignCombatDamage {
+                total_damage,
+                blockers,
+                assignment_modes,
+                ..
+            }) => {
+                assert_eq!(total_damage, 5);
+                assert_eq!(blockers.len(), 1);
+                assert_eq!(
+                    assignment_modes,
+                    vec![
+                        CombatDamageAssignmentMode::Normal,
+                        CombatDamageAssignmentMode::AsThoughUnblocked,
+                    ]
+                );
+            }
+            other => panic!("Expected AssignCombatDamage choice, got {other:?}"),
+        }
     }
 
     #[test]

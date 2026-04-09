@@ -7093,7 +7093,11 @@ mod tests {
         // Subject should be Or { SelfRef, Typed(nontoken creature you control, Another) }
         match &def.valid_card {
             Some(TargetFilter::Or { filters }) => {
-                assert_eq!(filters.len(), 2, "Expected 2 filters in Or, got {filters:?}");
+                assert_eq!(
+                    filters.len(),
+                    2,
+                    "Expected 2 filters in Or, got {filters:?}"
+                );
                 assert_eq!(filters[0], TargetFilter::SelfRef);
                 // Second filter: nontoken creature you control with Another
                 if let TargetFilter::Typed(tf) = &filters[1] {

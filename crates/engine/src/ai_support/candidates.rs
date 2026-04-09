@@ -982,6 +982,7 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
             player,
             total_damage,
             blockers,
+            assignment_modes,
             trample,
             pw_loyalty,
             attack_target,
@@ -1016,15 +1017,32 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
             } else {
                 (if trample.is_some() { remaining } else { 0 }, 0)
             };
-            vec![candidate(
+            let mut candidates = vec![candidate(
                 GameAction::AssignCombatDamage {
+                    mode: crate::types::game_state::CombatDamageAssignmentMode::Normal,
                     assignments,
                     trample_damage: trample_dmg,
                     controller_damage: ctrl_dmg,
                 },
                 TacticalClass::Selection,
                 Some(*player),
-            )]
+            )];
+            if assignment_modes
+                .contains(&crate::types::game_state::CombatDamageAssignmentMode::AsThoughUnblocked)
+            {
+                candidates.push(candidate(
+                    GameAction::AssignCombatDamage {
+                        mode:
+                            crate::types::game_state::CombatDamageAssignmentMode::AsThoughUnblocked,
+                        assignments: Vec::new(),
+                        trample_damage: 0,
+                        controller_damage: 0,
+                    },
+                    TacticalClass::Selection,
+                    Some(*player),
+                ));
+            }
+            candidates
         }
         // CR 601.2d: Distribute — even split as default.
         WaitingFor::DistributeAmong {

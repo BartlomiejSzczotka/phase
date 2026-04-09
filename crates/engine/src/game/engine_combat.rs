@@ -1,6 +1,6 @@
 use crate::game::combat::{AttackTarget, DamageAssignment, DamageTarget, TrampleKind};
 use crate::types::events::GameEvent;
-use crate::types::game_state::{DamageSlot, GameState, WaitingFor};
+use crate::types::game_state::{CombatDamageAssignmentMode, DamageSlot, GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
@@ -70,23 +70,82 @@ pub(super) fn handle_assign_combat_damage(
     attacker_id: ObjectId,
     total_damage: u32,
     blockers: &[DamageSlot],
+    assignment_modes: &[CombatDamageAssignmentMode],
     trample: Option<TrampleKind>,
     defending_player: PlayerId,
     attack_target: &AttackTarget,
     pw_loyalty: Option<u32>,
     pw_controller: Option<PlayerId>,
+    mode: CombatDamageAssignmentMode,
     assignments: &[(ObjectId, u32)],
     trample_damage: u32,
     controller_damage: u32,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    if !assignment_modes.contains(&mode) {
+        return Err(EngineError::InvalidAction(format!(
+            "Combat damage assignment mode {:?} is not allowed for attacker {:?}",
+            mode, attacker_id
+        )));
+    }
+
+    if mode == CombatDamageAssignmentMode::AsThoughUnblocked {
+        if !assignments.is_empty() || trample_damage > 0 || controller_damage > 0 {
+            return Err(EngineError::InvalidAction(
+                "As-though-unblocked assignment does not use blocker or trample splits".to_string(),
+            ));
+        }
+        let attacker_info = state
+            .combat
+            .as_ref()
+            .and_then(|combat| {
+                combat
+                    .attackers
+                    .iter()
+                    .find(|info| info.object_id == attacker_id)
+                    .cloned()
+            })
+            .ok_or_else(|| {
+                EngineError::InvalidAction(format!(
+                    "Attacker {:?} not found in combat state",
+                    attacker_id
+                ))
+            })?;
+        let damage_assignments = super::combat_damage::assign_damage_as_though_unblocked(
+            state,
+            &attacker_info,
+            total_damage,
+            trample,
+        );
+        if let Some(combat) = &mut state.combat {
+            combat.pending_damage.extend(
+                damage_assignments
+                    .into_iter()
+                    .map(|assignment| (attacker_id, assignment)),
+            );
+            combat.damage_step_index = Some(combat.damage_step_index.unwrap_or(0) + 1);
+        }
+
+        if let Some(waiting_for) = super::combat_damage::resolve_combat_damage(state, events) {
+            return Ok(waiting_for);
+        }
+
+        priority::reset_priority(state);
+        return Ok(WaitingFor::Priority { player });
+    }
+
     let assigned_total: u32 = assignments.iter().map(|(_, amount)| *amount).sum::<u32>()
         + trample_damage
         + controller_damage;
-    if assigned_total != total_damage {
+    let expected_total = if blockers.is_empty() && trample.is_none() {
+        0
+    } else {
+        total_damage
+    };
+    if assigned_total != expected_total {
         return Err(EngineError::InvalidAction(format!(
-            "Damage assignment total {} != attacker power {}",
-            assigned_total, total_damage
+            "Damage assignment total {} != expected {}",
+            assigned_total, expected_total
         )));
     }
 
@@ -241,4 +300,166 @@ pub(super) fn handle_empty_blockers(
 
     turns::advance_phase(state, events);
     Ok(turns::auto_advance(state, events))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::game::combat::{AttackerInfo, CombatState};
+    use crate::game::zones::create_object;
+    use crate::types::game_state::CombatDamageAssignmentMode;
+    use crate::types::identifiers::CardId;
+
+    fn setup() -> GameState {
+        let mut state = GameState::new_two_player(42);
+        state.turn_number = 2;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state
+    }
+
+    fn create_creature(
+        state: &mut GameState,
+        owner: PlayerId,
+        name: &str,
+        power: i32,
+        toughness: i32,
+    ) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(state.next_object_id),
+            owner,
+            name.to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Creature);
+        obj.power = Some(power);
+        obj.toughness = Some(toughness);
+        obj.entered_battlefield_turn = Some(1);
+        id
+    }
+
+    fn create_planeswalker(
+        state: &mut GameState,
+        owner: PlayerId,
+        name: &str,
+        loyalty: u32,
+    ) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(state.next_object_id),
+            owner,
+            name.to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Planeswalker);
+        obj.loyalty = Some(loyalty);
+        id
+    }
+
+    #[test]
+    fn as_though_unblocked_mode_applies_only_when_chosen() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Thorn Elemental", 5, 5);
+        let blocker = create_creature(&mut state, PlayerId(1), "Wall", 0, 4);
+        state.combat = Some(CombatState {
+            attackers: vec![AttackerInfo::attacking_player(attacker, PlayerId(1))],
+            blocker_assignments: std::iter::once((attacker, vec![blocker])).collect(),
+            blocker_to_attacker: std::iter::once((blocker, vec![attacker])).collect(),
+            ..Default::default()
+        });
+        if let Some(combat) = &mut state.combat {
+            combat.attackers[0].blocked = true;
+        }
+
+        let mut events = Vec::new();
+        let waiting = handle_assign_combat_damage(
+            &mut state,
+            PlayerId(0),
+            attacker,
+            5,
+            &[DamageSlot {
+                blocker_id: blocker,
+                lethal_minimum: 4,
+            }],
+            &[
+                CombatDamageAssignmentMode::Normal,
+                CombatDamageAssignmentMode::AsThoughUnblocked,
+            ],
+            None,
+            PlayerId(1),
+            &AttackTarget::Player(PlayerId(1)),
+            None,
+            None,
+            CombatDamageAssignmentMode::AsThoughUnblocked,
+            &[],
+            0,
+            0,
+            &mut events,
+        )
+        .unwrap();
+
+        assert!(matches!(waiting, WaitingFor::Priority { .. }));
+        assert_eq!(state.players[1].life, 15);
+        assert_eq!(state.objects[&blocker].damage_marked, 0);
+    }
+
+    #[test]
+    fn as_though_unblocked_mode_can_hit_planeswalker() {
+        let mut state = setup();
+        let attacker = create_creature(&mut state, PlayerId(0), "Thorn Elemental", 4, 4);
+        let blocker = create_creature(&mut state, PlayerId(1), "Wall", 0, 4);
+        let pw = create_planeswalker(&mut state, PlayerId(1), "Test Planeswalker", 6);
+        state.combat = Some(CombatState {
+            attackers: vec![AttackerInfo::new(
+                attacker,
+                AttackTarget::Planeswalker(pw),
+                PlayerId(1),
+            )],
+            blocker_assignments: std::iter::once((attacker, vec![blocker])).collect(),
+            blocker_to_attacker: std::iter::once((blocker, vec![attacker])).collect(),
+            ..Default::default()
+        });
+        if let Some(combat) = &mut state.combat {
+            combat.attackers[0].blocked = true;
+        }
+
+        let mut events = Vec::new();
+        let waiting = handle_assign_combat_damage(
+            &mut state,
+            PlayerId(0),
+            attacker,
+            4,
+            &[DamageSlot {
+                blocker_id: blocker,
+                lethal_minimum: 4,
+            }],
+            &[
+                CombatDamageAssignmentMode::Normal,
+                CombatDamageAssignmentMode::AsThoughUnblocked,
+            ],
+            None,
+            PlayerId(1),
+            &AttackTarget::Planeswalker(pw),
+            None,
+            None,
+            CombatDamageAssignmentMode::AsThoughUnblocked,
+            &[],
+            0,
+            0,
+            &mut events,
+        )
+        .unwrap();
+
+        assert!(matches!(waiting, WaitingFor::Priority { .. }));
+        assert_eq!(state.objects[&pw].loyalty, Some(2));
+        assert_eq!(state.players[1].life, 20);
+        assert_eq!(state.objects[&blocker].damage_marked, 0);
+    }
 }

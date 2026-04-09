@@ -656,9 +656,7 @@ pub(crate) fn parse_mana_spend_restriction(
 ///
 /// Used when comma-splitting separates the grant from the restriction text,
 /// producing a standalone clause like "that spell can't be countered".
-pub(super) fn parse_mana_spell_grant(
-    lower: &str,
-) -> Option<Vec<ManaSpellGrant>> {
+pub(super) fn parse_mana_spell_grant(lower: &str) -> Option<Vec<ManaSpellGrant>> {
     let trimmed = lower.trim().trim_end_matches('.');
     // Use nom tag for matching
     if value::<_, _, nom_language::error::VerboseError<&str>, _>(

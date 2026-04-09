@@ -4894,6 +4894,8 @@ pub enum ContinuousModification {
     /// CR 510.1c: This creature assigns combat damage equal to its toughness
     /// rather than its power.
     AssignDamageFromToughness,
+    /// CR 510.1c: This creature assigns combat damage as though it weren't blocked.
+    AssignDamageAsThoughUnblocked,
     /// CR 510.1a: This creature assigns no combat damage.
     AssignNoCombatDamage,
     /// CR 613.2 (Layer 2): Change the controller of the affected object to the

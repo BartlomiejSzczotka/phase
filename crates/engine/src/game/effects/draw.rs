@@ -2,12 +2,61 @@ use std::collections::HashSet;
 
 use crate::game::quantity::resolve_quantity;
 use crate::game::replacement::{self, ReplacementResult};
+use crate::game::static_abilities::prohibition_scope_matches_player;
 use crate::game::zones;
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::proposed_event::ProposedEvent;
+use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
+
+fn allowed_draw_count(
+    state: &GameState,
+    player_id: crate::types::player::PlayerId,
+    count: u32,
+) -> u32 {
+    let Some(player) = state.players.iter().find(|p| p.id == player_id) else {
+        return 0;
+    };
+
+    let mut allowed = count;
+    for &source_id in &state.battlefield {
+        let Some(source_obj) = state.objects.get(&source_id) else {
+            continue;
+        };
+
+        for def in &source_obj.static_definitions {
+            if def.condition.as_ref().is_some_and(|condition| {
+                !crate::game::layers::evaluate_condition(
+                    state,
+                    condition,
+                    source_obj.controller,
+                    source_id,
+                )
+            }) {
+                continue;
+            }
+
+            match def.mode {
+                StaticMode::CantDraw { ref who }
+                    if prohibition_scope_matches_player(who, player_id, source_id, state) =>
+                {
+                    return 0;
+                }
+                StaticMode::PerTurnDrawLimit { ref who, max }
+                    if prohibition_scope_matches_player(who, player_id, source_id, state) =>
+                {
+                    let remaining = max.saturating_sub(player.cards_drawn_this_turn);
+                    allowed = allowed.min(remaining);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    allowed
+}
 
 /// CR 121.1: Draw a card — put the top card of library into hand.
 pub fn resolve(
@@ -35,6 +84,7 @@ pub fn resolve(
                 player_id, count, ..
             } = event
             {
+                let allowed_count = allowed_draw_count(state, player_id, count);
                 let player = state
                     .players
                     .iter()
@@ -44,13 +94,13 @@ pub fn resolve(
                 let cards_to_draw: Vec<_> = player
                     .library
                     .iter()
-                    .take(count as usize)
+                    .take(allowed_count as usize)
                     .copied()
                     .collect();
 
                 // CR 704.5b: If library has fewer cards than requested, mark the player.
                 // CR 121.4: Partial draws are legal — draw what's available.
-                if count > 0 && cards_to_draw.len() < count as usize {
+                if allowed_count > 0 && cards_to_draw.len() < allowed_count as usize {
                     if let Some(player) = state.players.iter_mut().find(|p| p.id == player_id) {
                         player.drew_from_empty_library = true;
                     }
@@ -91,9 +141,10 @@ pub fn resolve(
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::QuantityExpr;
+    use crate::types::ability::{QuantityExpr, StaticDefinition};
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
+    use crate::types::statics::CastingProhibitionScope;
 
     fn make_ability(num_cards: u32) -> ResolvedAbility {
         ResolvedAbility::new(
@@ -238,5 +289,155 @@ mod tests {
             !state.players[0].drew_from_empty_library,
             "Normal draw should not set flag"
         );
+    }
+
+    #[test]
+    fn cant_draw_blocks_all_draws_for_affected_player() {
+        let mut state = GameState::new_two_player(42);
+        create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "A".to_string(),
+            Zone::Library,
+        );
+        let source_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(1),
+            "Omen Machine".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .static_definitions
+            .push(StaticDefinition::new(StaticMode::CantDraw {
+                who: CastingProhibitionScope::AllPlayers,
+            }));
+
+        let mut events = Vec::new();
+        resolve(&mut state, &make_ability(1), &mut events).unwrap();
+
+        assert!(state.players[0].hand.is_empty());
+        assert_eq!(state.players[0].library.len(), 1);
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event, GameEvent::CardDrawn { .. })));
+    }
+
+    #[test]
+    fn cant_draw_opponents_only_does_not_block_controller() {
+        let mut state = GameState::new_two_player(42);
+        create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "A".to_string(),
+            Zone::Library,
+        );
+        let source_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Narset".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .static_definitions
+            .push(StaticDefinition::new(StaticMode::CantDraw {
+                who: CastingProhibitionScope::Opponents,
+            }));
+
+        let mut events = Vec::new();
+        resolve(&mut state, &make_ability(1), &mut events).unwrap();
+
+        assert_eq!(state.players[0].hand.len(), 1);
+    }
+
+    #[test]
+    fn per_turn_draw_limit_allows_partial_multi_card_draw() {
+        let mut state = GameState::new_two_player(42);
+        create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "A".to_string(),
+            Zone::Library,
+        );
+        create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "B".to_string(),
+            Zone::Library,
+        );
+        let source_id = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(1),
+            "Spirit of the Labyrinth".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .static_definitions
+            .push(StaticDefinition::new(StaticMode::PerTurnDrawLimit {
+                who: CastingProhibitionScope::AllPlayers,
+                max: 1,
+            }));
+
+        let mut events = Vec::new();
+        resolve(&mut state, &make_ability(2), &mut events).unwrap();
+
+        assert_eq!(state.players[0].hand.len(), 1);
+        assert_eq!(state.players[0].cards_drawn_this_turn, 1);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, GameEvent::CardDrawn { .. }))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn per_turn_draw_limit_ignores_unaffected_player() {
+        let mut state = GameState::new_two_player(42);
+        create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "A".to_string(),
+            Zone::Library,
+        );
+        let source_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Narset".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .static_definitions
+            .push(StaticDefinition::new(StaticMode::PerTurnDrawLimit {
+                who: CastingProhibitionScope::Opponents,
+                max: 1,
+            }));
+
+        let mut events = Vec::new();
+        resolve(&mut state, &make_ability(1), &mut events).unwrap();
+
+        assert_eq!(state.players[0].hand.len(), 1);
+        assert_eq!(state.players[0].cards_drawn_this_turn, 1);
     }
 }

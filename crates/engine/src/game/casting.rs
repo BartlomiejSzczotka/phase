@@ -241,14 +241,8 @@ fn graveyard_has_enough_for_escape(
     player: PlayerId,
     escape_obj_id: ObjectId,
 ) -> bool {
-    let obj = match state.objects.get(&escape_obj_id) {
-        Some(o) => o,
-        None => return false,
-    };
-    let exile_count = obj.keywords.iter().find_map(|k| match k {
-        crate::types::keywords::Keyword::Escape { exile_count, .. } => Some(*exile_count),
-        _ => None,
-    });
+    let exile_count = super::keywords::effective_escape_data(state, escape_obj_id)
+        .map(|(_, exile_count)| exile_count);
     let Some(needed) = exile_count else {
         return false;
     };
@@ -283,40 +277,82 @@ fn has_effective_graveyard_cast_keyword(
     object_id: ObjectId,
     obj: &crate::game::game_object::GameObject,
 ) -> bool {
-    obj.keywords.iter().any(|k| {
-        matches!(
-            k,
-            crate::types::keywords::Keyword::Escape { .. }
-                | crate::types::keywords::Keyword::Harmonize(_)
-        )
-    }) || has_flashback_keyword(state, object_id)
-}
-
-fn build_spell_meta(state: &GameState, object_id: ObjectId) -> Option<SpellMeta> {
-    state.objects.get(&object_id).map(|obj| SpellMeta {
-        types: obj
-            .card_types
-            .core_types
+    super::keywords::object_has_effective_keyword_kind(state, object_id, KeywordKind::Escape)
+        || obj
+            .keywords
             .iter()
-            .map(|ct| format!("{ct:?}"))
-            .collect(),
-        subtypes: obj.card_types.subtypes.clone(),
-        keyword_kinds: effective_spell_keyword_kinds(state, object_id),
-        cast_from_zone: Some(obj.zone),
-    })
+            .any(|k| matches!(k, crate::types::keywords::Keyword::Harmonize(_)))
+        || has_flashback_keyword(state, object_id)
 }
 
-fn effective_spell_keyword_kinds(state: &GameState, object_id: ObjectId) -> Vec<KeywordKind> {
-    let mut kinds = Vec::new();
-    let Some(obj) = state.objects.get(&object_id) else {
-        return kinds;
+fn upsert_keyword_by_kind(keywords: &mut Vec<Keyword>, keyword: Keyword) {
+    if let Some(existing) = keywords
+        .iter_mut()
+        .find(|existing| existing.kind() == keyword.kind())
+    {
+        *existing = keyword;
+    } else {
+        keywords.push(keyword);
+    }
+}
+
+fn granted_spell_keywords(
+    state: &GameState,
+    caster: PlayerId,
+    object_id: ObjectId,
+) -> Vec<Keyword> {
+    let Some(spell_obj) = state.objects.get(&object_id) else {
+        return Vec::new();
     };
 
-    for keyword in &obj.keywords {
-        let kind = keyword.kind();
-        if !kinds.contains(&kind) {
-            kinds.push(kind);
+    let mut keywords = Vec::new();
+    for &bf_id in &state.battlefield {
+        let Some(source_obj) = state.objects.get(&bf_id) else {
+            continue;
+        };
+
+        for def in &source_obj.static_definitions {
+            let StaticMode::CastWithKeyword { keyword } = &def.mode else {
+                continue;
+            };
+
+            if def.condition.as_ref().is_some_and(|condition| {
+                !super::layers::evaluate_condition(state, condition, source_obj.controller, bf_id)
+            }) {
+                continue;
+            }
+
+            let matches = def.affected.as_ref().is_none_or(|filter| {
+                super::filter::spell_object_matches_filter(
+                    spell_obj,
+                    caster,
+                    filter,
+                    source_obj.controller,
+                )
+            });
+            if !matches {
+                continue;
+            }
+
+            upsert_keyword_by_kind(&mut keywords, keyword.clone());
         }
+    }
+
+    keywords
+}
+
+pub(crate) fn effective_spell_keywords(
+    state: &GameState,
+    caster: PlayerId,
+    object_id: ObjectId,
+) -> Vec<Keyword> {
+    let Some(obj) = state.objects.get(&object_id) else {
+        return Vec::new();
+    };
+
+    let mut keywords = obj.keywords.clone();
+    for keyword in granted_spell_keywords(state, caster, object_id) {
+        upsert_keyword_by_kind(&mut keywords, keyword);
     }
 
     if obj.zone != Zone::Battlefield
@@ -325,9 +361,41 @@ fn effective_spell_keyword_kinds(state: &GameState, object_id: ObjectId) -> Vec<
             object_id,
             KeywordKind::Flashback,
         )
-        && !kinds.contains(&KeywordKind::Flashback)
     {
-        kinds.push(KeywordKind::Flashback);
+        upsert_keyword_by_kind(
+            &mut keywords,
+            Keyword::Flashback(FlashbackCost::Mana(ManaCost::SelfManaCost)),
+        );
+    }
+
+    keywords
+}
+
+fn build_spell_meta(state: &GameState, caster: PlayerId, object_id: ObjectId) -> Option<SpellMeta> {
+    state.objects.get(&object_id).map(|obj| SpellMeta {
+        types: obj
+            .card_types
+            .core_types
+            .iter()
+            .map(|ct| format!("{ct:?}"))
+            .collect(),
+        subtypes: obj.card_types.subtypes.clone(),
+        keyword_kinds: effective_spell_keyword_kinds(state, caster, object_id),
+        cast_from_zone: Some(obj.zone),
+    })
+}
+
+fn effective_spell_keyword_kinds(
+    state: &GameState,
+    caster: PlayerId,
+    object_id: ObjectId,
+) -> Vec<KeywordKind> {
+    let mut kinds = Vec::new();
+    for keyword in effective_spell_keywords(state, caster, object_id) {
+        let kind = keyword.kind();
+        if !kinds.contains(&kind) {
+            kinds.push(kind);
+        }
     }
 
     kinds
@@ -549,10 +617,11 @@ fn prepare_spell_cast(
         obj.zone == Zone::Exile && has_exile_cast_permission(obj, state.turn_number);
     // CR 702.34 / CR 702.138 / CR 702.180: Cards in graveyard with graveyard-cast keywords.
     let has_escape = obj.zone == Zone::Graveyard
-        && obj
-            .keywords
-            .iter()
-            .any(|k| matches!(k, crate::types::keywords::Keyword::Escape { .. }));
+        && super::keywords::object_has_effective_keyword_kind(
+            state,
+            object_id,
+            KeywordKind::Escape,
+        );
     let has_graveyard_cast_keyword =
         obj.zone == Zone::Graveyard && has_effective_graveyard_cast_keyword(state, object_id, obj);
     // CR 601.2a + CR 117.1c: Graveyard cast via static permission (Lurrus, etc.).
@@ -677,10 +746,7 @@ fn prepare_spell_cast(
 
     // CR 702.138: Escape — use escape mana cost when casting from graveyard.
     let escape_cost = if has_escape {
-        obj.keywords.iter().find_map(|k| match k {
-            crate::types::keywords::Keyword::Escape { cost, .. } => Some(cost.clone()),
-            _ => None,
-        })
+        super::keywords::effective_escape_data(state, object_id).map(|(cost, _)| cost)
     } else {
         None
     };
@@ -749,10 +815,12 @@ fn prepare_spell_cast(
                 .or(warp_cost)
                 .unwrap_or_else(|| obj.mana_cost.clone())
         };
+    let has_granted_flash =
+        effective_spell_keyword_kinds(state, player, object_id).contains(&KeywordKind::Flash);
     // CR 304.1: Instants can be cast any time a player has priority.
     // CR 301.1 / CR 306.1: Artifacts and planeswalkers are cast at sorcery speed.
     if let Err(base_timing_error) =
-        restrictions::check_spell_timing(state, player, obj, &ability_def, false)
+        restrictions::check_spell_timing(state, player, obj, &ability_def, has_granted_flash)
     {
         // CR 702.8a: Flash permits instant-speed casting.
         let Some(flash_cost) = flash_cost else {
@@ -872,7 +940,7 @@ fn apply_battlefield_cost_modifiers(
 
             // CR 601.2f: Check spell type filter — does the spell match?
             if let Some(ref filter) = spell_filter {
-                if !spell_matches_cost_filter(state, spell_id, filter, bf_id) {
+                if !spell_matches_cost_filter(state, caster, spell_id, filter, bf_id) {
                     continue;
                 }
             }
@@ -899,17 +967,28 @@ fn apply_battlefield_cost_modifiers(
 /// Handles both Typed filters (single type) and Or filters (combined types like instant/sorcery).
 fn spell_matches_cost_filter(
     state: &GameState,
+    caster: PlayerId,
     spell_id: ObjectId,
     filter: &TargetFilter,
     source_id: ObjectId,
 ) -> bool {
+    let Some(spell_obj) = state.objects.get(&spell_id) else {
+        return false;
+    };
+    let Some(source_obj) = state.objects.get(&source_id) else {
+        return false;
+    };
+
     match filter {
-        TargetFilter::Typed(_) => {
-            super::filter::matches_target_filter(state, spell_id, filter, source_id)
-        }
-        TargetFilter::Or { filters } => filters
-            .iter()
-            .any(|f| super::filter::matches_target_filter(state, spell_id, f, source_id)),
+        TargetFilter::Typed(_) => super::filter::spell_object_matches_filter(
+            spell_obj,
+            caster,
+            filter,
+            source_obj.controller,
+        ),
+        TargetFilter::Or { filters } => filters.iter().any(|f| {
+            super::filter::spell_object_matches_filter(spell_obj, caster, f, source_obj.controller)
+        }),
         // CR 601.2e: Cost modifications only apply when the filter explicitly matches.
         // Fail-closed: unrecognized filter shapes do not universally reduce costs.
         _ => false,
@@ -971,10 +1050,10 @@ fn apply_affinity_reduction(
     spell_id: ObjectId,
     mana_cost: &mut ManaCost,
 ) {
-    let Some(spell_obj) = state.objects.get(&spell_id) else {
+    if !state.objects.contains_key(&spell_id) {
         return;
-    };
-    for kw in &spell_obj.keywords {
+    }
+    for kw in effective_spell_keywords(state, caster, spell_id) {
         if let Keyword::Affinity(ref type_filter) = kw {
             let filter = TargetFilter::Typed(type_filter.clone());
             let count = state
@@ -1007,7 +1086,7 @@ fn apply_pending_spell_cost_reductions(
         }
         let matches = match &r.spell_filter {
             None => true,
-            Some(filter) => spell_matches_cost_filter(state, spell_id, filter, spell_id),
+            Some(filter) => spell_matches_cost_filter(state, caster, spell_id, filter, spell_id),
         };
         if matches {
             apply_cost_mod_to_mana(mana_cost, &ManaCost::generic(1), r.amount, false);
@@ -1594,7 +1673,7 @@ pub fn can_pay_cost_after_auto_tap(
     if simulated.layers_dirty {
         super::layers::evaluate_layers(&mut simulated);
     }
-    let spell_meta = build_spell_meta(&simulated, source_id);
+    let spell_meta = build_spell_meta(&simulated, player, source_id);
 
     super::casting_costs::auto_tap_mana_sources(
         &mut simulated,
@@ -1650,7 +1729,7 @@ pub(super) fn pay_mana_cost(
         super::layers::evaluate_layers(state);
     }
 
-    let spell_meta = build_spell_meta(state, source_id);
+    let spell_meta = build_spell_meta(state, player, source_id);
 
     auto_tap_mana_sources(state, player, cost, events, Some(source_id));
 
@@ -2312,16 +2391,8 @@ fn casting_prohibition_scope_matches(
     source_obj: &super::game_object::GameObject,
     state: &GameState,
 ) -> bool {
-    match who {
-        CastingProhibitionScope::Opponents => caster != source_obj.controller,
-        CastingProhibitionScope::AllPlayers => true,
-        CastingProhibitionScope::Controller => caster == source_obj.controller,
-        // CR 303.4e: Resolve the enchanted creature's controller for aura-based restrictions.
-        CastingProhibitionScope::EnchantedCreatureController => source_obj
-            .attached_to
-            .and_then(|target_id| state.objects.get(&target_id))
-            .is_some_and(|enchanted| enchanted.controller == caster),
-    }
+    let _ = source_obj;
+    super::static_abilities::prohibition_scope_matches_player(who, caster, source_obj.id, state)
 }
 
 /// CR 604.3 + CR 101.2: Check if any active CantCastFrom static prevents casting
@@ -2597,7 +2668,7 @@ mod tests {
         TypedFilter,
     };
     use crate::types::card_type::CoreType;
-    use crate::types::keywords::{FlashbackCost, Keyword};
+    use crate::types::keywords::{FlashbackCost, Keyword, KeywordKind};
     use crate::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
     use crate::types::phase::Phase;
 
@@ -2693,6 +2764,32 @@ mod tests {
             obj.mana_cost = ManaCost::Cost {
                 shards: vec![ManaCostShard::Blue],
                 generic: 2,
+            };
+        }
+        obj_id
+    }
+
+    fn create_creature_spell_in_hand(state: &mut GameState, player: PlayerId) -> ObjectId {
+        let obj_id = create_object(
+            state,
+            CardId(22),
+            player,
+            "Hill Giant".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Unimplemented {
+                    name: "Creature".to_string(),
+                    description: None,
+                },
+            ));
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Red],
+                generic: 3,
             };
         }
         obj_id
@@ -2975,6 +3072,169 @@ mod tests {
         handle_cast_spell(&mut state, PlayerId(0), obj_id, CardId(20), &mut Vec::new())
             .expect("normal-timing cast should not require flash surcharge");
         assert_eq!(state.stack.len(), 1);
+    }
+
+    #[test]
+    fn cast_with_keyword_flash_allows_creature_spell_outside_normal_timing() {
+        let mut state = setup_game_at_main_phase();
+        state.phase = Phase::End;
+        state.active_player = PlayerId(1);
+        state.priority_player = PlayerId(0);
+
+        let source_id = create_object(
+            &mut state,
+            CardId(23),
+            PlayerId(0),
+            "Leyline".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .static_definitions
+            .push(
+                parse_static_line(
+                    "Creature cards you own that aren't on the battlefield have flash.",
+                )
+                .expect("static should parse"),
+            );
+
+        let obj_id = create_creature_spell_in_hand(&mut state, PlayerId(0));
+        add_mana(&mut state, PlayerId(0), ManaType::Red, 1);
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 3);
+
+        let mut events = Vec::new();
+        let result = handle_cast_spell(&mut state, PlayerId(0), obj_id, CardId(22), &mut events)
+            .expect("granted flash should allow the cast");
+
+        assert!(matches!(result, WaitingFor::Priority { .. }));
+        assert_eq!(state.stack.len(), 1);
+    }
+
+    #[test]
+    fn cast_with_keyword_convoke_enters_mana_payment_for_matching_spell() {
+        let mut state = setup_game_at_main_phase();
+        let source_id = create_object(
+            &mut state,
+            CardId(24),
+            PlayerId(0),
+            "Convoke Banner".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .static_definitions
+            .push(
+                parse_static_line("Creature spells you cast have convoke.")
+                    .expect("static should parse"),
+            );
+
+        let helper = create_object(
+            &mut state,
+            CardId(25),
+            PlayerId(0),
+            "Elf".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&helper)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let obj_id = create_creature_spell_in_hand(&mut state, PlayerId(0));
+        let result =
+            handle_cast_spell(&mut state, PlayerId(0), obj_id, CardId(22), &mut Vec::new())
+                .expect("granted convoke should make the cast start");
+
+        assert!(matches!(
+            result,
+            WaitingFor::ManaPayment {
+                convoke_mode: Some(ConvokeMode::Convoke),
+                ..
+            }
+        ));
+        assert!(effective_spell_keyword_kinds(&state, PlayerId(0), obj_id)
+            .contains(&KeywordKind::Convoke));
+    }
+
+    #[test]
+    fn cast_with_keyword_convoke_honors_from_exile_filter() {
+        let mut state = setup_game_at_main_phase();
+        let source_id = create_object(
+            &mut state,
+            CardId(26),
+            PlayerId(0),
+            "Exile Banner".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .static_definitions
+            .push(
+                parse_static_line("Spells you cast from exile have convoke.")
+                    .expect("static should parse"),
+            );
+
+        let helper = create_object(
+            &mut state,
+            CardId(27),
+            PlayerId(0),
+            "Elf".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&helper)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let obj_id = create_object(
+            &mut state,
+            CardId(28),
+            PlayerId(0),
+            "Exiled Divination".to_string(),
+            Zone::Exile,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 2 },
+                },
+            ));
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 2,
+            };
+            obj.casting_permissions
+                .push(crate::types::ability::CastingPermission::PlayFromExile {
+                    duration: crate::types::ability::Duration::Permanent,
+                });
+        }
+
+        let result =
+            handle_cast_spell(&mut state, PlayerId(0), obj_id, CardId(28), &mut Vec::new())
+                .expect("exiled spell should be castable with granted convoke");
+
+        assert!(matches!(
+            result,
+            WaitingFor::ManaPayment {
+                convoke_mode: Some(ConvokeMode::Convoke),
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -5339,6 +5599,7 @@ mod tests {
         // Recognized: Typed filter delegates to matches_target_filter
         assert!(!spell_matches_cost_filter(
             &state,
+            PlayerId(0),
             spell_id,
             &TargetFilter::Typed(crate::types::ability::TypedFilter::creature()),
             source_id,
@@ -5347,18 +5608,21 @@ mod tests {
         // Unrecognized: None, Player, SelfRef all return false (fail-closed)
         assert!(!spell_matches_cost_filter(
             &state,
+            PlayerId(0),
             spell_id,
             &TargetFilter::None,
             source_id,
         ));
         assert!(!spell_matches_cost_filter(
             &state,
+            PlayerId(0),
             spell_id,
             &TargetFilter::Player,
             source_id,
         ));
         assert!(!spell_matches_cost_filter(
             &state,
+            PlayerId(0),
             spell_id,
             &TargetFilter::SelfRef,
             source_id,
@@ -5603,6 +5867,176 @@ mod tests {
     }
 
     #[test]
+    fn parsed_static_graveyard_escape_grant_makes_spell_castable() {
+        let mut state = setup_game_at_main_phase();
+        let obj_id = add_flashback_instant_to_graveyard(
+            &mut state,
+            PlayerId(0),
+            ManaCost::NoCost,
+            ManaCost::Cost {
+                generic: 1,
+                shards: vec![ManaCostShard::Red],
+            },
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.base_keywords.clear();
+        obj.keywords.clear();
+
+        let source_id = create_object(
+            &mut state,
+            CardId(1001),
+            PlayerId(0),
+            "Underworld Breach".to_string(),
+            Zone::Battlefield,
+        );
+        let parsed = crate::parser::oracle::parse_oracle_text(
+            "Each nonland card in your graveyard has escape.\nThe escape cost is equal to the card's mana cost plus exile three other cards from your graveyard.",
+            "Underworld Breach",
+            &[],
+            &[String::from("Enchantment")],
+            &[],
+        );
+        let source = state.objects.get_mut(&source_id).unwrap();
+        source.card_types.core_types.push(CoreType::Enchantment);
+        source.base_card_types = source.card_types.clone();
+        source.static_definitions = parsed.statics.clone();
+        source.base_static_definitions = parsed.statics;
+
+        for idx in 0..3 {
+            let filler_id = create_object(
+                &mut state,
+                CardId(1100 + idx),
+                PlayerId(0),
+                format!("Filler {idx}"),
+                Zone::Graveyard,
+            );
+            let filler = state.objects.get_mut(&filler_id).unwrap();
+            filler.card_types.core_types.push(CoreType::Sorcery);
+            filler.base_card_types = filler.card_types.clone();
+        }
+
+        let available = spell_objects_available_to_cast(&state, PlayerId(0));
+        assert!(available.contains(&obj_id));
+
+        let prepared = prepare_spell_cast(&state, PlayerId(0), obj_id).unwrap();
+        assert_eq!(prepared.casting_variant, CastingVariant::Escape);
+        assert_eq!(
+            prepared.mana_cost,
+            ManaCost::Cost {
+                generic: 1,
+                shards: vec![ManaCostShard::Red],
+            }
+        );
+    }
+
+    #[test]
+    fn granted_escape_requires_exile_cost_payment() {
+        let mut state = setup_game_at_main_phase();
+        let obj_id = add_flashback_instant_to_graveyard(
+            &mut state,
+            PlayerId(0),
+            ManaCost::NoCost,
+            ManaCost::Cost {
+                generic: 1,
+                shards: vec![ManaCostShard::Red],
+            },
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.base_keywords.clear();
+        obj.keywords.clear();
+
+        let source_id = create_object(
+            &mut state,
+            CardId(1002),
+            PlayerId(0),
+            "Underworld Breach".to_string(),
+            Zone::Battlefield,
+        );
+        let parsed = crate::parser::oracle::parse_oracle_text(
+            "Each nonland card in your graveyard has escape.\nThe escape cost is equal to the card's mana cost plus exile three other cards from your graveyard.",
+            "Underworld Breach",
+            &[],
+            &[String::from("Enchantment")],
+            &[],
+        );
+        let source = state.objects.get_mut(&source_id).unwrap();
+        source.card_types.core_types.push(CoreType::Enchantment);
+        source.base_card_types = source.card_types.clone();
+        source.static_definitions = parsed.statics.clone();
+        source.base_static_definitions = parsed.statics;
+
+        for idx in 0..3 {
+            let filler_id = create_object(
+                &mut state,
+                CardId(1200 + idx),
+                PlayerId(0),
+                format!("Filler {idx}"),
+                Zone::Graveyard,
+            );
+            let filler = state.objects.get_mut(&filler_id).unwrap();
+            filler.card_types.core_types.push(CoreType::Sorcery);
+            filler.base_card_types = filler.card_types.clone();
+        }
+
+        let card_id = state.objects.get(&obj_id).unwrap().card_id;
+
+        let waiting = handle_cast_spell(&mut state, PlayerId(0), obj_id, card_id, &mut Vec::new())
+            .expect("granted escape should start cost payment");
+        assert!(matches!(
+            waiting,
+            WaitingFor::ExileFromGraveyardForCost { count: 3, .. }
+        ));
+    }
+
+    #[test]
+    fn granted_non_mana_flashback_pays_additional_cost() {
+        let mut state = setup_game_at_main_phase();
+        let obj_id = add_flashback_instant_to_graveyard(
+            &mut state,
+            PlayerId(0),
+            ManaCost::NoCost,
+            ManaCost::Cost {
+                generic: 2,
+                shards: vec![ManaCostShard::Green],
+            },
+        );
+        let obj = state.objects.get_mut(&obj_id).unwrap();
+        obj.base_keywords.clear();
+        obj.keywords.clear();
+
+        let source_id = create_object(
+            &mut state,
+            CardId(1003),
+            PlayerId(0),
+            "Grantor".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::continuous()
+                    .affected(TargetFilter::SpecificObject { id: obj_id })
+                    .modifications(vec![ContinuousModification::AddKeyword {
+                        keyword: Keyword::Flashback(FlashbackCost::NonMana(AbilityCost::PayLife {
+                            amount: 2,
+                        })),
+                    }]),
+            );
+
+        let card_id = state.objects.get(&obj_id).unwrap().card_id;
+
+        let waiting = handle_cast_spell(&mut state, PlayerId(0), obj_id, card_id, &mut Vec::new())
+            .expect("granted non-mana flashback should be castable");
+
+        assert!(matches!(waiting, WaitingFor::Priority { .. }));
+        assert_eq!(state.players[0].life, 18);
+        assert_eq!(state.stack.len(), 1);
+    }
+
+    #[test]
     fn self_graveyard_static_flashback_grant_is_castable() {
         let mut state = setup_game_at_main_phase();
         let obj_id = add_flashback_instant_to_graveyard(
@@ -5652,6 +6086,85 @@ mod tests {
                 shards: vec![ManaCostShard::Green],
             }
         );
+    }
+
+    #[test]
+    fn cast_with_keyword_convoke_uses_caster_not_stored_controller() {
+        let mut state = setup_game_at_main_phase();
+        let source_id = create_object(
+            &mut state,
+            CardId(1004),
+            PlayerId(0),
+            "Exile Banner".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source_id)
+            .unwrap()
+            .static_definitions
+            .push(
+                parse_static_line("Spells you cast from exile have convoke.")
+                    .expect("static should parse"),
+            );
+
+        let helper = create_object(
+            &mut state,
+            CardId(1005),
+            PlayerId(0),
+            "Elf".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&helper)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let obj_id = create_object(
+            &mut state,
+            CardId(1006),
+            PlayerId(1),
+            "Borrowed Spell".to_string(),
+            Zone::Exile,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 2 },
+                },
+            ));
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 2,
+            };
+            obj.casting_permissions.push(
+                crate::types::ability::CastingPermission::ExileWithAltCost {
+                    cost: obj.mana_cost.clone(),
+                },
+            );
+        }
+
+        let waiting = handle_cast_spell(
+            &mut state,
+            PlayerId(0),
+            obj_id,
+            CardId(1006),
+            &mut Vec::new(),
+        )
+        .expect("the acting player should receive granted convoke");
+        assert!(matches!(
+            waiting,
+            WaitingFor::ManaPayment {
+                convoke_mode: Some(ConvokeMode::Convoke),
+                ..
+            }
+        ));
     }
 
     #[test]

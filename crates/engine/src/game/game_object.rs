@@ -237,6 +237,11 @@ pub struct GameObject {
     #[serde(default)]
     pub assigns_damage_from_toughness: bool,
 
+    /// CR 510.1c: This creature assigns combat damage as though it weren't blocked.
+    /// Set by continuous effects during layer evaluation.
+    #[serde(default)]
+    pub assigns_damage_as_though_unblocked: bool,
+
     /// CR 510.1a: This creature assigns no combat damage.
     /// Set by continuous effects during layer evaluation (e.g., "~ assigns no combat damage").
     #[serde(default)]
@@ -378,6 +383,7 @@ impl GameObject {
             is_suspected: false,
             monstrous: false,
             assigns_damage_from_toughness: false,
+            assigns_damage_as_though_unblocked: false,
             assigns_no_combat_damage: false,
             case_state: None,
             class_level: None,

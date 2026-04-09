@@ -7,11 +7,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction,
-    AdditionalCost, CastingRestriction, Comparator, Effect, ModalChoice, ReplacementDefinition,
-    SolveCondition, SpellCastingOption, StaticCondition, StaticDefinition, TargetFilter,
-    TriggerCondition, TriggerDefinition, TypedFilter,
+    AdditionalCost, CastingRestriction, Comparator, ContinuousModification, Effect, ModalChoice,
+    ReplacementDefinition, SolveCondition, SpellCastingOption, StaticCondition, StaticDefinition,
+    TargetFilter, TriggerCondition, TriggerDefinition, TypedFilter,
 };
-use crate::types::keywords::{Keyword, KeywordKind};
+use crate::types::keywords::{FlashbackCost, Keyword, KeywordKind};
 use crate::types::mana::ManaCost;
 use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
@@ -49,9 +49,12 @@ use super::oracle_special::{
     parse_cumulative_upkeep_keyword, parse_defiler_cost_reduction, parse_escape_keyword,
     parse_harmonize_keyword, parse_solve_condition, try_parse_die_roll_table,
 };
-use super::oracle_static::{parse_static_line, parse_static_line_multi};
+use super::oracle_static::{
+    parse_static_line, parse_static_line_multi, try_parse_graveyard_keyword_grant_clause,
+    GraveyardGrantedKeywordKind,
+};
 use super::oracle_trigger::parse_trigger_lines;
-use super::oracle_util::{parse_mana_symbols, strip_reminder_text, TextPair};
+use super::oracle_util::{parse_mana_symbols, parse_number, strip_reminder_text, TextPair};
 
 /// Collected parsed abilities from Oracle text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,28 +133,87 @@ fn parsed_result_recently_granted_flashback(result: &ParsedAbilities) -> bool {
         })
 }
 
-fn parse_static_line_with_flashback_continuation(line: &str) -> Option<StaticDefinition> {
-    if let Some(static_def) = parse_static_line(line) {
-        return Some(static_def);
+fn parse_graveyard_keyword_continuation(
+    text: &str,
+    kind: GraveyardGrantedKeywordKind,
+) -> Option<Keyword> {
+    fn continuation_fully_consumed(rest: &str) -> bool {
+        rest.trim().trim_end_matches('.').trim().is_empty()
     }
 
-    let (prefix, continuation) = line.split_once(". ")?;
-    if !is_flashback_equal_mana_cost(&continuation.to_lowercase()) {
-        return None;
-    }
+    let lower = text.to_lowercase();
 
-    let static_def = parse_static_line(&format!("{prefix}."))?;
-    static_def
-        .modifications
-        .iter()
-        .any(|modification| {
-            matches!(
-                modification,
-                crate::types::ability::ContinuousModification::AddKeyword { keyword }
-                    if keyword.kind() == KeywordKind::Flashback
-            )
-        })
-        .then_some(static_def)
+    match kind {
+        GraveyardGrantedKeywordKind::Flashback => {
+            let (_, rest) = nom_on_lower(text, &lower, |i| {
+                value((), tag("the flashback cost is equal to ")).parse(i)
+            })?;
+            let rest_lower = rest.to_lowercase();
+            let (_, rest) = nom_on_lower(rest, &rest_lower, |i| {
+                value(
+                    (),
+                    alt((
+                        tag("that card's mana cost"),
+                        tag("the card's mana cost"),
+                        tag("its mana cost"),
+                    )),
+                )
+                .parse(i)
+            })?;
+            if !continuation_fully_consumed(rest) {
+                return None;
+            }
+            Some(Keyword::Flashback(FlashbackCost::Mana(
+                ManaCost::SelfManaCost,
+            )))
+        }
+        GraveyardGrantedKeywordKind::Escape => {
+            let (_, rest) = nom_on_lower(text, &lower, |i| {
+                value((), tag("the escape cost is equal to ")).parse(i)
+            })?;
+            let rest_lower = rest.to_lowercase();
+            let (_, rest) = nom_on_lower(rest, &rest_lower, |i| {
+                value(
+                    (),
+                    alt((
+                        tag("that card's mana cost plus exile "),
+                        tag("the card's mana cost plus exile "),
+                        tag("its mana cost plus exile "),
+                    )),
+                )
+                .parse(i)
+            })?;
+            let (exile_count, rest) = parse_number(rest)?;
+            let rest_lower = rest.to_lowercase();
+            let (_, rest) = nom_on_lower(rest, &rest_lower, |i| {
+                value((), tag("other cards from your graveyard")).parse(i)
+            })?;
+            if !continuation_fully_consumed(rest) {
+                return None;
+            }
+            Some(Keyword::Escape {
+                cost: ManaCost::SelfManaCost,
+                exile_count,
+            })
+        }
+    }
+}
+
+fn try_parse_graveyard_keyword_static_with_continuation(line: &str) -> Option<StaticDefinition> {
+    let lower = line.to_lowercase();
+    let (prefix, continuation) = split_once_on_lower(line, &lower, ". ")?;
+    let (affected, kind) = try_parse_graveyard_keyword_grant_clause(prefix)?;
+    let keyword = parse_graveyard_keyword_continuation(continuation, kind)?;
+    kind.matches_keyword(&keyword).then_some(
+        StaticDefinition::continuous()
+            .affected(affected)
+            .modifications(vec![ContinuousModification::AddKeyword { keyword }])
+            .description(line.to_string()),
+    )
+}
+
+fn parse_static_line_with_graveyard_keyword_continuation(line: &str) -> Option<StaticDefinition> {
+    try_parse_graveyard_keyword_static_with_continuation(line).or_else(|| parse_static_line(line))
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -494,6 +556,22 @@ pub fn parse_oracle_text(
 
         // Normalize card self-references for static parsing (replace card name with ~)
         let static_line = normalize_self_refs_for_static(&line, card_name);
+        if let Some(next_raw_line) = lines.get(i + 1).map(|next| next.trim()) {
+            if !next_raw_line.is_empty() {
+                let next_line = strip_x_cant_be_zero_suffix(&strip_reminder_text(next_raw_line));
+                if !next_line.is_empty() {
+                    let next_static_line = normalize_self_refs_for_static(&next_line, card_name);
+                    let combined_static_line = format!("{static_line} {next_static_line}");
+                    if let Some(static_def) =
+                        try_parse_graveyard_keyword_static_with_continuation(&combined_static_line)
+                    {
+                        result.statics.push(static_def);
+                        i += 2;
+                        continue;
+                    }
+                }
+            }
+        }
 
         if lower == "start your engines!" || lower == "start your engines" {
             result.extracted_keywords.push(Keyword::StartYourEngines);
@@ -504,7 +582,9 @@ pub fn parse_oracle_text(
         if lower == "your speed can increase beyond 4."
             || lower == "your speed can increase beyond 4"
         {
-            if let Some(static_def) = parse_static_line_with_flashback_continuation(&static_line) {
+            if let Some(static_def) =
+                parse_static_line_with_graveyard_keyword_continuation(&static_line)
+            {
                 result.statics.push(static_def);
                 i += 1;
                 continue;
@@ -555,7 +635,8 @@ pub fn parse_oracle_text(
                     let trimmed = clause.trim().trim_end_matches('.');
                     if !trimmed.is_empty() {
                         let clause_dot = format!("{trimmed}.");
-                        if let Some(sd) = parse_static_line_with_flashback_continuation(&clause_dot)
+                        if let Some(sd) =
+                            parse_static_line_with_graveyard_keyword_continuation(&clause_dot)
                         {
                             result.statics.push(sd);
                         }
@@ -576,7 +657,9 @@ pub fn parse_oracle_text(
                     continue;
                 }
             }
-            if let Some(static_def) = parse_static_line_with_flashback_continuation(&static_line) {
+            if let Some(static_def) =
+                parse_static_line_with_graveyard_keyword_continuation(&static_line)
+            {
                 result.statics.push(static_def);
                 i += 1;
                 continue;
@@ -835,7 +918,7 @@ pub fn parse_oracle_text(
                 if let Some((aw_name, effect_text)) = strip_ability_word_with_name(&line) {
                     let effect_static = normalize_self_refs_for_static(&effect_text, card_name);
                     if let Some(mut static_def) =
-                        parse_static_line_with_flashback_continuation(&effect_static)
+                        parse_static_line_with_graveyard_keyword_continuation(&effect_static)
                     {
                         if static_def.condition.is_none() {
                             if let Some(cond) = ability_word_to_condition(&aw_name) {
@@ -857,7 +940,7 @@ pub fn parse_oracle_text(
                         if !trimmed.is_empty() {
                             let clause_dot = format!("{trimmed}.");
                             if let Some(sd) =
-                                parse_static_line_with_flashback_continuation(&clause_dot)
+                                parse_static_line_with_graveyard_keyword_continuation(&clause_dot)
                             {
                                 result.statics.push(sd);
                             }
@@ -888,7 +971,7 @@ pub fn parse_oracle_text(
                         if !trimmed.is_empty() {
                             let clause_dot = format!("{trimmed}.");
                             if let Some(sd) =
-                                parse_static_line_with_flashback_continuation(&clause_dot)
+                                parse_static_line_with_graveyard_keyword_continuation(&clause_dot)
                             {
                                 result.statics.push(sd);
                             }
@@ -898,7 +981,7 @@ pub fn parse_oracle_text(
                     continue;
                 }
                 if let Some(static_def) =
-                    parse_static_line_with_flashback_continuation(&static_line)
+                    parse_static_line_with_graveyard_keyword_continuation(&static_line)
                 {
                     result.statics.push(static_def);
                     i += 1;
@@ -1243,7 +1326,7 @@ pub fn parse_oracle_text(
             if is_static_pattern(&effect_lower) {
                 let effect_static = normalize_self_refs_for_static(&effect_text, card_name);
                 if let Some(mut static_def) =
-                    parse_static_line_with_flashback_continuation(&effect_static)
+                    parse_static_line_with_graveyard_keyword_continuation(&effect_static)
                 {
                     // B7: Attach ability word condition to static definition
                     if static_def.condition.is_none() {
@@ -1270,6 +1353,24 @@ pub fn parse_oracle_text(
                 i += 1;
                 continue;
             }
+        }
+
+        // Leftover permanent text can still be a valid static even when classifier
+        // heuristics miss it. Try the actual static parser before falling through
+        // to generic dispatch/unimplemented categorization.
+        let static_line = normalize_self_refs_for_static(&line, card_name);
+        if let Some(static_def) =
+            parse_static_line_with_graveyard_keyword_continuation(&static_line)
+        {
+            result.statics.push(static_def);
+            i += 1;
+            continue;
+        }
+        let multi = parse_static_line_multi(&static_line);
+        if !multi.is_empty() {
+            result.statics.extend(multi);
+            i += 1;
+            continue;
         }
 
         // Priority 14a: Nom dispatch — try effect, trigger, static, and replacement
@@ -1939,6 +2040,40 @@ mod tests {
             &[],
         );
         assert_eq!(r.abilities.len(), 1);
+    }
+
+    #[test]
+    fn parser_reaches_static_line_for_blocks_each_combat_if_able() {
+        let r = parse(
+            "This creature blocks each combat if able.",
+            "Watchdog",
+            &[],
+            &["Creature"],
+            &["Dog"],
+        );
+        assert_eq!(r.abilities.len(), 0);
+        assert_eq!(r.statics.len(), 1);
+        assert_eq!(
+            r.statics[0].mode,
+            crate::types::statics::StaticMode::MustBlock
+        );
+    }
+
+    #[test]
+    fn parser_reaches_static_line_for_other_goblins_attack_each_combat_if_able() {
+        let r = parse(
+            "Other Goblin creatures you control attack each combat if able.",
+            "Goblin Assault",
+            &[],
+            &["Enchantment"],
+            &[],
+        );
+        assert_eq!(r.abilities.len(), 0, "{r:#?}");
+        assert_eq!(r.statics.len(), 1, "{r:#?}");
+        assert_eq!(
+            r.statics[0].mode,
+            crate::types::statics::StaticMode::MustAttack
+        );
     }
 
     #[test]
@@ -4751,6 +4886,121 @@ mod tests {
                     keyword: Keyword::Flashback(FlashbackCost::Mana(ManaCost::SelfManaCost)),
                 })
         }));
+    }
+
+    #[test]
+    fn top_level_static_escape_grant_stays_on_graveyard_cards() {
+        let result = parse(
+            "Each nonland card in your graveyard has escape.\nThe escape cost is equal to the card's mana cost plus exile three other cards from your graveyard.",
+            "Underworld Breach",
+            &[],
+            &["Enchantment"],
+            &[],
+        );
+        assert!(result.extracted_keywords.is_empty());
+        assert_eq!(result.statics.len(), 1);
+        let static_def = &result.statics[0];
+        let TargetFilter::Typed(tf) = static_def
+            .affected
+            .as_ref()
+            .expect("expected affected filter")
+        else {
+            panic!("expected typed affected filter");
+        };
+        assert_eq!(
+            tf.controller,
+            Some(crate::types::ability::ControllerRef::You)
+        );
+        assert!(
+            tf.properties.contains(&FilterProp::InZone {
+                zone: Zone::Graveyard
+            }),
+            "missing graveyard filter: {:?}",
+            tf.properties
+        );
+        assert!(
+            static_def
+                .modifications
+                .contains(&ContinuousModification::AddKeyword {
+                    keyword: Keyword::Escape {
+                        cost: ManaCost::SelfManaCost,
+                        exile_count: 3,
+                    },
+                }),
+            "missing escape grant: {:?}",
+            static_def.modifications
+        );
+    }
+
+    #[test]
+    fn same_line_static_escape_grant_stays_on_graveyard_cards() {
+        let result = parse(
+            "Each nonland card in your graveyard has escape. The escape cost is equal to the card's mana cost plus exile three other cards from your graveyard.",
+            "Underworld Breach",
+            &[],
+            &["Enchantment"],
+            &[],
+        );
+        assert!(result.extracted_keywords.is_empty());
+        assert_eq!(result.statics.len(), 1);
+        assert!(result.statics.iter().any(|static_def| {
+            static_def
+                .modifications
+                .contains(&ContinuousModification::AddKeyword {
+                    keyword: Keyword::Escape {
+                        cost: ManaCost::SelfManaCost,
+                        exile_count: 3,
+                    },
+                })
+        }));
+    }
+
+    #[test]
+    fn helper_parses_same_line_escape_grant_continuation() {
+        let static_def = try_parse_graveyard_keyword_static_with_continuation(
+            "Each nonland card in your graveyard has escape. The escape cost is equal to the card's mana cost plus exile three other cards from your graveyard.",
+        )
+        .expect("helper should parse same-line escape continuation");
+        assert!(
+            static_def
+                .modifications
+                .contains(&ContinuousModification::AddKeyword {
+                    keyword: Keyword::Escape {
+                        cost: ManaCost::SelfManaCost,
+                        exile_count: 3,
+                    },
+                }),
+            "missing escape grant: {:?}",
+            static_def.modifications
+        );
+    }
+
+    #[test]
+    fn escape_continuation_parser_accepts_self_mana_cost_clause() {
+        let keyword = parse_graveyard_keyword_continuation(
+            "The escape cost is equal to the card's mana cost plus exile three other cards from your graveyard.",
+            GraveyardGrantedKeywordKind::Escape,
+        )
+        .expect("continuation should parse");
+        assert_eq!(
+            keyword,
+            Keyword::Escape {
+                cost: ManaCost::SelfManaCost,
+                exile_count: 3,
+            }
+        );
+    }
+
+    #[test]
+    fn escape_continuation_parser_rejects_trailing_text() {
+        let keyword = parse_graveyard_keyword_continuation(
+            "The escape cost is equal to the card's mana cost plus exile three other cards from your graveyard until end of turn.",
+            GraveyardGrantedKeywordKind::Escape,
+        );
+        assert!(
+            keyword.is_none(),
+            "trailing text should reject continuation"
+        );
     }
 
     #[test]

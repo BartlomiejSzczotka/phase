@@ -80,6 +80,7 @@ pub fn run_combat(
         let trample_damage = if trample.is_some() { remaining } else { 0 };
         runner
             .act(GameAction::AssignCombatDamage {
+                mode: engine::types::game_state::CombatDamageAssignmentMode::Normal,
                 assignments,
                 trample_damage,
                 controller_damage: 0,

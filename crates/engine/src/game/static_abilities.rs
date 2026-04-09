@@ -6,7 +6,7 @@ use crate::types::ability::{TargetFilter, TypedFilter};
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
-use crate::types::statics::StaticMode;
+use crate::types::statics::{CastingProhibitionScope, StaticMode};
 
 /// Handler function type for static ability modes.
 /// Receives the `StaticMode` variant the handler was registered under.
@@ -56,7 +56,8 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     registry.insert(StaticMode::CantLoseLife, handle_rule_mod);
     registry.insert(StaticMode::MustAttack, handle_rule_mod);
     registry.insert(StaticMode::MustBlock, handle_rule_mod);
-    registry.insert(StaticMode::CantDraw, handle_rule_mod);
+    // Note: CantDraw is a data-carrying variant — runtime enforcement is in
+    // game/effects/draw.rs. Coverage support is via is_data_carrying_static().
     registry.insert(StaticMode::Panharmonicon, handle_rule_mod);
     registry.insert(StaticMode::IgnoreHexproof, handle_rule_mod);
     registry.insert(
@@ -181,6 +182,28 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     }
 
     registry
+}
+
+pub(crate) fn prohibition_scope_matches_player(
+    scope: &CastingProhibitionScope,
+    player: PlayerId,
+    source_id: ObjectId,
+    state: &GameState,
+) -> bool {
+    let Some(source_obj) = state.objects.get(&source_id) else {
+        return false;
+    };
+    match scope {
+        CastingProhibitionScope::Opponents => player != source_obj.controller,
+        CastingProhibitionScope::AllPlayers => true,
+        CastingProhibitionScope::Controller => player == source_obj.controller,
+        // CR 303.4e: "Enchanted player" / "enchanted creature's controller" style scopes
+        // follow the currently attached object's controller.
+        CastingProhibitionScope::EnchantedCreatureController => source_obj
+            .attached_to
+            .and_then(|target_id| state.objects.get(&target_id))
+            .is_some_and(|enchanted| enchanted.controller == player),
+    }
 }
 
 /// Handler for the Continuous mode -- layers.rs handles the actual evaluation.

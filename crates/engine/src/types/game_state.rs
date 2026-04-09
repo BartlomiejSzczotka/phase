@@ -880,6 +880,9 @@ pub enum WaitingFor {
         attacker_id: ObjectId,
         total_damage: u32,
         blockers: Vec<DamageSlot>,
+        /// Available combat-damage assignment modes for this attacker.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        assignment_modes: Vec<CombatDamageAssignmentMode>,
         /// CR 702.19: Which trample variant applies (None = no trample).
         trample: Option<crate::game::combat::TrampleKind>,
         defending_player: PlayerId,
@@ -920,6 +923,15 @@ pub enum WaitingFor {
 pub struct CopyTargetSlot {
     pub current: TargetRef,
     pub legal_alternatives: Vec<TargetRef>,
+}
+
+/// CR 510.1c: Optional combat-damage assignment mode for attackers with text like
+/// "you may have this creature assign its combat damage as though it weren't blocked."
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum CombatDamageAssignmentMode {
+    #[default]
+    Normal,
+    AsThoughUnblocked,
 }
 
 /// CR 510.1c: A blocker with its lethal damage threshold for UI display.

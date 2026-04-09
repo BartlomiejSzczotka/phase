@@ -1485,6 +1485,9 @@ fn fmt_modification(m: &crate::types::ability::ContinuousModification) -> String
         ContinuousModification::AddStaticMode { mode } => format!("{mode}"),
         ContinuousModification::SwitchPowerToughness => "switch P/T".into(),
         ContinuousModification::AssignDamageFromToughness => "damage from toughness".into(),
+        ContinuousModification::AssignDamageAsThoughUnblocked => {
+            "damage as though unblocked".into()
+        }
         ContinuousModification::ChangeController => "change controller".into(),
         ContinuousModification::SetBasicLandType { land_type } => {
             format!("set land type {}", land_type.as_subtype_str())
@@ -4348,7 +4351,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
                     || effective_lower.contains("as though they had flash")
             }
             StaticMode::MayChooseNotToUntap => effective_lower.contains("may choose not to untap"),
-            StaticMode::CantDraw => effective_lower.contains("can't draw"),
+            StaticMode::CantDraw { .. } => effective_lower.contains("can't draw"),
             StaticMode::PerTurnDrawLimit { .. } => effective_lower.contains("can't draw more than"),
             StaticMode::Panharmonicon => {
                 effective_lower.contains("triggers an additional time")

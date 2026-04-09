@@ -55,6 +55,17 @@ pub fn effective_flashback_cost(state: &GameState, object_id: ObjectId) -> Optio
     }
 }
 
+pub fn effective_escape_data(state: &GameState, object_id: ObjectId) -> Option<(ManaCost, u32)> {
+    let keyword = effective_keyword_for_object(state, object_id, KeywordKind::Escape)?;
+    match keyword {
+        Keyword::Escape { cost, exile_count } => Some((
+            resolve_keyword_mana_cost(state, object_id, &cost),
+            exile_count,
+        )),
+        _ => None,
+    }
+}
+
 fn effective_keyword_for_object(
     state: &GameState,
     object_id: ObjectId,

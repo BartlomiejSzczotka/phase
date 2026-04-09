@@ -157,7 +157,9 @@ pub enum StaticMode {
     CantLoseLife,
     MustAttack,
     MustBlock,
-    CantDraw,
+    CantDraw {
+        who: CastingProhibitionScope,
+    },
     Panharmonicon,
     IgnoreHexproof,
     /// CR 509.1a + CR 509.1b: This creature can block additional creatures.
@@ -350,6 +352,7 @@ impl Hash for StaticMode {
             StaticMode::ReduceCost { .. }
             | StaticMode::RaiseCost { .. }
             | StaticMode::DefilerCostReduction { .. }
+            | StaticMode::CantDraw { .. }
             | StaticMode::PerTurnCastLimit { .. }
             | StaticMode::PerTurnDrawLimit { .. }
             | StaticMode::MaximumHandSize { .. }
@@ -383,7 +386,7 @@ impl fmt::Display for StaticMode {
             StaticMode::CantLoseLife => write!(f, "CantLoseLife"),
             StaticMode::MustAttack => write!(f, "MustAttack"),
             StaticMode::MustBlock => write!(f, "MustBlock"),
-            StaticMode::CantDraw => write!(f, "CantDraw"),
+            StaticMode::CantDraw { who } => write!(f, "CantDraw({who})"),
             StaticMode::Panharmonicon => write!(f, "Panharmonicon"),
             StaticMode::IgnoreHexproof => write!(f, "IgnoreHexproof"),
             StaticMode::GraveyardCastPermission {
@@ -519,7 +522,6 @@ impl FromStr for StaticMode {
             "CantLoseLife" => StaticMode::CantLoseLife,
             "MustAttack" => StaticMode::MustAttack,
             "MustBlock" => StaticMode::MustBlock,
-            "CantDraw" => StaticMode::CantDraw,
             "Panharmonicon" => StaticMode::Panharmonicon,
             "IgnoreHexproof" => StaticMode::IgnoreHexproof,
             "GraveyardCastPermission" => StaticMode::GraveyardCastPermission {
@@ -586,6 +588,14 @@ impl FromStr for StaticMode {
             // Parameterized
             other => {
                 if let Some(inner) = other
+                    .strip_prefix("CantDraw(")
+                    .and_then(|s| s.strip_suffix(')'))
+                {
+                    if let Ok(who) = CastingProhibitionScope::from_str(inner) {
+                        return Ok(StaticMode::CantDraw { who });
+                    }
+                    return Ok(StaticMode::Other(other.to_string()));
+                } else if let Some(inner) = other
                     .strip_prefix("CantBeCast(")
                     .and_then(|s| s.strip_suffix(')'))
                 {
@@ -803,6 +813,12 @@ mod tests {
             StaticMode::CantCastDuring {
                 who: CastingProhibitionScope::Controller,
                 when: CastingProhibitionCondition::NotDuringYourTurn,
+            },
+            StaticMode::CantDraw {
+                who: CastingProhibitionScope::AllPlayers,
+            },
+            StaticMode::CantDraw {
+                who: CastingProhibitionScope::Opponents,
             },
             // Per-turn casting limits
             StaticMode::PerTurnCastLimit {

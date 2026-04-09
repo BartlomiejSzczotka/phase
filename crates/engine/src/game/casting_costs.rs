@@ -542,12 +542,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
 
     // CR 702.138a: Escape requires exiling N other cards from graveyard.
     if casting_variant == CastingVariant::Escape {
-        if let Some(exile_count) = state.objects.get(&object_id).and_then(|obj| {
-            obj.keywords.iter().find_map(|k| match k {
-                crate::types::keywords::Keyword::Escape { exile_count, .. } => Some(*exile_count),
-                _ => None,
-            })
-        }) {
+        if let Some((_, exile_count)) = super::keywords::effective_escape_data(state, object_id) {
             let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
             pending.casting_variant = casting_variant;
             return pay_additional_cost(
@@ -566,14 +561,9 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
 
     // CR 702.34a: Flashback with non-mana cost requires paying the cost as an additional cost.
     if casting_variant == CastingVariant::Flashback {
-        if let Some(non_mana_cost) = state.objects.get(&object_id).and_then(|obj| {
-            obj.keywords.iter().find_map(|k| match k {
-                crate::types::keywords::Keyword::Flashback(
-                    crate::types::keywords::FlashbackCost::NonMana(c),
-                ) => Some(c.clone()),
-                _ => None,
-            })
-        }) {
+        if let Some(crate::types::keywords::FlashbackCost::NonMana(non_mana_cost)) =
+            super::keywords::effective_flashback_cost(state, object_id)
+        {
             let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
             pending.casting_variant = casting_variant;
             pending.distribute = distribute;
@@ -1010,10 +1000,17 @@ pub(super) fn pay_and_push_adventure(
 ) -> Result<WaitingFor, EngineError> {
     // CR 702.51a: Convoke lets players tap creatures to reduce mana cost.
     // CR 702.51: Check for Convoke or Waterbend keyword on the spell.
-    let convoke_mode = state.objects.get(&object_id).and_then(|obj| {
-        if obj.keywords.iter().any(|k| matches!(k, Keyword::Convoke)) {
+    let convoke_mode = state.objects.get(&object_id).and_then(|_| {
+        let effective_keywords = super::casting::effective_spell_keywords(state, player, object_id);
+        if effective_keywords
+            .iter()
+            .any(|k| matches!(k, Keyword::Convoke))
+        {
             Some(ConvokeMode::Convoke)
-        } else if obj.keywords.iter().any(|k| matches!(k, Keyword::Waterbend)) {
+        } else if effective_keywords
+            .iter()
+            .any(|k| matches!(k, Keyword::Waterbend))
+        {
             Some(ConvokeMode::Waterbend)
         } else {
             None

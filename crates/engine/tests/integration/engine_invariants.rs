@@ -170,17 +170,29 @@ fn assert_assign_combat_damage_actions_respect_budget(state: &GameState) {
     if let WaitingFor::AssignCombatDamage { total_damage, .. } = &state.waiting_for {
         for action in legal_actions(state) {
             if let GameAction::AssignCombatDamage {
+                mode,
                 assignments,
                 trample_damage,
                 controller_damage,
             } = action
             {
-                let assigned_total: u32 = assignments.iter().map(|(_, amount)| *amount).sum();
-                assert_eq!(
-                    assigned_total + trample_damage + controller_damage,
-                    *total_damage,
-                    "combat damage assignments must spend the full damage budget"
-                );
+                match mode {
+                    crate::types::game_state::CombatDamageAssignmentMode::Normal => {
+                        let assigned_total: u32 =
+                            assignments.iter().map(|(_, amount)| *amount).sum();
+                        assert_eq!(
+                            assigned_total + trample_damage + controller_damage,
+                            *total_damage,
+                            "combat damage assignments must spend the full damage budget"
+                        );
+                    }
+                    crate::types::game_state::CombatDamageAssignmentMode::AsThoughUnblocked => {
+                        assert!(
+                            assignments.is_empty() && trample_damage == 0 && controller_damage == 0,
+                            "as-though-unblocked combat damage should not use blocker/trample splits"
+                        );
+                    }
+                }
             }
         }
     }

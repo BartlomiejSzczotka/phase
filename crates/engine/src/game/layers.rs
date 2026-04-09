@@ -342,6 +342,8 @@ pub fn evaluate_layers(state: &mut GameState) {
             obj.controller = obj.owner;
             // CR 613: Reset damage-from-toughness flag; re-applied by continuous effects.
             obj.assigns_damage_from_toughness = false;
+            // CR 510.1c: Reset unblocked-assignment flag; re-applied by continuous effects.
+            obj.assigns_damage_as_though_unblocked = false;
             // CR 510.1a: Reset no-combat-damage flag; re-applied by continuous effects.
             obj.assigns_no_combat_damage = false;
         }
@@ -988,6 +990,10 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
             ContinuousModification::AssignDamageFromToughness => {
                 obj.assigns_damage_from_toughness = true;
             }
+            // CR 510.1c: Mark creature as assigning combat damage as though unblocked.
+            ContinuousModification::AssignDamageAsThoughUnblocked => {
+                obj.assigns_damage_as_though_unblocked = true;
+            }
             // CR 510.1a: Mark creature as assigning no combat damage.
             ContinuousModification::AssignNoCombatDamage => {
                 obj.assigns_no_combat_damage = true;
@@ -1092,6 +1098,32 @@ mod tests {
         obj.base_toughness = Some(toughness);
         obj.timestamp = ts;
         id
+    }
+
+    #[test]
+    fn assign_damage_as_though_unblocked_flag_resets_with_layers() {
+        let mut state = setup();
+        let id = make_creature(&mut state, "Thorn Elemental", 5, 5, PlayerId(0));
+        let static_def = StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![ContinuousModification::AssignDamageAsThoughUnblocked]);
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.base_static_definitions.push(static_def.clone());
+            obj.static_definitions.push(static_def);
+        }
+
+        evaluate_layers(&mut state);
+        assert!(state.objects[&id].assigns_damage_as_though_unblocked);
+
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.base_static_definitions.clear();
+            obj.static_definitions.clear();
+        }
+
+        evaluate_layers(&mut state);
+        assert!(!state.objects[&id].assigns_damage_as_though_unblocked);
     }
 
     /// Helper: creatures you control filter

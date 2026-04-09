@@ -102,6 +102,7 @@ impl ContinuousModification {
             ContinuousModification::SwitchPowerToughness => Layer::SwitchPT,
             // CR 510.1c: Rule-modification effect processed in Ability layer (layer 6).
             ContinuousModification::AssignDamageFromToughness
+            | ContinuousModification::AssignDamageAsThoughUnblocked
             | ContinuousModification::AssignNoCombatDamage => Layer::Ability,
             // CR 613.2: Control-changing effects are applied in Layer 2.
             ContinuousModification::ChangeController => Layer::Control,

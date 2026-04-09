@@ -58,6 +58,24 @@ fn nom_tag_tp<'a>(tp: &TextPair<'a>, prefix: &str) -> Option<TextPair<'a>> {
         })
 }
 
+fn target_filter_is_your_graveyard(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Typed(tf) => {
+            tf.controller == Some(ControllerRef::You)
+                && tf.properties.iter().any(|prop| {
+                    matches!(
+                        prop,
+                        FilterProp::InZone {
+                            zone: Zone::Graveyard
+                        }
+                    )
+                })
+        }
+        TargetFilter::Or { filters } => filters.iter().all(target_filter_is_your_graveyard),
+        _ => false,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RuleStaticPredicate {
     CantUntap,
@@ -69,6 +87,56 @@ enum RuleStaticPredicate {
     LoseAllAbilities,
     NoMaximumHandSize,
     MayPlayAdditionalLand,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum GraveyardGrantedKeywordKind {
+    Flashback,
+    Escape,
+}
+
+impl GraveyardGrantedKeywordKind {
+    pub(crate) fn matches_keyword(self, keyword: &Keyword) -> bool {
+        match self {
+            GraveyardGrantedKeywordKind::Flashback => {
+                keyword.kind() == crate::types::keywords::KeywordKind::Flashback
+            }
+            GraveyardGrantedKeywordKind::Escape => {
+                keyword.kind() == crate::types::keywords::KeywordKind::Escape
+            }
+        }
+    }
+}
+
+pub(crate) fn try_parse_graveyard_keyword_grant_clause(
+    text: &str,
+) -> Option<(TargetFilter, GraveyardGrantedKeywordKind)> {
+    let stripped = strip_reminder_text(text);
+    let lower = stripped.to_lowercase();
+    let rest = nom_tag_lower(&stripped, &lower, "each ")?;
+    let rest_lower = rest.to_lowercase();
+    let (subject, keyword_text) =
+        super::oracle_nom::bridge::split_once_on_lower(rest, &rest_lower, " has ").or_else(
+            || super::oracle_nom::bridge::split_once_on_lower(rest, &rest_lower, " have "),
+        )?;
+    let subject = subject.trim();
+    let keyword_text = keyword_text.trim().trim_end_matches('.');
+
+    let kind = nom_on_lower(keyword_text, &keyword_text.to_lowercase(), |i| {
+        alt((
+            value(GraveyardGrantedKeywordKind::Flashback, tag("flashback")),
+            value(GraveyardGrantedKeywordKind::Escape, tag("escape")),
+        ))
+        .parse(i)
+    })?
+    .0;
+
+    let (filter, remainder) = parse_type_phrase(subject);
+    if !remainder.trim().is_empty() || !target_filter_is_your_graveyard(&filter) {
+        return None;
+    }
+
+    Some((filter, kind))
 }
 
 /// Parse a static/continuous ability line into a StaticDefinition.
@@ -297,6 +365,17 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     // --- "Each creature you control [with condition] assigns combat damage equal to its toughness" ---
     // CR 510.1c: Doran-class effects that cause creatures to use toughness for combat damage.
     if let Some(def) = parse_assigns_damage_from_toughness(&lower, &text) {
+        return Some(def);
+    }
+
+    // --- "You may have this creature assign its combat damage as though it weren't blocked." ---
+    // CR 510.1c: Thorn Elemental-class self static.
+    if let Some(def) = parse_assign_damage_as_though_unblocked(&lower, &text) {
+        return Some(def);
+    }
+
+    // --- "Enchanted/Equipped creature's controller may have it assign..." ---
+    if let Some(def) = parse_attached_creature_assign_damage_as_though_unblocked(&tp, &text) {
         return Some(def);
     }
 
@@ -882,6 +961,13 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
     // e.g., Spirit of the Labyrinth: "Each player can't draw more than one card each turn."
     // e.g., Narset, Parter of Veils: "Each opponent can't draw more than one card each turn."
     if let Some(def) = parse_per_turn_draw_limit(tp.lower, &text) {
+        return Some(def);
+    }
+
+    // --- CR 101.2 / CR 121.3: Blanket draw prohibition ("can't draw cards") ---
+    // e.g., Omen Machine: "Players can't draw cards."
+    // e.g., Maralen of the Mornsong: "Players can't draw cards."
+    if let Some(def) = parse_cant_draw_cards(tp.lower, &text) {
         return Some(def);
     }
 
@@ -1511,6 +1597,78 @@ fn parse_assigns_damage_from_toughness(lower: &str, text: &str) -> Option<Static
         StaticDefinition::continuous()
             .affected(TargetFilter::Typed(filter))
             .modifications(vec![ContinuousModification::AssignDamageFromToughness])
+            .description(text.to_string()),
+    )
+}
+
+/// CR 510.1c: Parse "you may have this creature assign its combat damage as though it
+/// weren't blocked" self-referential static.
+fn parse_assign_damage_as_though_unblocked(lower: &str, text: &str) -> Option<StaticDefinition> {
+    type VE<'a> = nom_language::error::VerboseError<&'a str>;
+
+    let clean = lower.trim_end_matches('.');
+    let result = preceded(
+        tag::<_, _, VE<'_>>("you may have "),
+        alt((tag("this creature"), tag("it"))),
+    )
+    .parse(clean)
+    .ok()?;
+    let (rest, _) = result;
+    let (rest, _) = tag::<_, _, VE<'_>>(" assign its combat damage as though it weren't blocked")
+        .parse(rest)
+        .ok()?;
+    if !rest.is_empty() {
+        return None;
+    }
+
+    Some(
+        StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![ContinuousModification::AssignDamageAsThoughUnblocked])
+            .description(text.to_string()),
+    )
+}
+
+/// CR 510.1c: Parse attached-creature controller wording:
+/// - "Enchanted creature's controller may have it assign its combat damage as though it weren't blocked."
+/// - "Equipped creature's controller may have it assign its combat damage as though it weren't blocked."
+fn parse_attached_creature_assign_damage_as_though_unblocked(
+    tp: &TextPair<'_>,
+    text: &str,
+) -> Option<StaticDefinition> {
+    type VE<'a> = nom_language::error::VerboseError<&'a str>;
+
+    let clean = TextPair::new(
+        tp.original.trim_end_matches('.'),
+        tp.lower.trim_end_matches('.'),
+    );
+    let (rest, affected) = if let Some(rest) = nom_tag_tp(&clean, "enchanted creature") {
+        (
+            rest,
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::EnchantedBy])),
+        )
+    } else if let Some(rest) = nom_tag_tp(&clean, "equipped creature") {
+        (
+            rest,
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::EquippedBy])),
+        )
+    } else {
+        return None;
+    };
+
+    let (_, _) = alt((
+        tag::<_, _, VE<'_>>(
+            "'s controller may have it assign its combat damage as though it weren't blocked",
+        ),
+        tag("’s controller may have it assign its combat damage as though it weren't blocked"),
+    ))
+    .parse(rest.lower)
+    .ok()?;
+
+    Some(
+        StaticDefinition::continuous()
+            .affected(affected)
+            .modifications(vec![ContinuousModification::AssignDamageAsThoughUnblocked])
             .description(text.to_string()),
     )
 }
@@ -2181,16 +2339,41 @@ fn parse_creature_subject_filter(subject: &str) -> Option<TargetFilter> {
     let lower = trimmed.to_lowercase();
     let tp = TextPair::new(trimmed, &lower);
 
-    let descriptor = if let Some(prefix) = trimmed.strip_suffix(" creatures") {
+    let (subject_core, controller) = if let Some(prefix) = tp.original.strip_suffix(" you control")
+    {
+        (prefix.trim(), Some(ControllerRef::You))
+    } else if let Some(prefix) = tp.original.strip_suffix(" your opponents control") {
+        (prefix.trim(), Some(ControllerRef::Opponent))
+    } else {
+        (tp.original, None)
+    };
+
+    let subject_core_lower = subject_core.to_lowercase();
+    let subject_core_tp = TextPair::new(subject_core, &subject_core_lower);
+    let (descriptor_text, has_other) =
+        if let Some(rest) = subject_core_tp.original.strip_prefix("Other ") {
+            (rest.trim(), true)
+        } else if let Some(rest) = subject_core_tp.original.strip_prefix("other ") {
+            (rest.trim(), true)
+        } else {
+            (subject_core_tp.original.trim(), false)
+        };
+
+    let descriptor = if let Some(prefix) = descriptor_text.strip_suffix(" creatures") {
         prefix.trim()
-    } else if !trimmed.contains(' ') && tp.lower.ends_with('s') {
+    } else if !descriptor_text.contains(' ') && descriptor_text.to_lowercase().ends_with('s') {
         // CR 205.3m: Use parse_subtype for irregular plurals (Elves→Elf, Dwarves→Dwarf)
-        if let Some((canonical, _)) = parse_subtype(trimmed) {
-            return Some(TargetFilter::Typed(
-                TypedFilter::creature().subtype(canonical),
-            ));
+        if let Some((canonical, _)) = parse_subtype(descriptor_text) {
+            let mut typed = TypedFilter::creature().subtype(canonical);
+            if let Some(controller) = controller {
+                typed = typed.controller(controller);
+            }
+            if has_other {
+                typed = typed.properties(vec![FilterProp::Another]);
+            }
+            return Some(TargetFilter::Typed(typed));
         }
-        trimmed.trim_end_matches('s').trim()
+        descriptor_text.trim_end_matches('s').trim()
     } else {
         return None;
     };
@@ -2200,16 +2383,26 @@ fn parse_creature_subject_filter(subject: &str) -> Option<TargetFilter> {
     }
 
     if let Some(color) = parse_named_color(descriptor) {
-        return Some(TargetFilter::Typed(
-            TypedFilter::creature().properties(vec![FilterProp::HasColor { color }]),
-        ));
+        let mut typed = TypedFilter::creature().properties(vec![FilterProp::HasColor { color }]);
+        if let Some(controller) = controller {
+            typed = typed.controller(controller);
+        }
+        if has_other {
+            typed.properties.push(FilterProp::Another);
+        }
+        return Some(TargetFilter::Typed(typed));
     }
 
     if is_capitalized_words(descriptor) {
         let subtype = descriptor.to_string();
-        return Some(TargetFilter::Typed(
-            TypedFilter::creature().subtype(subtype),
-        ));
+        let mut typed = TypedFilter::creature().subtype(subtype);
+        if let Some(controller) = controller {
+            typed = typed.controller(controller);
+        }
+        if has_other {
+            typed.properties.push(FilterProp::Another);
+        }
+        return Some(TargetFilter::Typed(typed));
     }
 
     None
@@ -2255,14 +2448,18 @@ fn strip_rule_static_subject<'a>(text: &'a str, lower: &str) -> Option<(TargetFi
         " doesn’t untap during ",
         " don't untap during ",
         " don’t untap during ",
-        " attacks each combat if able",
-        " attacks each turn if able",
         " must attack each combat if able",
         " must attack if able",
-        " blocks each combat if able",
-        " blocks each turn if able",
+        " attacks each combat if able",
+        " attack each combat if able",
+        " attacks each turn if able",
+        " attack each turn if able",
         " must block each combat if able",
         " must block if able",
+        " blocks each combat if able",
+        " block each combat if able",
+        " blocks each turn if able",
+        " block each turn if able",
         " can block only creatures with flying",
         " has shroud",
         " have shroud",
@@ -2348,8 +2545,12 @@ fn parse_rule_static_predicate(text: &str) -> Option<RuleStaticPredicate> {
     // CR 508.1d: A creature that "attacks if able" is a requirement on the declare attackers step.
     if matches!(
         tp.lower,
-        "attacks each combat if able"
+        "attack each combat if able"
+            | "attack each combat if able."
+            | "attacks each combat if able"
             | "attacks each combat if able."
+            | "attack each turn if able"
+            | "attack each turn if able."
             | "attacks each turn if able"
             | "attacks each turn if able."
             | "must attack each combat if able"
@@ -2363,8 +2564,12 @@ fn parse_rule_static_predicate(text: &str) -> Option<RuleStaticPredicate> {
     // CR 509.1c: A creature that "blocks if able" is a requirement on the declare blockers step.
     if matches!(
         tp.lower,
-        "blocks each combat if able"
+        "block each combat if able"
+            | "block each combat if able."
+            | "blocks each combat if able"
             | "blocks each combat if able."
+            | "block each turn if able"
+            | "block each turn if able."
             | "blocks each turn if able"
             | "blocks each turn if able."
             | "must block each combat if able"
@@ -2993,6 +3198,27 @@ fn parse_per_turn_draw_limit(tp: &str, text: &str) -> Option<StaticDefinition> {
         StaticDefinition::new(StaticMode::PerTurnDrawLimit { who, max })
             .description(text.to_string()),
     )
+}
+
+/// CR 101.2 / CR 121.3: Parse blanket draw prohibition from Oracle text.
+/// Handles "[Subject] can't draw cards."
+/// E.g., Omen Machine: "Players can't draw cards."
+/// E.g., Maralen of the Mornsong: "Players can't draw cards."
+fn parse_cant_draw_cards(tp: &str, text: &str) -> Option<StaticDefinition> {
+    type VE<'a> = nom_language::error::VerboseError<&'a str>;
+
+    let (who, predicate) = strip_casting_prohibition_subject(tp)?;
+    let rest = nom_tag_lower(predicate, predicate, "can't draw ")
+        .or_else(|| nom_tag_lower(predicate, predicate, "can\u{2019}t draw "))?;
+
+    alt((
+        value((), tag::<_, _, VE<'_>>("cards")),
+        value((), tag::<_, _, VE<'_>>("a card")),
+    ))
+    .parse(rest.trim_end_matches('.'))
+    .ok()?;
+
+    Some(StaticDefinition::new(StaticMode::CantDraw { who }).description(text.to_string()))
 }
 
 /// Parse the subject of "[type] cards in [zones] can't enter the battlefield".
@@ -4754,30 +4980,33 @@ fn extract_cant_untap_condition(lower: &str) -> Option<StaticCondition> {
 fn try_parse_scoped_must_attack_block(lower: &str, text: &str) -> Option<Vec<StaticDefinition>> {
     // Strip trailing period for matching.
     let clean = lower.trim_end_matches('.');
+    let clean_text = text.trim_end_matches('.');
 
     // Try to extract the verb phrase suffix and determine the mode(s).
-    let (subject, modes) = if let Some(subj) = clean.strip_suffix(" attack each combat if able") {
-        (subj, vec![StaticMode::MustAttack])
-    } else if let Some(subj) = clean.strip_suffix(" attacks each combat if able") {
-        (subj, vec![StaticMode::MustAttack])
-    } else if let Some(subj) = clean.strip_suffix(" attack each turn if able") {
-        (subj, vec![StaticMode::MustAttack])
-    } else if let Some(subj) = clean.strip_suffix(" block each combat if able") {
-        (subj, vec![StaticMode::MustBlock])
-    } else if let Some(subj) = clean.strip_suffix(" blocks each combat if able") {
-        (subj, vec![StaticMode::MustBlock])
-    } else if let Some(subj) = clean.strip_suffix(" block each turn if able") {
-        (subj, vec![StaticMode::MustBlock])
-    } else if let Some(subj) = clean.strip_suffix(" attacks or blocks each combat if able") {
-        (subj, vec![StaticMode::MustAttack, StaticMode::MustBlock])
-    } else if let Some(subj) = clean.strip_suffix(" attack or block each combat if able") {
-        (subj, vec![StaticMode::MustAttack, StaticMode::MustBlock])
-    } else {
-        return None;
-    };
+    let (subject_lower, modes) =
+        if let Some(subj) = clean.strip_suffix(" attack each combat if able") {
+            (subj, vec![StaticMode::MustAttack])
+        } else if let Some(subj) = clean.strip_suffix(" attacks each combat if able") {
+            (subj, vec![StaticMode::MustAttack])
+        } else if let Some(subj) = clean.strip_suffix(" attack each turn if able") {
+            (subj, vec![StaticMode::MustAttack])
+        } else if let Some(subj) = clean.strip_suffix(" block each combat if able") {
+            (subj, vec![StaticMode::MustBlock])
+        } else if let Some(subj) = clean.strip_suffix(" blocks each combat if able") {
+            (subj, vec![StaticMode::MustBlock])
+        } else if let Some(subj) = clean.strip_suffix(" block each turn if able") {
+            (subj, vec![StaticMode::MustBlock])
+        } else if let Some(subj) = clean.strip_suffix(" attacks or blocks each combat if able") {
+            (subj, vec![StaticMode::MustAttack, StaticMode::MustBlock])
+        } else if let Some(subj) = clean.strip_suffix(" attack or block each combat if able") {
+            (subj, vec![StaticMode::MustAttack, StaticMode::MustBlock])
+        } else {
+            return None;
+        };
+    let subject = &clean_text[..subject_lower.len()];
 
     // Determine the affected filter from the subject phrase.
-    let affected = match subject {
+    let affected = match subject_lower {
         "all creatures" | "each creature" => TargetFilter::Typed(TypedFilter::creature()),
         "creatures you control" => {
             TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You))
@@ -4787,7 +5016,8 @@ fn try_parse_scoped_must_attack_block(lower: &str, text: &str) -> Option<Vec<Sta
         }
         // Self-ref: "this creature" / card name — handled by the existing
         // RuleStaticPredicate path, so we skip here.
-        _ => return None,
+        _ => parse_creature_subject_filter(subject)
+            .or_else(|| parse_continuous_subject_filter(subject))?,
     };
 
     // Emit one StaticDefinition per mode. For compound "attacks or blocks each
@@ -6556,6 +6786,67 @@ mod tests {
         }
     }
 
+    #[test]
+    fn graveyard_keyword_grant_clause_flashback() {
+        let (filter, kind) = try_parse_graveyard_keyword_grant_clause(
+            "Each instant and sorcery card in your graveyard has flashback.",
+        )
+        .expect("should parse flashback grant clause");
+        assert_eq!(kind, GraveyardGrantedKeywordKind::Flashback);
+        match filter {
+            TargetFilter::Or { filters } => {
+                assert_eq!(filters.len(), 2);
+                for branch in filters {
+                    let TargetFilter::Typed(tf) = branch else {
+                        panic!("expected typed branch, got {branch:?}");
+                    };
+                    assert_eq!(tf.controller, Some(ControllerRef::You));
+                    assert!(tf.properties.contains(&FilterProp::InZone {
+                        zone: Zone::Graveyard,
+                    }));
+                }
+            }
+            other => panic!("expected instant/sorcery graveyard filter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn graveyard_keyword_grant_clause_escape() {
+        let (filter, kind) = try_parse_graveyard_keyword_grant_clause(
+            "Each nonland card in your graveyard has escape.",
+        )
+        .expect("should parse escape grant clause");
+        assert_eq!(kind, GraveyardGrantedKeywordKind::Escape);
+        let TargetFilter::Typed(tf) = filter else {
+            panic!("expected typed graveyard filter");
+        };
+        assert_eq!(tf.controller, Some(ControllerRef::You));
+        assert!(
+            tf.properties.contains(&FilterProp::InZone {
+                zone: Zone::Graveyard
+            }),
+            "missing graveyard zone: {:?}",
+            tf.properties
+        );
+        assert!(
+            tf.type_filters
+                .contains(&TypeFilter::Non(Box::new(TypeFilter::Land))),
+            "missing nonland type filter: {:?}",
+            tf.type_filters
+        );
+    }
+
+    #[test]
+    fn graveyard_keyword_grant_clause_rejects_non_you_scope() {
+        let clause = try_parse_graveyard_keyword_grant_clause(
+            "Each nonland card in their graveyard has escape.",
+        );
+        assert!(
+            clause.is_none(),
+            "only your graveyard scope is currently supported"
+        );
+    }
+
     // --- Graveyard play permission tests (Crucible of Worlds / Icetill Explorer) ---
 
     #[test]
@@ -8107,6 +8398,39 @@ mod tests {
     }
 
     #[test]
+    fn cant_draw_all_players() {
+        let def = parse_static_line("Players can't draw cards.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CantDraw {
+                who: CastingProhibitionScope::AllPlayers,
+            }
+        );
+    }
+
+    #[test]
+    fn cant_draw_controller() {
+        let def = parse_static_line("You can't draw cards.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CantDraw {
+                who: CastingProhibitionScope::Controller,
+            }
+        );
+    }
+
+    #[test]
+    fn cant_draw_opponents() {
+        let def = parse_static_line("Your opponents can't draw cards.").unwrap();
+        assert_eq!(
+            def.mode,
+            StaticMode::CantDraw {
+                who: CastingProhibitionScope::Opponents,
+            }
+        );
+    }
+
+    #[test]
     fn spell_cost_reduction_uses_card_types_in_graveyard_quantity() {
         let def = parse_static_line(
             "This spell costs {1} less to cast for each card type among cards in your graveyard.",
@@ -8396,6 +8720,37 @@ mod tests {
         assert!(def
             .modifications
             .contains(&ContinuousModification::AssignDamageFromToughness));
+    }
+
+    #[test]
+    fn static_assign_damage_as_though_unblocked_self() {
+        let def = parse_static_line(
+            "You may have this creature assign its combat damage as though it weren't blocked.",
+        )
+        .unwrap();
+        assert_eq!(def.mode, StaticMode::Continuous);
+        assert_eq!(def.affected, Some(TargetFilter::SelfRef));
+        assert!(def
+            .modifications
+            .contains(&ContinuousModification::AssignDamageAsThoughUnblocked));
+    }
+
+    #[test]
+    fn static_assign_damage_as_though_unblocked_enchanted_controller() {
+        let def = parse_static_line(
+            "Enchanted creature's controller may have it assign its combat damage as though it weren't blocked.",
+        )
+        .unwrap();
+        assert_eq!(def.mode, StaticMode::Continuous);
+        assert_eq!(
+            def.affected,
+            Some(TargetFilter::Typed(
+                TypedFilter::creature().properties(vec![FilterProp::EnchantedBy]),
+            ))
+        );
+        assert!(def
+            .modifications
+            .contains(&ContinuousModification::AssignDamageAsThoughUnblocked));
     }
 
     // --- Group C: Casting prohibition variants ---

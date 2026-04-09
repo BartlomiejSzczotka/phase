@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::ability::TargetRef;
-use super::game_state::AutoPassRequest;
+use super::game_state::{AutoPassRequest, CombatDamageAssignmentMode};
 use super::identifiers::{CardId, ObjectId};
 use super::match_config::DeckCardCount;
 use crate::game::combat::AttackTarget;
@@ -168,6 +168,8 @@ pub enum GameAction {
     /// CR 510.1c/d: Assign damage from an attacker to its blockers (and optionally
     /// the defending player/PW with trample, plus PW controller with trample-over-PW).
     AssignCombatDamage {
+        #[serde(default)]
+        mode: CombatDamageAssignmentMode,
         assignments: Vec<(ObjectId, u32)>,
         trample_damage: u32,
         /// CR 702.19c: Damage to PW controller when trample-over-PW spills past loyalty.
