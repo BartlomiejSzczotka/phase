@@ -237,8 +237,14 @@ fn strip_constraint_sentences(text: &str) -> String {
         "do this only once each turn",
     ];
     let mut result = text.to_string();
+    // Case-insensitive match: Oracle text is mixed-case ("This ability triggers...")
+    // but patterns are lowercase, so find on lowered text and remove from original.
+    let lower_for_static = result.to_lowercase();
     for pattern in &patterns {
-        result = result.replace(pattern, "");
+        if let Some(pos) = lower_for_static.find(pattern) {
+            result.replace_range(pos..pos + pattern.len(), "");
+            break; // At most one constraint sentence per trigger
+        }
     }
     // Dynamic pattern: "this ability triggers only the first N time(s) each turn."
     // Uses scan_split_at_phrase + split_once_on instead of raw .find() for dispatch.

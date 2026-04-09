@@ -327,7 +327,26 @@ pub(crate) fn opponent_land_color_options(
             }
         }
         // Fallback: basic-land subtype-only objects (no explicit mana ability).
-        if options.is_empty() {
+        // Check whether this specific object contributed any colors above — if not,
+        // fall back to its land subtypes. (Must be per-object, not global, otherwise
+        // once any land adds a color via an explicit ability, later basic lands with
+        // no explicit ability silently skip the fallback.)
+        let obj_had_explicit_ability = obj.abilities.iter().any(|ability| {
+            if ability.kind != AbilityKind::Activated
+                || !super::mana_abilities::is_mana_ability(ability)
+                || !has_tap_component(&ability.cost)
+            {
+                return false;
+            }
+            !matches!(
+                &*ability.effect,
+                Effect::Mana {
+                    produced: ManaProduction::OpponentLandColors { .. },
+                    ..
+                }
+            )
+        });
+        if !obj_had_explicit_ability {
             if let Some(mana_type) = obj
                 .card_types
                 .subtypes

@@ -1101,13 +1101,6 @@ pub(super) fn parse_followup_continuation_ast(
         {
             Some(ContinuationAst::SuspectLastCreated)
         }
-        // CR 508.4 / CR 614.1: "they/those tokens enter tapped and attacking" (plural)
-        // after Token, CopyTokenOf, or ChangeZone — same as singular "enters" variant.
-        Effect::CopyTokenOf { .. } | Effect::Token { .. } | Effect::ChangeZone { .. }
-            if nom_primitives::scan_contains(&lower, "enter tapped and attacking") =>
-        {
-            Some(ContinuationAst::EntersTappedAttacking)
-        }
         // CR 701.19c + CR 608.2c: "It can't be regenerated" prevents regeneration shields;
         // later text modifies the preceding Destroy instruction per CR 608.2c.
         Effect::Destroy { .. } | Effect::DestroyAll { .. }
