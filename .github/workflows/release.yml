@@ -403,6 +403,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -456,8 +458,8 @@ jobs:
           fi
           echo "## Changes" > changelog.md
           git log --format="- %s" "$RANGE" -- ':!.planning' \
-            | grep -v "^- release:" \
-            | grep -v "^- chore: update coverage" \
+            | { grep -v "^- release:" || true; } \
+            | { grep -v "^- chore: update coverage" || true; } \
             >> changelog.md
 
       - name: Create release
