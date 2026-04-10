@@ -1234,7 +1234,10 @@ pub(crate) fn parse_trigger_condition(condition: &str) -> (TriggerMode, TriggerD
         push_warning(w);
     }
 
-    // Parse event verb from the remaining text
+    // Parse event verb from the remaining text.
+    // Note: try_parse_event may emit its own warnings into the thread-local accumulator
+    // during this call; subject_warnings are re-emitted after, so the final ordering is:
+    // pre_warnings → try_parse_event warnings → subject_warnings.
     if let Some((mode, mut def)) = try_parse_event(&subject, rest, &lower) {
         // Re-emit subject warnings — the trigger parsed but the subject degraded to Any.
         for w in subject_warnings {
@@ -1256,9 +1259,12 @@ pub(crate) fn parse_trigger_condition(condition: &str) -> (TriggerMode, TriggerD
 
 /// CR 608.2k: Extract the trigger subject from condition text for pronoun context.
 /// Reuses `parse_trigger_subject` but only needs the `TargetFilter`, not the remainder.
-/// For phase triggers ("at the beginning of...") and player-action triggers ("you cast..."),
-/// there is no object subject — return `Any` silently so `resolve_it_pronoun` falls back
-/// to `SelfRef`.
+/// For subjectless triggers (phase, player-action, game mechanics), the result is `Any`
+/// and `resolve_it_pronoun` falls back to `SelfRef`.
+///
+/// Warnings from `parse_trigger_subject` are discarded — this function is a best-effort
+/// subject extraction for pronoun resolution, not a diagnostic site. Warnings for
+/// degraded subjects are emitted by the main trigger condition path instead.
 fn extract_trigger_subject_for_context(condition_text: &str) -> TargetFilter {
     let lower = condition_text.to_lowercase();
     let after_keyword = alt((
@@ -1269,39 +1275,15 @@ fn extract_trigger_subject_for_context(condition_text: &str) -> TargetFilter {
     .map(|(rest, _)| rest)
     .unwrap_or(&lower);
 
-    // Trigger patterns with no object subject — early-out without calling
-    // parse_trigger_subject (which would warn on the unrecognized text).
-    // Covers: phase triggers, player-action triggers, game mechanic triggers,
-    // passive-voice counter placement, and replacement-style "as ~ enters".
-    if alt((
-        value((), tag::<_, _, VerboseError<&str>>("at the beginning of ")),
-        value((), tag("at end of ")),
-        value((), tag("at the end of ")),
-        value((), tag("you ")),
-        value((), tag("you'")),
-        // Game mechanic triggers without object subjects
-        value((), tag("chaos ensues")),
-        value((), tag("the ring tempts ")),
-        value((), tag("day becomes ")),
-        value((), tag("night becomes ")),
-        // Passive voice counter placement: "one or more counters are put on"
-        value((), tag("one or more ")),
-        // Replacement-style triggers
-        value((), tag("as ~ enters")),
-        // Enchanted-X triggers
-        value((), tag("enchanted ")),
-        // Ability-based triggers
-        value((), tag("ability ")),
-        // State-based triggers
-        value((), tag("there are ")),
-    ))
-    .parse(after_keyword)
-    .is_ok()
-    {
-        return TargetFilter::Any;
-    }
-
+    // Drain pre-existing warnings, call parse_trigger_subject, discard any
+    // warnings it emits, then restore the originals. This avoids maintaining
+    // a parallel list of "subjectless" trigger patterns.
+    let pre = take_warnings();
     let (subject, _) = parse_trigger_subject(after_keyword);
+    let _discarded = take_warnings();
+    for w in pre {
+        push_warning(w);
+    }
     subject
 }
 
