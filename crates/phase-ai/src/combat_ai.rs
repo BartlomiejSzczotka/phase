@@ -31,31 +31,38 @@ pub fn choose_attackers_with_targets(
     state: &GameState,
     player: PlayerId,
 ) -> Vec<(ObjectId, AttackTarget)> {
-    choose_attackers_with_targets_with_profile(state, player, &AiProfile::default())
+    choose_attackers_with_targets_with_profile(state, player, &AiProfile::default(), None)
 }
 
 pub fn choose_attackers_with_targets_with_profile(
     state: &GameState,
     player: PlayerId,
     profile: &AiProfile,
+    valid_attacker_ids: Option<&[ObjectId]>,
 ) -> Vec<(ObjectId, AttackTarget)> {
     let opponents = players::opponents(state, player);
     if opponents.is_empty() {
         return Vec::new();
     }
 
-    let candidates: Vec<ObjectId> = state
-        .battlefield
-        .iter()
-        .filter_map(|&id| {
-            let obj = state.objects.get(&id)?;
-            if obj.controller == player && can_attack(state, id) {
-                Some(id)
-            } else {
-                None
-            }
-        })
-        .collect();
+    // Use engine-provided valid attacker list when available; fall back to
+    // local can_attack() for tests and hypothetical scenarios.
+    let candidates: Vec<ObjectId> = if let Some(ids) = valid_attacker_ids {
+        ids.to_vec()
+    } else {
+        state
+            .battlefield
+            .iter()
+            .filter_map(|&id| {
+                let obj = state.objects.get(&id)?;
+                if obj.controller == player && can_attack(state, id) {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .collect()
+    };
     let preferred_opponent = preferred_attack_opponent(state, player, &opponents, &candidates);
     // Collect blockers for the most likely attack target rather than the whole table.
     let opponent_blockers: Vec<ObjectId> = state
