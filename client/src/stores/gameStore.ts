@@ -37,8 +37,11 @@ export {
   clearActiveGame,
 } from "../services/gamePersistence";
 
+export type GameMode = "ai" | "online" | "local" | "p2p-host" | "p2p-join";
+
 interface GameStoreState {
   gameId: string | null;
+  gameMode: GameMode | null;
   gameState: GameState | null;
   events: GameEvent[];
   eventHistory: GameEvent[];
@@ -62,6 +65,7 @@ interface GameStoreActions {
     formatConfig?: FormatConfig,
     playerCount?: number,
     matchConfig?: MatchConfig,
+    firstPlayer?: number,
   ) => Promise<void>;
   resumeGame: (gameId: string, adapter: EngineAdapter, savedState: GameState) => Promise<void>;
   dispatch: (action: GameAction) => Promise<GameEvent[]>;
@@ -71,12 +75,14 @@ interface GameStoreActions {
   setGameState: (state: GameState) => void;
   setWaitingFor: (waitingFor: WaitingFor | null) => void;
   setLegalActions: (actions: GameAction[]) => void;
+  setGameMode: (mode: GameMode) => void;
 }
 
 export type GameStore = GameStoreState & GameStoreActions;
 
 const initialState: GameStoreState = {
   gameId: null,
+  gameMode: null,
   gameState: null,
   events: [],
   eventHistory: [],
@@ -95,9 +101,9 @@ export const useGameStore = create<GameStore>()(
   subscribeWithSelector((set, get) => ({
     ...initialState,
 
-    initGame: async (gameId, adapter, deckData, formatConfig, playerCount, matchConfig) => {
+    initGame: async (gameId, adapter, deckData, formatConfig, playerCount, matchConfig, firstPlayer) => {
       await adapter.initialize();
-      const initResult = await adapter.initializeGame(deckData, formatConfig, playerCount, matchConfig);
+      const initResult = await adapter.initializeGame(deckData, formatConfig, playerCount, matchConfig, firstPlayer);
       const state = await adapter.getState();
       const legalResult = await adapter.getLegalActions();
       const initLogEntries = (initResult.log_entries ?? []).map((entry, i) => ({
@@ -224,6 +230,10 @@ export const useGameStore = create<GameStore>()(
 
     setLegalActions: (actions) => {
       set({ legalActions: actions });
+    },
+
+    setGameMode: (mode) => {
+      set({ gameMode: mode });
     },
   })),
 );

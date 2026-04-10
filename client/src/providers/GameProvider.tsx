@@ -144,6 +144,8 @@ export interface GameProviderProps {
   formatConfig?: FormatConfig;
   playerCount?: number;
   matchConfig?: MatchConfig;
+  /** CR 103.1: 0 = human plays first, 1 = opponent plays first, undefined = random. */
+  firstPlayer?: number;
   onWsEvent?: (event: WsAdapterEvent) => void;
   onP2PEvent?: (event: P2PAdapterEvent) => void;
   onReady?: () => void;
@@ -162,6 +164,7 @@ export function GameProvider({
   formatConfig,
   playerCount,
   matchConfig,
+  firstPlayer,
   onWsEvent,
   onP2PEvent,
   onReady,
@@ -186,7 +189,8 @@ export function GameProvider({
   onResumeResetRef.current = onResumeReset;
 
   useEffect(() => {
-    const { initGame, resumeGame, reset } = useGameStore.getState();
+    const { initGame, resumeGame, reset, setGameMode } = useGameStore.getState();
+    setGameMode(mode);
 
     const isOnline = mode === "online";
     const isP2P = mode === "p2p-host" || mode === "p2p-join";
@@ -451,7 +455,7 @@ export function GameProvider({
           }
           const deckList = buildDeckList(parsedDeck, formatConfig);
           try {
-            await initGame(gameId, adapter, deckList, formatConfig, playerCount, matchConfig);
+            await initGame(gameId, adapter, deckList, formatConfig, playerCount, matchConfig, firstPlayer);
             if (cancelled) return;
             if (!adapter.cardDbLoaded) {
               onCardDataMissingRef.current?.();
@@ -476,7 +480,7 @@ export function GameProvider({
 
       const deckList = buildDeckList(parsedDeck, formatConfig);
       try {
-        await initGame(gameId, adapter, deckList, formatConfig, playerCount, matchConfig);
+        await initGame(gameId, adapter, deckList, formatConfig, playerCount, matchConfig, firstPlayer);
         if (cancelled) return;
         if (!adapter.cardDbLoaded) {
           onCardDataMissingRef.current?.();

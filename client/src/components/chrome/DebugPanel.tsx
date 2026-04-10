@@ -6,6 +6,8 @@ import { restoreGameState } from "../../game/dispatch";
 import { useGameStore } from "../../stores/gameStore";
 import { useUiStore } from "../../stores/uiStore";
 
+const SCROLL_THRESHOLD = 40; // px from bottom to count as "at bottom"
+
 interface ConsoleEntry {
   level: "log" | "warn" | "error" | "debug";
   message: string;
@@ -44,11 +46,21 @@ export function DebugPanel() {
   const open = useUiStore((s) => s.debugPanelOpen);
   const turnCheckpoints = useGameStore((s) => s.turnCheckpoints);
   const gameState = useGameStore((s) => s.gameState);
+  const gameMode = useGameStore((s) => s.gameMode);
   const [importText, setImportText] = useState("");
   const [status, setStatus] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [consoleSnapshot, setConsoleSnapshot] = useState<ConsoleEntry[]>([]);
+  const consoleContainerRef = useRef<HTMLDivElement>(null);
   const consoleEndRef = useRef<HTMLDivElement>(null);
+
+  // Smart scroll tracking: only auto-scroll if user is at the bottom
+  const isAtBottomRef = useRef(true);
+  const [newMessageCount, setNewMessageCount] = useState(0);
+  const [showJumpToBottom, setShowJumpToBottom] = useState(false);
+  const prevSnapshotLenRef = useRef(0);
+
+  const canRestoreCheckpoints = gameMode === "ai" || gameMode === "local";
 
   const handleRestore = useCallback(async (state: GameState) => {
     setStatus(null);
@@ -104,6 +116,25 @@ export function DebugPanel() {
       .catch(() => setStatus({ type: "error", message: "Failed to copy" }));
   }, [gameState]);
 
+  const scrollToBottom = useCallback(() => {
+    consoleEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    setNewMessageCount(0);
+    setShowJumpToBottom(false);
+  }, []);
+
+  const handleConsoleScroll = useCallback(() => {
+    const el = consoleContainerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < SCROLL_THRESHOLD;
+    isAtBottomRef.current = atBottom;
+    if (atBottom) {
+      setNewMessageCount(0);
+      setShowJumpToBottom(false);
+    } else {
+      setShowJumpToBottom(true);
+    }
+  }, []);
+
   // Refresh console snapshot periodically while the panel is open
   useEffect(() => {
     if (!open) return;
@@ -114,9 +145,19 @@ export function DebugPanel() {
     return () => clearInterval(interval);
   }, [open]);
 
-  // Auto-scroll console to bottom when new entries appear
+  // Smart scroll: auto-scroll only when at bottom, track new messages otherwise
   useEffect(() => {
-    consoleEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    const newLen = consoleSnapshot.length;
+    const added = newLen - prevSnapshotLenRef.current;
+    prevSnapshotLenRef.current = newLen;
+
+    if (added <= 0) return;
+
+    if (isAtBottomRef.current) {
+      consoleEndRef.current?.scrollIntoView({ behavior: "smooth" });
+    } else {
+      setNewMessageCount((prev) => prev + added);
+    }
   }, [consoleSnapshot]);
 
   if (!open) return null;
@@ -135,13 +176,15 @@ export function DebugPanel() {
         </button>
       </div>
 
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         {/* Checkpoints */}
         <section className="border-b border-gray-800 px-3 py-2">
           <h3 className="mb-1 font-mono text-xs font-bold uppercase tracking-wider text-gray-500">
             Turn Checkpoints
           </h3>
-          {turnCheckpoints.length === 0 ? (
+          {!canRestoreCheckpoints ? (
+            <p className="text-xs text-gray-600">Restore disabled in multiplayer</p>
+          ) : turnCheckpoints.length === 0 ? (
             <p className="text-xs text-gray-600">No checkpoints yet (saved at turn start)</p>
           ) : (
             <div className="flex flex-col gap-1">
@@ -158,27 +201,29 @@ export function DebugPanel() {
           )}
         </section>
 
-        {/* Import */}
-        <section className="border-b border-gray-800 px-3 py-2">
-          <h3 className="mb-1 font-mono text-xs font-bold uppercase tracking-wider text-gray-500">
-            Import State
-          </h3>
-          <textarea
-            ref={textareaRef}
-            value={importText}
-            onChange={(e) => setImportText(e.target.value)}
-            placeholder="Paste GameState JSON..."
-            className="w-full rounded border border-gray-700 bg-gray-800 px-2 py-1 font-mono text-xs text-gray-300 placeholder-gray-600 focus:border-blue-500 focus:outline-none"
-            rows={4}
-          />
-          <button
-            onClick={handleImport}
-            disabled={!importText.trim()}
-            className="mt-1 w-full rounded bg-blue-700 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Restore
-          </button>
-        </section>
+        {/* Import — only available in AI/local modes */}
+        {canRestoreCheckpoints && (
+          <section className="border-b border-gray-800 px-3 py-2">
+            <h3 className="mb-1 font-mono text-xs font-bold uppercase tracking-wider text-gray-500">
+              Import State
+            </h3>
+            <textarea
+              ref={textareaRef}
+              value={importText}
+              onChange={(e) => setImportText(e.target.value)}
+              placeholder="Paste GameState JSON..."
+              className="w-full rounded border border-gray-700 bg-gray-800 px-2 py-1 font-mono text-xs text-gray-300 placeholder-gray-600 focus:border-blue-500 focus:outline-none"
+              rows={4}
+            />
+            <button
+              onClick={handleImport}
+              disabled={!importText.trim()}
+              className="mt-1 w-full rounded bg-blue-700 px-2 py-1 text-xs font-medium text-white transition-colors hover:bg-blue-600 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Restore
+            </button>
+          </section>
+        )}
 
         {/* Copy current state */}
         <section className="px-3 py-2">
@@ -214,30 +259,48 @@ export function DebugPanel() {
               Console
             </h3>
             <button
-              onClick={() => { consoleLogs.length = 0; setConsoleSnapshot([]); }}
+              onClick={() => { consoleLogs.length = 0; setConsoleSnapshot([]); prevSnapshotLenRef.current = 0; setNewMessageCount(0); }}
               className="text-[10px] text-gray-600 hover:text-gray-400"
             >
               Clear
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto rounded bg-black/40 p-1 font-mono text-[10px] leading-tight">
-            {consoleSnapshot.map((entry, i) => (
-              <div
-                key={i}
-                className={
-                  entry.level === "error"
-                    ? "text-red-400"
-                    : entry.level === "warn"
-                      ? "text-yellow-400"
-                      : entry.level === "debug"
-                        ? "text-gray-600"
-                        : "text-gray-400"
-                }
+          <div className="relative min-h-0 flex-1">
+            <div
+              ref={consoleContainerRef}
+              onScroll={handleConsoleScroll}
+              className="h-full select-text overflow-y-auto rounded bg-black/40 p-1 font-mono text-[10px] leading-tight"
+            >
+              {consoleSnapshot.map((entry, i) => (
+                <div
+                  key={i}
+                  className={
+                    entry.level === "error"
+                      ? "text-red-400"
+                      : entry.level === "warn"
+                        ? "text-yellow-400"
+                        : entry.level === "debug"
+                          ? "text-gray-600"
+                          : "text-gray-400"
+                  }
+                >
+                  {entry.message}
+                </div>
+              ))}
+              <div ref={consoleEndRef} />
+            </div>
+            {showJumpToBottom && (
+              <button
+                onClick={scrollToBottom}
+                className="absolute bottom-2 left-1/2 -translate-x-1/2 rounded-full bg-blue-700/90 px-3 py-1 text-[10px] font-medium text-white shadow-lg backdrop-blur-sm transition-colors hover:bg-blue-600"
               >
-                {entry.message}
-              </div>
-            ))}
-            <div ref={consoleEndRef} />
+                {newMessageCount > 0
+                  ? newMessageCount === 1
+                    ? "1 new message"
+                    : `${newMessageCount} new messages`
+                  : "Jump to bottom"}
+              </button>
+            )}
           </div>
         </section>
 
