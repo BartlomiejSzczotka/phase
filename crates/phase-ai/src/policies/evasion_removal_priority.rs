@@ -52,7 +52,7 @@ impl TacticalPolicy for EvasionRemovalPriorityPolicy {
             (power * mult).min(3.0)
         } else if has_menace {
             // Menace: AI might have a blocker but needs 2 legal blockers — count
-            // only creatures that can actually block this attacker (flying/shadow check)
+            // only creatures that can actually block this attacker (full blocking check)
             let legal_blocker_count = ctx
                 .state
                 .battlefield
@@ -62,7 +62,7 @@ impl TacticalPolicy for EvasionRemovalPriorityPolicy {
                         obj.controller == ctx.ai_player
                             && !obj.tapped
                             && obj.card_types.core_types.contains(&CoreType::Creature)
-                            && crate::combat_ai::can_block_check(obj, target)
+                            && engine::game::combat::can_block_pair(ctx.state, id, *target_id)
                     })
                 })
                 .count();

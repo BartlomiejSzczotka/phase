@@ -10,7 +10,6 @@ use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 
 use crate::cast_facts::cast_facts_for_action;
-use crate::combat_ai;
 use crate::config::PolicyPenalties;
 use crate::eval::{evaluate_creature, threat_level};
 
@@ -178,15 +177,16 @@ pub(crate) fn battlefield_pressure_delta(state: &GameState, ai_player: PlayerId)
 pub(crate) fn opponent_lethal_damage(state: &GameState, ai_player: PlayerId) -> i32 {
     let opponents = players::opponents(state, ai_player);
 
-    // Collect AI's untapped creatures for blocking checks
-    let ai_blockers: Vec<&GameObject> = state
+    // Collect AI's untapped creature IDs for blocking checks
+    let ai_blocker_ids: Vec<ObjectId> = state
         .battlefield
         .iter()
-        .filter_map(|id| state.objects.get(id))
-        .filter(|obj| {
-            obj.controller == ai_player
+        .filter_map(|&id| {
+            let obj = state.objects.get(&id)?;
+            (obj.controller == ai_player
                 && !obj.tapped
-                && obj.card_types.core_types.contains(&CoreType::Creature)
+                && obj.card_types.core_types.contains(&CoreType::Creature))
+            .then_some(id)
         })
         .collect();
 
@@ -202,9 +202,9 @@ pub(crate) fn opponent_lethal_damage(state: &GameState, ai_player: PlayerId) -> 
             continue;
         }
         let power = obj.power.unwrap_or(0);
-        let can_be_blocked = ai_blockers
+        let can_be_blocked = ai_blocker_ids
             .iter()
-            .any(|blocker| combat_ai::can_block_check(blocker, obj));
+            .any(|&bid| engine::game::combat::can_block_pair(state, bid, obj_id));
         if can_be_blocked {
             // Blockable creatures contribute half power (some will get through)
             total += power / 2;
@@ -216,17 +216,14 @@ pub(crate) fn opponent_lethal_damage(state: &GameState, ai_player: PlayerId) -> 
 }
 
 /// Whether any of ai_player's untapped creatures can legally block the given creature.
-/// Delegates to `combat_ai::can_block_check` for flying/reach/shadow rules.
+/// Delegates to the engine's `can_block_pair` for full blocking restriction checks.
 pub(crate) fn ai_can_block(state: &GameState, ai_player: PlayerId, attacker_id: ObjectId) -> bool {
-    let Some(attacker) = state.objects.get(&attacker_id) else {
-        return false;
-    };
     state.battlefield.iter().any(|&id| {
         state.objects.get(&id).is_some_and(|obj| {
             obj.controller == ai_player
                 && !obj.tapped
                 && obj.card_types.core_types.contains(&CoreType::Creature)
-                && combat_ai::can_block_check(obj, attacker)
+                && engine::game::combat::can_block_pair(state, id, attacker_id)
         })
     })
 }

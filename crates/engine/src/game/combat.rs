@@ -1051,7 +1051,11 @@ pub fn get_valid_attacker_ids(state: &GameState) -> Vec<ObjectId> {
 
 /// Check per-pair blocking legality (evasion abilities, CR 509.1b).
 /// Does NOT check menace (which is a multi-blocker constraint).
-fn can_block_pair(state: &GameState, blocker_id: ObjectId, attacker_id: ObjectId) -> bool {
+/// CR 509.1a–b: Check if a specific blocker can legally block a specific attacker,
+/// accounting for all blocking restrictions (CantBeBlocked, CantBeBlockedExceptBy,
+/// CantBeBlockedBy, Protection, Flying/Reach, Shadow, Fear, Intimidate, Skulk,
+/// Horsemanship, CantBlock/CantAttackOrBlock).
+pub fn can_block_pair(state: &GameState, blocker_id: ObjectId, attacker_id: ObjectId) -> bool {
     let Some(blocker) = state.objects.get(&blocker_id) else {
         return false;
     };

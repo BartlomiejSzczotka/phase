@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use engine::game::combat::AttackTarget;
+use engine::game::combat::{can_block_pair, AttackTarget};
 use engine::game::players;
 use engine::types::ability::{Effect, QuantityExpr, QuantityRef, TargetFilter};
 use engine::types::card_type::CoreType;
@@ -109,13 +109,7 @@ pub fn choose_attackers_with_targets_with_profile(
 
         let best_blocker_value = opponent_blockers
             .iter()
-            .filter(|&&bid| {
-                let blocker = match state.objects.get(&bid) {
-                    Some(b) => b,
-                    None => return false,
-                };
-                can_block_check(blocker, obj)
-            })
+            .filter(|&&bid| can_block_pair(state, bid, id))
             .map(|&bid| {
                 let blocker = state.objects.get(&bid).unwrap();
                 let blocker_toughness = blocker.toughness.unwrap_or(0);
@@ -415,13 +409,7 @@ pub fn choose_blockers_with_profile(
                 None => return false,
             };
             blocker.has_keyword(&Keyword::Deathtouch)
-                && can_block_with_engine_map(
-                    bid,
-                    attacker_id,
-                    blocker,
-                    attacker,
-                    valid_block_targets,
-                )
+                && can_block_with_engine_map(state, bid, attacker_id, valid_block_targets)
         }) {
             let blocker_id = available_blockers[pos];
             assignments.push((blocker_id, attacker_id));
@@ -449,19 +437,7 @@ pub fn choose_blockers_with_profile(
             .iter()
             .filter(|&&bid| {
                 !used_blockers.contains(&bid)
-                    && state
-                        .objects
-                        .get(&bid)
-                        .map(|b| {
-                            can_block_with_engine_map(
-                                bid,
-                                attacker_id,
-                                b,
-                                attacker,
-                                valid_block_targets,
-                            )
-                        })
-                        .unwrap_or(false)
+                    && can_block_with_engine_map(state, bid, attacker_id, valid_block_targets)
             })
             .filter_map(|&bid| {
                 let blocker = state.objects.get(&bid)?;
@@ -555,19 +531,7 @@ pub fn choose_blockers_with_profile(
             .iter()
             .filter(|&&bid| {
                 !used_blockers.contains(&bid)
-                    && state
-                        .objects
-                        .get(&bid)
-                        .map(|b| {
-                            can_block_with_engine_map(
-                                bid,
-                                attacker_id,
-                                b,
-                                attacker,
-                                valid_block_targets,
-                            )
-                        })
-                        .unwrap_or(false)
+                    && can_block_with_engine_map(state, bid, attacker_id, valid_block_targets)
             })
             .filter_map(|&bid| {
                 let b = state.objects.get(&bid)?;
@@ -713,18 +677,11 @@ pub fn choose_blockers_with_profile(
                 // deals the attacker's power to the player, negating the damage prevented.
                 if let Some(&blocker_id) = available_blockers.iter().find(|&&bid| {
                     !used_blockers.contains(&bid)
+                        && can_block_with_engine_map(state, bid, attacker_id, valid_block_targets)
                         && state
                             .objects
                             .get(&bid)
-                            .map(|b| {
-                                can_block_with_engine_map(
-                                    bid,
-                                    attacker_id,
-                                    b,
-                                    attacker,
-                                    valid_block_targets,
-                                ) && !has_damage_reflection_to_controller(b)
-                            })
+                            .map(|b| !has_damage_reflection_to_controller(b))
                             .unwrap_or(false)
                 }) {
                     assignments.push((blocker_id, attacker_id));
@@ -942,7 +899,7 @@ fn crackback_damage(
             }
             let bid = our_blockers[blocker_idx];
             if let Some(blocker) = state.objects.get(&bid) {
-                if can_block_check(blocker, opp_obj) {
+                if can_block_pair(state, bid, opp_id) {
                     blocker_idx += 1;
                     if opp_obj.has_keyword(&Keyword::Trample) {
                         let blocker_toughness = blocker.toughness.unwrap_or(0);
@@ -1027,55 +984,20 @@ fn has_cant_be_blocked(obj: &engine::game::game_object::GameObject) -> bool {
         .any(|sd| sd.mode == StaticMode::CantBeBlocked)
 }
 
-/// Check if a blocker can legally block an attacker.
-/// Checks: CantBeBlocked, flying/reach, shadow.
-/// Note: This is a heuristic fallback for contexts where the engine's
-/// `valid_block_targets` map is unavailable (e.g. crackback estimation, tests).
-/// In real blocker assignment, prefer `can_block_with_engine_map`.
-pub(crate) fn can_block_check(
-    blocker: &engine::game::game_object::GameObject,
-    attacker: &engine::game::game_object::GameObject,
-) -> bool {
-    // CR 509.1b: Creatures with "can't be blocked" can never be blocked
-    if has_cant_be_blocked(attacker) {
-        return false;
-    }
-
-    // Flying check
-    if attacker.has_keyword(&Keyword::Flying)
-        && !blocker.has_keyword(&Keyword::Flying)
-        && !blocker.has_keyword(&Keyword::Reach)
-    {
-        return false;
-    }
-
-    // Shadow check
-    let attacker_shadow = attacker.has_keyword(&Keyword::Shadow);
-    let blocker_shadow = blocker.has_keyword(&Keyword::Shadow);
-    if attacker_shadow != blocker_shadow {
-        return false;
-    }
-
-    true
-}
-
 /// Check if a blocker can legally block an attacker, using the engine's pre-validated
-/// `valid_block_targets` map when available. This map accounts for all blocking
-/// restrictions (CantBeBlocked, CantBeBlockedExceptBy, CantBeBlockedBy, Protection,
-/// flying/reach, shadow, menace minimums, etc.) so the AI never needs to re-derive them.
-/// Falls back to `can_block_check` when the map is not provided.
+/// `valid_block_targets` map when available. Falls back to the engine's `can_block_pair`
+/// when the map is not provided (e.g. unit tests without a WaitingFor state).
 fn can_block_with_engine_map(
+    state: &GameState,
     blocker_id: ObjectId,
     attacker_id: ObjectId,
-    blocker: &engine::game::game_object::GameObject,
-    attacker: &engine::game::game_object::GameObject,
     valid_block_targets: Option<&HashMap<ObjectId, Vec<ObjectId>>>,
 ) -> bool {
     if let Some(map) = valid_block_targets {
         map.get(&blocker_id)
             .is_some_and(|targets| targets.contains(&attacker_id))
     } else {
-        can_block_check(blocker, attacker)
+        can_block_pair(state, blocker_id, attacker_id)
     }
 }
 
