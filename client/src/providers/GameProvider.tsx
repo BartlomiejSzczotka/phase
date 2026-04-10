@@ -527,7 +527,7 @@ export function GameProvider({
         reset();
       }
     };
-  }, [gameId, mode, difficulty, joinCode, formatConfig, playerCount, matchConfig]);
+  }, [gameId, mode, difficulty, joinCode, formatConfig, playerCount, matchConfig, firstPlayer]);
 
   return (
     <GameDispatchContext.Provider value={dispatchAction}>
