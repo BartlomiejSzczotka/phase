@@ -390,12 +390,16 @@ pub fn choose_blockers_with_profile(
         .collect();
     sorted_attackers.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    // First pass: assign deathtouch blockers to highest-value attackers
+    // First pass: assign deathtouch blockers to highest-value attackers.
+    // CR 702.111b: Skip menace attackers — they require 2+ blockers (handled in gang-block pass).
     for &(attacker_id, _) in &sorted_attackers {
         let attacker = match state.objects.get(&attacker_id) {
             Some(a) => a,
             None => continue,
         };
+        if attacker.has_keyword(&Keyword::Menace) {
+            continue;
+        }
 
         if let Some(pos) = available_blockers.iter().position(|&bid| {
             if used_blockers.contains(&bid) {
@@ -413,7 +417,8 @@ pub fn choose_blockers_with_profile(
         }
     }
 
-    // Second pass: assign remaining blockers where they'd survive
+    // Second pass: assign remaining blockers where they'd survive.
+    // CR 702.111b: Skip menace attackers — they require 2+ blockers (handled in gang-block pass).
     for &(attacker_id, _) in &sorted_attackers {
         if assignments.iter().any(|&(_, a)| a == attacker_id) {
             continue; // Already blocked
@@ -423,6 +428,9 @@ pub fn choose_blockers_with_profile(
             Some(a) => a,
             None => continue,
         };
+        if attacker.has_keyword(&Keyword::Menace) {
+            continue;
+        }
 
         // Find a blocker that survives and can kill the attacker
         let best = available_blockers
@@ -540,17 +548,22 @@ pub fn choose_blockers_with_profile(
             .collect();
         gang_candidates.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
 
-        // Skip if any single blocker can already kill it (handled in second pass above)
-        if gang_candidates.iter().any(|&(bid, _, _)| {
-            state
-                .objects
-                .get(&bid)
-                .map(|b| {
-                    let (kills, _) = evaluate_block_outcome(b, attacker);
-                    kills
-                })
-                .unwrap_or(false)
-        }) {
+        // Skip if any single blocker can already kill it (handled in second pass above).
+        // CR 702.111b: Exception — menace attackers MUST be gang-blocked even when a
+        // single blocker could kill them, because single blocks are illegal.
+        let has_menace = attacker.has_keyword(&Keyword::Menace);
+        if !has_menace
+            && gang_candidates.iter().any(|&(bid, _, _)| {
+                state
+                    .objects
+                    .get(&bid)
+                    .map(|b| {
+                        let (kills, _) = evaluate_block_outcome(b, attacker);
+                        kills
+                    })
+                    .unwrap_or(false)
+            })
+        {
             continue;
         }
 
@@ -595,8 +608,26 @@ pub fn choose_blockers_with_profile(
             }
         }
 
-        // Only gang-block if combined power can kill AND total value risked <= attacker value
-        if combined_power >= attacker_toughness && gang_value <= attacker_value {
+        // CR 702.111b: Menace requires at least 2 blockers. If the gang set is too
+        // small, try to add another blocker even if combined power already suffices.
+        if has_menace && gang_set.len() < 2 {
+            if let Some(&(bid, power, value)) = effective_candidates
+                .iter()
+                .find(|(bid, _, _)| !gang_set.contains(bid))
+            {
+                combined_power += power;
+                gang_set.push(bid);
+                gang_value += value;
+            }
+        }
+
+        // Only gang-block if combined power can kill AND total value risked <= attacker value.
+        // For menace attackers, also require at least 2 blockers.
+        let min_blockers = if has_menace { 2 } else { 1 };
+        if combined_power >= attacker_toughness
+            && gang_set.len() >= min_blockers
+            && gang_value <= attacker_value
+        {
             for bid in gang_set {
                 assignments.push((bid, attacker_id));
                 used_blockers.push(bid);
@@ -645,6 +676,10 @@ pub fn choose_blockers_with_profile(
                     Some(a) => a,
                     None => continue,
                 };
+                // CR 702.111b: Skip menace attackers — single chump blocks are illegal.
+                if attacker.has_keyword(&Keyword::Menace) {
+                    continue;
+                }
                 // Find any unused blocker that can legally block this attacker.
                 // Skip damage-reflection creatures (Jackal Pup) — blocking with them
                 // deals the attacker's power to the player, negating the damage prevented.
