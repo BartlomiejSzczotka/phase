@@ -15,9 +15,37 @@ import { useAltToggle } from "./useAltToggle";
  * - T: Tap all untapped lands (when in ManaPayment)
  * - Escape: Cancel current action / cancel end-turn mode
  * - D: Copy game state JSON to clipboard (debug)
+ * - `: Toggle debug panel
+ * - Triple-tap (touch): Toggle debug panel (iPad/mobile)
  */
 export function useKeyboardShortcuts(): void {
   useAltToggle();
+
+  // Triple-tap gesture for debug panel on touch devices (no keyboard)
+  useEffect(() => {
+    let tapCount = 0;
+    let lastTap = 0;
+    const TAP_WINDOW = 500; // ms between taps
+    const REQUIRED_FINGERS = 3;
+
+    const handler = (e: TouchEvent) => {
+      if (e.touches.length !== REQUIRED_FINGERS) {
+        tapCount = 0;
+        return;
+      }
+      const now = Date.now();
+      if (now - lastTap > TAP_WINDOW) tapCount = 0;
+      tapCount++;
+      lastTap = now;
+      if (tapCount >= 2) {
+        tapCount = 0;
+        useUiStore.getState().toggleDebugPanel();
+      }
+    };
+
+    window.addEventListener("touchstart", handler);
+    return () => window.removeEventListener("touchstart", handler);
+  }, []);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -133,10 +161,8 @@ export function useKeyboardShortcuts(): void {
           break;
 
         case "`":
-          if (import.meta.env.DEV) {
-            e.preventDefault();
-            uiState.toggleDebugPanel();
-          }
+          e.preventDefault();
+          uiState.toggleDebugPanel();
           break;
       }
     };

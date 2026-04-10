@@ -378,6 +378,8 @@ class AudioManager {
 
   /** Stop music, close AudioContext. */
   dispose(): void {
+    this.generation++;
+    this.crossfadeInProgress = false;
     this.stopStinger();
     if (this.currentAudio) {
       this.currentAudio.pause();
@@ -391,6 +393,38 @@ class AudioManager {
     this.musicGain = null;
     this.sfxBuffers.clear();
     this.isWarmedUp = false;
+  }
+
+  /**
+   * Tear down and fully rebuild the AudioContext, reload the theme,
+   * and restart playback. Use this to recover from iOS/iPadOS audio
+   * suspension where resume() alone doesn't work.
+   */
+  async restart(): Promise<void> {
+    const context = this.activeContext;
+    const phase = this.battlefieldPhase;
+    this.dispose();
+    this.warmUp();
+    try {
+      const prefs = usePreferencesStore.getState();
+      const manifest = await findManifest(
+        prefs.audioThemeId,
+        prefs.customThemeUrls,
+      );
+      await this.loadTheme(manifest);
+    } catch {
+      await this.loadTheme(PLANESWALKER_THEME);
+    }
+    this.activeContext = context;
+    this.battlefieldPhase = phase;
+    this.setContext(context, true);
+  }
+
+  /** Return a human-readable diagnostic string for the debug panel. */
+  diagnostics(): string {
+    const ctxState = this.ctx?.state ?? "none";
+    const playing = this.currentAudio ? !this.currentAudio.paused : false;
+    return `ctx=${ctxState} music=${playing ? "playing" : "stopped"} context=${this.activeContext}`;
   }
 
   // ---------------------------------------------------------------------------

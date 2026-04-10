@@ -810,7 +810,7 @@ function GamePageContent({
       </AnimatePresence>
 
       {/* Overlay layers */}
-      {import.meta.env.DEV && <DebugPanel />}
+      <DebugPanel />
 
       {viewingZone && (
         <ZoneViewer

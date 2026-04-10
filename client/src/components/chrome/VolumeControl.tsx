@@ -44,8 +44,12 @@ export function VolumeControl({ variant }: VolumeControlProps) {
   const handleToggleMute = useCallback(() => {
     const next = !masterMuted;
     setMasterMuted(next);
-    if (!next) {
-      audioManager.ensurePlayback();
+    if (next) {
+      // Fully tear down AudioContext so iOS doesn't leave it in a broken suspended state
+      audioManager.dispose();
+    } else {
+      // Rebuild from scratch — resume() alone can't recover from iOS "interrupted" state
+      audioManager.restart();
     }
   }, [masterMuted, setMasterMuted]);
 
@@ -146,11 +150,14 @@ export function VolumeControl({ variant }: VolumeControlProps) {
     );
   }
 
-  // variant === "chrome"
+  // variant === "chrome" — icon on right, slider expands leftward
+  // (pinned to upper-right corner, so the icon stays at the screen edge)
+  // flex-row-reverse keeps the icon (first in DOM) visually on the right,
+  // so it's always visible even when collapsed with overflow-hidden.
   return (
     <div
       ref={containerRef}
-      className="flex min-h-11 items-center overflow-hidden rounded-[16px] border border-white/12 bg-black/18 backdrop-blur-sm transition-all duration-200"
+      className="flex flex-row-reverse min-h-11 items-center overflow-hidden rounded-[16px] border border-white/12 bg-black/18 backdrop-blur-sm transition-all duration-200"
       style={{ width: expanded ? 200 : 44 }}
       onMouseEnter={handleMouseEnter}
       onMouseLeave={handleMouseLeave}
@@ -164,9 +171,10 @@ export function VolumeControl({ variant }: VolumeControlProps) {
         <Icon />
       </button>
       <div
-        className="flex items-center gap-2 pr-3 transition-opacity duration-200"
+        className="flex items-center gap-2 pl-3 transition-opacity duration-200"
         style={{ opacity: expanded ? 1 : 0 }}
       >
+        <span className="w-8 text-xs text-slate-400">{sliderLabel}</span>
         <input
           type="range"
           min={0}
@@ -177,7 +185,6 @@ export function VolumeControl({ variant }: VolumeControlProps) {
           aria-label="Volume"
           tabIndex={expanded ? 0 : -1}
         />
-        <span className="w-8 text-right text-xs text-slate-400">{sliderLabel}</span>
       </div>
     </div>
   );

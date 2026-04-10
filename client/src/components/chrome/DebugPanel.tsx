@@ -1,9 +1,44 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { GameState } from "../../adapter/types";
+import { audioManager } from "../../audio/AudioManager";
 import { restoreGameState } from "../../game/dispatch";
 import { useGameStore } from "../../stores/gameStore";
 import { useUiStore } from "../../stores/uiStore";
+
+interface ConsoleEntry {
+  level: "log" | "warn" | "error" | "debug";
+  message: string;
+  timestamp: number;
+}
+
+/** Ring buffer of captured console output, shared across mount/unmount cycles. */
+const consoleLogs: ConsoleEntry[] = [];
+const MAX_CONSOLE_ENTRIES = 200;
+let consolePatched = false;
+
+function patchConsole(): void {
+  if (consolePatched) return;
+  consolePatched = true;
+
+  const levels = ["log", "warn", "error", "debug"] as const;
+  for (const level of levels) {
+    const original = console[level].bind(console);
+    console[level] = (...args: unknown[]) => {
+      original(...args);
+      const message = args.map((a) =>
+        typeof a === "string" ? a : JSON.stringify(a, null, 2),
+      ).join(" ");
+      consoleLogs.push({ level, message, timestamp: Date.now() });
+      if (consoleLogs.length > MAX_CONSOLE_ENTRIES) {
+        consoleLogs.splice(0, consoleLogs.length - MAX_CONSOLE_ENTRIES);
+      }
+    };
+  }
+}
+
+// Patch immediately so we capture logs from app startup
+patchConsole();
 
 export function DebugPanel() {
   const open = useUiStore((s) => s.debugPanelOpen);
@@ -12,6 +47,8 @@ export function DebugPanel() {
   const [importText, setImportText] = useState("");
   const [status, setStatus] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [consoleSnapshot, setConsoleSnapshot] = useState<ConsoleEntry[]>([]);
+  const consoleEndRef = useRef<HTMLDivElement>(null);
 
   const handleRestore = useCallback(async (state: GameState) => {
     setStatus(null);
@@ -66,6 +103,21 @@ export function DebugPanel() {
       .then(() => setStatus({ type: "success", message: "Copied to clipboard" }))
       .catch(() => setStatus({ type: "error", message: "Failed to copy" }));
   }, [gameState]);
+
+  // Refresh console snapshot periodically while the panel is open
+  useEffect(() => {
+    if (!open) return;
+    setConsoleSnapshot([...consoleLogs]);
+    const interval = setInterval(() => {
+      setConsoleSnapshot([...consoleLogs]);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [open]);
+
+  // Auto-scroll console to bottom when new entries appear
+  useEffect(() => {
+    consoleEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [consoleSnapshot]);
 
   if (!open) return null;
 
@@ -139,6 +191,56 @@ export function DebugPanel() {
           </button>
         </section>
 
+        {/* Audio diagnostics */}
+        <section className="border-b border-gray-800 px-3 py-2">
+          <h3 className="mb-1 font-mono text-xs font-bold uppercase tracking-wider text-gray-500">
+            Audio
+          </h3>
+          <div className="flex flex-col gap-1 text-xs">
+            <AudioState />
+            <button
+              onClick={() => audioManager.restart()}
+              className="rounded bg-gray-800 px-2 py-1 text-left transition-colors hover:bg-gray-700"
+            >
+              Restart AudioContext
+            </button>
+          </div>
+        </section>
+
+        {/* Console */}
+        <section className="flex min-h-0 flex-1 flex-col px-3 py-2">
+          <div className="mb-1 flex items-center justify-between">
+            <h3 className="font-mono text-xs font-bold uppercase tracking-wider text-gray-500">
+              Console
+            </h3>
+            <button
+              onClick={() => { consoleLogs.length = 0; setConsoleSnapshot([]); }}
+              className="text-[10px] text-gray-600 hover:text-gray-400"
+            >
+              Clear
+            </button>
+          </div>
+          <div className="flex-1 overflow-y-auto rounded bg-black/40 p-1 font-mono text-[10px] leading-tight">
+            {consoleSnapshot.map((entry, i) => (
+              <div
+                key={i}
+                className={
+                  entry.level === "error"
+                    ? "text-red-400"
+                    : entry.level === "warn"
+                      ? "text-yellow-400"
+                      : entry.level === "debug"
+                        ? "text-gray-600"
+                        : "text-gray-400"
+                }
+              >
+                {entry.message}
+              </div>
+            ))}
+            <div ref={consoleEndRef} />
+          </div>
+        </section>
+
         {/* Status message */}
         {status && (
           <div
@@ -154,4 +256,16 @@ export function DebugPanel() {
       </div>
     </div>
   );
+}
+
+/** Live AudioContext state readout — refreshes every second while panel is open. */
+function AudioState() {
+  const [info, setInfo] = useState("");
+  useEffect(() => {
+    const update = () => setInfo(audioManager.diagnostics());
+    update();
+    const id = setInterval(update, 1000);
+    return () => clearInterval(id);
+  }, []);
+  return <span className="text-gray-500">{info}</span>;
 }
