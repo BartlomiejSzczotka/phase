@@ -35,7 +35,7 @@ mod tests {
     use crate::config::AiConfig;
     use engine::ai_support::{ActionMetadata, AiDecisionContext, CandidateAction, TacticalClass};
     use engine::game::zones::create_object;
-    use engine::types::ability::{Effect, QuantityExpr, ResolvedAbility, TargetFilter};
+    use engine::types::ability::{Effect, QuantityExpr, ResolvedAbility};
     use engine::types::card_type::CoreType;
     use engine::types::game_state::{GameState, PendingCast};
     use engine::types::identifiers::{CardId, ObjectId};

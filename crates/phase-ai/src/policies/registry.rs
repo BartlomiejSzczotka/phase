@@ -42,6 +42,8 @@ impl Default for PolicyRegistry {
                 Box::new(super::mana_efficiency::ManaEfficiencyPolicy),
                 Box::new(super::stack_awareness::StackAwarenessPolicy),
                 Box::new(super::downside_awareness::DownsideAwarenessPolicy),
+                Box::new(super::tempo_curve::TempoCurvePolicy),
+                Box::new(super::synergy_casting::SynergyCastingPolicy),
                 Box::new(LethalityAwarenessPolicy),
                 Box::new(SacrificeValuePolicy),
                 Box::new(EvasionRemovalPriorityPolicy),

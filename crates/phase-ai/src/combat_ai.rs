@@ -91,8 +91,12 @@ pub fn choose_attackers_with_targets_with_profile(
         let has_evasion = obj.has_keyword(&Keyword::Flying)
             || obj.has_keyword(&Keyword::Menace)
             || obj.has_keyword(&Keyword::Shadow);
+        // CR 702.20b: Attacking with vigilance doesn't cause the creature to tap,
+        // so it has zero defensive cost — always include vigilance creatures.
+        let has_vigilance = obj.has_keyword(&Keyword::Vigilance);
+        let has_lifelink = obj.has_keyword(&Keyword::Lifelink);
 
-        if has_evasion || opponent_blockers.is_empty() {
+        if has_evasion || has_vigilance || opponent_blockers.is_empty() {
             attacking_ids.push(id);
             continue;
         }
@@ -129,7 +133,14 @@ pub fn choose_attackers_with_targets_with_profile(
                 let free_damage = kills_blocker && attacker_survives;
                 // Favorable trade: attacker kills blocker and is worth less (trading up)
                 let favorable_trade = kills_blocker && my_value <= blocker_value;
-                if should_attack_given_objective(objective, free_damage, favorable_trade, profile) {
+                if should_attack_given_objective(
+                    objective,
+                    free_damage,
+                    favorable_trade,
+                    has_lifelink,
+                    my_power,
+                    profile,
+                ) {
                     attacking_ids.push(id);
                 }
             }
@@ -162,6 +173,52 @@ pub fn choose_attackers_with_targets_with_profile(
 
         if unblocked_power as f64 > worst_loss_value {
             attacking_ids = candidates.clone();
+        }
+    }
+
+    // Crackback analysis: if tapping our attackers leaves us dead on the swing-back,
+    // hold back non-vigilance creatures (highest-value first) until we survive.
+    if !attacking_ids.is_empty() && !matches!(objective, CombatObjective::PushLethal) {
+        let my_life = state.players[player.0 as usize].life;
+        let cb_damage = crackback_damage(state, player, &opponents, &attacking_ids);
+        if cb_damage >= my_life {
+            // Sort non-vigilance attackers by value descending — hold back most valuable first
+            let mut non_vigilance: Vec<(usize, f64)> = attacking_ids
+                .iter()
+                .enumerate()
+                .filter(|&(_, &id)| {
+                    state
+                        .objects
+                        .get(&id)
+                        .map(|o| !o.has_keyword(&Keyword::Vigilance))
+                        .unwrap_or(false)
+                })
+                .map(|(i, &id)| (i, evaluate_creature(state, id)))
+                .collect();
+            non_vigilance
+                .sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+
+            // Remove attackers one at a time until crackback is survivable
+            let mut to_remove = Vec::new();
+            for &(idx, _) in &non_vigilance {
+                let remaining: Vec<ObjectId> = attacking_ids
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| !to_remove.contains(i))
+                    .map(|(_, &id)| id)
+                    .collect();
+                let cb = crackback_damage(state, player, &opponents, &remaining);
+                if cb < my_life {
+                    break;
+                }
+                to_remove.push(idx);
+            }
+
+            // Apply removals (iterate in reverse to preserve indices)
+            to_remove.sort_unstable();
+            for &idx in to_remove.iter().rev() {
+                attacking_ids.remove(idx);
+            }
         }
     }
 
@@ -364,7 +421,6 @@ pub fn choose_blockers_with_profile(
             Some(a) => a,
             None => continue,
         };
-        let attacker_power = attacker.power.unwrap_or(0);
 
         // Find a blocker that survives and can kill the attacker
         let best = available_blockers
@@ -379,10 +435,7 @@ pub fn choose_blockers_with_profile(
             })
             .filter_map(|&bid| {
                 let blocker = state.objects.get(&bid)?;
-                let blocker_toughness = blocker.toughness.unwrap_or(0);
-                let blocker_power = blocker.power.unwrap_or(0);
-                let survives = blocker_toughness > attacker_power;
-                let kills = blocker_power >= attacker.toughness.unwrap_or(0);
+                let (kills, survives) = evaluate_block_outcome(blocker, attacker);
                 // Prefer: survives and kills > survives > kills > neither
                 let priority = (survives as u8) * 2 + (kills as u8);
                 Some((bid, priority, evaluate_creature(state, bid)))
@@ -421,6 +474,105 @@ pub fn choose_blockers_with_profile(
             if priority > 0 || should_chump_stabilize || should_chump_race {
                 assignments.push((blocker_id, attacker_id));
                 used_blockers.push(blocker_id);
+            }
+        }
+    }
+
+    // Gang-blocking pass (CR 509.1a): assign multiple blockers to a single attacker
+    // when no single blocker can kill it but combined power can.
+    // Only gang-block when the combined blocker value is less than the attacker value.
+    for &(attacker_id, attacker_value) in &sorted_attackers {
+        if assignments.iter().any(|&(_, a)| a == attacker_id) {
+            continue; // Already blocked
+        }
+        let attacker = match state.objects.get(&attacker_id) {
+            Some(a) => a,
+            None => continue,
+        };
+        let attacker_toughness = attacker.toughness.unwrap_or(0);
+        let attacker_power = attacker.power.unwrap_or(0);
+        let attacker_has_deathtouch = attacker.has_keyword(&Keyword::Deathtouch);
+        let attacker_has_first_strike = attacker.has_keyword(&Keyword::FirstStrike)
+            || attacker.has_keyword(&Keyword::DoubleStrike);
+
+        // Collect eligible unused blockers sorted by value (ascending = sacrifice cheapest)
+        let mut gang_candidates: Vec<(ObjectId, i32, f64)> = available_blockers
+            .iter()
+            .filter(|&&bid| {
+                !used_blockers.contains(&bid)
+                    && state
+                        .objects
+                        .get(&bid)
+                        .map(|b| can_block_check(b, attacker))
+                        .unwrap_or(false)
+            })
+            .filter_map(|&bid| {
+                let b = state.objects.get(&bid)?;
+                Some((bid, b.power.unwrap_or(0), evaluate_creature(state, bid)))
+            })
+            .collect();
+        gang_candidates.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Skip if any single blocker can already kill it (handled in second pass above)
+        if gang_candidates.iter().any(|&(bid, _, _)| {
+            state
+                .objects
+                .get(&bid)
+                .map(|b| {
+                    let (kills, _) = evaluate_block_outcome(b, attacker);
+                    kills
+                })
+                .unwrap_or(false)
+        }) {
+            continue;
+        }
+
+        // CR 702.7b: If attacker has first strike and blocker doesn't, the blocker
+        // dies before dealing damage. Skip blockers that would die to first strike.
+        let effective_candidates: Vec<(ObjectId, i32, f64)> = gang_candidates
+            .into_iter()
+            .filter(|&(bid, _, _)| {
+                if !attacker_has_first_strike {
+                    return true;
+                }
+                let b = match state.objects.get(&bid) {
+                    Some(b) => b,
+                    None => return false,
+                };
+                // Blocker survives first strike if it has first strike too,
+                // or if attacker can't kill it in the first strike step
+                b.has_keyword(&Keyword::FirstStrike)
+                    || b.has_keyword(&Keyword::DoubleStrike)
+                    || attacker_power < b.toughness.unwrap_or(0)
+            })
+            .collect();
+
+        // CR 702.2c: Deathtouch means any nonzero damage is lethal, so one
+        // blocker with deathtouch is enough — no need to gang-block.
+        // Also skip if attacker has deathtouch: every blocker dies, so
+        // gang-blocking just loses more creatures.
+        if attacker_has_deathtouch {
+            continue;
+        }
+
+        // Find minimum set of blockers whose combined power >= attacker toughness
+        let mut combined_power = 0;
+        let mut gang_set: Vec<ObjectId> = Vec::new();
+        let mut gang_value = 0.0;
+        for &(bid, power, value) in &effective_candidates {
+            combined_power += power;
+            gang_set.push(bid);
+            gang_value += value;
+            if combined_power >= attacker_toughness {
+                break;
+            }
+        }
+
+        // Only gang-block if combined power can kill AND total value risked <= attacker value
+        if combined_power >= attacker_toughness && gang_value <= attacker_value {
+            for bid in gang_set {
+                assignments.push((bid, attacker_id));
+                used_blockers.push(bid);
             }
         }
     }
@@ -530,7 +682,25 @@ fn determine_attack_objective(
     {
         CombatObjective::PreserveAdvantage
     } else {
-        CombatObjective::Race
+        // Race velocity: compute turns-to-kill for both sides.
+        // If our clock is shorter (we die sooner), stabilize instead of racing blindly.
+        let our_clock = opponents
+            .iter()
+            .map(|&opp| race_clock(state, opp, player))
+            .min()
+            .unwrap_or(u32::MAX);
+        let their_clock = opponents
+            .iter()
+            .map(|&opp| race_clock(state, player, opp))
+            .min()
+            .unwrap_or(u32::MAX);
+
+        if our_clock <= 2 && our_clock < their_clock {
+            // We die in 1-2 turns and can't kill them faster — stabilize
+            CombatObjective::Stabilize
+        } else {
+            CombatObjective::Race
+        }
     }
 }
 
@@ -568,14 +738,120 @@ fn should_attack_given_objective(
     objective: CombatObjective,
     free_damage: bool,
     favorable_trade: bool,
+    has_lifelink: bool,
+    attacker_power: i32,
     _profile: &AiProfile,
 ) -> bool {
+    // Lifelink creates a life swing: opponent loses N, you gain N = 2N effective swing.
+    // This makes marginal attacks worthwhile, especially while racing.
+    let lifelink_bonus = has_lifelink && attacker_power > 0;
     match objective {
         CombatObjective::PushLethal => true,
-        CombatObjective::Stabilize => free_damage,
-        CombatObjective::PreserveAdvantage => free_damage || favorable_trade,
-        CombatObjective::Race => free_damage || favorable_trade,
+        CombatObjective::Stabilize => free_damage || lifelink_bonus,
+        CombatObjective::PreserveAdvantage => free_damage || favorable_trade || lifelink_bonus,
+        CombatObjective::Race => free_damage || favorable_trade || lifelink_bonus,
     }
+}
+
+/// Estimate how many turns until `defender` dies from `attacker`'s board.
+/// Returns u32::MAX if the attacker has no damage on board.
+fn race_clock(state: &GameState, attacker: PlayerId, defender: PlayerId) -> u32 {
+    let defender_life = state.players[defender.0 as usize].life;
+    if defender_life <= 0 {
+        return 0;
+    }
+    let attack_power = battlefield_power(state, attacker);
+    if attack_power <= 0 {
+        return u32::MAX;
+    }
+    // Ceiling division: turns to deal lethal
+    ((defender_life + attack_power - 1) / attack_power) as u32
+}
+
+/// Compute the maximum damage an opponent can deal on the crackback,
+/// assuming the given set of `tapped_attackers` are tapped and unavailable
+/// to block. Vigilance creatures in `tapped_attackers` are still available.
+fn crackback_damage(
+    state: &GameState,
+    player: PlayerId,
+    opponents: &[PlayerId],
+    tapped_attackers: &[ObjectId],
+) -> i32 {
+    let mut our_blockers: Vec<ObjectId> = state
+        .battlefield
+        .iter()
+        .filter_map(|&id| {
+            let obj = state.objects.get(&id)?;
+            if obj.controller != player
+                || !obj.card_types.core_types.contains(&CoreType::Creature)
+                || obj.tapped
+            {
+                return None;
+            }
+            if tapped_attackers.contains(&id) && !obj.has_keyword(&Keyword::Vigilance) {
+                return None;
+            }
+            Some(id)
+        })
+        .collect();
+
+    our_blockers.sort_by(|&a, &b| {
+        let ta = state.objects.get(&a).and_then(|o| o.toughness).unwrap_or(0);
+        let tb = state.objects.get(&b).and_then(|o| o.toughness).unwrap_or(0);
+        tb.cmp(&ta)
+    });
+
+    let mut opp_attackers: Vec<(ObjectId, i32)> = opponents
+        .iter()
+        .flat_map(|&opp| {
+            state.battlefield.iter().filter_map(move |&id| {
+                let obj = state.objects.get(&id)?;
+                if obj.controller == opp
+                    && obj.card_types.core_types.contains(&CoreType::Creature)
+                    && !obj.tapped
+                    && !obj.has_keyword(&Keyword::Defender)
+                {
+                    Some((id, obj.power.unwrap_or(0)))
+                } else {
+                    None
+                }
+            })
+        })
+        .collect();
+
+    opp_attackers.sort_by_key(|b| std::cmp::Reverse(b.1));
+
+    let mut unblocked_damage = 0i32;
+    let mut blocker_idx = 0;
+    for &(opp_id, opp_power) in &opp_attackers {
+        let opp_obj = match state.objects.get(&opp_id) {
+            Some(o) => o,
+            None => continue,
+        };
+        let blocked = loop {
+            if blocker_idx >= our_blockers.len() {
+                break false;
+            }
+            let bid = our_blockers[blocker_idx];
+            if let Some(blocker) = state.objects.get(&bid) {
+                if can_block_check(blocker, opp_obj) {
+                    blocker_idx += 1;
+                    if opp_obj.has_keyword(&Keyword::Trample) {
+                        let blocker_toughness = blocker.toughness.unwrap_or(0);
+                        let trample_through = (opp_power - blocker_toughness).max(0);
+                        unblocked_damage += trample_through;
+                    }
+                    break true;
+                }
+            }
+            blocker_idx += 1;
+        };
+        if !blocked {
+            unblocked_damage += opp_power;
+        }
+    }
+
+    unblocked_damage
 }
 
 fn battlefield_power(state: &GameState, player: PlayerId) -> i32 {
@@ -655,6 +931,75 @@ pub(crate) fn can_block_check(
     }
 
     true
+}
+
+/// Evaluate whether a single blocker kills the attacker and/or survives combat,
+/// accounting for first strike (CR 702.7), double strike (CR 702.4), and
+/// deathtouch (CR 702.2).
+fn evaluate_block_outcome(
+    blocker: &engine::game::game_object::GameObject,
+    attacker: &engine::game::game_object::GameObject,
+) -> (bool, bool) {
+    let blocker_power = blocker.power.unwrap_or(0);
+    let blocker_toughness = blocker.toughness.unwrap_or(0);
+    let attacker_power = attacker.power.unwrap_or(0);
+    let attacker_toughness = attacker.toughness.unwrap_or(0);
+
+    let attacker_has_first_strike =
+        attacker.has_keyword(&Keyword::FirstStrike) || attacker.has_keyword(&Keyword::DoubleStrike);
+    let blocker_has_first_strike =
+        blocker.has_keyword(&Keyword::FirstStrike) || blocker.has_keyword(&Keyword::DoubleStrike);
+    let attacker_has_deathtouch = attacker.has_keyword(&Keyword::Deathtouch);
+    let blocker_has_deathtouch = blocker.has_keyword(&Keyword::Deathtouch);
+
+    // CR 702.2c: Any nonzero damage from deathtouch is lethal.
+    let attacker_lethal = if attacker_has_deathtouch {
+        1
+    } else {
+        blocker_toughness
+    };
+    let blocker_lethal = if blocker_has_deathtouch {
+        1
+    } else {
+        attacker_toughness
+    };
+
+    // CR 702.4b / CR 702.7b: First-strike/double-strike creatures deal damage
+    // in the first combat damage step. If one side has it and the other doesn't,
+    // the first-striker may kill before the other deals damage.
+    let blocker_dies_before_dealing =
+        attacker_has_first_strike && !blocker_has_first_strike && attacker_power >= attacker_lethal;
+
+    let attacker_dies_before_dealing =
+        blocker_has_first_strike && !attacker_has_first_strike && blocker_power >= blocker_lethal;
+
+    // CR 702.4a: Double strike deals damage in both combat damage steps.
+    let effective_attacker_damage = if attacker.has_keyword(&Keyword::DoubleStrike) {
+        attacker_power * 2
+    } else {
+        attacker_power
+    };
+    let effective_blocker_damage = if blocker.has_keyword(&Keyword::DoubleStrike) {
+        blocker_power * 2
+    } else {
+        blocker_power
+    };
+
+    let kills = if blocker_dies_before_dealing {
+        // Blocker is killed by first strike before it can deal damage
+        false
+    } else {
+        effective_blocker_damage >= blocker_lethal
+    };
+
+    let survives = if attacker_dies_before_dealing {
+        // Attacker is killed by blocker's first strike before it can deal damage
+        true
+    } else {
+        effective_attacker_damage < attacker_lethal
+    };
+
+    (kills, survives)
 }
 
 #[cfg(test)]
@@ -1040,5 +1385,233 @@ mod tests {
         for (_, target) in &attacks {
             assert_eq!(*target, AttackTarget::Player(PlayerId(1)));
         }
+    }
+
+    // --- Gang-blocking tests (CR 509.1a) ---
+
+    #[test]
+    fn gang_block_kills_large_attacker() {
+        let mut state = setup();
+        // 6/6 attacker, two 3/3 blockers can combine to kill it
+        let big = add_creature(&mut state, PlayerId(0), "Wurm", 6, 6, vec![]);
+        let b1 = add_creature(&mut state, PlayerId(1), "Knight1", 3, 3, vec![]);
+        let b2 = add_creature(&mut state, PlayerId(1), "Knight2", 3, 3, vec![]);
+        state.players[1].life = 20;
+
+        let blockers = choose_blockers(&state, PlayerId(1), &[big]);
+
+        // Both 3/3s should gang-block the 6/6 (combined power 6 >= toughness 6)
+        let blocking_big: Vec<_> = blockers.iter().filter(|&&(_, a)| a == big).collect();
+        assert_eq!(
+            blocking_big.len(),
+            2,
+            "Two 3/3s should gang-block the 6/6, got {:?}",
+            blockers
+        );
+        assert!(
+            blockers.iter().any(|&(b, _)| b == b1),
+            "Knight1 should participate in gang-block"
+        );
+        assert!(
+            blockers.iter().any(|&(b, _)| b == b2),
+            "Knight2 should participate in gang-block"
+        );
+    }
+
+    #[test]
+    fn gang_block_skipped_when_value_not_worth_it() {
+        let mut state = setup();
+        // 2/2 attacker, two 3/3 blockers — don't waste two big creatures on a small one
+        let small = add_creature(&mut state, PlayerId(0), "Bear", 2, 2, vec![]);
+        let _b1 = add_creature(&mut state, PlayerId(1), "Knight1", 3, 3, vec![]);
+        let _b2 = add_creature(&mut state, PlayerId(1), "Knight2", 3, 3, vec![]);
+        state.players[1].life = 20;
+
+        let blockers = choose_blockers(&state, PlayerId(1), &[small]);
+
+        // A single 3/3 already kills the 2/2 — second pass handles it, no gang needed.
+        // But either way, should NOT have 2 blockers on a 2/2.
+        let blocking_small: Vec<_> = blockers.iter().filter(|&&(_, a)| a == small).collect();
+        assert!(
+            blocking_small.len() <= 1,
+            "Should not gang-block a small attacker with multiple large blockers"
+        );
+    }
+
+    #[test]
+    fn gang_block_skipped_against_deathtouch() {
+        let mut state = setup();
+        // 4/4 deathtouch attacker — gang-blocking loses multiple creatures
+        let dt_attacker = add_creature(
+            &mut state,
+            PlayerId(0),
+            "Basilisk",
+            4,
+            4,
+            vec![Keyword::Deathtouch],
+        );
+        let _b1 = add_creature(&mut state, PlayerId(1), "Knight1", 3, 3, vec![]);
+        let _b2 = add_creature(&mut state, PlayerId(1), "Knight2", 3, 3, vec![]);
+        state.players[1].life = 20;
+
+        let blockers = choose_blockers(&state, PlayerId(1), &[dt_attacker]);
+
+        // Should not gang-block a deathtouch creature — all blockers die
+        let blocking: Vec<_> = blockers
+            .iter()
+            .filter(|&&(_, a)| a == dt_attacker)
+            .collect();
+        assert!(
+            blocking.len() <= 1,
+            "Should not gang-block a deathtouch attacker, got {:?}",
+            blockers
+        );
+    }
+
+    // --- First-strike awareness tests (CR 702.7) ---
+
+    #[test]
+    fn first_strike_attacker_kills_before_blocker_deals_damage() {
+        let mut state = setup();
+        // 3/3 first striker attacks, 2/2 blocker would normally trade but
+        // first strike kills the blocker before it deals damage
+        let fs_attacker = add_creature(
+            &mut state,
+            PlayerId(0),
+            "Knight",
+            3,
+            3,
+            vec![Keyword::FirstStrike],
+        );
+        let blocker = add_creature(&mut state, PlayerId(1), "Bear", 2, 2, vec![]);
+        state.players[1].life = 20;
+
+        let blockers = choose_blockers(&state, PlayerId(1), &[fs_attacker]);
+
+        // The 2/2 should NOT block because it dies to first strike before dealing damage
+        // (priority = 0: doesn't kill, doesn't survive), and at 20 life no chump needed
+        assert!(
+            !blockers.iter().any(|&(b, _)| b == blocker),
+            "2/2 should not block a 3/3 first-striker at high life (dies for nothing)"
+        );
+    }
+
+    #[test]
+    fn blocker_with_first_strike_survives_against_normal_attacker() {
+        let mut state = setup();
+        // 2/2 first-strike blocker vs 3/3 normal attacker
+        // Blocker deals damage first, but 2 < 3 so attacker survives,
+        // then attacker hits back for 3 which kills the 2/2.
+        // However, a 3/3 first-striker blocking a 3/3 should kill it
+        // before taking damage.
+        let attacker = add_creature(&mut state, PlayerId(0), "Ogre", 3, 3, vec![]);
+        let fs_blocker = add_creature(
+            &mut state,
+            PlayerId(1),
+            "Elite",
+            3,
+            3,
+            vec![Keyword::FirstStrike],
+        );
+        state.players[1].life = 20;
+
+        let blockers = choose_blockers(&state, PlayerId(1), &[attacker]);
+
+        // 3/3 first-striker kills the 3/3 before it deals damage — survives and kills
+        assert!(
+            blockers.contains(&(fs_blocker, attacker)),
+            "3/3 first-striker should block 3/3 (kills before taking damage)"
+        );
+    }
+
+    #[test]
+    fn double_strike_attacker_deals_double_damage() {
+        let mut state = setup();
+        // 2/2 double-striker attacks, 3/3 blocker: double strike deals 2+2=4 total,
+        // which kills the 3/3. The 3/3 deals 3 back, killing the 2/2 in the normal
+        // damage step. But in first-strike step: 2 damage < 3 toughness, so the 3/3
+        // survives first strike, then in normal step both deal lethal. It's a trade.
+        // The 3/3 DOES kill the 2/2, so kills=true. But survives=false (takes 4 total).
+        let ds_attacker = add_creature(
+            &mut state,
+            PlayerId(0),
+            "Berserker",
+            2,
+            2,
+            vec![Keyword::DoubleStrike],
+        );
+        let big_blocker = add_creature(&mut state, PlayerId(1), "Ogre", 3, 3, vec![]);
+        state.players[1].life = 20;
+
+        let blockers = choose_blockers(&state, PlayerId(1), &[ds_attacker]);
+
+        // The 3/3 should block the 2/2 double-striker — it kills the attacker
+        // (even though the blocker also dies, it's a favorable trade: 3/3 > 2/2)
+        assert!(
+            blockers.contains(&(big_blocker, ds_attacker)),
+            "3/3 should block 2/2 double-striker (kills it, favorable trade)"
+        );
+    }
+
+    // --- Deathtouch + flying legality tests ---
+
+    #[test]
+    fn deathtouch_without_flying_cannot_block_flyer() {
+        let mut state = setup();
+        let flyer = add_creature(
+            &mut state,
+            PlayerId(0),
+            "Dragon",
+            4,
+            4,
+            vec![Keyword::Flying],
+        );
+        let _dt_ground = add_creature(
+            &mut state,
+            PlayerId(1),
+            "Snake",
+            1,
+            1,
+            vec![Keyword::Deathtouch],
+        );
+        state.players[1].life = 20;
+
+        let blockers = choose_blockers(&state, PlayerId(1), &[flyer]);
+
+        // Ground deathtouch creature cannot block a flyer
+        assert!(
+            blockers.is_empty(),
+            "Ground deathtouch creature should not block a flying attacker"
+        );
+    }
+
+    #[test]
+    fn deathtouch_with_reach_can_block_flyer() {
+        let mut state = setup();
+        let flyer = add_creature(
+            &mut state,
+            PlayerId(0),
+            "Dragon",
+            4,
+            4,
+            vec![Keyword::Flying],
+        );
+        let dt_reach = add_creature(
+            &mut state,
+            PlayerId(1),
+            "Spider",
+            1,
+            1,
+            vec![Keyword::Deathtouch, Keyword::Reach],
+        );
+        state.players[1].life = 20;
+
+        let blockers = choose_blockers(&state, PlayerId(1), &[flyer]);
+
+        // Deathtouch + reach can block and kill the flyer
+        assert!(
+            blockers.contains(&(dt_reach, flyer)),
+            "Deathtouch creature with reach should block the flyer"
+        );
     }
 }

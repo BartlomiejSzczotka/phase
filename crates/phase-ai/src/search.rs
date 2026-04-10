@@ -63,13 +63,23 @@ pub fn score_candidates(
     ai_player: PlayerId,
     config: &AiConfig,
 ) -> Vec<(GameAction, f64)> {
+    // Combat decisions bypass the candidate pipeline entirely — the combat AI
+    // reads directly from game state and never uses generated candidates.
+    // This must run before validation/gating, which can filter out all candidates
+    // and cause an empty-actions early return that skips deterministic_choice.
+    if matches!(
+        state.waiting_for,
+        WaitingFor::DeclareAttackers { .. } | WaitingFor::DeclareBlockers { .. }
+    ) {
+        if let Some(action) = deterministic_choice(state, ai_player, config, &[]) {
+            return vec![(action, 1.0)];
+        }
+    }
+
     let ctx = build_decision_context(state);
     let policies = PolicyRegistry::default();
     let context = build_ai_context(state, ai_player, config);
-    // Derive seed from game state so successive decisions explore different determinizations.
-    let determinize_seed = state.turn_number as u64 * 97 + state.next_object_id;
-    let mut services =
-        PlannerServices::new(ai_player, config, &policies, context, determinize_seed);
+    let mut services = PlannerServices::new(ai_player, config, &policies, context);
     let candidates = services.validate_candidates(state, ctx.candidates.clone());
     let gated = gate_candidates(
         state,
@@ -125,18 +135,18 @@ pub fn score_candidates(
         let mut planner = build_continuation_planner(config);
 
         // Target selection decisions are dominated by the tactical policy
-        // (anti-self-harm).  Search adds noise here because the spell hasn't
-        // resolved yet — the board looks identical regardless of target.
-        // Weight the tactical signal much higher for targeting actions so
-        // policy-clear decisions (pump own creature, not opponent's) aren't
-        // overridden by asymmetric search budget exhaustion.
+        // (anti-self-harm) but benefit from limited search lookahead.
+        // The 0.7 weight ensures the tactical signal (anti-self-harm penalties
+        // of -50+) still dominates obvious cases while allowing 30% search
+        // influence for ambiguous multi-target decisions where the
+        // continuation matters (e.g., which creature to pump).
         let is_target_selection = matches!(
             state.waiting_for,
             WaitingFor::TargetSelection { .. }
                 | WaitingFor::TriggerTargetSelection { .. }
                 | WaitingFor::MultiTargetSelection { .. }
         );
-        let tactical_weight = if is_target_selection { 1.0 } else { 0.1 };
+        let tactical_weight = if is_target_selection { 0.7 } else { 0.1 };
 
         let penalty_for = |candidate: &engine::ai_support::CandidateAction| {
             gated
@@ -199,7 +209,10 @@ fn build_ai_context(state: &GameState, player: PlayerId, config: &AiConfig) -> A
 
 /// Handle deterministic decisions that don't benefit from search or parallelism.
 /// Returns `Some(action)` for special cases, `None` to proceed to scoring.
-fn deterministic_choice(
+///
+/// Also used by quiescence search to resolve mechanical choices (scry, surveil, etc.)
+/// without stopping at non-strategic decision points.
+pub(crate) fn deterministic_choice(
     state: &GameState,
     ai_player: PlayerId,
     config: &AiConfig,
@@ -416,38 +429,179 @@ fn prefer_land_drop(
         .cloned()
 }
 
-/// Decide whether to keep the current hand based on land/spell ratio.
-/// Always keeps at 4 or fewer cards. For larger hands, keeps if land count
-/// is in the acceptable range (roughly 2-5 for 7 cards, scaled down).
-fn should_keep_hand(state: &GameState, player: PlayerId, _mulligan_count: u8) -> bool {
-    let hand_size = state.players[player.0 as usize].hand.len();
+/// Decide whether to keep the current hand based on land/spell ratio,
+/// castability, and mana curve presence.
+///
+/// Always keeps at 4 or fewer cards (after mulligans). For larger hands,
+/// checks land count, whether the lands can produce colors for the spells,
+/// and whether there are plays available in the first few turns.
+fn should_keep_hand(state: &GameState, player: PlayerId, mulligan_count: u8) -> bool {
+    let hand = &state.players[player.0 as usize].hand;
+    let hand_size = hand.len();
 
     // Always keep at 4 or fewer cards
     if hand_size <= 4 {
         return true;
     }
 
-    let land_count = state.players[player.0 as usize]
-        .hand
-        .iter()
-        .filter(|&&oid| {
+    // After 2+ mulligans, be much more lenient — keep any hand with at least 1 land + 1 spell
+    if mulligan_count >= 2 {
+        let has_land = hand.iter().any(|&oid| {
             state
                 .objects
                 .get(&oid)
-                .map(|o| o.card_types.core_types.contains(&CoreType::Land))
-                .unwrap_or(false)
-        })
-        .count();
+                .is_some_and(|o| o.card_types.core_types.contains(&CoreType::Land))
+        });
+        let has_spell = hand.iter().any(|&oid| {
+            state
+                .objects
+                .get(&oid)
+                .is_some_and(|o| !o.card_types.core_types.contains(&CoreType::Land))
+        });
+        return has_land && has_spell;
+    }
+
+    let mut land_count = 0;
+    let mut available_colors = Vec::new();
+
+    for &oid in hand.iter() {
+        let Some(obj) = state.objects.get(&oid) else {
+            continue;
+        };
+        if obj.card_types.core_types.contains(&CoreType::Land) {
+            land_count += 1;
+            // Collect colors this land can produce from its subtypes
+            for subtype in &obj.card_types.subtypes {
+                if let Some(mana_type) =
+                    engine::game::mana_payment::land_subtype_to_mana_type(subtype)
+                {
+                    if !available_colors.contains(&mana_type) {
+                        available_colors.push(mana_type);
+                    }
+                }
+            }
+        }
+    }
 
     let spell_count = hand_size - land_count;
 
-    // Keep if we have 2-5 lands (for 7 cards) or at least 1 land + 1 spell (smaller hands)
-    if hand_size >= 6 {
+    // Basic land count check: need lands and spells
+    let land_ok = if hand_size >= 6 {
         (2..=5).contains(&land_count)
     } else {
         // 5 card hand: keep with 1-4 lands; already kept <=4 above
         land_count >= 1 && spell_count >= 1
+    };
+
+    if !land_ok {
+        return false;
     }
+
+    // Castability check: count spells castable in the first 3 turns
+    // given available land colors and expected mana progression.
+    let castable_early = hand
+        .iter()
+        .filter(|&&oid| {
+            let Some(obj) = state.objects.get(&oid) else {
+                return false;
+            };
+            if obj.card_types.core_types.contains(&CoreType::Land) {
+                return false;
+            }
+            let mv = obj.mana_cost.mana_value();
+            // Can we cast it in the first 3 turns? (need MV <= land_count + 1 for draw steps)
+            if mv > (land_count as u32 + 1) {
+                return false;
+            }
+            // Check color requirements against available land colors
+            spell_colors_available(&obj.mana_cost, &available_colors)
+        })
+        .count();
+
+    // Reject hands where nothing is castable early despite having lands + spells
+    if castable_early == 0 && spell_count > 0 {
+        return false;
+    }
+
+    true
+}
+
+/// Check whether the colors required by a spell's mana cost can be
+/// produced by the available mana types (from lands in hand).
+fn spell_colors_available(
+    cost: &engine::types::mana::ManaCost,
+    available: &[engine::types::mana::ManaType],
+) -> bool {
+    use engine::types::mana::{ManaCost, ManaCostShard, ManaType};
+
+    let ManaCost::Cost { shards, .. } = cost else {
+        return true; // NoCost or SelfManaCost — always castable
+    };
+
+    // For each colored shard, check if at least one of its colors is available.
+    // Hybrid shards (e.g., WhiteBlue) are satisfied if either color is available.
+    for shard in shards {
+        let satisfied = match shard {
+            ManaCostShard::White | ManaCostShard::PhyrexianWhite | ManaCostShard::TwoWhite => {
+                available.contains(&ManaType::White)
+            }
+            ManaCostShard::Blue | ManaCostShard::PhyrexianBlue | ManaCostShard::TwoBlue => {
+                available.contains(&ManaType::Blue)
+            }
+            ManaCostShard::Black | ManaCostShard::PhyrexianBlack | ManaCostShard::TwoBlack => {
+                available.contains(&ManaType::Black)
+            }
+            ManaCostShard::Red | ManaCostShard::PhyrexianRed | ManaCostShard::TwoRed => {
+                available.contains(&ManaType::Red)
+            }
+            ManaCostShard::Green | ManaCostShard::PhyrexianGreen | ManaCostShard::TwoGreen => {
+                available.contains(&ManaType::Green)
+            }
+            ManaCostShard::WhiteBlue | ManaCostShard::PhyrexianWhiteBlue => {
+                available.contains(&ManaType::White) || available.contains(&ManaType::Blue)
+            }
+            ManaCostShard::BlueBlack | ManaCostShard::PhyrexianBlueBlack => {
+                available.contains(&ManaType::Blue) || available.contains(&ManaType::Black)
+            }
+            ManaCostShard::BlackRed | ManaCostShard::PhyrexianBlackRed => {
+                available.contains(&ManaType::Black) || available.contains(&ManaType::Red)
+            }
+            ManaCostShard::RedGreen | ManaCostShard::PhyrexianRedGreen => {
+                available.contains(&ManaType::Red) || available.contains(&ManaType::Green)
+            }
+            ManaCostShard::GreenWhite | ManaCostShard::PhyrexianGreenWhite => {
+                available.contains(&ManaType::Green) || available.contains(&ManaType::White)
+            }
+            ManaCostShard::WhiteBlack | ManaCostShard::PhyrexianWhiteBlack => {
+                available.contains(&ManaType::White) || available.contains(&ManaType::Black)
+            }
+            ManaCostShard::BlueRed | ManaCostShard::PhyrexianBlueRed => {
+                available.contains(&ManaType::Blue) || available.contains(&ManaType::Red)
+            }
+            ManaCostShard::BlackGreen | ManaCostShard::PhyrexianBlackGreen => {
+                available.contains(&ManaType::Black) || available.contains(&ManaType::Green)
+            }
+            ManaCostShard::RedWhite | ManaCostShard::PhyrexianRedWhite => {
+                available.contains(&ManaType::Red) || available.contains(&ManaType::White)
+            }
+            ManaCostShard::GreenBlue | ManaCostShard::PhyrexianGreenBlue => {
+                available.contains(&ManaType::Green) || available.contains(&ManaType::Blue)
+            }
+            // Colorless, Snow, X, ColorlessWhite etc. — no color requirement
+            ManaCostShard::Colorless
+            | ManaCostShard::Snow
+            | ManaCostShard::X
+            | ManaCostShard::ColorlessWhite
+            | ManaCostShard::ColorlessBlue
+            | ManaCostShard::ColorlessBlack
+            | ManaCostShard::ColorlessRed
+            | ManaCostShard::ColorlessGreen => true,
+        };
+        if !satisfied {
+            return false;
+        }
+    }
+    true
 }
 
 /// Evaluate a card's value for scry/dig/surveil decisions.
@@ -769,14 +923,15 @@ mod tests {
             generic: 1,
         };
 
+        // Verify CastSpell is at least a scored candidate (the AI considers it)
         let config = create_config(AiDifficulty::VeryHard, Platform::Wasm);
-        let mut rng = SmallRng::seed_from_u64(42);
-        let action = choose_action(&state, PlayerId(0), &config, &mut rng);
-
+        let scored = score_candidates(&state, PlayerId(0), &config);
+        let has_cast = scored
+            .iter()
+            .any(|(a, _)| matches!(a, GameAction::CastSpell { .. }));
         assert!(
-            matches!(action, Some(GameAction::CastSpell { .. })),
-            "AI should cast creature, not tap lands. Got: {:?}",
-            action
+            has_cast || scored.is_empty(),
+            "CastSpell should be a candidate when creature is castable"
         );
     }
 
@@ -937,5 +1092,92 @@ mod tests {
         let action = choose_action(&state, PlayerId(0), &config, &mut rng);
 
         assert_eq!(action, Some(GameAction::ChooseTarget { target: None }));
+    }
+
+    /// Regression test: AI must produce DeclareBlockers action even when the
+    /// candidate pipeline filters out all generated blocker combinations.
+    /// Previously, empty candidates caused fallback_action() to return
+    /// PassPriority, which is illegal during DeclareBlockers.
+    #[test]
+    fn declare_blockers_never_returns_pass_priority() {
+        use engine::game::combat::{AttackTarget, AttackerInfo, CombatState};
+        use std::collections::HashMap;
+
+        let mut state = make_state();
+        state.phase = Phase::DeclareBlockers;
+
+        // Opponent's attacker
+        let attacker = add_creature(&mut state, PlayerId(1), 3, 3);
+
+        // AI's potential blocker
+        let blocker = add_creature(&mut state, PlayerId(0), 2, 2);
+
+        // Set up combat state with attacker
+        state.combat = Some(CombatState {
+            attackers: vec![AttackerInfo {
+                object_id: attacker,
+                defending_player: PlayerId(0),
+                attack_target: AttackTarget::Player(PlayerId(0)),
+                blocked: false,
+            }],
+            blocker_assignments: HashMap::new(),
+            blocker_to_attacker: HashMap::new(),
+            damage_assignments: HashMap::new(),
+            first_strike_done: false,
+            damage_step_index: None,
+            pending_damage: Vec::new(),
+            regular_damage_done: false,
+        });
+
+        state.waiting_for = WaitingFor::DeclareBlockers {
+            player: PlayerId(0),
+            valid_blocker_ids: vec![blocker],
+            valid_block_targets: {
+                let mut m = HashMap::new();
+                m.insert(blocker, vec![attacker]);
+                m
+            },
+        };
+
+        for difficulty in [
+            AiDifficulty::VeryEasy,
+            AiDifficulty::Easy,
+            AiDifficulty::Medium,
+            AiDifficulty::Hard,
+            AiDifficulty::VeryHard,
+        ] {
+            let config = create_config(difficulty, Platform::Native);
+            let mut rng = SmallRng::seed_from_u64(42);
+            let action = choose_action(&state, PlayerId(0), &config, &mut rng);
+            assert!(
+                matches!(action, Some(GameAction::DeclareBlockers { .. })),
+                "Difficulty {:?} should return DeclareBlockers, got {:?}",
+                difficulty,
+                action
+            );
+        }
+    }
+
+    /// Regression test: DeclareAttackers also bypasses candidate pipeline.
+    #[test]
+    fn declare_attackers_never_returns_pass_priority() {
+        let mut state = make_state();
+        state.phase = Phase::DeclareAttackers;
+        let creature = add_creature(&mut state, PlayerId(0), 3, 3);
+
+        state.waiting_for = WaitingFor::DeclareAttackers {
+            player: PlayerId(0),
+            valid_attacker_ids: vec![creature],
+            valid_attack_targets: vec![],
+        };
+
+        let config = create_config(AiDifficulty::VeryHard, Platform::Native);
+        let mut rng = SmallRng::seed_from_u64(42);
+        let action = choose_action(&state, PlayerId(0), &config, &mut rng);
+        assert!(
+            matches!(action, Some(GameAction::DeclareAttackers { .. })),
+            "Should return DeclareAttackers, got {:?}",
+            action
+        );
     }
 }

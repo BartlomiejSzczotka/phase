@@ -44,6 +44,12 @@ impl SynergyGraph {
         }
     }
 
+    /// Look up the pre-computed synergy score for a card by name.
+    /// Returns 0.0 if the card has no detected synergy.
+    pub fn card_score(&self, name: &str) -> f64 {
+        self.scores.get(name).copied().unwrap_or(0.0)
+    }
+
     /// Sum synergy scores for cards currently on the player's battlefield,
     /// weighted by how many synergy partners are co-present.
     pub fn board_synergy_bonus(&self, state: &GameState, player: PlayerId) -> f64 {

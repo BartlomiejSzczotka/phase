@@ -30,8 +30,6 @@ pub struct SearchConfig {
     pub planner_mode: PlannerMode,
     pub rollout_depth: u32,
     pub rollout_samples: u32,
-    pub mcts: Option<MctsConfig>,
-    pub hidden_info_mode: HiddenInfoMode,
     pub opponent_model: OpponentModel,
     /// Optional time budget in milliseconds. When set, search terminates
     /// after this duration regardless of node count. Essential for WASM
@@ -43,14 +41,6 @@ pub struct SearchConfig {
 pub enum PlannerMode {
     BeamOnly,
     BeamPlusRollout,
-    BeamPlusMcts,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HiddenInfoMode {
-    PerfectInfo,
-    Determinized,
-    RevealedOnlyBias,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -58,15 +48,6 @@ pub enum OpponentModel {
     DeterministicBestReply,
     ThreatWeightedReply,
     SampledReply,
-}
-
-#[derive(Debug, Clone)]
-pub struct MctsConfig {
-    pub simulations: u32,
-    pub c_puct: f64,
-    pub rollout_depth: u32,
-    pub exploration_fraction: f64,
-    pub dirichlet_alpha: Option<f64>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,8 +77,6 @@ impl Default for SearchConfig {
             planner_mode: PlannerMode::BeamOnly,
             rollout_depth: 0,
             rollout_samples: 0,
-            mcts: None,
-            hidden_info_mode: HiddenInfoMode::PerfectInfo,
             opponent_model: OpponentModel::DeterministicBestReply,
             time_budget_ms: None,
         }
@@ -184,6 +163,14 @@ pub struct PolicyPenalties {
     /// Penalty for spending the last counterspell on a low-impact target.
     #[serde(default = "default_counter_last_reservation_penalty")]
     pub counter_last_reservation_penalty: f64,
+    /// Bonus for casting spells on-curve (mana value matches available mana),
+    /// weighted toward early game turns.
+    #[serde(default = "default_tempo_curve_bonus")]
+    pub tempo_curve_bonus: f64,
+    /// Bonus for casting spells that synergize with existing board presence
+    /// (tribal overlap, deck synergy graph).
+    #[serde(default = "default_synergy_casting_bonus")]
+    pub synergy_casting_bonus: f64,
 }
 
 impl Default for PolicyPenalties {
@@ -218,6 +205,8 @@ impl Default for PolicyPenalties {
             low_life_aggro_penalty: default_low_life_aggro_penalty(),
             card_advantage_behind_extra: default_card_advantage_behind_extra(),
             counter_last_reservation_penalty: default_counter_last_reservation_penalty(),
+            tempo_curve_bonus: default_tempo_curve_bonus(),
+            synergy_casting_bonus: default_synergy_casting_bonus(),
         }
     }
 }
@@ -257,6 +246,12 @@ fn default_card_advantage_behind_extra() -> f64 {
 }
 fn default_counter_last_reservation_penalty() -> f64 {
     -1.5
+}
+fn default_tempo_curve_bonus() -> f64 {
+    0.3
+}
+fn default_synergy_casting_bonus() -> f64 {
+    0.25
 }
 
 /// Full AI configuration combining difficulty, search, and evaluation settings.
@@ -305,8 +300,6 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 planner_mode: PlannerMode::BeamOnly,
                 rollout_depth: 0,
                 rollout_samples: 0,
-                mcts: None,
-                hidden_info_mode: HiddenInfoMode::PerfectInfo,
                 opponent_model: OpponentModel::DeterministicBestReply,
                 time_budget_ms: None,
             },
@@ -328,8 +321,6 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 planner_mode: PlannerMode::BeamOnly,
                 rollout_depth: 0,
                 rollout_samples: 0,
-                mcts: None,
-                hidden_info_mode: HiddenInfoMode::PerfectInfo,
                 opponent_model: OpponentModel::DeterministicBestReply,
                 time_budget_ms: None,
             },
@@ -351,8 +342,6 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 planner_mode: PlannerMode::BeamPlusRollout,
                 rollout_depth: 1,
                 rollout_samples: 1,
-                mcts: None,
-                hidden_info_mode: HiddenInfoMode::PerfectInfo,
                 opponent_model: OpponentModel::DeterministicBestReply,
                 time_budget_ms: None,
             },
@@ -374,14 +363,12 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 planner_mode: PlannerMode::BeamPlusRollout,
                 rollout_depth: 2,
                 rollout_samples: 1,
-                mcts: None,
-                hidden_info_mode: HiddenInfoMode::PerfectInfo,
                 opponent_model: OpponentModel::ThreatWeightedReply,
                 time_budget_ms: None,
             },
         ),
         AiDifficulty::VeryHard => (
-            0.01,
+            0.3,
             AiProfile {
                 risk_tolerance: 0.45,
                 interaction_patience: 1.0,
@@ -393,18 +380,10 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
                 enabled: true,
                 max_depth: 3,
                 max_nodes: 64,
-                max_branching: 6,
-                planner_mode: PlannerMode::BeamPlusMcts,
+                max_branching: 5,
+                planner_mode: PlannerMode::BeamPlusRollout,
                 rollout_depth: 2,
                 rollout_samples: 2,
-                mcts: Some(MctsConfig {
-                    simulations: 48,
-                    c_puct: 1.25,
-                    rollout_depth: 2,
-                    exploration_fraction: 0.0,
-                    dirichlet_alpha: None,
-                }),
-                hidden_info_mode: HiddenInfoMode::Determinized,
                 opponent_model: OpponentModel::ThreatWeightedReply,
                 time_budget_ms: None,
             },
@@ -425,20 +404,12 @@ pub fn create_config(difficulty: AiDifficulty, platform: Platform) -> AiConfig {
         player_count: 2,
     };
 
-    // WASM platform constraints: reduce budgets but keep MCTS with a time cap.
+    // WASM platform constraints: reduce search budgets.
     // AI computation runs in a Web Worker so it does not block the UI thread.
     if platform == Platform::Wasm {
         config.search.max_depth = config.search.max_depth.min(2);
         config.search.max_nodes = config.search.max_nodes * 2 / 3;
         config.search.rollout_depth = config.search.rollout_depth.min(2);
-        if matches!(config.search.planner_mode, PlannerMode::BeamPlusMcts) {
-            // Reduce simulations (48 → 20) and add 500ms time cap as safety net
-            if let Some(mcts) = &mut config.search.mcts {
-                mcts.simulations = mcts.simulations.min(20);
-                mcts.rollout_depth = mcts.rollout_depth.min(2);
-            }
-            config.search.time_budget_ms = Some(500);
-        }
     }
 
     config
@@ -465,10 +436,6 @@ pub fn create_config_for_players(
             config.search.max_nodes = config.search.max_nodes * 2 / 3;
             config.search.max_branching = config.search.max_branching.min(4);
             config.search.rollout_depth = config.search.rollout_depth.min(1);
-            if let Some(mcts) = &mut config.search.mcts {
-                mcts.simulations = mcts.simulations.saturating_mul(2) / 3;
-                mcts.rollout_depth = mcts.rollout_depth.min(1);
-            }
         }
         _ => {
             // 5-6+ players: heuristic-only or minimal search
@@ -479,10 +446,6 @@ pub fn create_config_for_players(
                 config.search.max_nodes /= 3;
                 config.search.max_branching = config.search.max_branching.min(3);
                 config.search.rollout_depth = config.search.rollout_depth.min(1);
-                if let Some(mcts) = &mut config.search.mcts {
-                    mcts.simulations /= 2;
-                    mcts.rollout_depth = mcts.rollout_depth.min(1);
-                }
             }
         }
     }
@@ -535,14 +498,13 @@ mod tests {
     }
 
     #[test]
-    fn very_hard_is_near_deterministic() {
+    fn very_hard_is_deeper_and_more_deterministic() {
         let config = create_config(AiDifficulty::VeryHard, Platform::Native);
-        assert!(config.temperature < 0.1);
-        assert_eq!(config.search.planner_mode, PlannerMode::BeamPlusMcts);
-        assert!(config.search.mcts.is_some());
+        assert!(config.temperature < 0.5);
+        assert_eq!(config.search.planner_mode, PlannerMode::BeamPlusRollout);
         assert_eq!(config.search.max_depth, 3);
         assert_eq!(config.search.max_nodes, 64);
-        assert_eq!(config.search.max_branching, 6);
+        assert_eq!(config.search.max_branching, 5);
         assert_eq!(config.search.rollout_samples, 2);
     }
 
@@ -557,15 +519,10 @@ mod tests {
     }
 
     #[test]
-    fn wasm_very_hard_has_mcts_with_time_budget() {
+    fn wasm_very_hard_reduces_depth() {
         let config = create_config(AiDifficulty::VeryHard, Platform::Wasm);
         assert_eq!(config.search.max_depth, 2);
-        assert_eq!(config.search.planner_mode, PlannerMode::BeamPlusMcts);
-        assert!(config.search.mcts.is_some());
-        let mcts = config.search.mcts.unwrap();
-        assert!(mcts.simulations <= 20);
-        assert_eq!(mcts.rollout_depth, 2);
-        assert_eq!(config.search.time_budget_ms, Some(500));
+        assert_eq!(config.search.planner_mode, PlannerMode::BeamPlusRollout);
     }
 
     #[test]
@@ -619,14 +576,11 @@ mod tests {
     }
 
     #[test]
-    fn four_player_very_hard_keeps_mcts_with_lower_budget() {
+    fn four_player_very_hard_reduces_budget() {
+        let base = create_config(AiDifficulty::VeryHard, Platform::Native);
         let config = create_config_for_players(AiDifficulty::VeryHard, Platform::Native, 4);
-        assert_eq!(config.search.planner_mode, PlannerMode::BeamPlusMcts);
-        assert!(config
-            .search
-            .mcts
-            .as_ref()
-            .is_some_and(|mcts| mcts.simulations < 48));
+        assert_eq!(config.search.planner_mode, PlannerMode::BeamPlusRollout);
+        assert!(config.search.max_nodes < base.search.max_nodes);
     }
 
     #[test]

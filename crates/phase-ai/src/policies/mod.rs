@@ -18,6 +18,8 @@ mod registry;
 mod sacrifice_value;
 pub(crate) mod stack_awareness;
 pub(crate) mod strategy_helpers;
+mod synergy_casting;
+mod tempo_curve;
 pub(crate) mod tutor;
 
 pub use registry::PolicyRegistry;

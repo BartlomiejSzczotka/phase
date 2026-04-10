@@ -92,7 +92,7 @@ mod tests {
     use engine::game::zones::create_object;
     use engine::types::card_type::CoreType;
     use engine::types::game_state::{GameState, WaitingFor};
-    use engine::types::identifiers::{CardId, ObjectId};
+    use engine::types::identifiers::CardId;
     use engine::types::phase::Phase;
     use engine::types::player::PlayerId;
     use engine::types::zones::Zone;

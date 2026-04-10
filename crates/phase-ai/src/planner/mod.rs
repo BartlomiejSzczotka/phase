@@ -1,7 +1,6 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
-use std::mem::Discriminant;
 
 use engine::ai_support::{
     build_decision_context, AiDecisionContext, CandidateAction, TacticalClass,
@@ -13,7 +12,7 @@ use engine::types::player::PlayerId;
 
 use crate::card_hints::should_play_now_with_facts;
 use crate::cast_facts::cast_facts_for_action;
-use crate::config::{AiConfig, HiddenInfoMode, OpponentModel, PlannerMode};
+use crate::config::{AiConfig, OpponentModel, PlannerMode};
 use crate::eval::{
     evaluate_for_planner, evaluate_state, strategic_intent, threat_level, StrategicIntent,
 };
@@ -76,13 +75,6 @@ pub struct ValueEstimate {
 pub struct PlannerEvaluation {
     pub priors: Vec<PolicyPrior>,
     pub value: ValueEstimate,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct SearchNodeKey {
-    pub state_hash: u64,
-    pub actor: Option<PlayerId>,
-    pub waiting_for_kind: Discriminant<WaitingFor>,
 }
 
 /// Compute a lightweight hash of the game-relevant fields of a GameState.
@@ -187,39 +179,6 @@ pub fn quick_state_hash(state: &GameState) -> u64 {
     hasher.finish()
 }
 
-impl SearchNodeKey {
-    pub fn new(state: &GameState, actor: Option<PlayerId>) -> Self {
-        let waiting_for_kind = std::mem::discriminant(&state.waiting_for);
-        let mut hasher = DefaultHasher::new();
-        quick_state_hash(state).hash(&mut hasher);
-        actor.hash(&mut hasher);
-        waiting_for_kind.hash(&mut hasher);
-        Self {
-            state_hash: hasher.finish(),
-            actor,
-            waiting_for_kind,
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct TreeEdge {
-    pub candidate: CandidateAction,
-    pub prior: f64,
-    pub visits: u32,
-    pub total_value: f64,
-    pub virtual_loss: f64,
-    pub child_key: Option<SearchNodeKey>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct SearchNode {
-    pub visits: u32,
-    pub total_value: f64,
-    pub edges: Vec<TreeEdge>,
-    pub expanded: bool,
-}
-
 #[derive(Debug, Clone, Default)]
 pub struct UtilityVector {
     pub self_value: f64,
@@ -261,25 +220,11 @@ impl UtilityReducer for SampledReplyUtilityReducer {
     }
 }
 
-pub trait InformationSetSampler: Send {
-    fn determinize(&mut self, visible_state: &GameState, player: PlayerId) -> GameState;
-}
-
-#[derive(Debug, Default)]
-pub struct PerfectInfoSampler;
-
-impl InformationSetSampler for PerfectInfoSampler {
-    fn determinize(&mut self, visible_state: &GameState, _player: PlayerId) -> GameState {
-        visible_state.clone()
-    }
-}
-
 pub struct PlannerServices<'a> {
     pub ai_player: PlayerId,
     pub config: &'a AiConfig,
     pub policies: &'a PolicyRegistry,
     pub context: crate::context::AiContext,
-    pub information_set_sampler: Box<dyn InformationSetSampler + 'a>,
     pub utility_reducer: Box<dyn UtilityReducer + 'a>,
     eval_cache: HashMap<u64, f64>,
 }
@@ -290,17 +235,7 @@ impl<'a> PlannerServices<'a> {
         config: &'a AiConfig,
         policies: &'a PolicyRegistry,
         context: crate::context::AiContext,
-        determinize_seed: u64,
     ) -> Self {
-        let information_set_sampler: Box<dyn InformationSetSampler + 'a> =
-            match config.search.hidden_info_mode {
-                HiddenInfoMode::PerfectInfo | HiddenInfoMode::RevealedOnlyBias => {
-                    Box::new(PerfectInfoSampler)
-                }
-                HiddenInfoMode::Determinized => Box::new(
-                    crate::determinize::RandomizedDeterminizer::new(determinize_seed),
-                ),
-            };
         let utility_reducer: Box<dyn UtilityReducer + 'a> = match config.search.opponent_model {
             OpponentModel::DeterministicBestReply if config.player_count <= 2 => {
                 Box::new(DuelUtilityReducer)
@@ -316,7 +251,6 @@ impl<'a> PlannerServices<'a> {
             config,
             policies,
             context,
-            information_set_sampler,
             utility_reducer,
             eval_cache: HashMap::new(),
         }
@@ -333,7 +267,6 @@ impl<'a> PlannerServices<'a> {
             config,
             policies,
             crate::context::AiContext::empty(&config.weights),
-            42,
         )
     }
 
@@ -422,11 +355,16 @@ impl<'a> PlannerServices<'a> {
         evaluate_for_planner(state, self.ai_player, weights)
     }
 
-    /// Quiescence search: resolve forced priority passes until the position is "quiet"
-    /// (empty stack or a player has a real decision). This prevents the horizon effect
-    /// where the search evaluates mid-stack-resolution positions that misleadingly
-    /// penalize spell casting — the hand shrinks but the board doesn't improve because
-    /// the creature hasn't resolved yet.
+    /// Quiescence search: resolve forced actions and mechanical choices until the
+    /// position is "quiet" (empty stack with a genuine priority decision, or game
+    /// over). This prevents the horizon effect where the search evaluates
+    /// mid-stack-resolution positions that misleadingly penalize spell casting.
+    ///
+    /// Handles three categories of non-strategic actions:
+    /// 1. Forced priority passes (only PassPriority is legal)
+    /// 2. Single-action states (only one legal action exists)
+    /// 3. Deterministic mechanical choices (scry, surveil, discard-to-hand-size, etc.)
+    ///    resolved via `deterministic_choice`
     ///
     /// Capped at MAX_QUIESCE_STEPS to prevent runaway loops from cascading triggers.
     fn quiesce(&self, state: &GameState) -> GameState {
@@ -434,24 +372,52 @@ impl<'a> PlannerServices<'a> {
 
         let mut sim = state.clone();
         for _ in 0..MAX_QUIESCE_STEPS {
-            if sim.stack.is_empty() {
-                break;
-            }
             if matches!(sim.waiting_for, WaitingFor::GameOver { .. }) {
                 break;
             }
+
             let ctx = build_decision_context(&sim);
-            let all_pass = !ctx.candidates.is_empty()
-                && ctx
-                    .candidates
-                    .iter()
-                    .all(|c| matches!(c.action, engine::types::actions::GameAction::PassPriority));
-            if !all_pass {
+
+            // No candidates: nothing to do
+            if ctx.candidates.is_empty() {
                 break;
             }
-            if apply(&mut sim, engine::types::actions::GameAction::PassPriority).is_err() {
-                break;
+
+            // Case 1: All candidates are PassPriority — resolve the stack
+            let all_pass = ctx
+                .candidates
+                .iter()
+                .all(|c| matches!(c.action, engine::types::actions::GameAction::PassPriority));
+            if all_pass {
+                if apply(&mut sim, engine::types::actions::GameAction::PassPriority).is_err() {
+                    break;
+                }
+                continue;
             }
+
+            // Case 2: Only one legal action — apply it (forced move)
+            if ctx.candidates.len() == 1 {
+                if apply(&mut sim, ctx.candidates[0].action.clone()).is_err() {
+                    break;
+                }
+                continue;
+            }
+
+            // Case 3: Deterministic mechanical choice (scry, surveil, mulligan, etc.)
+            // These are non-strategic decisions that can be resolved with heuristics.
+            let actions: Vec<_> = ctx.candidates.iter().map(|c| c.action.clone()).collect();
+            let acting_player = sim.waiting_for.acting_player().unwrap_or(self.ai_player);
+            if let Some(action) =
+                crate::search::deterministic_choice(&sim, acting_player, self.config, &actions)
+            {
+                if apply(&mut sim, action).is_err() {
+                    break;
+                }
+                continue;
+            }
+
+            // Genuine decision point — stop quiescence
+            break;
         }
         sim
     }
@@ -548,11 +514,6 @@ impl<'a> PlannerServices<'a> {
             priors: self.policy_priors(state, &ctx, &candidates, scoring_player),
             value: self.evaluate_for_planner(state),
         }
-    }
-
-    pub fn determinize(&mut self, state: &GameState) -> GameState {
-        self.information_set_sampler
-            .determinize(state, self.ai_player)
     }
 
     pub fn utility_vector(&self, state: &GameState, value: &ValueEstimate) -> UtilityVector {
@@ -729,181 +690,6 @@ impl ContinuationPlanner for BeamContinuationPlanner {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MctsPlanner {
-    pub config: crate::config::MctsConfig,
-    pub tree: HashMap<SearchNodeKey, SearchNode>,
-}
-
-impl MctsPlanner {
-    pub fn new(config: crate::config::MctsConfig) -> Self {
-        Self {
-            config,
-            tree: HashMap::new(),
-        }
-    }
-
-    fn root_value(&self, key: &SearchNodeKey) -> Option<f64> {
-        let node = self.tree.get(key)?;
-        if node.visits == 0 {
-            None
-        } else {
-            Some(node.total_value / node.visits as f64)
-        }
-    }
-
-    fn select_edge_index(&self, node_key: &SearchNodeKey) -> Option<usize> {
-        let node = self.tree.get(node_key)?;
-        let parent_visits = node.visits.max(1) as f64;
-        node.edges
-            .iter()
-            .enumerate()
-            .max_by(|(_, left), (_, right)| {
-                self.puct_score(parent_visits, left)
-                    .partial_cmp(&self.puct_score(parent_visits, right))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-            .map(|(index, _)| index)
-    }
-
-    fn puct_score(&self, parent_visits: f64, edge: &TreeEdge) -> f64 {
-        let mean_value = if edge.visits == 0 {
-            0.0
-        } else {
-            edge.total_value / edge.visits as f64
-        };
-        let exploration =
-            self.config.c_puct * edge.prior * (parent_visits.sqrt() / (1.0 + edge.visits as f64));
-        mean_value + exploration - edge.virtual_loss
-    }
-
-    fn expand_node(
-        &mut self,
-        node_key: SearchNodeKey,
-        state: &GameState,
-        services: &mut PlannerServices<'_>,
-    ) {
-        let evaluation = services.planner_evaluation(state);
-        let node = self.tree.entry(node_key).or_default();
-        if node.expanded {
-            return;
-        }
-        node.edges = evaluation
-            .priors
-            .into_iter()
-            .map(|prior| TreeEdge {
-                candidate: prior.candidate,
-                prior: prior.prior,
-                visits: 0,
-                total_value: 0.0,
-                virtual_loss: 0.0,
-                child_key: None,
-            })
-            .collect();
-        node.expanded = true;
-    }
-
-    fn run_simulation(
-        &mut self,
-        root_state: &GameState,
-        services: &mut PlannerServices<'_>,
-        budget: &mut SearchBudget,
-    ) -> f64 {
-        let mut state = services.determinize(root_state);
-        let mut path: Vec<(SearchNodeKey, Option<usize>)> = Vec::new();
-        let utility = loop {
-            if budget.exhausted() {
-                break services.quiesced_leaf_eval(&state);
-            }
-            budget.tick();
-
-            let actor = state.waiting_for.acting_player();
-            let node_key = SearchNodeKey::new(&state, actor);
-            let is_terminal = matches!(state.waiting_for, WaitingFor::GameOver { .. });
-            let needs_expansion = !self.tree.get(&node_key).is_some_and(|node| node.expanded);
-            self.tree.entry(node_key).or_default();
-            path.push((node_key, None));
-
-            if is_terminal {
-                // GameOver — evaluate directly, no quiescence needed.
-                let value = services.evaluate_for_planner(&state);
-                break services.reduce_utility(&state, &value);
-            }
-
-            if needs_expansion {
-                self.expand_node(node_key, &state, services);
-                break if self.config.rollout_depth == 0 {
-                    services.quiesced_leaf_eval(&state)
-                } else {
-                    services.rollout_estimate(&state, self.config.rollout_depth)
-                };
-            }
-
-            let Some(edge_index) = self.select_edge_index(&node_key) else {
-                break services.quiesced_leaf_eval(&state);
-            };
-            if let Some((_, last_edge)) = path.last_mut() {
-                *last_edge = Some(edge_index);
-            }
-
-            let Some(candidate) = self
-                .tree
-                .get(&node_key)
-                .and_then(|node| node.edges.get(edge_index))
-                .map(|edge| edge.candidate.clone())
-            else {
-                break services.quiesced_leaf_eval(&state);
-            };
-            let Some(next_state) = services.apply_candidate(&state, &candidate) else {
-                break services.quiesced_leaf_eval(&state);
-            };
-            let child_key = SearchNodeKey::new(&next_state, next_state.waiting_for.acting_player());
-            if let Some(node) = self.tree.get_mut(&node_key) {
-                if let Some(edge) = node.edges.get_mut(edge_index) {
-                    edge.child_key = Some(child_key);
-                }
-            }
-            state = next_state;
-        };
-
-        for (node_key, edge_index) in path {
-            if let Some(node) = self.tree.get_mut(&node_key) {
-                node.visits += 1;
-                node.total_value += utility;
-                if let Some(edge_index) = edge_index {
-                    if let Some(edge) = node.edges.get_mut(edge_index) {
-                        edge.visits += 1;
-                        edge.total_value += utility;
-                    }
-                }
-            }
-        }
-
-        utility
-    }
-}
-
-impl ContinuationPlanner for MctsPlanner {
-    fn evaluate_after_action(
-        &mut self,
-        state: &GameState,
-        services: &mut PlannerServices<'_>,
-        budget: &mut SearchBudget,
-    ) -> f64 {
-        self.tree.clear();
-        let root_key = SearchNodeKey::new(state, state.waiting_for.acting_player());
-        for _ in 0..self.config.simulations {
-            if budget.exhausted() {
-                break;
-            }
-            self.run_simulation(state, services, budget);
-        }
-
-        self.root_value(&root_key)
-            .unwrap_or_else(|| services.quiesced_leaf_eval(state))
-    }
-}
-
 pub fn build_continuation_planner(config: &AiConfig) -> Box<dyn ContinuationPlanner> {
     match config.search.planner_mode {
         PlannerMode::BeamOnly => Box::new(BeamContinuationPlanner {
@@ -914,17 +700,6 @@ pub fn build_continuation_planner(config: &AiConfig) -> Box<dyn ContinuationPlan
             depth: config.search.max_depth.saturating_sub(1),
             rollout_depth: config.search.rollout_depth,
         }),
-        PlannerMode::BeamPlusMcts => {
-            Box::new(MctsPlanner::new(config.search.mcts.clone().unwrap_or(
-                crate::config::MctsConfig {
-                    simulations: 24,
-                    c_puct: 1.25,
-                    rollout_depth: config.search.rollout_depth,
-                    exploration_fraction: 0.0,
-                    dirichlet_alpha: None,
-                },
-            )))
-        }
     }
 }
 
@@ -1020,21 +795,6 @@ mod tests {
     }
 
     #[test]
-    fn node_key_is_stable_for_equivalent_state() {
-        let state = make_state();
-        let key_a = SearchNodeKey::new(&state, Some(PlayerId(0)));
-        let key_b = SearchNodeKey::new(&state, Some(PlayerId(0)));
-        assert_eq!(key_a, key_b);
-    }
-
-    #[test]
-    fn perfect_info_sampler_is_no_op() {
-        let mut sampler = PerfectInfoSampler;
-        let state = make_state();
-        assert_eq!(sampler.determinize(&state, PlayerId(0)), state);
-    }
-
-    #[test]
     fn search_budget_tracks_node_count() {
         let mut budget = SearchBudget::new(3);
         assert!(!budget.exhausted());
@@ -1105,133 +865,6 @@ mod tests {
             .iter()
             .all(|prior| prior.prior.is_finite() && prior.prior > 0.0));
         assert!(priors[1].prior > priors[0].prior);
-    }
-
-    #[test]
-    fn puct_prefers_high_prior_when_visits_are_equal() {
-        let planner = MctsPlanner::new(crate::config::MctsConfig {
-            simulations: 8,
-            c_puct: 1.25,
-            rollout_depth: 1,
-            exploration_fraction: 0.0,
-            dirichlet_alpha: None,
-        });
-        let node_key = SearchNodeKey::new(&make_state(), Some(PlayerId(0)));
-        let mut planner = planner;
-        planner.tree.insert(
-            node_key,
-            SearchNode {
-                visits: 4,
-                total_value: 0.0,
-                edges: vec![
-                    TreeEdge {
-                        candidate: CandidateAction {
-                            action: GameAction::PassPriority,
-                            metadata: ActionMetadata {
-                                actor: Some(PlayerId(0)),
-                                tactical_class: TacticalClass::Pass,
-                            },
-                        },
-                        prior: 0.2,
-                        visits: 0,
-                        total_value: 0.0,
-                        virtual_loss: 0.0,
-                        child_key: None,
-                    },
-                    TreeEdge {
-                        candidate: CandidateAction {
-                            action: GameAction::MulliganDecision { keep: true },
-                            metadata: ActionMetadata {
-                                actor: Some(PlayerId(0)),
-                                tactical_class: TacticalClass::Selection,
-                            },
-                        },
-                        prior: 0.8,
-                        visits: 0,
-                        total_value: 0.0,
-                        virtual_loss: 0.0,
-                        child_key: None,
-                    },
-                ],
-                expanded: true,
-            },
-        );
-
-        assert_eq!(planner.select_edge_index(&node_key), Some(1));
-    }
-
-    #[test]
-    fn expansion_uses_legal_engine_candidates() {
-        let state = make_state();
-        let config = create_config(AiDifficulty::VeryHard, Platform::Native);
-        let policies = PolicyRegistry::default();
-        let mut services = PlannerServices::new_default(PlayerId(0), &config, &policies);
-        let mut planner = MctsPlanner::new(config.search.mcts.clone().unwrap());
-        let key = SearchNodeKey::new(&state, Some(PlayerId(0)));
-        planner.expand_node(key, &state, &mut services);
-        let node = planner.tree.get(&key).unwrap();
-        assert!(node.expanded);
-        assert!(!node.edges.is_empty());
-        assert!(node.edges.iter().all(|edge| services
-            .apply_candidate(&state, &edge.candidate)
-            .is_some()
-            || matches!(edge.candidate.action, GameAction::PassPriority)));
-    }
-
-    #[test]
-    fn backprop_updates_visits_and_value_totals() {
-        let mut state = make_state();
-        let land_id = create_object(
-            &mut state,
-            CardId(99),
-            PlayerId(0),
-            "Forest".to_string(),
-            Zone::Hand,
-        );
-        state
-            .objects
-            .get_mut(&land_id)
-            .unwrap()
-            .card_types
-            .core_types
-            .push(CoreType::Land);
-
-        let config = create_config(AiDifficulty::VeryHard, Platform::Native);
-        let policies = PolicyRegistry::default();
-        let mut services = PlannerServices::new_default(PlayerId(0), &config, &policies);
-        let mut planner = MctsPlanner::new(config.search.mcts.clone().unwrap());
-        let mut budget = SearchBudget::new(32);
-        let _ = planner.evaluate_after_action(&state, &mut services, &mut budget);
-        let root_key = SearchNodeKey::new(&state, Some(PlayerId(0)));
-        let root = planner.tree.get(&root_key).unwrap();
-        assert!(root.visits > 0);
-        assert!(root.total_value.is_finite());
-    }
-
-    #[test]
-    fn mcts_respects_budget() {
-        let state = make_state();
-        let config = create_config(AiDifficulty::VeryHard, Platform::Native);
-        let policies = PolicyRegistry::default();
-        let mut services = PlannerServices::new_default(PlayerId(0), &config, &policies);
-        let mut planner = MctsPlanner::new(config.search.mcts.clone().unwrap());
-        let mut budget = SearchBudget::new(2);
-        let _ = planner.evaluate_after_action(&state, &mut services, &mut budget);
-        assert!(budget.exhausted());
-    }
-
-    #[test]
-    fn mcts_root_visits_do_not_exceed_simulation_budget() {
-        let state = make_state();
-        let config = create_config(AiDifficulty::VeryHard, Platform::Native);
-        let policies = PolicyRegistry::default();
-        let mut services = PlannerServices::new_default(PlayerId(0), &config, &policies);
-        let mut planner = MctsPlanner::new(config.search.mcts.clone().unwrap());
-        let mut budget = SearchBudget::new(256);
-        let _ = planner.evaluate_after_action(&state, &mut services, &mut budget);
-        let root_key = SearchNodeKey::new(&state, Some(PlayerId(0)));
-        let root = planner.tree.get(&root_key).unwrap();
-        assert!(root.visits <= planner.config.simulations);
     }
 
     #[test]
