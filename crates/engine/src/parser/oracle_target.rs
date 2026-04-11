@@ -4033,6 +4033,33 @@ mod tests {
     }
 
     #[test]
+    fn parse_type_phrase_aura_card_stays_generic() {
+        let (filter, rest) =
+            parse_type_phrase("Aura card with mana value less than or equal to that Aura");
+        assert_eq!(rest.trim(), "Aura", "remainder: '{rest}'");
+        let TargetFilter::Typed(typed) = filter else {
+            panic!("Expected Typed filter, got {filter:?}");
+        };
+        assert_eq!(typed.get_subtype(), Some("Aura"));
+        assert!(
+            typed
+                .type_filters
+                .iter()
+                .position(|type_filter| *type_filter == TypeFilter::Enchantment)
+                .is_none(),
+            "search-only normalization should not happen in parse_type_phrase: {typed:?}"
+        );
+        assert!(typed.properties.iter().any(|property| matches!(
+            property,
+            FilterProp::CmcLE {
+                value: QuantityExpr::Ref {
+                    qty: QuantityRef::EventContextSourceManaValue
+                }
+            }
+        )));
+    }
+
+    #[test]
     fn combat_status_prefix_unblocked() {
         let result = parse_combat_status_prefix("unblocked attacking creatures");
         assert_eq!(result, Some((FilterProp::Unblocked, 10)));
