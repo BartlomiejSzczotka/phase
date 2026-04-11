@@ -66,24 +66,26 @@ pub(super) fn parse_search_library_details(lower: &str) -> SearchLibraryDetails 
 fn parse_search_target_player(lower: &str) -> Option<TargetFilter> {
     use nom::branch::alt;
     use nom::combinator::value;
+    use nom::sequence::preceded;
 
-    let after_search = lower.strip_prefix("search ")?.trim_start();
-
-    let (filter, _rest) = nom_on_lower(after_search, after_search, |i| {
-        alt((
-            value(
-                TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
-                tag("target opponent's library"),
-            ),
-            value(
-                TargetFilter::Player,
-                tag("target player's library"),
-            ),
-            value(
-                TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
-                tag("an opponent's library"),
-            ),
-        ))
+    let (filter, _rest) = nom_on_lower(lower, lower, |i| {
+        preceded(
+            tag("search "),
+            alt((
+                value(
+                    TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
+                    tag("target opponent's library"),
+                ),
+                value(
+                    TargetFilter::Player,
+                    tag("target player's library"),
+                ),
+                value(
+                    TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent)),
+                    tag("an opponent's library"),
+                ),
+            )),
+        )
         .parse(i)
     })?;
     Some(filter)

@@ -609,9 +609,15 @@ pub(super) fn parse_search_and_creation_ast(
         });
     }
     if starts_with_possessive(lower, "search", "library")
-        || lower.starts_with("search target opponent's library")
-        || lower.starts_with("search target player's library")
-        || lower.starts_with("search an opponent's library")
+        || nom_on_lower(lower, lower, |i| {
+            alt((
+                value((), tag("search target opponent's library")),
+                value((), tag("search target player's library")),
+                value((), tag("search an opponent's library")),
+            ))
+            .parse(i)
+        })
+        .is_some()
     {
         let details = super::parse_search_library_details(lower);
         return Some(SearchCreationImperativeAst::SearchLibrary {
