@@ -107,28 +107,45 @@ pub(super) fn try_parse_put_counter<'a>(
 }
 
 pub(super) fn try_parse_remove_counter(lower: &str, ctx: &ParseContext) -> Option<Effect> {
-    // "remove N {type} counter(s) from {target}" or "remove all {type} counters from {target}"
+    // "remove N {type} counter(s) from {target}" or "remove all counters from {target}"
+    // CR 121.1: Counter type is optional — "remove all counters" removes every type.
     let ((), after_remove) = nom_on_lower(lower, lower, |i| value((), tag("remove ")).parse(i))?;
     let after_remove = after_remove.trim();
 
     // CR 122.1: "remove all" uses sentinel count -1, resolved to actual count at runtime.
+    // Also handle "up to N" prefix (player may remove fewer).
     let (count, rest) = if let Some(((), rest)) = nom_on_lower(after_remove, after_remove, |i| {
         value((), tag("all ")).parse(i)
     }) {
         (-1i32, rest.trim_start())
+    } else if let Some(((), rest)) = nom_on_lower(after_remove, after_remove, |i| {
+        value((), tag("up to ")).parse(i)
+    }) {
+        let (n, r) = parse_number(rest.trim())?;
+        (n as i32, r)
     } else {
         let (n, r) = parse_number(after_remove)?;
         (n as i32, r)
     };
 
-    let type_end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
-    let raw_type = &rest[..type_end];
-    let counter_type = normalize_counter_type(raw_type);
-
-    let after_type = rest[type_end..].trim_start();
-    let ((), after_counter_word) = nom_on_lower(after_type, after_type, |i| {
-        value((), alt((tag("counters"), tag("counter")))).parse(i)
-    })?;
+    // Try matching "counter(s)" directly (untyped: "remove all counters from ...").
+    // If that fails, parse a type word first, then "counter(s)".
+    let (counter_type, after_counter_word) =
+        if let Some(((), after_cw)) = nom_on_lower(rest, rest, |i| {
+            value((), alt((tag("counters"), tag("counter")))).parse(i)
+        }) {
+            // No type specified — empty string signals "all types" to the handler.
+            (String::new(), after_cw)
+        } else {
+            let type_end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+            let raw_type = &rest[..type_end];
+            let counter_type = normalize_counter_type(raw_type);
+            let after_type = rest[type_end..].trim_start();
+            let ((), after_cw) = nom_on_lower(after_type, after_type, |i| {
+                value((), alt((tag("counters"), tag("counter")))).parse(i)
+            })?;
+            (counter_type, after_cw)
+        };
     let after_counter_word = after_counter_word.trim_start();
 
     let ((), target_text) = nom_on_lower(after_counter_word, after_counter_word, |i| {
@@ -214,6 +231,81 @@ pub(super) fn try_parse_move_counters<'a>(lower: &str, text: &'a str) -> Option<
         },
         remainder,
     ))
+}
+
+/// CR 121.5: Parse "move [all/N] [type] counter(s) from [source] onto/to [target]".
+/// Handles Bioshift, Fate Transfer, Nesting Grounds, Simic Fluxmage, etc.
+pub(super) fn try_parse_move_counters_from(lower: &str, ctx: &ParseContext) -> Option<Effect> {
+    let ((), after_move) = nom_on_lower(lower, lower, |i| value((), tag("move ")).parse(i))?;
+    let after_move = after_move.trim();
+
+    // Parse quantity: "all", "any number of", or a number.
+    // count is informational (None = all, Some(n) = at most n).
+    let rest = if let Some(((), rest)) =
+        nom_on_lower(after_move, after_move, |i| value((), tag("all ")).parse(i))
+    {
+        rest.trim_start()
+    } else if let Some(((), rest)) = nom_on_lower(after_move, after_move, |i| {
+        value((), tag("any number of ")).parse(i)
+    }) {
+        rest.trim_start()
+    } else if let Some((_, rest)) = parse_number(after_move) {
+        rest.trim_start()
+    } else {
+        // "move a +1/+1 counter" — article consumed by parse_number("a" → 1)
+        return None;
+    };
+
+    // Try matching "counter(s)" directly (untyped), or parse a type first.
+    let (counter_type, after_counter_word) =
+        if let Some(((), after_cw)) = nom_on_lower(rest, rest, |i| {
+            value((), alt((tag("counters"), tag("counter")))).parse(i)
+        }) {
+            (None, after_cw)
+        } else {
+            let type_end = rest.find(|c: char| c.is_whitespace()).unwrap_or(rest.len());
+            let raw_type = &rest[..type_end];
+            let ct = normalize_counter_type(raw_type);
+            let after_type = rest[type_end..].trim_start();
+            let ((), after_cw) = nom_on_lower(after_type, after_type, |i| {
+                value((), alt((tag("counters"), tag("counter")))).parse(i)
+            })?;
+            (Some(ct), after_cw)
+        };
+    let after_counter_word = after_counter_word.trim_start();
+
+    // Expect "from "
+    let ((), after_from) = nom_on_lower(after_counter_word, after_counter_word, |i| {
+        value((), tag("from ")).parse(i)
+    })?;
+    let after_from = after_from.trim();
+
+    // Parse source target — delimited by " onto " or " to ".
+    let split_pos = after_from
+        .find(" onto ")
+        .or_else(|| after_from.find(" to "));
+    let (source_text, target_text) = match split_pos {
+        Some(pos) => {
+            let source = &after_from[..pos];
+            let rest = &after_from[pos..];
+            let target = rest
+                .strip_prefix(" onto ")
+                .or_else(|| rest.strip_prefix(" to "))
+                .unwrap_or(rest)
+                .trim();
+            (source, target)
+        }
+        None => return None,
+    };
+
+    let source = resolve_counter_target(source_text, ctx);
+    let (target, _rem) = parse_target(target_text);
+
+    Some(Effect::MoveCounters {
+        source,
+        counter_type,
+        target,
+    })
 }
 
 /// CR 701.10e: Parse "double the number of {type} counters on {target}".
@@ -361,4 +453,101 @@ fn parse_mana_color_from_text(text: &str) -> Option<ManaColor> {
     let lower = text.split_whitespace().next()?.to_lowercase();
     let (_rest, color) = nom_primitives::parse_color.parse(&lower).ok()?;
     Some(color)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn default_ctx() -> ParseContext {
+        ParseContext::default()
+    }
+
+    #[test]
+    fn remove_counter_untyped_all() {
+        // Vampire Hexmage: "remove all counters from target permanent"
+        let result = try_parse_remove_counter("remove all counters from target permanent", &default_ctx());
+        let Some(Effect::RemoveCounter { counter_type, count, target }) = result else {
+            panic!("expected RemoveCounter, got {result:?}");
+        };
+        assert!(counter_type.is_empty(), "untyped should be empty string");
+        assert_eq!(count, -1, "all = sentinel -1");
+        assert!(matches!(target, TargetFilter::Typed { .. }));
+    }
+
+    #[test]
+    fn remove_counter_untyped_single() {
+        // Thrull Parasite: "remove a counter from target nonland permanent"
+        let result = try_parse_remove_counter("remove a counter from target nonland permanent", &default_ctx());
+        let Some(Effect::RemoveCounter { counter_type, count, .. }) = result else {
+            panic!("expected RemoveCounter, got {result:?}");
+        };
+        assert!(counter_type.is_empty());
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn remove_counter_up_to_n() {
+        // Heartless Act mode 2: "remove up to three counters from target creature"
+        let result = try_parse_remove_counter("remove up to three counters from target creature", &default_ctx());
+        let Some(Effect::RemoveCounter { counter_type, count, .. }) = result else {
+            panic!("expected RemoveCounter, got {result:?}");
+        };
+        assert!(counter_type.is_empty());
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn remove_counter_typed_still_works() {
+        // Existing pattern: "remove a +1/+1 counter from ~"
+        let result = try_parse_remove_counter("remove a +1/+1 counter from ~", &default_ctx());
+        let Some(Effect::RemoveCounter { counter_type, count, .. }) = result else {
+            panic!("expected RemoveCounter, got {result:?}");
+        };
+        assert_eq!(counter_type, "P1P1");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn move_counters_from_self_onto_target() {
+        // Simic Fluxmage: "move a +1/+1 counter from this creature onto target creature"
+        let result = try_parse_move_counters_from(
+            "move a +1/+1 counter from this creature onto target creature",
+            &default_ctx(),
+        );
+        let Some(Effect::MoveCounters { source, counter_type, target }) = result else {
+            panic!("expected MoveCounters, got {result:?}");
+        };
+        assert!(matches!(source, TargetFilter::SelfRef));
+        assert_eq!(counter_type, Some("P1P1".to_string()));
+        assert!(matches!(target, TargetFilter::Typed { .. }));
+    }
+
+    #[test]
+    fn move_counters_all_types() {
+        // Fate Transfer: "move all counters from target creature onto another target creature"
+        let result = try_parse_move_counters_from(
+            "move all counters from target creature onto another target creature",
+            &default_ctx(),
+        );
+        let Some(Effect::MoveCounters { counter_type, .. }) = result else {
+            panic!("expected MoveCounters, got {result:?}");
+        };
+        assert_eq!(counter_type, None, "untyped = None");
+    }
+
+    #[test]
+    fn move_counters_typed_from_target_to_self() {
+        // Cytoplast Root-Kin: "move a +1/+1 counter from target creature you control onto this creature"
+        let result = try_parse_move_counters_from(
+            "move a +1/+1 counter from target creature you control onto this creature",
+            &default_ctx(),
+        );
+        let Some(Effect::MoveCounters { source, counter_type, target }) = result else {
+            panic!("expected MoveCounters, got {result:?}");
+        };
+        assert!(matches!(source, TargetFilter::Typed { .. }));
+        assert_eq!(counter_type, Some("P1P1".to_string()));
+        assert!(matches!(target, TargetFilter::SelfRef));
+    }
 }

@@ -326,6 +326,7 @@ pub fn resolve_move(
 }
 
 /// Remove counters from target objects, clamping at 0.
+/// CR 121.1: When counter_type is empty, removes counters of every type (Vampire Hexmage).
 pub fn resolve_remove(
     state: &mut GameState,
     ability: &ResolvedAbility,
@@ -339,63 +340,105 @@ pub fn resolve_remove(
         } => (counter_type.clone(), *count),
         _ => ("P1P1".to_string(), 1),
     };
-    let ct = parse_counter_type(&counter_type_str);
+
+    // CR 121.1: Empty counter_type means "all types" — collect each type on the object.
+    let all_types = counter_type_str.is_empty();
 
     let targets = resolve_defined_or_targets(ability);
     for obj_id in targets {
-        // CR 122.1: count == -1 means "remove all" — resolve to the actual counter count.
-        let counter_num = if raw_count < 0 {
-            state
+        // Build the list of (counter_type, count) pairs to remove.
+        let removals: Vec<(CounterType, u32)> = if all_types {
+            // Remove all counter types. count == -1 means remove all of each type;
+            // positive count means remove up to that many total (player's choice — for now, remove
+            // proportionally starting from the first type).
+            let counters: Vec<(CounterType, u32)> = state
                 .objects
                 .get(&obj_id)
-                .and_then(|obj| obj.counters.get(&ct).copied())
-                .unwrap_or(0)
+                .map(|obj| {
+                    obj.counters
+                        .iter()
+                        .filter(|(_, &v)| v > 0)
+                        .map(|(ct, &v)| (ct.clone(), v))
+                        .collect()
+                })
+                .unwrap_or_default();
+            if raw_count < 0 {
+                // Remove all of every type.
+                counters
+            } else {
+                // Remove up to N total counters across all types.
+                let mut budget = raw_count as u32;
+                counters
+                    .into_iter()
+                    .filter_map(|(ct, available)| {
+                        if budget == 0 {
+                            return None;
+                        }
+                        let to_remove = available.min(budget);
+                        budget -= to_remove;
+                        Some((ct, to_remove))
+                    })
+                    .collect()
+            }
         } else {
-            raw_count as u32
+            let ct = parse_counter_type(&counter_type_str);
+            // CR 122.1: count == -1 means "remove all" — resolve to the actual counter count.
+            let counter_num = if raw_count < 0 {
+                state
+                    .objects
+                    .get(&obj_id)
+                    .and_then(|obj| obj.counters.get(&ct).copied())
+                    .unwrap_or(0)
+            } else {
+                raw_count as u32
+            };
+            vec![(ct, counter_num)]
         };
 
-        let proposed = ProposedEvent::RemoveCounter {
-            object_id: obj_id,
-            counter_type: ct.clone(),
-            count: counter_num,
-            applied: HashSet::new(),
-        };
+        for (ct, counter_num) in removals {
+            let proposed = ProposedEvent::RemoveCounter {
+                object_id: obj_id,
+                counter_type: ct,
+                count: counter_num,
+                applied: HashSet::new(),
+            };
 
-        match replacement::replace_event(state, proposed, events) {
-            ReplacementResult::Execute(event) => {
-                if let ProposedEvent::RemoveCounter {
-                    object_id,
-                    counter_type,
-                    count,
-                    ..
-                } = event
-                {
-                    let obj = state
-                        .objects
-                        .get_mut(&object_id)
-                        .ok_or(EffectError::ObjectNotFound(object_id))?;
-                    let entry = obj.counters.entry(counter_type.clone()).or_insert(0);
-                    *entry = entry.saturating_sub(count);
-
-                    if matches!(
-                        counter_type,
-                        CounterType::Plus1Plus1 | CounterType::Minus1Minus1
-                    ) {
-                        state.layers_dirty = true;
-                    }
-
-                    events.push(GameEvent::CounterRemoved {
+            match replacement::replace_event(state, proposed, events) {
+                ReplacementResult::Execute(event) => {
+                    if let ProposedEvent::RemoveCounter {
                         object_id,
                         counter_type,
                         count,
-                    });
+                        ..
+                    } = event
+                    {
+                        let obj = state
+                            .objects
+                            .get_mut(&object_id)
+                            .ok_or(EffectError::ObjectNotFound(object_id))?;
+                        let entry = obj.counters.entry(counter_type.clone()).or_insert(0);
+                        *entry = entry.saturating_sub(count);
+
+                        if matches!(
+                            counter_type,
+                            CounterType::Plus1Plus1 | CounterType::Minus1Minus1
+                        ) {
+                            state.layers_dirty = true;
+                        }
+
+                        events.push(GameEvent::CounterRemoved {
+                            object_id,
+                            counter_type,
+                            count,
+                        });
+                    }
                 }
-            }
-            ReplacementResult::Prevented => {}
-            ReplacementResult::NeedsChoice(player) => {
-                state.waiting_for =
-                    crate::game::replacement::replacement_choice_waiting_for(player, state);
-                return Ok(());
+                ReplacementResult::Prevented => {}
+                ReplacementResult::NeedsChoice(player) => {
+                    state.waiting_for =
+                        crate::game::replacement::replacement_choice_waiting_for(player, state);
+                    return Ok(());
+                }
             }
         }
     }

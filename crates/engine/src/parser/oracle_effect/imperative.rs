@@ -4,7 +4,10 @@ use nom::combinator::value;
 use nom::Parser;
 use nom_language::error::VerboseError;
 
-use super::counter::{try_parse_double_effect, try_parse_put_counter, try_parse_remove_counter};
+use super::counter::{
+    try_parse_double_effect, try_parse_move_counters_from, try_parse_put_counter,
+    try_parse_remove_counter,
+};
 use super::mana::{try_parse_activate_only_condition, try_parse_add_mana_effect};
 use super::token::try_parse_token;
 use super::types::*;
@@ -2290,6 +2293,9 @@ pub(super) fn parse_imperative_family_ast(
                 parse_zone_counter_ast(text, lower, ctx).map(ImperativeFamilyAst::ZoneCounter)
             }),
 
+        // "move" → counter movement (step 2): "move N counters from X onto Y"
+        "move" => parse_zone_counter_ast(text, lower, ctx).map(ImperativeFamilyAst::ZoneCounter),
+
         // "add" → mana/cost-resource (step 1)
         "add" => parse_cost_resource_ast(text, lower).map(ImperativeFamilyAst::CostResource),
 
@@ -2722,6 +2728,25 @@ pub(super) fn parse_zone_counter_ast(
             }),
             _ => None,
         };
+    }
+    // CR 121.5: "move [N] [type] counter(s) from [source] onto/to [target]"
+    if tag::<_, _, VerboseError<&str>>("move ")
+        .parse(lower)
+        .is_ok()
+        && nom_primitives::scan_contains(lower, "counter")
+    {
+        if let Some(Effect::MoveCounters {
+            source,
+            counter_type,
+            target,
+        }) = try_parse_move_counters_from(lower, ctx)
+        {
+            return Some(ZoneCounterImperativeAst::MoveCounters {
+                source,
+                counter_type,
+                target,
+            });
+        }
     }
     None
 }
