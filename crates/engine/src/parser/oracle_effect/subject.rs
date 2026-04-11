@@ -9,8 +9,8 @@ use super::types::*;
 use super::{resolve_it_pronoun, ParseContext};
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, ContinuousModification, ControllerRef, Duration, Effect,
-    FilterProp, GainLifePlayer, PtValue, QuantityExpr, QuantityRef, RoundingMode, StaticDefinition,
-    TargetFilter, TypedFilter,
+    FilterProp, GainLifePlayer, MultiTargetSpec, PtValue, QuantityExpr, QuantityRef, RoundingMode,
+    StaticDefinition, TargetFilter, TypedFilter,
 };
 use crate::types::game_state::DayNight;
 use crate::types::statics::StaticMode;
@@ -312,6 +312,24 @@ pub(super) fn parse_subject_application(
             let (filter, _) = parse_target(target_text);
             let mut application = subject_filter_application(filter, true)?;
             application.multi_target = multi_target;
+            return Some(application);
+        }
+    }
+    // CR 115.1d: "any number of target creatures" — variable-count targeting.
+    // Strip "any number of " prefix, delegate to parse_target for the filter,
+    // and attach MultiTargetSpec { min: 0, max: None } (unlimited).
+    if let Ok((after_prefix, _)) =
+        tag::<_, _, VerboseError<&str>>("any number of ").parse(lower.as_str())
+    {
+        let consumed = lower.len() - after_prefix.len();
+        let target_text = &subject[consumed..];
+        if tag::<_, _, VerboseError<&str>>("target ")
+            .parse(after_prefix)
+            .is_ok()
+        {
+            let (filter, _) = parse_target(target_text);
+            let mut application = subject_filter_application(filter, true)?;
+            application.multi_target = Some(MultiTargetSpec { min: 0, max: None });
             return Some(application);
         }
     }
@@ -1186,6 +1204,7 @@ pub(crate) fn starts_with_subject_prefix(lower: &str) -> bool {
         alt((
             value((), tag::<_, _, VerboseError<&str>>("all ")),
             value((), tag("an opponent ")),
+            value((), tag("any number of ")),
             value((), tag("defending player ")),
             value((), tag("each of ")),
             value((), tag("each opponent ")),
@@ -1435,5 +1454,61 @@ mod tests {
         let result = parse_subject_application("that player", &ctx);
         assert!(result.is_some());
         assert_eq!(result.unwrap().affected, TargetFilter::Player);
+    }
+
+    // CR 115.1d: "any number of target" subject prefix tests
+    #[test]
+    fn parse_subject_any_number_of_target_creatures() {
+        let ctx = ParseContext::default();
+        let result = parse_subject_application("any number of target creatures", &ctx);
+        assert!(result.is_some());
+        let app = result.unwrap();
+        assert!(
+            matches!(app.affected, TargetFilter::Typed(ref t) if t.type_filters.contains(&TypeFilter::Creature)),
+            "should parse creature filter, got {:?}",
+            app.affected
+        );
+        assert!(app.target.is_some(), "should be targeted");
+        assert_eq!(
+            app.multi_target,
+            Some(MultiTargetSpec { min: 0, max: None }),
+            "should have unlimited multi_target"
+        );
+    }
+
+    #[test]
+    fn parse_subject_any_number_of_target_creatures_you_control() {
+        let ctx = ParseContext::default();
+        let result = parse_subject_application("any number of target creatures you control", &ctx);
+        assert!(result.is_some());
+        let app = result.unwrap();
+        assert!(
+            matches!(app.affected, TargetFilter::Typed(ref t)
+                if t.type_filters.contains(&TypeFilter::Creature)
+                && t.controller == Some(ControllerRef::You)),
+            "should parse creature + controller, got {:?}",
+            app.affected
+        );
+        assert_eq!(
+            app.multi_target,
+            Some(MultiTargetSpec { min: 0, max: None }),
+        );
+    }
+
+    #[test]
+    fn parse_subject_any_number_of_target_players() {
+        let ctx = ParseContext::default();
+        let result = parse_subject_application("any number of target players", &ctx);
+        assert!(result.is_some());
+        let app = result.unwrap();
+        assert_eq!(
+            app.multi_target,
+            Some(MultiTargetSpec { min: 0, max: None }),
+        );
+    }
+
+    #[test]
+    fn starts_with_subject_prefix_any_number_of() {
+        assert!(starts_with_subject_prefix("any number of target creatures each get +1/+1"));
     }
 }

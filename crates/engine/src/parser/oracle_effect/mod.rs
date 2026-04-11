@@ -2796,6 +2796,11 @@ fn lower_subject_predicate_ast(
     predicate: PredicateAst,
     ctx: &ParseContext,
 ) -> ParsedEffectClause {
+    // CR 115.1d: Propagate multi_target from the subject phrase (e.g., "any number of
+    // target creatures", "up to two target artifacts") into the lowered clause so the
+    // targeting system creates the correct number of target slots at cast time.
+    let multi_target = subject.multi_target.clone();
+
     match predicate {
         PredicateAst::Continuous {
             effect,
@@ -2806,7 +2811,7 @@ fn lower_subject_predicate_ast(
             duration,
             sub_ability,
             distribute: None,
-            multi_target: None,
+            multi_target,
             condition: None,
         },
         PredicateAst::Become {
@@ -2818,7 +2823,7 @@ fn lower_subject_predicate_ast(
             duration,
             sub_ability,
             distribute: None,
-            multi_target: None,
+            multi_target,
             condition: None,
         },
         PredicateAst::Restriction { effect, duration } => ParsedEffectClause {
@@ -2826,7 +2831,7 @@ fn lower_subject_predicate_ast(
             duration,
             sub_ability: None,
             distribute: None,
-            multi_target: None,
+            multi_target,
             condition: None,
         },
         PredicateAst::ImperativeFallback { text } => {
@@ -8045,6 +8050,60 @@ mod tests {
         let spec = spec.unwrap();
         assert_eq!(spec.min, 0);
         assert_eq!(spec.max, None);
+    }
+
+    // CR 115.1d: "any number of target" subject-predicate integration tests
+    #[test]
+    fn any_number_of_target_creatures_pump_and_keyword() {
+        let clause = parse_effect_clause(
+            "any number of target creatures each get +1/+1 and gain flying until end of turn",
+            &ParseContext::default(),
+        );
+        // Combined pump + keyword becomes GenericEffect with continuous modifications
+        assert!(
+            matches!(clause.effect, Effect::GenericEffect { .. }),
+            "expected GenericEffect, got {:?}",
+            clause.effect
+        );
+        assert_eq!(
+            clause.multi_target,
+            Some(MultiTargetSpec { min: 0, max: None }),
+            "should have unlimited multi_target"
+        );
+    }
+
+    #[test]
+    fn any_number_of_target_creatures_phase_out() {
+        let clause = parse_effect_clause(
+            "any number of target creatures you control phase out",
+            &ParseContext::default(),
+        );
+        assert!(
+            matches!(clause.effect, Effect::PhaseOut { .. }),
+            "expected PhaseOut, got {:?}",
+            clause.effect
+        );
+        assert_eq!(
+            clause.multi_target,
+            Some(MultiTargetSpec { min: 0, max: None }),
+        );
+    }
+
+    #[test]
+    fn any_number_of_target_players_mill() {
+        let clause = parse_effect_clause(
+            "any number of target players each mill two cards",
+            &ParseContext::default(),
+        );
+        assert!(
+            matches!(clause.effect, Effect::Mill { .. } | Effect::TargetOnly { .. }),
+            "expected Mill or TargetOnly, got {:?}",
+            clause.effect
+        );
+        assert_eq!(
+            clause.multi_target,
+            Some(MultiTargetSpec { min: 0, max: None }),
+        );
     }
 
     #[test]
