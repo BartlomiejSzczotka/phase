@@ -177,6 +177,20 @@ pub fn derive_display_state(state: &mut GameState) {
     // Derive has_pending_cast so the frontend can read it directly
     // without maintaining a parallel list of casting-flow WaitingFor states.
     state.has_pending_cast = state.waiting_for.has_pending_cast();
+
+    // Invariant: the two storage sites for "am I mid-cast" must agree. If
+    // `waiting_for` says we're mid-cast, `GameState::pending_cast` must be
+    // populated (either inline via the variant's `pending_cast_ref`, or on
+    // the outer state for `ManaPayment`). Drift here is the bug class that
+    // caused the `ChooseXValue` omission and the `Unsummon` cast/cancel loop
+    // regression — this assert makes future drift surface immediately.
+    debug_assert!(
+        !state.has_pending_cast
+            || state.pending_cast.is_some()
+            || state.waiting_for.pending_cast_ref().is_some(),
+        "has_pending_cast is true but no PendingCast is reachable — drift in {:?}",
+        std::mem::discriminant(&state.waiting_for)
+    );
 }
 
 #[cfg(test)]

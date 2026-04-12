@@ -4077,7 +4077,29 @@ mod tests {
     #[test]
     fn test_mana_ability_during_mana_payment_stays_in_mana_payment() {
         let mut state = setup_game_at_main_phase();
-        // Set up ManaPayment state
+        // In production, ManaPayment is only entered via `enter_payment_step`
+        // once `state.pending_cast` is populated — the drift invariant in
+        // `derived` requires the two storage sites to agree. Reproduce that
+        // precondition here so the synthetic state matches engine reality.
+        state.pending_cast = Some(Box::new(crate::types::game_state::PendingCast {
+            object_id: ObjectId(0),
+            card_id: CardId(0),
+            ability: crate::types::ability::ResolvedAbility::new(
+                crate::types::ability::Effect::Unimplemented {
+                    name: "Test".to_string(),
+                    description: None,
+                },
+                vec![],
+                ObjectId(0),
+                PlayerId(0),
+            ),
+            cost: crate::types::mana::ManaCost::NoCost,
+            activation_cost: None,
+            activation_ability_index: None,
+            target_constraints: vec![],
+            casting_variant: crate::types::game_state::CastingVariant::Normal,
+            distribute: None,
+        }));
         state.waiting_for = WaitingFor::ManaPayment {
             player: PlayerId(0),
             convoke_mode: None,

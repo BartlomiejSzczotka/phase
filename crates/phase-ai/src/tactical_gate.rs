@@ -143,6 +143,16 @@ fn assess_candidate(ctx: &PolicyContext<'_>) -> GateDecision {
                 GateDecision::Allow
             }
         }
+        // CR 601.2: Announcing a spell commits the caster — the rules provide
+        // no strategic rewind. CancelCast exists only as a mechanical escape
+        // when the cast cannot be completed (no legal targets after a
+        // replacement effect, unaffordable cost after a cost-increase static).
+        // Removing it from the strategic pool prevents regret-based cast/cancel
+        // loops — once a ChooseTarget or pay-cost option exists, the AI must
+        // pick one. The genuine-escape cases fall through to
+        // `search::fallback_action`, which emits CancelCast when the scored
+        // pool is empty.
+        GameAction::CancelCast => GateDecision::Reject,
         _ => GateDecision::Allow,
     }
 }
@@ -700,5 +710,73 @@ mod tests {
             assess_candidate(&ctx),
             GateDecision::AllowWithPenalty(-10.0)
         );
+    }
+
+    /// CR 601.2: A spell is cast the moment it's announced — the rules provide
+    /// no strategic rewind. The AI's strategic pool must reject CancelCast so
+    /// that pre-cast commitment stays coherent with targeting and payment.
+    /// (The fallback_action escape in `search.rs` still supplies CancelCast
+    /// when the scored pool is empty, covering genuine "can't complete cast"
+    /// cases like unaffordable post-cost-increase mana or all targets gone.)
+    #[test]
+    fn rejects_cancel_cast_as_strategic_candidate() {
+        let mut scenario = GameScenario::new();
+        let creature = scenario.add_creature(P1, "Elvish Mystic", 1, 1).id();
+        let unsummon = scenario
+            .add_spell_to_hand_from_oracle(
+                P0,
+                "Unsummon",
+                true,
+                "Return target creature to its owner's hand.",
+            )
+            .id();
+        let mut runner = scenario.build();
+        let state = runner.state_mut();
+        state.waiting_for = WaitingFor::TargetSelection {
+            player: P0,
+            pending_cast: Box::new(PendingCast::new(
+                unsummon,
+                state.objects.get(&unsummon).unwrap().card_id,
+                ResolvedAbility::new(
+                    Effect::Bounce {
+                        target: TargetFilter::Any,
+                        destination: None,
+                    },
+                    Vec::new(),
+                    unsummon,
+                    P0,
+                ),
+                ManaCost::zero(),
+            )),
+            target_slots: vec![TargetSelectionSlot {
+                legal_targets: vec![TargetRef::Object(creature)],
+                optional: false,
+            }],
+            selection: TargetSelectionProgress::default(),
+        };
+
+        let config = create_config(AiDifficulty::VeryHard, Platform::Wasm);
+        let decision = AiDecisionContext {
+            waiting_for: state.waiting_for.clone(),
+            candidates: Vec::new(),
+        };
+        let candidate = CandidateAction {
+            action: GameAction::CancelCast,
+            metadata: ActionMetadata {
+                actor: Some(P0),
+                tactical_class: TacticalClass::Pass,
+            },
+        };
+        let ctx = PolicyContext {
+            state,
+            decision: &decision,
+            candidate: &candidate,
+            ai_player: P0,
+            config: &config,
+            context: &AiContext::empty(&config.weights),
+            cast_facts: None,
+        };
+
+        assert_eq!(assess_candidate(&ctx), GateDecision::Reject);
     }
 }

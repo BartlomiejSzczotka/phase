@@ -44,13 +44,37 @@ pub fn choose_action(
 }
 
 /// Produce a safe action when the AI has no scored candidates.
-/// During casting-related states, cancel the cast. During combat, submit empty
-/// declarations. During active play, pass priority.
+/// During combat, submit empty declarations. During active play, pass priority.
 /// Returns None only for terminal states (GameOver) where no action is possible.
+///
+/// **Invariant:** this function must never be called in a `has_pending_cast`
+/// state. `casting::can_cast_object_now` is the single authority on castability
+/// — if it returns true, the engine guarantees the cast pipeline (targeting,
+/// mode selection, cost payment) has a valid completion path. Reaching the
+/// pending-cast branch here means that authority has a gap: the AI entered a
+/// cast it cannot complete. Fix the gate, not the recovery.
+///
+/// In release builds we still emit `CancelCast` to keep the match running, but
+/// debug builds panic so the gap surfaces during testing instead of silently
+/// degrading AI play into cast/cancel churn.
 fn fallback_action(state: &GameState) -> Option<GameAction> {
     match &state.waiting_for {
         WaitingFor::GameOver { .. } => None,
-        _ if state.waiting_for.has_pending_cast() => Some(GameAction::CancelCast),
+        _ if state.waiting_for.has_pending_cast() => {
+            debug_assert!(
+                false,
+                "AI fallback reached during pending cast ({:?}) — \
+                 can_cast_object_now has a gap that allowed an uncompletable \
+                 cast through. Tighten the pre-cast check rather than relying \
+                 on CancelCast recovery.",
+                std::mem::discriminant(&state.waiting_for)
+            );
+            tracing::error!(
+                waiting_for = ?std::mem::discriminant(&state.waiting_for),
+                "AI fallback cancelled an uncompletable cast — can_cast_object_now gap"
+            );
+            Some(GameAction::CancelCast)
+        }
         WaitingFor::DeclareAttackers { .. } => Some(GameAction::DeclareAttackers {
             attacks: Vec::new(),
         }),

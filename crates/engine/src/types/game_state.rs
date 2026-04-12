@@ -1102,26 +1102,58 @@ impl WaitingFor {
         }
     }
 
-    /// Whether this state is part of the casting flow and can be backed out of
-    /// with `CancelCast`. This is true for every state that carries a `pending_cast`.
-    pub fn has_pending_cast(&self) -> bool {
+    /// Returns a reference to the pending cast embedded in this state, if any.
+    ///
+    /// This is the single authority on which `WaitingFor` variants carry an
+    /// inline `PendingCast`. `has_pending_cast()` delegates here.
+    ///
+    /// Runtime drift detector: the `debug_assert!` in `game::derived` trips
+    /// in tests if a new variant populates `GameState::pending_cast` without
+    /// being covered here (or by the `ManaPayment` exception in
+    /// `has_pending_cast`). That is the practical safeguard — the `_ => None`
+    /// wildcard below does not compile-enforce variant coverage on its own.
+    ///
+    /// Note: `ManaPayment` is the one casting-flow variant that does NOT embed
+    /// its `PendingCast`. It reads from `GameState::pending_cast` instead so
+    /// multiplayer visibility filtering (`game::visibility`) can clear
+    /// mid-payment detail for opponents while preserving the public "spell on
+    /// the stack" view elsewhere. `has_pending_cast()` accounts for this.
+    pub fn pending_cast_ref(&self) -> Option<&PendingCast> {
         match self {
-            WaitingFor::ManaPayment { .. }
-            | WaitingFor::TargetSelection { .. }
-            | WaitingFor::ModeChoice { .. }
-            | WaitingFor::OptionalCostChoice { .. }
-            | WaitingFor::DefilerPayment { .. }
-            | WaitingFor::DiscardForCost { .. }
-            | WaitingFor::SacrificeForCost { .. }
-            | WaitingFor::TapCreaturesForSpellCost { .. }
-            | WaitingFor::TapCreaturesForManaAbility { .. }
-            | WaitingFor::ExileFromGraveyardForCost { .. }
-            | WaitingFor::HarmonizeTapChoice { .. } => true,
-            WaitingFor::CollectEvidenceChoice { resume, .. } => {
-                matches!(resume.as_ref(), CollectEvidenceResume::Casting { .. })
-            }
-            _ => false,
+            WaitingFor::ChooseXValue { pending_cast, .. }
+            | WaitingFor::TargetSelection { pending_cast, .. }
+            | WaitingFor::ModeChoice { pending_cast, .. }
+            | WaitingFor::OptionalCostChoice { pending_cast, .. }
+            | WaitingFor::DefilerPayment { pending_cast, .. }
+            | WaitingFor::DiscardForCost { pending_cast, .. }
+            | WaitingFor::SacrificeForCost { pending_cast, .. }
+            | WaitingFor::TapCreaturesForSpellCost { pending_cast, .. }
+            | WaitingFor::ExileFromGraveyardForCost { pending_cast, .. }
+            | WaitingFor::HarmonizeTapChoice { pending_cast, .. } => Some(pending_cast),
+            WaitingFor::CollectEvidenceChoice { resume, .. } => match resume.as_ref() {
+                CollectEvidenceResume::Casting { pending_cast } => Some(pending_cast),
+                CollectEvidenceResume::Effect { .. } => None,
+            },
+            _ => None,
         }
+    }
+
+    /// Whether this state is part of the casting flow and can be backed out of
+    /// with `CancelCast` (CR 601.2).
+    ///
+    /// Derived from `pending_cast_ref()` plus the single `ManaPayment`
+    /// exception (which externalizes its `PendingCast` into
+    /// `GameState::pending_cast`). Centralizing the predicate here guarantees
+    /// that every variant carrying a `PendingCast` is covered — drift between
+    /// data model and predicate is structurally prevented.
+    ///
+    /// `TapCreaturesForManaAbility` is intentionally NOT a cast state: it
+    /// carries a `PendingManaAbility`, not a `PendingCast`, and the engine
+    /// does not accept `CancelCast` during that step. A mana ability activated
+    /// inside a spell's mana payment still routes the cast via the outer
+    /// `ManaPayment` state (which is a cast state).
+    pub fn has_pending_cast(&self) -> bool {
+        self.pending_cast_ref().is_some() || matches!(self, WaitingFor::ManaPayment { .. })
     }
 }
 
@@ -2272,6 +2304,86 @@ mod tests {
             pending_cast: dummy_pending(),
         }));
         assert_eq!(variants.len(), 26);
+    }
+
+    #[test]
+    fn pending_cast_ref_is_single_source_of_truth_for_inline_variants() {
+        // CR 601.2f: Every WaitingFor variant that carries `pending_cast: Box<PendingCast>`
+        // inline must expose it via `pending_cast_ref`, which in turn drives
+        // `has_pending_cast`. This test guards the mapping for ChooseXValue (the
+        // variant whose earlier omission caused the Unsummon cast/cancel loop
+        // regression and produced the ChooseXValue-fallback latent bug). Remaining
+        // inline variants share the same match arm; the destructuring pattern
+        // makes coverage compiler-visible.
+        let pending = Box::new(PendingCast {
+            object_id: ObjectId(1),
+            card_id: CardId(1),
+            ability: ResolvedAbility::new(
+                crate::types::ability::Effect::Unimplemented {
+                    name: "Dummy".to_string(),
+                    description: None,
+                },
+                vec![],
+                ObjectId(1),
+                PlayerId(0),
+            ),
+            cost: ManaCost::NoCost,
+            activation_cost: None,
+            activation_ability_index: None,
+            target_constraints: vec![],
+            casting_variant: CastingVariant::Normal,
+            distribute: None,
+        });
+        let choose_x = WaitingFor::ChooseXValue {
+            player: PlayerId(0),
+            max: 5,
+            pending_cast: pending,
+            convoke_mode: None,
+        };
+        assert!(choose_x.pending_cast_ref().is_some());
+        assert!(choose_x.has_pending_cast());
+    }
+
+    #[test]
+    fn has_pending_cast_covers_mana_payment_exception() {
+        // ManaPayment externalizes its PendingCast into GameState::pending_cast
+        // for multiplayer visibility filtering. has_pending_cast must account
+        // for this variant even though pending_cast_ref returns None.
+        let mana_payment = WaitingFor::ManaPayment {
+            player: PlayerId(0),
+            convoke_mode: None,
+        };
+        assert!(mana_payment.pending_cast_ref().is_none());
+        assert!(mana_payment.has_pending_cast());
+    }
+
+    #[test]
+    fn has_pending_cast_excludes_non_cast_states() {
+        // Priority is never a cast state.
+        let priority = WaitingFor::Priority {
+            player: PlayerId(0),
+        };
+        assert!(!priority.has_pending_cast());
+        assert!(priority.pending_cast_ref().is_none());
+
+        // TapCreaturesForManaAbility carries PendingManaAbility, not PendingCast.
+        // A mana ability activated inside a spell cast still routes the cast
+        // through the outer ManaPayment state, so excluding this variant here
+        // does not lose mid-cast tracking.
+        let tap_mana = WaitingFor::TapCreaturesForManaAbility {
+            player: PlayerId(0),
+            count: 1,
+            creatures: vec![ObjectId(1)],
+            pending_mana_ability: Box::new(PendingManaAbility {
+                player: PlayerId(0),
+                source_id: ObjectId(1),
+                ability_index: 0,
+                color_override: None,
+                resume: ManaAbilityResume::Priority,
+            }),
+        };
+        assert!(!tap_mana.has_pending_cast());
+        assert!(tap_mana.pending_cast_ref().is_none());
     }
 
     #[test]
