@@ -10,6 +10,7 @@ pub(crate) mod effect_classify;
 mod effect_timing;
 mod etb_value;
 mod evasion_removal_priority;
+mod free_outlet_activation;
 pub(crate) mod hand_disruption;
 mod hold_mana_up;
 mod interaction_reservation;

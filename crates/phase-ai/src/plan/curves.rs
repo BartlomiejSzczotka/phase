@@ -48,6 +48,11 @@ fn tempo_class_for(features: &DeckFeatures) -> TempoClass {
     if features.control.commitment > 0.55 && features.control.reactive_tempo > 0.35 {
         return TempoClass::Control;
     }
+    // Aristocrats decks play grindy midrange — they win by attrition through
+    // sacrifice loops, not burst tempo or curve aggression.
+    if features.aristocrats.commitment > 0.5 {
+        return TempoClass::Midrange;
+    }
     match features.archetype {
         DeckArchetype::Aggro => TempoClass::Aggro,
         DeckArchetype::Control => TempoClass::Control,
@@ -350,6 +355,28 @@ mod tests {
             snapshot.tempo_class,
             TempoClass::Ramp,
             "ramp+tribal hybrid should read as Ramp"
+        );
+    }
+
+    #[test]
+    fn high_aristocrats_commitment_picks_midrange_tempo() {
+        let features = DeckFeatures {
+            aristocrats: crate::features::aristocrats::AristocratsFeature {
+                outlet_count: 3,
+                free_outlet_count: 3,
+                death_trigger_count: 3,
+                fodder_source_count: 5,
+                commitment: 0.9,
+                outlet_names: vec!["Outlet A".to_string()],
+                death_trigger_names: vec!["Trigger A".to_string()],
+            },
+            ..Default::default()
+        };
+        let snapshot = derive_snapshot(&features);
+        assert_eq!(
+            snapshot.tempo_class,
+            TempoClass::Midrange,
+            "high-commitment aristocrats deck should pick Midrange tempo"
         );
     }
 

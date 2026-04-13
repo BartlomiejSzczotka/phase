@@ -9,6 +9,7 @@ use super::copy_value::CopyValuePolicy;
 use super::effect_timing::EffectTimingPolicy;
 use super::etb_value::EtbValuePolicy;
 use super::evasion_removal_priority::EvasionRemovalPriorityPolicy;
+use super::free_outlet_activation::FreeOutletActivationPolicy;
 use super::hand_disruption::HandDisruptionPolicy;
 use super::hold_mana_up::HoldManaUpForInteractionPolicy;
 use super::interaction_reservation::InteractionReservationPolicy;
@@ -63,6 +64,8 @@ pub enum PolicyId {
     TribalDensityMulligan,
     HoldManaUpForInteraction,
     SweeperTiming,
+    FreeOutletActivation,
+    AristocratsKeepablesMulligan,
 }
 
 /// Coarse routing kind for a candidate decision. Each policy declares which
@@ -175,6 +178,7 @@ impl Default for PolicyRegistry {
             Box::new(TribalLordPriorityPolicy),
             Box::new(HoldManaUpForInteractionPolicy),
             Box::new(SweeperTimingPolicy),
+            Box::new(FreeOutletActivationPolicy),
         ];
         let mut by_kind: HashMap<DecisionKind, Vec<usize>> = HashMap::new();
         for (idx, policy) in policies.iter().enumerate() {

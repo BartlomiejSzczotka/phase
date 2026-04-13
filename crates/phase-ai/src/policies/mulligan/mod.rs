@@ -28,11 +28,13 @@ use crate::features::DeckFeatures;
 use crate::plan::PlanSnapshot;
 use crate::policies::registry::{PolicyId, PolicyReason};
 
+pub mod aristocrats_keepables;
 pub mod keepables_by_land_count;
 pub mod landfall_keepables;
 pub mod ramp_keepables;
 pub mod tribal_density;
 
+pub use aristocrats_keepables::AristocratsKeepablesMulligan;
 pub use keepables_by_land_count::KeepablesByLandCount;
 pub use landfall_keepables::LandfallKeepablesMulligan;
 pub use ramp_keepables::RampKeepablesMulligan;
@@ -95,6 +97,7 @@ impl Default for MulliganRegistry {
                 Box::new(LandfallKeepablesMulligan),
                 Box::new(RampKeepablesMulligan),
                 Box::new(TribalDensityMulligan),
+                Box::new(AristocratsKeepablesMulligan),
             ],
         }
     }
