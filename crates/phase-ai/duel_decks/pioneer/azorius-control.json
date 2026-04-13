@@ -1,0 +1,116 @@
+{
+  "name": "Azorius Control",
+  "format": "pioneer",
+  "frozen_date": "2026-04-13",
+  "source": "https://www.mtggoldfish.com/metagame/pioneer",
+  "main": [
+    {
+      "name": "Island",
+      "count": 2
+    },
+    {
+      "name": "Plains",
+      "count": 2
+    },
+    {
+      "name": "Supreme Verdict",
+      "count": 2
+    },
+    {
+      "name": "Hallowed Fountain",
+      "count": 4
+    },
+    {
+      "name": "Field of Ruin",
+      "count": 2
+    },
+    {
+      "name": "Dovin's Veto",
+      "count": 1
+    },
+    {
+      "name": "Hall of Storm Giants",
+      "count": 1
+    },
+    {
+      "name": "Teferi, Hero of Dominaria",
+      "count": 2
+    },
+    {
+      "name": "Deserted Beach",
+      "count": 3
+    },
+    {
+      "name": "Farewell",
+      "count": 1
+    },
+    {
+      "name": "March of Otherworldly Light",
+      "count": 4
+    },
+    {
+      "name": "The Wandering Emperor",
+      "count": 3
+    },
+    {
+      "name": "Eiganjo, Seat of the Empire",
+      "count": 1
+    },
+    {
+      "name": "Otawara, Soaring City",
+      "count": 1
+    },
+    {
+      "name": "Temporary Lockdown",
+      "count": 3
+    },
+    {
+      "name": "Change the Equation",
+      "count": 1
+    },
+    {
+      "name": "Restless Anchorage",
+      "count": 2
+    },
+    {
+      "name": "Get Lost",
+      "count": 3
+    },
+    {
+      "name": "No More Lies",
+      "count": 4
+    },
+    {
+      "name": "Meticulous Archive",
+      "count": 2
+    },
+    {
+      "name": "Three Steps Ahead",
+      "count": 1
+    },
+    {
+      "name": "Fountainport",
+      "count": 2
+    },
+    {
+      "name": "Beza, the Bounding Spring",
+      "count": 2
+    },
+    {
+      "name": "Floodfarm Verge",
+      "count": 4
+    },
+    {
+      "name": "Stock Up",
+      "count": 2
+    },
+    {
+      "name": "Elspeth, Storm Slayer",
+      "count": 1
+    },
+    {
+      "name": "Consult the Star Charts",
+      "count": 4
+    }
+  ]
+}

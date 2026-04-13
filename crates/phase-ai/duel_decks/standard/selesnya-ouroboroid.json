@@ -1,0 +1,100 @@
+{
+  "name": "Selesnya Ouroboroid",
+  "format": "standard",
+  "frozen_date": "2026-04-13",
+  "source": "https://www.mtggoldfish.com/metagame/standard",
+  "main": [
+    {
+      "name": "Abandoned Air Temple",
+      "count": 3
+    },
+    {
+      "name": "Hushwood Verge",
+      "count": 2
+    },
+    {
+      "name": "Badgermole Cub",
+      "count": 4
+    },
+    {
+      "name": "Hushwood Verge",
+      "count": 2
+    },
+    {
+      "name": "Gene Pollinator",
+      "count": 4
+    },
+    {
+      "name": "Insidious Fungus",
+      "count": 1
+    },
+    {
+      "name": "Spider Manifestation",
+      "count": 4
+    },
+    {
+      "name": "Llanowar Elves",
+      "count": 1
+    },
+    {
+      "name": "Meltstrider's Resolve",
+      "count": 1
+    },
+    {
+      "name": "Multiversal Passage",
+      "count": 2
+    },
+    {
+      "name": "Forest",
+      "count": 8
+    },
+    {
+      "name": "Nurturing Pixie",
+      "count": 1
+    },
+    {
+      "name": "Ouroboroid",
+      "count": 4
+    },
+    {
+      "name": "Craterhoof Behemoth",
+      "count": 1
+    },
+    {
+      "name": "Brightglass Gearhulk",
+      "count": 4
+    },
+    {
+      "name": "Archdruid's Charm",
+      "count": 2
+    },
+    {
+      "name": "Llanowar Elves",
+      "count": 2
+    },
+    {
+      "name": "Llanowar Elves",
+      "count": 1
+    },
+    {
+      "name": "Nature's Rhythm",
+      "count": 4
+    },
+    {
+      "name": "Plains",
+      "count": 2
+    },
+    {
+      "name": "Seam Rip",
+      "count": 2
+    },
+    {
+      "name": "Soul-Guide Lantern",
+      "count": 1
+    },
+    {
+      "name": "Temple Garden",
+      "count": 4
+    }
+  ]
+}

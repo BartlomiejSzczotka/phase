@@ -1,0 +1,208 @@
+{
+  "name": "Niv to Light",
+  "format": "pioneer",
+  "frozen_date": "2026-04-13",
+  "source": "https://www.mtggoldfish.com/metagame/pioneer",
+  "main": [
+    {
+      "name": "Watery Grave",
+      "count": 1
+    },
+    {
+      "name": "Temple Garden",
+      "count": 1
+    },
+    {
+      "name": "Sylvan Caryatid",
+      "count": 4
+    },
+    {
+      "name": "Swamp",
+      "count": 1
+    },
+    {
+      "name": "Supreme Verdict",
+      "count": 1
+    },
+    {
+      "name": "Bring to Light",
+      "count": 4
+    },
+    {
+      "name": "Culling Ritual",
+      "count": 1
+    },
+    {
+      "name": "Deafening Clarion",
+      "count": 1
+    },
+    {
+      "name": "Sunbillow Verge",
+      "count": 1
+    },
+    {
+      "name": "Fable of the Mirror-Breaker",
+      "count": 2
+    },
+    {
+      "name": "Stomping Ground",
+      "count": 1
+    },
+    {
+      "name": "Sacred Foundry",
+      "count": 1
+    },
+    {
+      "name": "Plains",
+      "count": 1
+    },
+    {
+      "name": "Hushwood Verge",
+      "count": 2
+    },
+    {
+      "name": "Indatha Triome",
+      "count": 1
+    },
+    {
+      "name": "Pest Control",
+      "count": 1
+    },
+    {
+      "name": "Jetmir's Garden",
+      "count": 2
+    },
+    {
+      "name": "Ketria Triome",
+      "count": 2
+    },
+    {
+      "name": "Knight of Autumn",
+      "count": 1
+    },
+    {
+      "name": "Kolaghan's Command",
+      "count": 1
+    },
+    {
+      "name": "Breeding Pool",
+      "count": 2
+    },
+    {
+      "name": "Overgrown Tomb",
+      "count": 1
+    },
+    {
+      "name": "Mountain",
+      "count": 1
+    },
+    {
+      "name": "Maelstrom Pulse",
+      "count": 1
+    },
+    {
+      "name": "Niv-Mizzet Reborn",
+      "count": 2
+    },
+    {
+      "name": "Niv-Mizzet, Supreme",
+      "count": 1
+    },
+    {
+      "name": "Omnath, Locus of Creation",
+      "count": 3
+    },
+    {
+      "name": "Island",
+      "count": 1
+    },
+    {
+      "name": "Pillage the Bog",
+      "count": 1
+    },
+    {
+      "name": "Forest",
+      "count": 1
+    },
+    {
+      "name": "Raugrin Triome",
+      "count": 1
+    },
+    {
+      "name": "Floodfarm Verge",
+      "count": 1
+    },
+    {
+      "name": "Spara's Headquarters",
+      "count": 1
+    },
+    {
+      "name": "Fabled Passage",
+      "count": 4
+    },
+    {
+      "name": "Elesh Norn, Mother of Machines",
+      "count": 1
+    },
+    {
+      "name": "Ancient Cornucopia",
+      "count": 3
+    },
+    {
+      "name": "Blood Crypt",
+      "count": 1
+    },
+    {
+      "name": "Bleachbone Verge",
+      "count": 1
+    },
+    {
+      "name": "Tolsimir, Friend to Wolves",
+      "count": 1
+    },
+    {
+      "name": "Up the Beanstalk",
+      "count": 4
+    },
+    {
+      "name": "Valki, God of Lies",
+      "count": 1
+    },
+    {
+      "name": "Vanishing Verse",
+      "count": 2
+    },
+    {
+      "name": "Wandering Mind",
+      "count": 1
+    },
+    {
+      "name": "Wastewood Verge",
+      "count": 1
+    },
+    {
+      "name": "Abrupt Decay",
+      "count": 1
+    },
+    {
+      "name": "Xander's Lounge",
+      "count": 2
+    },
+    {
+      "name": "Zagoth Triome",
+      "count": 2
+    },
+    {
+      "name": "Ziatora's Proving Ground",
+      "count": 1
+    },
+    {
+      "name": "Lightning Helix",
+      "count": 3
+    },
+    {
+      "name": "Leyline Binding",
+      "count": 4
+    }
+  ]
+}

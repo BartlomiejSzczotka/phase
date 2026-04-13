@@ -1,0 +1,72 @@
+{
+  "name": "Mono-Red Prowess",
+  "format": "pioneer",
+  "frozen_date": "2026-04-13",
+  "source": "https://www.mtggoldfish.com/metagame/pioneer",
+  "main": [
+    {
+      "name": "Abrade",
+      "count": 1
+    },
+    {
+      "name": "Sunspine Lynx",
+      "count": 3
+    },
+    {
+      "name": "Den of the Bugbear",
+      "count": 2
+    },
+    {
+      "name": "Emberheart Challenger",
+      "count": 4
+    },
+    {
+      "name": "Kumano Faces Kakkazan",
+      "count": 4
+    },
+    {
+      "name": "Lightning Strike",
+      "count": 2
+    },
+    {
+      "name": "Monstrous Rage",
+      "count": 4
+    },
+    {
+      "name": "Burst Lightning",
+      "count": 4
+    },
+    {
+      "name": "Ramunap Ruins",
+      "count": 3
+    },
+    {
+      "name": "Reckless Rage",
+      "count": 4
+    },
+    {
+      "name": "Rockface Village",
+      "count": 2
+    },
+    {
+      "name": "Screaming Nemesis",
+      "count": 4
+    },
+    {
+      "name": "Sokenzan, Crucible of Defiance",
+      "count": 1
+    },
+    {
+      "name": "Soul-Scar Mage",
+      "count": 4
+    },
+    {
+      "name": "Monastery Swiftspear",
+      "count": 4
+    },
+    {
+      "name": "Mountain",
+      "count": 14
+    }
+  ]
+}

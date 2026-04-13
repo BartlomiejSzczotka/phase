@@ -1,0 +1,84 @@
+{
+  "name": "Boros Energy",
+  "format": "modern",
+  "frozen_date": "2026-04-13",
+  "source": "https://www.mtggoldfish.com/metagame/modern",
+  "main": [
+    {
+      "name": "Ajani, Nacatl Pariah",
+      "count": 4
+    },
+    {
+      "name": "Elegant Parlor",
+      "count": 3
+    },
+    {
+      "name": "Flooded Strand",
+      "count": 4
+    },
+    {
+      "name": "Seasoned Pyromancer",
+      "count": 4
+    },
+    {
+      "name": "Arid Mesa",
+      "count": 4
+    },
+    {
+      "name": "Arena of Glory",
+      "count": 3
+    },
+    {
+      "name": "Thraben Charm",
+      "count": 3
+    },
+    {
+      "name": "Blood Moon",
+      "count": 1
+    },
+    {
+      "name": "Guide of Souls",
+      "count": 4
+    },
+    {
+      "name": "Mountain",
+      "count": 1
+    },
+    {
+      "name": "Galvanic Discharge",
+      "count": 4
+    },
+    {
+      "name": "Ragavan, Nimble Pilferer",
+      "count": 4
+    },
+    {
+      "name": "Goblin Bombardment",
+      "count": 3
+    },
+    {
+      "name": "Sacred Foundry",
+      "count": 2
+    },
+    {
+      "name": "The Legend of Roku",
+      "count": 2
+    },
+    {
+      "name": "Ocelot Pride",
+      "count": 4
+    },
+    {
+      "name": "Phlage, Titan of Fire's Fury",
+      "count": 4
+    },
+    {
+      "name": "Plains",
+      "count": 2
+    },
+    {
+      "name": "Marsh Flats",
+      "count": 4
+    }
+  ]
+}

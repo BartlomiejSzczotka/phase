@@ -1,0 +1,100 @@
+{
+  "name": "Orzhov Greasefang",
+  "format": "pioneer",
+  "frozen_date": "2026-04-13",
+  "source": "https://www.mtggoldfish.com/metagame/pioneer",
+  "main": [
+    {
+      "name": "Concealed Courtyard",
+      "count": 4
+    },
+    {
+      "name": "Brightclimb Pathway",
+      "count": 2
+    },
+    {
+      "name": "Cling to Dust",
+      "count": 1
+    },
+    {
+      "name": "Godless Shrine",
+      "count": 4
+    },
+    {
+      "name": "Eiganjo, Seat of the Empire",
+      "count": 1
+    },
+    {
+      "name": "Fatal Push",
+      "count": 4
+    },
+    {
+      "name": "Fleeting Spirit",
+      "count": 4
+    },
+    {
+      "name": "Geier Reach Sanitarium",
+      "count": 1
+    },
+    {
+      "name": "The Mycosynth Gardens",
+      "count": 4
+    },
+    {
+      "name": "Greasefang, Okiba Boss",
+      "count": 4
+    },
+    {
+      "name": "Guardian of New Benalia",
+      "count": 3
+    },
+    {
+      "name": "Iron-Shield Elf",
+      "count": 4
+    },
+    {
+      "name": "Lively Dirge",
+      "count": 1
+    },
+    {
+      "name": "Monument to Endurance",
+      "count": 4
+    },
+    {
+      "name": "Parhelion II",
+      "count": 4
+    },
+    {
+      "name": "Plains",
+      "count": 1
+    },
+    {
+      "name": "Shadowy Backstreet",
+      "count": 2
+    },
+    {
+      "name": "Swamp",
+      "count": 1
+    },
+    {
+      "name": "Takenuma, Abandoned Mire",
+      "count": 1
+    },
+    {
+      "name": "Thoughtseize",
+      "count": 4
+    },
+    {
+      "name": "Urborg, Tomb of Yawgmoth",
+      "count": 1
+    },
+    {
+      "name": "Vanishing Verse",
+      "count": 3
+    },
+    {
+      "name": "Bleachbone Verge",
+      "count": 2
+    }
+  ]
+}

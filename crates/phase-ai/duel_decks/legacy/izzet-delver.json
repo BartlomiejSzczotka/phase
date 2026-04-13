@@ -1,0 +1,96 @@
+{
+  "name": "Izzet Delver",
+  "format": "legacy",
+  "frozen_date": "2026-04-13",
+  "source": "https://www.mtggoldfish.com/metagame/legacy",
+  "main": [
+    {
+      "name": "Wasteland",
+      "count": 4
+    },
+    {
+      "name": "Brazen Borrower",
+      "count": 1
+    },
+    {
+      "name": "Cori-Steel Cutter",
+      "count": 3
+    },
+    {
+      "name": "Volcanic Island",
+      "count": 4
+    },
+    {
+      "name": "Unholy Heat",
+      "count": 1
+    },
+    {
+      "name": "Spell Pierce",
+      "count": 1
+    },
+    {
+      "name": "Scalding Tarn",
+      "count": 2
+    },
+    {
+      "name": "Preordain",
+      "count": 1
+    },
+    {
+      "name": "Ponder",
+      "count": 4
+    },
+    {
+      "name": "Polluted Delta",
+      "count": 2
+    },
+    {
+      "name": "Misty Rainforest",
+      "count": 2
+    },
+    {
+      "name": "Mishra's Bauble",
+      "count": 4
+    },
+    {
+      "name": "Murktide Regent",
+      "count": 2
+    },
+    {
+      "name": "Lightning Bolt",
+      "count": 4
+    },
+    {
+      "name": "Island",
+      "count": 1
+    },
+    {
+      "name": "Force of Will",
+      "count": 4
+    },
+    {
+      "name": "Flooded Strand",
+      "count": 3
+    },
+    {
+      "name": "Dragon's Rage Channeler",
+      "count": 4
+    },
+    {
+      "name": "Thundering Falls",
+      "count": 1
+    },
+    {
+      "name": "Delver of Secrets",
+      "count": 4
+    },
+    {
+      "name": "Daze",
+      "count": 4
+    },
+    {
+      "name": "Brainstorm",
+      "count": 4
+    }
+  ]
+}

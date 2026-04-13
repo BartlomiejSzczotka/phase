@@ -9,6 +9,7 @@ pub mod context;
 pub mod decision_kind;
 pub mod deck_knowledge;
 pub mod deck_profile;
+pub mod duel_suite;
 pub mod eval;
 pub mod features;
 pub mod plan;

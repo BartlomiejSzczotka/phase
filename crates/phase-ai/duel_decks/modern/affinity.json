@@ -1,0 +1,100 @@
+{
+  "name": "Affinity",
+  "format": "modern",
+  "frozen_date": "2026-04-13",
+  "source": "https://www.mtggoldfish.com/metagame/modern",
+  "main": [
+    {
+      "name": "Fiery Islet",
+      "count": 4
+    },
+    {
+      "name": "Arcbound Ravager",
+      "count": 2
+    },
+    {
+      "name": "Krang, Master Mind",
+      "count": 2
+    },
+    {
+      "name": "Island",
+      "count": 1
+    },
+    {
+      "name": "Pithing Needle",
+      "count": 1
+    },
+    {
+      "name": "Engineered Explosives",
+      "count": 4
+    },
+    {
+      "name": "Kappa Cannoneer",
+      "count": 4
+    },
+    {
+      "name": "Skateboard",
+      "count": 1
+    },
+    {
+      "name": "Mox Opal",
+      "count": 4
+    },
+    {
+      "name": "Shadowspear",
+      "count": 1
+    },
+    {
+      "name": "Welding Jar",
+      "count": 1
+    },
+    {
+      "name": "Shivan Reef",
+      "count": 1
+    },
+    {
+      "name": "Mishra's Bauble",
+      "count": 4
+    },
+    {
+      "name": "Pinnacle Emissary",
+      "count": 4
+    },
+    {
+      "name": "Sink into Stupor",
+      "count": 2
+    },
+    {
+      "name": "Tormod's Crypt",
+      "count": 3
+    },
+    {
+      "name": "Weapons Manufacturing",
+      "count": 4
+    },
+    {
+      "name": "Emry, Lurker of the Loch",
+      "count": 2
+    },
+    {
+      "name": "Spirebluff Canal",
+      "count": 4
+    },
+    {
+      "name": "Steam Vents",
+      "count": 1
+    },
+    {
+      "name": "Metallic Rebuke",
+      "count": 3
+    },
+    {
+      "name": "Urza's Saga",
+      "count": 4
+    },
+    {
+      "name": "Claws of Gix",
+      "count": 3
+    }
+  ]
+}
