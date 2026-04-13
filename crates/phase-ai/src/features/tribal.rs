@@ -86,10 +86,6 @@ pub struct TribalFeature {
     pub tribes: Vec<TribeEntry>,
     /// Commitment of the dominant tribe (`0.0` when there is none).
     pub commitment: f32,
-    /// Names of cards that contributed a lord/ETB-payoff/cost-reducer/token-gen
-    /// count for the dominant tribe. Used as battlefield identifiers in policies —
-    /// not for structural classification.
-    pub payoff_names: Vec<String>,
 }
 
 /// Structural detection — two-pass walk over every `DeckEntry`.
@@ -137,54 +133,23 @@ pub fn detect(deck: &[DeckEntry]) -> TribalFeature {
     }
 
     // ---- Pass 2: payoff census ----
-    // Collect payoff names per tribe for the dominant tribe selection step.
-    let mut tribe_payoff_names: BTreeMap<String, Vec<String>> = BTreeMap::new();
-
+    // Single-traversal: borrow each `TribeEntry` mutably and check every face
+    // against every tribe in one walk. Avoids the prior O(entries × tribes)
+    // key-clone allocation and the get_mut+Index double-lookup pattern.
     for entry in deck {
         let face = &entry.card;
-
-        for tribe_key in tribe_map.keys().cloned().collect::<Vec<_>>() {
-            // Lord detection: static with affected-tribe filter and a boosting modification.
-            if is_lord(face, &tribe_key) {
-                tribe_map.get_mut(&tribe_key).unwrap().lord_count =
-                    tribe_map[&tribe_key].lord_count.saturating_add(entry.count);
-                tribe_payoff_names
-                    .entry(tribe_key.clone())
-                    .or_default()
-                    .push(face.name.clone());
+        for (tribe_key, te) in tribe_map.iter_mut() {
+            if is_lord(face, tribe_key) {
+                te.lord_count = te.lord_count.saturating_add(entry.count);
             }
-
-            // ETB payoff: trigger fires when a tribe member enters the battlefield.
-            if is_etb_payoff(face, &tribe_key) {
-                tribe_map.get_mut(&tribe_key).unwrap().etb_payoff_count = tribe_map[&tribe_key]
-                    .etb_payoff_count
-                    .saturating_add(entry.count);
-                tribe_payoff_names
-                    .entry(tribe_key.clone())
-                    .or_default()
-                    .push(face.name.clone());
+            if is_etb_payoff(face, tribe_key) {
+                te.etb_payoff_count = te.etb_payoff_count.saturating_add(entry.count);
             }
-
-            // Cost reducer: reduces the cost of tribal spells.
-            if is_cost_reducer(face, &tribe_key) {
-                tribe_map.get_mut(&tribe_key).unwrap().cost_reducer_count = tribe_map[&tribe_key]
-                    .cost_reducer_count
-                    .saturating_add(entry.count);
-                tribe_payoff_names
-                    .entry(tribe_key.clone())
-                    .or_default()
-                    .push(face.name.clone());
+            if is_cost_reducer(face, tribe_key) {
+                te.cost_reducer_count = te.cost_reducer_count.saturating_add(entry.count);
             }
-
-            // Token generator: produces tokens of this subtype.
-            if is_token_generator(face, &tribe_key) {
-                tribe_map.get_mut(&tribe_key).unwrap().token_gen_count = tribe_map[&tribe_key]
-                    .token_gen_count
-                    .saturating_add(entry.count);
-                tribe_payoff_names
-                    .entry(tribe_key.clone())
-                    .or_default()
-                    .push(face.name.clone());
+            if is_token_generator(face, tribe_key) {
+                te.token_gen_count = te.token_gen_count.saturating_add(entry.count);
             }
         }
     }
@@ -226,27 +191,12 @@ pub fn detect(deck: &[DeckEntry]) -> TribalFeature {
         }
     });
 
-    // Payoff names: stable-ordered union of payoff names for the dominant tribe.
-    let payoff_names = dominant_tribe
-        .as_deref()
-        .and_then(|tribe| tribe_payoff_names.get(tribe))
-        .map(|names| {
-            let mut seen = std::collections::HashSet::new();
-            names
-                .iter()
-                .filter(|n| seen.insert(n.as_str()))
-                .cloned()
-                .collect()
-        })
-        .unwrap_or_default();
-
     sorted.truncate(MAX_TRIBES);
 
     TribalFeature {
         dominant_tribe,
         tribes: sorted,
         commitment,
-        payoff_names,
     }
 }
 
@@ -274,7 +224,7 @@ fn is_changeling(face: &CardFace) -> bool {
 /// 2. `modifications` contains at least one lord-class modification.
 ///
 /// CR 613.4c: P/T anthems apply in layer 7c.
-/// CR 604.1: Ability-granting statics apply in layer 6.
+/// CR 613.1f: Ability-adding effects apply in layer 6.
 pub(crate) fn is_lord(face: &CardFace, tribe: &str) -> bool {
     statics_are_lord_for(&face.static_abilities, tribe)
 }
@@ -494,7 +444,6 @@ mod tests {
         assert!(feature.dominant_tribe.is_none());
         assert!(feature.tribes.is_empty());
         assert_eq!(feature.commitment, 0.0);
-        assert!(feature.payoff_names.is_empty());
     }
 
     #[test]

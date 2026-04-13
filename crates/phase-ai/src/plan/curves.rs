@@ -266,7 +266,6 @@ mod tests {
                 dominant_tribe: Some("Elf".to_string()),
                 commitment: 0.7,
                 tribes: Vec::new(),
-                payoff_names: Vec::new(),
             },
             ..Default::default()
         };
@@ -306,7 +305,6 @@ mod tests {
                 dominant_tribe: Some("Goblin".to_string()),
                 commitment: 0.8,
                 tribes: Vec::new(),
-                payoff_names: Vec::new(),
             },
             ..Default::default()
         };
@@ -322,7 +320,6 @@ mod tests {
                 dominant_tribe: Some("Elf".to_string()),
                 commitment: 0.8,
                 tribes: Vec::new(),
-                payoff_names: Vec::new(),
             },
             mana_ramp: ManaRampFeature {
                 dork_count: 8,

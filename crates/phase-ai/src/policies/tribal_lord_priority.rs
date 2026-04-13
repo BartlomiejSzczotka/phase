@@ -196,7 +196,6 @@ mod tests {
                 dominant_tribe: Some(dominant.to_string()),
                 commitment,
                 tribes: Vec::new(),
-                payoff_names: Vec::new(),
             },
             ..Default::default()
         }
