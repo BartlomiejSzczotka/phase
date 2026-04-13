@@ -10,6 +10,7 @@ use super::effect_timing::EffectTimingPolicy;
 use super::etb_value::EtbValuePolicy;
 use super::evasion_removal_priority::EvasionRemovalPriorityPolicy;
 use super::hand_disruption::HandDisruptionPolicy;
+use super::hold_mana_up::HoldManaUpForInteractionPolicy;
 use super::interaction_reservation::InteractionReservationPolicy;
 use super::landfall_timing::LandfallTimingPolicy;
 use super::lethality_awareness::LethalityAwarenessPolicy;
@@ -17,6 +18,7 @@ use super::life_total_resource::LifeTotalResourcePolicy;
 use super::ramp_timing::RampTimingPolicy;
 use super::recursion_awareness::RecursionAwarenessPolicy;
 use super::sacrifice_value::SacrificeValuePolicy;
+use super::sweeper_timing::SweeperTimingPolicy;
 use super::tribal_lord_priority::TribalLordPriorityPolicy;
 use super::tutor::TutorPolicy;
 use crate::cast_facts::cast_facts_for_action;
@@ -59,6 +61,8 @@ pub enum PolicyId {
     RampKeepablesMulligan,
     TribalLordPriority,
     TribalDensityMulligan,
+    HoldManaUpForInteraction,
+    SweeperTiming,
 }
 
 /// Coarse routing kind for a candidate decision. Each policy declares which
@@ -169,6 +173,8 @@ impl Default for PolicyRegistry {
             Box::new(LandfallTimingPolicy),
             Box::new(RampTimingPolicy),
             Box::new(TribalLordPriorityPolicy),
+            Box::new(HoldManaUpForInteractionPolicy),
+            Box::new(SweeperTimingPolicy),
         ];
         let mut by_kind: HashMap<DecisionKind, Vec<usize>> = HashMap::new();
         for (idx, policy) in policies.iter().enumerate() {

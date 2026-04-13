@@ -42,6 +42,12 @@ fn tempo_class_for(features: &DeckFeatures) -> TempoClass {
     if features.tribal.commitment > 0.55 {
         return TempoClass::Aggro;
     }
+    // A control deck with high commitment AND meaningful reactive_tempo reads
+    // as Control. Placed after ramp and tribal so ramp+control hybrids read as
+    // Ramp and tribal+control hybrids read as Aggro (both have higher priority).
+    if features.control.commitment > 0.55 && features.control.reactive_tempo > 0.35 {
+        return TempoClass::Control;
+    }
     match features.archetype {
         DeckArchetype::Aggro => TempoClass::Aggro,
         DeckArchetype::Control => TempoClass::Control,
@@ -122,6 +128,17 @@ fn expected_threats_for(features: &DeckFeatures) -> [u8; SCHEDULE_LEN] {
             let turn = turn_idx + 1;
             if (2..=4).contains(&turn) {
                 *slot = slot.saturating_add(1);
+            }
+        }
+    }
+    // Control decks with high commitment delay threats — they spend early turns
+    // deploying interaction, not permanents. Subtract 1 from turns 3 and 4
+    // to reflect that control's threat deployment is back-loaded.
+    if features.control.commitment > 0.55 {
+        for (turn_idx, slot) in threats.iter_mut().enumerate() {
+            let turn = turn_idx + 1;
+            if turn == 3 || turn == 4 {
+                *slot = slot.saturating_sub(1);
             }
         }
     }
@@ -333,6 +350,57 @@ mod tests {
             snapshot.tempo_class,
             TempoClass::Ramp,
             "ramp+tribal hybrid should read as Ramp"
+        );
+    }
+
+    #[test]
+    fn high_control_commitment_picks_control_tempo() {
+        let features = DeckFeatures {
+            control: crate::features::control::ControlFeature {
+                counterspell_count: 4,
+                spot_removal_count: 6,
+                commitment: 0.9,
+                reactive_tempo: 0.7,
+                instant_count: 10,
+                reactive_instant_ratio: 0.5,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let snapshot = derive_snapshot(&features);
+        assert_eq!(
+            snapshot.tempo_class,
+            TempoClass::Control,
+            "high-commitment control deck should pick Control tempo"
+        );
+    }
+
+    #[test]
+    fn control_commitment_delays_threats() {
+        let baseline = derive_snapshot(&DeckFeatures::default());
+
+        let features = DeckFeatures {
+            control: crate::features::control::ControlFeature {
+                counterspell_count: 4,
+                spot_removal_count: 6,
+                commitment: 0.9,
+                reactive_tempo: 0.7,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let control_snapshot = derive_snapshot(&features);
+
+        // Turns 3 and 4 (indices 2 and 3) should be reduced by 1.
+        assert!(
+            control_snapshot.expected_threats[2] < baseline.expected_threats[2]
+                || control_snapshot.expected_threats[2] == 0,
+            "turn 3 threats should be delayed by control commitment"
+        );
+        assert!(
+            control_snapshot.expected_threats[3] < baseline.expected_threats[3]
+                || control_snapshot.expected_threats[3] == 0,
+            "turn 4 threats should be delayed by control commitment"
         );
     }
 }
