@@ -279,6 +279,18 @@ pub struct PendingCast {
     /// resource (damage, counters, life) among the chosen targets via DistributeAmong.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distribute: Option<DistributionUnit>,
+    /// CR 601.2a + CR 601.2i: Zone the spell was in before announcement. The spell
+    /// moves to the stack at announcement time; if the cast is aborted at any step
+    /// (modal/target/cost), the object is returned to this zone and all choices
+    /// are reversed. Defaults to `Zone::Hand` — the common case — so legacy
+    /// `PendingCast::new` callers (mana abilities, activated abilities) don't
+    /// need updating.
+    #[serde(default = "default_origin_zone")]
+    pub origin_zone: Zone,
+}
+
+fn default_origin_zone() -> Zone {
+    Zone::Hand
 }
 
 impl PendingCast {
@@ -298,6 +310,7 @@ impl PendingCast {
             target_constraints: Vec::new(),
             casting_variant: CastingVariant::Normal,
             distribute: None,
+            origin_zone: Zone::Hand,
         }
     }
 }
@@ -2119,6 +2132,7 @@ mod tests {
                 target_constraints: vec![],
                 casting_variant: CastingVariant::Normal,
                 distribute: None,
+                origin_zone: Zone::Hand,
             })
         }
 
@@ -2333,6 +2347,7 @@ mod tests {
             target_constraints: vec![],
             casting_variant: CastingVariant::Normal,
             distribute: None,
+            origin_zone: Zone::Hand,
         });
         let choose_x = WaitingFor::ChooseXValue {
             player: PlayerId(0),

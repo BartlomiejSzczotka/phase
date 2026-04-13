@@ -4,10 +4,44 @@ import { AnimatePresence, motion } from "framer-motion";
 import { StackEntry } from "./StackEntry.tsx";
 import { StackTargetArcs } from "./StackTargetArcs.tsx";
 import { useGameStore } from "../../stores/gameStore.ts";
-import type { ObjectId, StackEntry as StackEntryType } from "../../adapter/types.ts";
+import type { ObjectId, StackEntry as StackEntryType, WaitingFor } from "../../adapter/types.ts";
 import { getStackCardSize } from "../board/boardSizing.ts";
 
 const EMPTY_STACK: StackEntryType[] = [];
+
+// CR 601.2a + CR 601.2b-f: Post-announcement, the spell sits on the engine's
+// stack while modes/targets/costs are chosen. This helper identifies the
+// ObjectId of the cast currently in that pre-finalization window so the UI can
+// render the "Casting…" badge on it.
+//
+// Most mid-cast WaitingFor variants carry the PendingCast inline (including
+// ChooseXValue) — read the object_id directly. `ManaPayment` is the one
+// variant where the engine keeps the PendingCast on outer GameState; in that
+// case the topmost stack entry is always the current cast by engine invariant
+// (no other stack push/pop can interleave within a single cast).
+function getPendingCastObjectId(
+  waitingFor: WaitingFor | null | undefined,
+  topOfStackId: ObjectId | null,
+): ObjectId | null {
+  if (!waitingFor) return null;
+  switch (waitingFor.type) {
+    case "TargetSelection":
+    case "ModeChoice":
+    case "OptionalCostChoice":
+    case "DefilerPayment":
+    case "DiscardForCost":
+    case "SacrificeForCost":
+    case "TapCreaturesForSpellCost":
+    case "ExileFromGraveyardForCost":
+    case "HarmonizeTapChoice":
+    case "ChooseXValue":
+      return waitingFor.data.pending_cast.object_id;
+    case "ManaPayment":
+      return topOfStackId;
+    default:
+      return null;
+  }
+}
 
 const STAGGER_Y = 24;
 const STAGGER_X = 10;
@@ -40,35 +74,25 @@ export function StackDisplay() {
     return () => window.removeEventListener("resize", handleResize);
   }, []);
 
-  // During TargetSelection, show the pending spell as a preview on top of the stack
-  const pendingEntry: StackEntryType | null = useMemo(() => {
-    if (waitingFor?.type !== "TargetSelection") return null;
-    const pc = waitingFor.data.pending_cast;
-    // Activated abilities use card_id 0 — don't show them as stack spells
-    if (pc.card_id === 0) return null;
-    return {
-      id: pc.object_id,
-      source_id: pc.object_id,
-      controller: waitingFor.data.player,
-      kind: { type: "Spell", data: { card_id: pc.card_id, ability: pc.ability } },
-    };
-  }, [waitingFor]);
+  // CR 601.2a: The engine places the spell on the stack at announcement, so
+  // no ghost synthesis is needed here. Identify the in-progress cast so the
+  // "Casting…" badge can be applied to that entry.
+  const topOfStackId = stack.length > 0 ? stack[stack.length - 1].id : null;
+  const pendingCastId = useMemo(
+    () => getPendingCastObjectId(waitingFor, topOfStackId),
+    [waitingFor, topOfStackId],
+  );
 
-  const fullStack = useMemo(() => {
-    if (!pendingEntry) return stack;
-    return [...stack, pendingEntry];
-  }, [stack, pendingEntry]);
-
-  const activeStackEntryId = hoveredStackEntryId ?? fullStack[fullStack.length - 1]?.id ?? null;
+  const activeStackEntryId = hoveredStackEntryId ?? stack[stack.length - 1]?.id ?? null;
 
   const handleStackEntryHover = useCallback((entryId: ObjectId, hovered: boolean) => {
     setHoveredStackEntryId(hovered ? entryId : null);
   }, []);
 
-  if (fullStack.length === 0) return null;
+  if (stack.length === 0) return null;
 
-  const displayStack = fullStack;
-  const rawCardSize = getStackCardSize(fullStack.length);
+  const displayStack = stack;
+  const rawCardSize = getStackCardSize(stack.length);
   const widthScale =
     viewport.width < 640 ? 0.58 :
       viewport.width < 1024 ? 0.72 :
@@ -149,7 +173,7 @@ export function StackDisplay() {
                   Stack
                 </span>
                 <span className="rounded-full bg-cyan-500/15 px-2 py-0.5 text-[10px] font-semibold text-cyan-200">
-                  {fullStack.length}
+                  {stack.length}
                 </span>
               </div>
               <button
@@ -184,7 +208,7 @@ export function StackDisplay() {
                     entry={entry}
                     index={index}
                     isTop={index === displayStack.length - 1}
-                    isPending={pendingEntry != null && entry.id === pendingEntry.id}
+                    isPending={pendingCastId != null && entry.id === pendingCastId}
                     cardSize={cardSize}
                     onHoverChange={(hovered) => handleStackEntryHover(entry.id, hovered)}
                     style={entryStyles[index]}

@@ -785,14 +785,27 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             &mut events,
         )?,
         (WaitingFor::ManaPayment { player, .. }, GameAction::CancelCast) => {
-            // Clean up any saved pending cast info
-            state.pending_cast = None;
-            WaitingFor::Priority { player: *player }
+            // CR 601.2i: Cancelling at mana payment rolls back the cast — pop
+            // the stack entry placed at announcement and return the object to
+            // its origin zone via `cancel_pending_cast`.
+            let player = *player;
+            match state.pending_cast.take() {
+                Some(pending) => {
+                    engine_casting::cancel_pending_cast(state, player, &pending, &mut events)
+                }
+                None => WaitingFor::Priority { player },
+            }
         }
         (WaitingFor::ChooseXValue { player, .. }, GameAction::CancelCast) => {
-            // CR 601.2f: Caster may back out of casting before committing to an X value.
-            state.pending_cast = None;
-            WaitingFor::Priority { player: *player }
+            // CR 601.2f + CR 601.2i: Caster may back out before committing to an
+            // X value. Pop the stack entry placed at announcement and restore.
+            let player = *player;
+            match state.pending_cast.take() {
+                Some(pending) => {
+                    engine_casting::cancel_pending_cast(state, player, &pending, &mut events)
+                }
+                None => WaitingFor::Priority { player },
+            }
         }
         (WaitingFor::ChooseXValue { .. }, GameAction::PassPriority) => {
             // CR 601.2f: X must be chosen before the cast can proceed; passing priority
@@ -898,6 +911,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     crate::types::mana::ManaCost::NoCost,
                 );
                 pending_resumed.casting_variant = pending.casting_variant;
+                pending_resumed.origin_zone = pending.origin_zone;
 
                 // CR 601.2d: "divided evenly, rounded down" — EvenSplitDamage bypasses
                 // interactive distribution. Remainder is intentionally lost per Oracle text;
@@ -922,6 +936,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                         pending.ability,
                         &pending.cost,
                         pending.casting_variant,
+                        pending.origin_zone,
                         &mut events,
                     )?
                 } else {
@@ -943,6 +958,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     pending.ability,
                     &pending.cost,
                     pending.casting_variant,
+                    pending.origin_zone,
                     &mut events,
                 )?
             }
@@ -1528,7 +1544,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
 
             // CR 601.2d: Resume casting pipeline after distribution.
             if state.pending_cast.is_some() {
-                // Mid-cast distribution: resume finalize_cast to push spell to stack.
+                // Mid-cast distribution: resume finalize_cast to commit the spell.
                 let pending = state.pending_cast.take().unwrap();
                 casting_costs::finalize_cast(
                     state,
@@ -1538,6 +1554,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     pending.ability,
                     &pending.cost,
                     pending.casting_variant,
+                    pending.origin_zone,
                     &mut events,
                 )?
             } else {
@@ -4099,6 +4116,7 @@ mod tests {
             target_constraints: vec![],
             casting_variant: crate::types::game_state::CastingVariant::Normal,
             distribute: None,
+            origin_zone: crate::types::zones::Zone::Hand,
         }));
         state.waiting_for = WaitingFor::ManaPayment {
             player: PlayerId(0),

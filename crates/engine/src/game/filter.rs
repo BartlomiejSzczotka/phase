@@ -386,8 +386,29 @@ pub fn spell_record_matches_filter(
 /// Unlike [`spell_record_matches_filter`], this preserves the spell's current zone
 /// and interprets `ControllerRef` relative to the current caster rather than the
 /// object's stored controller.
+///
+/// CR 601.2a: After announcement, the spell's live `zone` is `Zone::Stack`, but
+/// "spells cast from [zone]" filters on battlefield statics (CastWithKeyword,
+/// ReduceCost, RaiseCost) must evaluate against the pre-announcement zone.
+/// Callers inside the casting pipeline should pass `origin_zone` via
+/// [`spell_object_matches_filter_from`]; this no-override helper falls back to
+/// the object's current zone for legacy call sites that aren't mid-cast-aware.
 pub fn spell_object_matches_filter(
     spell_obj: &GameObject,
+    caster: PlayerId,
+    filter: &TargetFilter,
+    source_controller: PlayerId,
+) -> bool {
+    spell_object_matches_filter_from(spell_obj, spell_obj.zone, caster, filter, source_controller)
+}
+
+/// Variant of [`spell_object_matches_filter`] that treats the spell as being
+/// in `origin_zone` for filter evaluation — used during the cast pipeline where
+/// the object has already physically moved to `Zone::Stack` at announcement
+/// (CR 601.2a) but filters must still see the pre-announcement zone.
+pub fn spell_object_matches_filter_from(
+    spell_obj: &GameObject,
+    origin_zone: Zone,
     caster: PlayerId,
     filter: &TargetFilter,
     source_controller: PlayerId,
@@ -400,7 +421,7 @@ pub fn spell_object_matches_filter(
         colors: spell_obj.color.clone(),
         mana_value: spell_obj.mana_cost.mana_value(),
     };
-    spell_object_matches_filter_inner(&record, spell_obj.zone, caster, filter, source_controller)
+    spell_object_matches_filter_inner(&record, origin_zone, caster, filter, source_controller)
 }
 
 fn spell_object_matches_filter_inner(

@@ -301,6 +301,7 @@ mod tests {
             target_constraints: vec![],
             casting_variant: CastingVariant::Normal,
             distribute: None,
+            origin_zone: crate::types::zones::Zone::Hand,
         })
     }
 

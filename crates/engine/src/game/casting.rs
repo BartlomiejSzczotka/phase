@@ -122,6 +122,10 @@ struct PreparedSpellCast {
     mana_cost: crate::types::mana::ManaCost,
     modal: Option<crate::types::ability::ModalChoice>,
     casting_variant: CastingVariant,
+    /// CR 601.2a: Zone the card was in before announcement (hand / command /
+    /// graveyard / exile). Threaded onto `PendingCast.origin_zone` so that
+    /// CancelCast (CR 601.2i) can return the object to its origin zone.
+    origin_zone: Zone,
 }
 
 /// CR 101.2 + CR 601.2a: Temporary restrictions can limit which zones affected
@@ -288,6 +292,25 @@ fn upsert_keyword_by_kind(keywords: &mut Vec<Keyword>, keyword: Keyword) {
     }
 }
 
+/// CR 601.2a + CR 603.4: Look up the pre-announcement zone for a spell that
+/// is currently mid-cast. `obj.zone` stays at the origin until `finalize_cast`
+/// performs the Hand→Stack move itself, but should the ordering ever change
+/// this fallback preserves correctness for filters like "spells you cast from
+/// exile have convoke" that must evaluate against the pre-announcement zone.
+fn pending_cast_origin_zone_for(state: &GameState, object_id: ObjectId) -> Option<Zone> {
+    if let Some(pc) = state.waiting_for.pending_cast_ref() {
+        if pc.object_id == object_id {
+            return Some(pc.origin_zone);
+        }
+    }
+    if let Some(pc) = state.pending_cast.as_ref() {
+        if pc.object_id == object_id {
+            return Some(pc.origin_zone);
+        }
+    }
+    None
+}
+
 fn granted_spell_keywords(
     state: &GameState,
     caster: PlayerId,
@@ -296,6 +319,8 @@ fn granted_spell_keywords(
     let Some(spell_obj) = state.objects.get(&object_id) else {
         return Vec::new();
     };
+
+    let origin_zone = pending_cast_origin_zone_for(state, object_id).unwrap_or(spell_obj.zone);
 
     let mut keywords = Vec::new();
     for &bf_id in &state.battlefield {
@@ -315,8 +340,9 @@ fn granted_spell_keywords(
             }
 
             let matches = def.affected.as_ref().is_none_or(|filter| {
-                super::filter::spell_object_matches_filter(
+                super::filter::spell_object_matches_filter_from(
                     spell_obj,
+                    origin_zone,
                     caster,
                     filter,
                     source_obj.controller,
@@ -347,7 +373,12 @@ pub(crate) fn effective_spell_keywords(
         upsert_keyword_by_kind(&mut keywords, keyword);
     }
 
-    if obj.zone != Zone::Battlefield
+    // CR 702.34a: The flashback keyword is granted while the object isn't on
+    // the battlefield. Use the pre-announcement zone so flashback still
+    // applies for spells being cast from graveyard even after `finalize_cast`
+    // moves them to the stack.
+    let effective_origin_zone = pending_cast_origin_zone_for(state, object_id).unwrap_or(obj.zone);
+    if effective_origin_zone != Zone::Battlefield
         && super::keywords::object_has_effective_keyword_kind(
             state,
             object_id,
@@ -373,7 +404,7 @@ fn build_spell_meta(state: &GameState, caster: PlayerId, object_id: ObjectId) ->
             .collect(),
         subtypes: obj.card_types.subtypes.clone(),
         keyword_kinds: effective_spell_keyword_kinds(state, caster, object_id),
-        cast_from_zone: Some(obj.zone),
+        cast_from_zone: Some(pending_cast_origin_zone_for(state, object_id).unwrap_or(obj.zone)),
     })
 }
 
@@ -871,6 +902,7 @@ fn prepare_spell_cast(
     // CR 601.2f: Apply one-shot pending cost reductions ("the next spell costs {N} less").
     apply_pending_spell_cost_reductions(state, player, object_id, &mut mana_cost);
 
+    let origin_zone = obj.zone;
     Ok(PreparedSpellCast {
         object_id,
         card_id: obj.card_id,
@@ -878,6 +910,7 @@ fn prepare_spell_cast(
         mana_cost,
         modal: obj.modal.clone(),
         casting_variant,
+        origin_zone,
     })
 }
 
@@ -1155,6 +1188,12 @@ pub fn handle_adventure_choice(
 
     // Now proceed with normal casting using whichever face is active
     let prepared = prepare_spell_cast(state, player, object_id)?;
+
+    // CR 601.2a + CR 715.3a: Announce the (Adventure-or-creature) spell onto the
+    // stack before mode/target/cost processing. Adventure's dedicated casting
+    // path bypasses continue_with_prepared so it must announce explicitly.
+    announce_spell_on_stack(state, player, &prepared, events);
+
     // Adventure spells always have a spell ability (the adventure face is an instant/sorcery).
     let ability_def = prepared
         .ability_def
@@ -1198,6 +1237,7 @@ pub fn handle_adventure_choice(
                     resolved,
                     &prepared.mana_cost,
                     prepared.casting_variant,
+                    prepared.origin_zone,
                     events,
                 );
             } else {
@@ -1210,6 +1250,7 @@ pub fn handle_adventure_choice(
                     &prepared.mana_cost,
                     CastingVariant::Adventure,
                     None,
+                    prepared.origin_zone,
                     events,
                 );
             }
@@ -1230,6 +1271,7 @@ pub fn handle_adventure_choice(
             CastingVariant::Adventure
         };
         pending_adv.distribute = ability_def.distribute.clone();
+        pending_adv.origin_zone = prepared.origin_zone;
         return Ok(WaitingFor::TargetSelection {
             player,
             pending_cast: Box::new(pending_adv),
@@ -1248,6 +1290,7 @@ pub fn handle_adventure_choice(
             resolved,
             &prepared.mana_cost,
             prepared.casting_variant,
+            prepared.origin_zone,
             events,
         )
     } else {
@@ -1260,6 +1303,7 @@ pub fn handle_adventure_choice(
             &prepared.mana_cost,
             CastingVariant::Adventure,
             None,
+            prepared.origin_zone,
             events,
         )
     }
@@ -1397,6 +1441,47 @@ pub fn handle_cast_spell(
     continue_cast_from_prepared(state, player, object_id, events)
 }
 
+/// CR 601.2a: Announce the spell by pushing a placeholder `StackEntry` onto
+/// the stack. Called exactly once per spell cast, at the top of
+/// `continue_with_prepared` / `continue_with_no_ability` /
+/// `handle_adventure_choice` (i.e., after all pre-announcement choices like
+/// Adventure/Warp/MDFC have resolved and `prepare_spell_cast` succeeded).
+///
+/// The stack entry is pushed with `ability: None` and `actual_mana_spent: 0`;
+/// `finalize_cast` updates these in place once choices and costs are committed
+/// and performs the `Zone::Stack` zone change for the object itself. Keeping
+/// `obj.zone` equal to the origin zone (hand / graveyard / exile / command)
+/// until finalize preserves CR-correct evaluation of off-zone continuous
+/// effects (CR 604.3 — "each nonland card in your graveyard has escape", cast-
+/// with-keyword statics that filter "spells you cast from exile", etc.). The
+/// CR-visible invariant — "the spell is on the stack" — is expressed by the
+/// presence of the StackEntry, not the object's zone field.
+///
+/// If the cast is aborted at any step (CR 601.2i), `handle_cancel_cast` pops
+/// this entry; no zone reversion is needed because `obj.zone` never changed.
+fn announce_spell_on_stack(
+    state: &mut GameState,
+    player: PlayerId,
+    prepared: &PreparedSpellCast,
+    events: &mut Vec<GameEvent>,
+) {
+    stack::push_to_stack(
+        state,
+        StackEntry {
+            id: prepared.object_id,
+            source_id: prepared.object_id,
+            controller: player,
+            kind: StackEntryKind::Spell {
+                card_id: prepared.card_id,
+                ability: None,
+                casting_variant: prepared.casting_variant,
+                actual_mana_spent: 0,
+            },
+        },
+        events,
+    );
+}
+
 /// Continue the casting pipeline from a PreparedSpellCast.
 /// Handles modal selection, targeting, aura targeting, and mana payment.
 /// Shared by handle_cast_spell and handle_warp_cost_choice.
@@ -1419,6 +1504,11 @@ fn continue_with_prepared(
             return continue_with_no_ability(state, player, prepared, events);
         }
     }
+
+    // CR 601.2a: The spell goes on the stack at announcement, before any
+    // mode/target/cost steps. All subsequent branches construct a `PendingCast`
+    // that references an object already on the stack.
+    announce_spell_on_stack(state, player, &prepared, events);
 
     // Build the resolved ability from the ability_def, or a placeholder for auras
     // with no spell-level ability (aura targeting is via the Enchant keyword).
@@ -1446,6 +1536,7 @@ fn continue_with_prepared(
             pending_modal.casting_variant = prepared.casting_variant;
             pending_modal.distribute = ability_def.distribute.clone();
             pending_modal.target_constraints = target_constraints;
+            pending_modal.origin_zone = prepared.origin_zone;
             return Ok(WaitingFor::ModeChoice {
                 player,
                 modal: capped,
@@ -1518,6 +1609,7 @@ fn continue_with_prepared(
                     resolved,
                     &prepared.mana_cost,
                     prepared.casting_variant,
+                    prepared.origin_zone,
                     events,
                 );
             } else {
@@ -1533,6 +1625,7 @@ fn continue_with_prepared(
                     .ability_def
                     .as_ref()
                     .and_then(|a| a.distribute.clone());
+                pending_aura.origin_zone = prepared.origin_zone;
                 return Ok(WaitingFor::TargetSelection {
                     player,
                     pending_cast: Box::new(pending_aura),
@@ -1558,6 +1651,7 @@ fn continue_with_prepared(
                 resolved,
                 &prepared.mana_cost,
                 prepared.casting_variant,
+                prepared.origin_zone,
                 events,
             );
         }
@@ -1574,6 +1668,7 @@ fn continue_with_prepared(
             .ability_def
             .as_ref()
             .and_then(|a| a.distribute.clone());
+        pending_targets.origin_zone = prepared.origin_zone;
         return Ok(WaitingFor::TargetSelection {
             player,
             pending_cast: Box::new(pending_targets),
@@ -1591,6 +1686,7 @@ fn continue_with_prepared(
         resolved,
         &prepared.mana_cost,
         prepared.casting_variant,
+        prepared.origin_zone,
         events,
     )
 }
@@ -1605,6 +1701,9 @@ fn continue_with_no_ability(
 ) -> Result<WaitingFor, EngineError> {
     // Auras always have a spell ability (Enchant keyword generates targeting),
     // so this path is only for non-Aura permanents.
+
+    // CR 601.2a: Announce the spell onto the stack before any cost payment.
+    announce_spell_on_stack(state, player, &prepared, events);
 
     // Build a placeholder resolved ability for cost-payment plumbing.
     // The PendingCast infrastructure requires a ResolvedAbility; it carries no
@@ -1627,6 +1726,7 @@ fn continue_with_no_ability(
         placeholder,
         &prepared.mana_cost,
         prepared.casting_variant,
+        prepared.origin_zone,
         events,
     )
 }
@@ -2436,13 +2536,38 @@ pub fn handle_activate_ability(
     Ok(WaitingFor::Priority { player })
 }
 
-/// Record a cancelled cast so the AI avoids re-attempting the same spell/ability this window.
+/// CR 601.2i: If the player is unable or unwilling to complete a cast, the
+/// process is reversed: the spell is removed from the stack and any costs
+/// paid/choices made are rewound. The engine exposes this as
+/// `GameAction::CancelCast` at each interactive WaitingFor step before mana is
+/// actually debited.
+///
+/// For spell casts (distinguished by `activation_ability_index.is_none()`) the
+/// StackEntry pushed at announcement (CR 601.2a) is removed here. The object's
+/// `zone` field was left at the origin zone across the cast pipeline (see
+/// `announce_spell_on_stack` / `finalize_cast` for the rationale), so no zone
+/// reversion is needed — the object is already in its origin zone.
+/// Activated-ability casts never placed an object on the stack during target
+/// selection, so no stack rollback is needed for them.
 pub fn handle_cancel_cast(
     state: &mut GameState,
     pending: &PendingCast,
     _events: &mut Vec<GameEvent>,
 ) {
     state.cancelled_casts.push(pending.object_id);
+
+    if pending.activation_ability_index.is_none() {
+        // CR 601.2i: Remove the placeholder stack entry pushed at announcement.
+        // No other player can interject between announce and cancel, so the
+        // entry is still the topmost object for this cast.
+        if let Some(pos) = state
+            .stack
+            .iter()
+            .rposition(|entry| entry.id == pending.object_id)
+        {
+            state.stack.remove(pos);
+        }
+    }
 }
 
 // Cost payment handlers are in casting_costs module.
@@ -4489,14 +4614,159 @@ mod tests {
             result.waiting_for,
             WaitingFor::TargetSelection { .. }
         ));
-        // Card should still be in hand
+        // CR 601.2a: The spell is announced onto the stack at the start of
+        // the cast. The object's own zone stays at the origin until finalize
+        // so mid-cast continuous effects (graveyard escape, cast-from-exile
+        // filters, etc.) keep evaluating correctly.
+        assert_eq!(state.stack.len(), 1);
+        assert_eq!(state.stack[0].id, obj_id);
         assert!(!state.players[0].hand.is_empty());
 
-        // Cancel -> should return to Priority
+        // CR 601.2i: Cancel -> the placeholder stack entry is popped and the
+        // card remains in hand (no zone revert needed because no zone change
+        // has been committed yet).
         let result = apply(&mut state, GameAction::CancelCast).unwrap();
         assert!(matches!(result.waiting_for, WaitingFor::Priority { .. }));
-        // Card should still be in hand after cancel
+        assert!(state.stack.is_empty());
         assert!(!state.players[0].hand.is_empty());
+        assert!(state.players[0].hand.contains(&obj_id));
+    }
+
+    /// CR 601.2a: After announcement, the spell is the topmost object on the
+    /// stack and remains there through each interactive cast step. This test
+    /// exercises the stack-at-announcement invariant during TargetSelection.
+    #[test]
+    fn spell_is_on_stack_during_target_selection() {
+        use crate::game::engine::apply;
+        use crate::types::actions::GameAction;
+
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_instant_in_hand(&mut state, PlayerId(0));
+        add_mana(&mut state, PlayerId(0), ManaType::Red, 1);
+
+        // Two ambiguous targets force interactive selection.
+        for card_id_val in [50, 51] {
+            let cid = create_object(
+                &mut state,
+                CardId(card_id_val),
+                PlayerId(1),
+                "Goblin".to_string(),
+                Zone::Battlefield,
+            );
+            state
+                .objects
+                .get_mut(&cid)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Creature);
+        }
+
+        let result = apply(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: obj_id,
+                card_id: CardId(10),
+                targets: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            result.waiting_for,
+            WaitingFor::TargetSelection { .. }
+        ));
+
+        // CR 601.2a: The StackEntry exists from announcement — no ghost-entry
+        // synthesis is needed on the client side.
+        assert_eq!(state.stack.len(), 1);
+        let entry = &state.stack[0];
+        assert_eq!(entry.id, obj_id);
+        assert_eq!(entry.controller, PlayerId(0));
+        // CR 601.2i: The placeholder entry has no ability attached yet —
+        // `finalize_cast` fills it in after costs commit.
+        match &entry.kind {
+            StackEntryKind::Spell {
+                card_id,
+                ability,
+                actual_mana_spent,
+                ..
+            } => {
+                assert_eq!(*card_id, CardId(10));
+                assert!(ability.is_none());
+                assert_eq!(*actual_mana_spent, 0);
+            }
+            other => panic!("expected Spell stack entry, got {:?}", other),
+        }
+    }
+
+    /// CR 601.2i: Cancelling from `ManaPayment` pops the placeholder stack
+    /// entry pushed at announcement. Exercises the Convoke path which keeps
+    /// the PendingCast on outer `GameState::pending_cast`.
+    #[test]
+    fn cancel_cast_from_mana_payment_pops_stack_entry() {
+        use crate::game::engine::apply;
+        use crate::types::actions::GameAction;
+
+        let mut state = setup_game_at_main_phase();
+
+        // A convoke-eligible creature on the battlefield gates the convoke
+        // flow into ManaPayment (without one, convoke_mode is filtered away
+        // and the flow goes straight to finalize_cast).
+        let creature_id = create_object(
+            &mut state,
+            CardId(59),
+            PlayerId(0),
+            "Token".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&creature_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.has_summoning_sickness = false;
+        }
+
+        let obj_id = create_object(
+            &mut state,
+            CardId(60),
+            PlayerId(0),
+            "Convoke Spell".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Sorcery);
+            obj.keywords.push(Keyword::Convoke);
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![],
+                generic: 2,
+            };
+            obj.abilities.push(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                },
+            ));
+        }
+        add_mana(&mut state, PlayerId(0), ManaType::Colorless, 2);
+
+        let result = apply(
+            &mut state,
+            GameAction::CastSpell {
+                object_id: obj_id,
+                card_id: CardId(60),
+                targets: vec![],
+            },
+        )
+        .unwrap();
+        assert!(matches!(result.waiting_for, WaitingFor::ManaPayment { .. }));
+        assert_eq!(state.stack.len(), 1);
+        assert!(state.pending_cast.is_some());
+
+        let result = apply(&mut state, GameAction::CancelCast).unwrap();
+        assert!(matches!(result.waiting_for, WaitingFor::Priority { .. }));
+        assert!(state.stack.is_empty());
+        assert!(state.pending_cast.is_none());
+        assert!(state.players[0].hand.contains(&obj_id));
     }
 
     // --- Aura casting tests ---
@@ -4866,6 +5136,28 @@ mod tests {
         ));
 
         let mut events = Vec::new();
+
+        // CR 601.2a: Simulate announcement (normally performed by
+        // `announce_spell_on_stack` in the continue_with_prepared path) so
+        // `finalize_cast` finds the existing stack entry to update. Only push
+        // the StackEntry — the object's `zone` stays at the origin (Hand)
+        // until `finalize_cast` performs the Hand→Stack zone change itself.
+        stack::push_to_stack(
+            &mut state,
+            StackEntry {
+                id: object_id,
+                source_id: object_id,
+                controller: PlayerId(0),
+                kind: StackEntryKind::Spell {
+                    card_id: CardId(77),
+                    ability: None,
+                    casting_variant: CastingVariant::Normal,
+                    actual_mana_spent: 0,
+                },
+            },
+            &mut events,
+        );
+
         let waiting_for = crate::game::casting_costs::pay_and_push(
             &mut state,
             PlayerId(0),
@@ -4878,6 +5170,7 @@ mod tests {
             },
             CastingVariant::Normal,
             None,
+            Zone::Hand,
             &mut events,
         )
         .expect("spell with chained targets should cast");

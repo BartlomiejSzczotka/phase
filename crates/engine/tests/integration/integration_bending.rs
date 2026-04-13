@@ -54,6 +54,7 @@ fn set_dummy_pending_cast(state: &mut GameState) {
         target_constraints: vec![],
         casting_variant: CastingVariant::Normal,
         distribute: None,
+        origin_zone: engine::types::zones::Zone::Hand,
     }));
 }
 
@@ -297,7 +298,24 @@ fn test_mana_payment_finalization() {
         target_constraints: vec![],
         casting_variant: CastingVariant::Normal,
         distribute: None,
+        origin_zone: engine::types::zones::Zone::Hand,
     }));
+    // CR 601.2a: Simulate the announcement stack push that the production flow
+    // would have performed on entering the cast pipeline.
+    runner
+        .state_mut()
+        .stack
+        .push(engine::types::game_state::StackEntry {
+            id: spell_id,
+            source_id: spell_id,
+            controller: P0,
+            kind: engine::types::game_state::StackEntryKind::Spell {
+                card_id: CardId(100),
+                ability: None,
+                casting_variant: CastingVariant::Normal,
+                actual_mana_spent: 0,
+            },
+        });
     runner.state_mut().waiting_for = WaitingFor::ManaPayment {
         player: P0,
         convoke_mode: None,
@@ -352,6 +370,7 @@ fn test_mana_payment_cancel_clears_pending_cast() {
         target_constraints: vec![],
         casting_variant: CastingVariant::Normal,
         distribute: None,
+        origin_zone: engine::types::zones::Zone::Hand,
     }));
     runner.state_mut().waiting_for = WaitingFor::ManaPayment {
         player: P0,

@@ -19,7 +19,6 @@ use super::mana_payment;
 use super::mana_sources::{self, ManaSourceOption};
 use super::restrictions;
 use super::stack;
-use super::zones;
 
 use super::ability_utils::{
     assign_targets_in_chain, auto_select_targets_for_ability, begin_target_selection_for_ability,
@@ -80,6 +79,7 @@ pub(crate) fn handle_decide_additional_cost(
             &updated_pending.cost,
             updated_pending.casting_variant,
             updated_pending.distribute,
+            updated_pending.origin_zone,
             events,
         )
     }
@@ -133,6 +133,7 @@ pub(crate) fn handle_discard_for_cost(
         &pending.cost,
         pending.casting_variant,
         pending.distribute,
+        pending.origin_zone,
         events,
     )
 }
@@ -189,6 +190,7 @@ pub(crate) fn handle_sacrifice_for_cost(
             &pending.cost,
             pending.casting_variant,
             pending.distribute,
+            pending.origin_zone,
             events,
         )
     }
@@ -251,6 +253,7 @@ pub(crate) fn handle_tap_creatures_for_spell_cost(
             &pending.cost,
             pending.casting_variant,
             pending.distribute,
+            pending.origin_zone,
             events,
         )
     }
@@ -309,6 +312,7 @@ pub(crate) fn handle_exile_from_graveyard_for_cost(
         &pending.cost,
         pending.casting_variant,
         pending.distribute,
+        pending.origin_zone,
         events,
     )
 }
@@ -436,6 +440,7 @@ pub(super) fn check_additional_cost_or_pay(
     ability: ResolvedAbility,
     cost: &crate::types::mana::ManaCost,
     casting_variant: CastingVariant,
+    origin_zone: Zone,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     check_additional_cost_or_pay_with_distribute(
@@ -447,6 +452,7 @@ pub(super) fn check_additional_cost_or_pay(
         cost,
         casting_variant,
         None,
+        origin_zone,
         events,
     )
 }
@@ -464,6 +470,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
     cost: &crate::types::mana::ManaCost,
     casting_variant: CastingVariant,
     distribute: Option<DistributionUnit>,
+    origin_zone: Zone,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     // CR 207.2c + CR 601.2f: Strive per-target cost increase.
@@ -499,11 +506,13 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
                 // Required additional costs bypass the choice prompt — pay directly.
                 let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
                 pending.casting_variant = casting_variant;
+                pending.origin_zone = origin_zone;
                 return pay_additional_cost(state, player, req_cost.clone(), pending, events);
             }
             AdditionalCost::Optional(_) | AdditionalCost::Choice(_, _) => {
                 let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
                 pending.casting_variant = casting_variant;
+                pending.origin_zone = origin_zone;
                 return Ok(WaitingFor::OptionalCostChoice {
                     player,
                     cost: additional_cost,
@@ -531,6 +540,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
     if let Some(energy_mv) = energy_cost {
         let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
         pending.casting_variant = casting_variant;
+        pending.origin_zone = origin_zone;
         return pay_additional_cost(
             state,
             player,
@@ -545,6 +555,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
         if let Some((_, exile_count)) = super::keywords::effective_escape_data(state, object_id) {
             let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
             pending.casting_variant = casting_variant;
+            pending.origin_zone = origin_zone;
             return pay_additional_cost(
                 state,
                 player,
@@ -567,6 +578,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
             let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
             pending.casting_variant = casting_variant;
             pending.distribute = distribute;
+            pending.origin_zone = origin_zone;
             return pay_additional_cost(state, player, non_mana_cost, pending, events);
         }
     }
@@ -577,6 +589,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
         let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
         pending.casting_variant = casting_variant;
         pending.distribute = distribute;
+        pending.origin_zone = origin_zone;
         return Ok(WaitingFor::DefilerPayment {
             player,
             life_cost,
@@ -594,6 +607,7 @@ pub(super) fn check_additional_cost_or_pay_with_distribute(
         cost,
         casting_variant,
         distribute,
+        origin_zone,
         events,
     )
 }
@@ -712,6 +726,7 @@ pub(crate) fn handle_defiler_payment(
         &cost,
         pending.casting_variant,
         pending.distribute,
+        pending.origin_zone,
         events,
     )
 }
@@ -791,6 +806,7 @@ fn pay_additional_cost(
                 &combined,
                 pending.casting_variant,
                 pending.distribute,
+                pending.origin_zone,
                 events,
             );
         }
@@ -928,6 +944,7 @@ fn pay_additional_cost(
         &pending.cost,
         pending.casting_variant,
         pending.distribute,
+        pending.origin_zone,
         events,
     )
 }
@@ -942,6 +959,7 @@ pub(super) fn pay_and_push(
     cost: &crate::types::mana::ManaCost,
     casting_variant: CastingVariant,
     distribute: Option<DistributionUnit>,
+    origin_zone: Zone,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     // CR 702.180a/b: Harmonize — offer optional creature tap to reduce generic mana cost.
@@ -968,6 +986,7 @@ pub(super) fn pay_and_push(
             if !eligible.is_empty() {
                 let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
                 pending.casting_variant = casting_variant;
+                pending.origin_zone = origin_zone;
                 return Ok(WaitingFor::HarmonizeTapChoice {
                     player,
                     eligible_creatures: eligible,
@@ -986,6 +1005,7 @@ pub(super) fn pay_and_push(
         cost,
         casting_variant,
         distribute,
+        origin_zone,
         events,
     )
 }
@@ -1000,6 +1020,7 @@ pub(super) fn pay_and_push_adventure(
     cost: &crate::types::mana::ManaCost,
     casting_variant: CastingVariant,
     distribute: Option<DistributionUnit>,
+    origin_zone: Zone,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     // CR 702.51a: Convoke lets players tap creatures to reduce mana cost.
@@ -1036,6 +1057,7 @@ pub(super) fn pay_and_push_adventure(
         let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
         pending.casting_variant = casting_variant;
         pending.distribute = distribute;
+        pending.origin_zone = origin_zone;
         state.pending_cast = Some(Box::new(pending));
         return Ok(enter_payment_step(state, player, convoke_mode));
     }
@@ -1048,13 +1070,31 @@ pub(super) fn pay_and_push_adventure(
         ability,
         cost,
         casting_variant,
+        origin_zone,
         events,
     )
 }
 
-/// Pay mana, move spell to stack, and return Priority.
-/// Shared finalization path used by both `pay_and_push_adventure` (normal casting)
-/// and the `(ManaPayment, PassPriority)` handler (after interactive mana payment).
+/// CR 601.2i: Finalize a spell cast.
+///
+/// By the time this runs, `announce_spell_on_stack` has already pushed a
+/// placeholder `StackEntry` with `ability: None, actual_mana_spent: 0`. The
+/// object's `zone` field, however, is still at `origin_zone` — zone transition
+/// is deferred here so continuous effects that granted castability (e.g.
+/// "cards in your graveyard have escape") keep applying through cost payment.
+/// This function:
+///   1. Snapshots the mana pool, pays the declared cost, and records the actual
+///      amount deducted (CR 700.14 — matters for cost reductions / convoke).
+///   2. Moves the object from `origin_zone` to `Zone::Stack` now that the cast
+///      is committed.
+///   3. Updates the existing stack entry's `ability` (filling in the resolved
+///      on-resolve effect) and `actual_mana_spent`.
+///   4. Emits `SpellCast` (CR 603.6a — the trigger point for "whenever a player
+///      casts a spell"), records commander cast taxes, and consumes any
+///      graveyard-cast permissions / one-shot cost reductions.
+///
+/// Shared by `pay_and_push_adventure` (normal casting) and the
+/// `(ManaPayment, PassPriority)` handler (after interactive mana payment).
 #[allow(clippy::too_many_arguments)]
 pub(super) fn finalize_cast(
     state: &mut GameState,
@@ -1064,6 +1104,7 @@ pub(super) fn finalize_cast(
     ability: ResolvedAbility,
     cost: &crate::types::mana::ManaCost,
     casting_variant: CastingVariant,
+    origin_zone: Zone,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
     // CR 700.14: Snapshot pool size before payment to compute actual mana spent.
@@ -1085,19 +1126,26 @@ pub(super) fn finalize_cast(
         .unwrap_or(0);
     let actual_mana_spent = pool_before.saturating_sub(pool_after) as u32;
 
-    // Record commander cast before moving (need to check zone before move)
-    let (was_in_command_zone, source_zone) = state
-        .objects
-        .get(&object_id)
-        .map(|obj| (obj.zone == Zone::Command && obj.is_commander, obj.zone))
-        .unwrap_or((false, Zone::Hand));
+    // CR 603.4 + CR 903.8: `origin_zone` preserves the pre-announcement zone so
+    // that "cast from hand/graveyard/exile" conditions evaluate correctly and
+    // commander-tax bookkeeping fires only when casting from the command zone.
+    // The actual Hand→Stack zone transition is deferred to later in this
+    // function (see the `move_to_zone` call below), after mana payment has
+    // completed against the origin zone.
+    let was_in_command_zone = origin_zone == Zone::Command
+        && state
+            .objects
+            .get(&object_id)
+            .map(|obj| obj.is_commander)
+            .unwrap_or(false);
+    let source_zone = origin_zone;
 
     // CR 603.4: Record the zone the spell was cast from so ETB triggers can
     // evaluate conditions like "if you cast it from your hand".
     let mut ability = ability;
     ability.context.cast_from_zone = Some(source_zone);
 
-    // Emit targeting events before the spell moves to the stack
+    // Emit targeting events now that the cast is committed.
     emit_targeting_events(
         state,
         &flatten_targets_in_chain(&ability),
@@ -1109,8 +1157,8 @@ pub(super) fn finalize_cast(
     // Determine whether this spell has a meaningful on-resolve ability.
     // Permanent spells with no Spell-kind AbilityDefinition get a placeholder
     // Unimplemented effect through the cost pipeline (from continue_with_no_ability).
-    // Only those become `ability: None` on the stack — they simply enter the
-    // battlefield on resolution. All other spells keep their ResolvedAbility.
+    // Only those remain `ability: None` on the stack — they simply enter the
+    // battlefield on resolution. All other spells get their ResolvedAbility.
     let is_placeholder = matches!(
         ability.effect,
         crate::types::ability::Effect::Unimplemented { .. }
@@ -1126,30 +1174,36 @@ pub(super) fn finalize_cast(
         None
     };
 
-    // Move card from hand/command zone to stack zone
-    zones::move_to_zone(state, object_id, Zone::Stack, events);
+    // CR 601.2a + CR 601.2i: The spell was announced onto the stack earlier,
+    // but the object's `zone` field stayed at its origin through cost payment
+    // so continuous effects that granted castability ("cards in your graveyard
+    // have escape", "spells you cast from exile have convoke") continued to
+    // apply. Now that the cast is committed, perform the Hand→Stack zone
+    // transition so zone-change triggers, counterspell targeting
+    // (`FilterProp::InZone { Stack }`), and on-resolution bookkeeping all see
+    // the spell as living on the stack.
+    super::zones::move_to_zone(state, object_id, Zone::Stack, events);
+
+    // CR 601.2i: Update the existing stack entry (pushed at announcement) with
+    // the finalized ability and the actual mana spent. The entry must still be
+    // present — no one else can have pushed/popped between announce and
+    // finalize within a single cast.
+    let entry = state
+        .stack
+        .iter_mut()
+        .rfind(|entry| entry.id == object_id)
+        .expect("spell stack entry from announcement still present at finalize");
+    entry.kind = StackEntryKind::Spell {
+        card_id,
+        ability: stack_ability,
+        casting_variant,
+        actual_mana_spent,
+    };
 
     // Track commander cast count for tax calculation
     if was_in_command_zone {
         super::commander::record_commander_cast(state, object_id);
     }
-
-    // Push stack entry
-    stack::push_to_stack(
-        state,
-        StackEntry {
-            id: object_id,
-            source_id: object_id,
-            controller: player,
-            kind: StackEntryKind::Spell {
-                card_id,
-                ability: stack_ability,
-                casting_variant,
-                actual_mana_spent,
-            },
-        },
-        events,
-    );
 
     state.priority_passes.clear();
     state.priority_pass_count = 0;
@@ -1570,6 +1624,7 @@ mod tests {
             target_constraints: Vec::new(),
             casting_variant: CastingVariant::Normal,
             distribute: None,
+            origin_zone: Zone::Hand,
         }
     }
 

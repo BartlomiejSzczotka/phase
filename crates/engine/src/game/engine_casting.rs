@@ -234,6 +234,7 @@ pub(super) fn handle_harmonize_tap_choice(
         &pending.cost,
         pending.casting_variant,
         pending.distribute,
+        pending.origin_zone,
         events,
     )
 }

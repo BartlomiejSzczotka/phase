@@ -183,6 +183,7 @@ pub(crate) fn handle_choice(
                 &pending.cost,
                 pending.casting_variant,
                 pending.distribute,
+                pending.origin_zone,
                 events,
             )
         }
@@ -289,7 +290,23 @@ mod tests {
             other => panic!("Expected CollectEvidenceChoice, got {:?}", other),
         };
 
+        // CR 601.2a: Simulate announcement — `finalize_cast` expects the spell
+        // to already be on the stack from the announcement step. Push the
+        // StackEntry only; the object's zone remains at its origin (Hand)
+        // until `finalize_cast` commits the Hand→Stack transition.
         let mut events = Vec::new();
+        state.stack.push(crate::types::game_state::StackEntry {
+            id: source_id,
+            source_id,
+            controller: PlayerId(0),
+            kind: crate::types::game_state::StackEntryKind::Spell {
+                card_id: CardId(100),
+                ability: None,
+                casting_variant: crate::types::game_state::CastingVariant::Normal,
+                actual_mana_spent: 0,
+            },
+        });
+
         let next = handle_choice(
             &mut state,
             PlayerId(0),

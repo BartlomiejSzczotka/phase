@@ -98,6 +98,7 @@ pub(crate) fn handle_select_modes(
                 resolved,
                 &total_cost,
                 pending.casting_variant,
+                pending.origin_zone,
                 events,
             );
         }
@@ -112,6 +113,7 @@ pub(crate) fn handle_select_modes(
             PendingCast::new(pending.object_id, pending.card_id, resolved, total_cost);
         pending_sel.target_constraints = pending.target_constraints;
         pending_sel.casting_variant = pending.casting_variant;
+        pending_sel.origin_zone = pending.origin_zone;
         return Ok(WaitingFor::TargetSelection {
             player,
             pending_cast: Box::new(pending_sel),
@@ -129,6 +131,7 @@ pub(crate) fn handle_select_modes(
         resolved,
         &total_cost,
         pending.casting_variant,
+        pending.origin_zone,
         events,
     )
 }
@@ -181,6 +184,7 @@ pub(crate) fn handle_select_targets(
             );
             pending_dist.casting_variant = pending.casting_variant;
             pending_dist.distribute = Some(unit.clone());
+            pending_dist.origin_zone = pending.origin_zone;
             state.pending_cast = Some(Box::new(pending_dist));
             return Ok(WaitingFor::DistributeAmong {
                 player,
@@ -236,6 +240,7 @@ pub(crate) fn handle_select_targets(
         &pending.cost,
         pending.casting_variant,
         pending.distribute,
+        pending.origin_zone,
         events,
     )
 }
@@ -323,6 +328,7 @@ pub(crate) fn handle_choose_target(
                 ability,
                 &pending.cost,
                 pending.casting_variant,
+                pending.origin_zone,
                 events,
             )
         }
