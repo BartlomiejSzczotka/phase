@@ -25,3 +25,4 @@ name = "ai-tune"
 path = "src/bin/ai_tune.rs"
 
 [dev-dependencies]
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

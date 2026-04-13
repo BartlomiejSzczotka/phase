@@ -6,14 +6,16 @@ use engine::types::card_type::CoreType;
 use engine::types::game_state::{GameState, WaitingFor};
 use engine::types::player::PlayerId;
 
+use crate::cast_facts::cast_facts_for_action;
 use crate::combat_ai::{choose_attackers_with_targets_with_profile, choose_blockers_with_profile};
 use crate::config::{AiConfig, ThreatAwareness};
 use crate::context::AiContext;
 use crate::planner::{
     apply_candidate, build_continuation_planner, rank_candidates, PlannerServices, SearchBudget,
 };
+use crate::policies::context::PolicyContext;
 use crate::policies::tutor::{score_search_choice_cards, score_search_choice_selection};
-use crate::policies::PolicyRegistry;
+use crate::policies::{PolicyId, PolicyRegistry, PolicyVerdict};
 use crate::tactical_gate::gate_candidates;
 use crate::threat_profile::{
     build_threat_profile_multiplayer, ArchetypeBaseProbabilities, ThreatProfile,
@@ -37,10 +39,124 @@ pub fn choose_action(
         // so the game never deadlocks waiting for the AI.
         return fallback_action(state);
     }
-    if scored.len() == 1 {
-        return Some(scored[0].0.clone());
+    let chosen = if scored.len() == 1 {
+        Some(scored[0].0.clone())
+    } else {
+        softmax_select_pairs(&scored, config.temperature, rng)
+    };
+    if let Some(action) = &chosen {
+        emit_decision_trace(state, ai_player, config, action);
     }
-    softmax_select_pairs(&scored, config.temperature, rng)
+    chosen
+}
+
+/// Emit a structured decision-trace event for the chosen tactical action.
+///
+/// Gated on `phase_ai::decision_trace` at DEBUG — zero hot-path overhead when
+/// disabled (the `event_enabled!` macro compiles to a single filter check).
+/// When enabled, rebuilds the `PolicyRegistry` context for the chosen
+/// candidate and emits the top 3 policy contributions sorted by `|delta|`
+/// descending, plus any defensive `Reject` verdicts. Mulligan decisions are
+/// excluded — the `MulliganRegistry` emits its own trace at
+/// `phase_ai::decision_trace`.
+fn emit_decision_trace(
+    state: &GameState,
+    ai_player: PlayerId,
+    config: &AiConfig,
+    action: &GameAction,
+) {
+    if !tracing::event_enabled!(target: "phase_ai::decision_trace", tracing::Level::DEBUG) {
+        return;
+    }
+    if matches!(state.waiting_for, WaitingFor::MulliganDecision { .. }) {
+        return;
+    }
+
+    let ctx = build_decision_context(state);
+    let candidate = ctx.candidates.iter().find(|c| c.action == *action);
+    let Some(candidate) = candidate else {
+        // The chosen action was produced by a deterministic path (combat AI,
+        // scry ordering, etc.) that doesn't flow through the tactical policy
+        // registry, so there is nothing to aggregate.
+        return;
+    };
+
+    let context = build_ai_context(state, ai_player, config);
+    emit_trace_for_candidate(state, &ctx, candidate, ai_player, config, &context);
+}
+
+/// Core aggregator: given a fully-built `PolicyContext`'s inputs for a chosen
+/// candidate, run every applicable policy via `PolicyRegistry::verdicts()`,
+/// sort scored verdicts by `|delta|` descending, and emit a structured
+/// tracing event. Separated from `emit_decision_trace` so integration tests
+/// can drive the aggregator with a handcrafted `AiContext` (bypassing
+/// `build_ai_context`, which depends on `state.deck_pools`).
+///
+/// Exposed `pub` with `#[doc(hidden)]` to keep the public surface area tight
+/// while enabling direct trace-contract assertions from `tests/`.
+#[doc(hidden)]
+pub fn emit_trace_for_candidate(
+    state: &GameState,
+    decision: &engine::ai_support::AiDecisionContext,
+    candidate: &engine::ai_support::CandidateAction,
+    ai_player: PlayerId,
+    config: &AiConfig,
+    context: &AiContext,
+) {
+    if !tracing::event_enabled!(target: "phase_ai::decision_trace", tracing::Level::DEBUG) {
+        return;
+    }
+    let policies = PolicyRegistry::default();
+    let cast_facts = cast_facts_for_action(state, &candidate.action, ai_player);
+    let policy_ctx = PolicyContext {
+        state,
+        decision,
+        candidate,
+        ai_player,
+        config,
+        context,
+        cast_facts,
+    };
+    let verdicts = policies.verdicts(&policy_ctx);
+
+    // Partition into Rejects (always logged) and Scores (top-3 by |delta|).
+    type RejectEntry = (PolicyId, &'static str, Vec<(&'static str, i64)>);
+    type ScoreEntry = (PolicyId, f64, &'static str, Vec<(&'static str, i64)>);
+    let mut rejects: Vec<RejectEntry> = Vec::new();
+    let mut scores: Vec<ScoreEntry> = Vec::new();
+    for (id, verdict) in verdicts {
+        match verdict {
+            PolicyVerdict::Reject { reason } => {
+                rejects.push((id, reason.kind, reason.facts));
+            }
+            PolicyVerdict::Score { delta, reason } => {
+                scores.push((id, delta, reason.kind, reason.facts));
+            }
+        }
+    }
+    scores.sort_by(|a, b| {
+        b.1.abs()
+            .partial_cmp(&a.1.abs())
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    let top: Vec<_> = scores.into_iter().take(3).collect();
+
+    let top_fmt: Vec<String> = top
+        .iter()
+        .map(|(id, delta, kind, facts)| format!("{:?}:{}={:+.3}{:?}", id, kind, delta, facts))
+        .collect();
+    let rejects_fmt: Vec<String> = rejects
+        .iter()
+        .map(|(id, kind, facts)| format!("{:?}:{}{:?}", id, kind, facts))
+        .collect();
+
+    tracing::debug!(
+        target: "phase_ai::decision_trace",
+        action = ?std::mem::discriminant(&candidate.action),
+        top_policies = ?top_fmt,
+        rejects = ?rejects_fmt,
+        "tactical decision"
+    );
 }
 
 /// Produce a safe action when the AI has no scored candidates.
