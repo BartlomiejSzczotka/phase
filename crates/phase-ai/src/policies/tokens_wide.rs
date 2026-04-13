@@ -76,9 +76,16 @@ fn score_cast_spell(
     };
 
     // Token generator: casting the factory is the highest-priority play. CR 111.1.
-    // At policy time we only have the runtime object's abilities; trigger.execute
-    // chains (e.g., upkeep triggers) are not stored on GameObject, so we pass
-    // an empty slice for the triggers argument.
+    //
+    // KNOWN GAP: `GameObject` does not carry a `triggers` field — triggered
+    // abilities are registered elsewhere in the trigger-watcher system and not
+    // queryable here. So this branch can only see token-generation in the
+    // direct ability chain. Cards like Bitterblossom (whose token creation
+    // lives in an upkeep `TriggerDefinition.execute`) won't get the per-cast
+    // bonus from this policy. They DO contribute to `commitment` (which is
+    // computed at deck-build time over `face.triggers` in the feature's
+    // `detect()`), so tempo class, mulligan, and board-wipe amplification all
+    // still react correctly. Only the per-cast +1.0 is suppressed.
     if is_token_generator_parts(&obj.abilities, &[]) {
         return PolicyVerdict::Score {
             delta: 1.0,

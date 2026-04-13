@@ -60,7 +60,7 @@ fn tempo_class_for(features: &DeckFeatures) -> TempoClass {
     // like an aggro deck — it wins through board-wide combat pressure.
     // Placed AFTER ramp branches (ramp+tokens reads as Ramp) and AFTER tribal
     // (tribal+tokens reads as Aggro already), BEFORE control.
-    if features.tokens_wide.commitment > TOKENS_WIDE_TEMPO_FLOOR {
+    if features.tokens_wide.commitment >= TOKENS_WIDE_TEMPO_FLOOR {
         return TempoClass::Aggro;
     }
     // A control deck with high commitment AND meaningful reactive_tempo reads

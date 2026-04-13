@@ -109,7 +109,9 @@ impl MulliganPolicy for TokensWideKeepablesMulligan {
         }
 
         // No generator in a committed deck → prefer to find one. CR 103.5.
-        if payoff_count == 0 && commitment > MULLIGAN_FLOOR {
+        // (`commitment > MULLIGAN_FLOOR` is implied by reaching this point —
+        // the early opt-out at top-of-fn already filtered `<= MULLIGAN_FLOOR`.)
+        if payoff_count == 0 {
             return MulliganScore::Score {
                 delta: -1.0,
                 reason: PolicyReason::new("tokens_wide_no_payoff")

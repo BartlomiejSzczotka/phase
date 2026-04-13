@@ -117,25 +117,29 @@ pub fn detect(deck: &[DeckEntry]) -> TokensWideFeature {
         let is_pump = is_mass_pump_parts(&face.abilities);
         let is_payoff = is_wide_payoff_parts(&face.triggers);
 
-        for _ in 0..entry.count {
-            if is_gen {
-                token_generator_count = token_generator_count.saturating_add(1);
-                payoff_names.push(face.name.clone());
-            }
-            if is_mass {
-                mass_token_generator_count = mass_token_generator_count.saturating_add(1);
-            }
-            if is_anthem {
-                anthem_count = anthem_count.saturating_add(1);
-                anthem_names.push(face.name.clone());
-            }
-            if is_pump {
-                mass_pump_count = mass_pump_count.saturating_add(1);
-                anthem_names.push(face.name.clone());
-            }
-            if is_payoff {
-                wide_payoff_count = wide_payoff_count.saturating_add(1);
-            }
+        // Counts scale with playset size; identity-lookup name lists do not.
+        // Push each unique face name once — mulligan policy iterates the lists,
+        // so dedup keeps lookups O(unique_faces) rather than O(decklist).
+        if is_gen {
+            token_generator_count = token_generator_count.saturating_add(entry.count);
+            payoff_names.push(face.name.clone());
+        }
+        if is_mass {
+            mass_token_generator_count = mass_token_generator_count.saturating_add(entry.count);
+        }
+        if is_anthem {
+            anthem_count = anthem_count.saturating_add(entry.count);
+        }
+        if is_pump {
+            mass_pump_count = mass_pump_count.saturating_add(entry.count);
+        }
+        // Single push per face — anthem-and-pump combo cards (Glorious Anthem
+        // shape with an Overrun activation) appear once in `anthem_names`.
+        if is_anthem || is_pump {
+            anthem_names.push(face.name.clone());
+        }
+        if is_payoff {
+            wide_payoff_count = wide_payoff_count.saturating_add(entry.count);
         }
     }
 
@@ -176,8 +180,12 @@ fn compute_commitment(
     let p = (wide_payoff_count as f32 / 3.0).min(1.0);
     let mass_bonus = (0.04 * mass_token_generator_count as f32).min(0.15);
 
+    // mass_token_generator_count is a strict subset of token_generator_count,
+    // so when generators are absent mass_bonus is necessarily zero — the early
+    // return collapses to 0.0. Keeping the branch explicit makes the
+    // commitment-collapse semantics unambiguous.
     if token_generator_count == 0 || (anthem_count + mass_pump_count) == 0 {
-        mass_bonus
+        0.0
     } else {
         ((g * a * p).powf(1.0 / 3.0) + mass_bonus).min(1.0)
     }
