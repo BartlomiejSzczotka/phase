@@ -4346,6 +4346,20 @@ pub enum ReplacementCondition {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         active_player_req: Option<ControllerRef>,
     },
+    /// General quantity-comparison gate for replacement effects.
+    /// "as long as <quantity condition>" — replacement applies only while the comparison is true.
+    /// Reuses QuantityExpr + Comparator building blocks.
+    /// `active_player_req` optionally gates the condition on whose turn it is:
+    ///   - `None` → pure quantity check, no turn requirement
+    ///   - `Some(You)` → must be controller's turn
+    ///   - `Some(Opponent)` → must be opponent's turn
+    OnlyIfQuantity {
+        lhs: QuantityExpr,
+        comparator: Comparator,
+        rhs: QuantityExpr,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        active_player_req: Option<ControllerRef>,
+    },
     /// CR 702.138c: "escapes with" — replacement applies only when the creature
     /// entered the battlefield via escape.
     CastViaEscape,

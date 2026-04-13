@@ -9,6 +9,8 @@ use nom_language::error::VerboseError;
 
 use super::oracle_effect::{parse_effect_chain, try_parse_named_choice};
 use super::oracle_keyword::parse_keyword_from_oracle;
+use super::oracle_nom::bridge::nom_on_lower;
+use super::oracle_nom::condition::parse_inner_condition;
 use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_quantity::capitalize_first;
 use super::oracle_static::split_keyword_list;
@@ -123,6 +125,10 @@ pub fn parse_replacement_line(text: &str, card_name: &str) -> Option<Replacement
     }
     // "damage can't be prevented" is handled by effect parsing (Effect::AddRestriction),
     // not replacement parsing. See oracle_effect.rs damage prevention disabled handler.
+
+    if let Some(def) = parse_conditional_draw_replacement(&text, &lower) {
+        return Some(def);
+    }
 
     // --- "If you would draw a card, {effect}" ---
     if nom_primitives::scan_contains(&lower, "you would draw") {
@@ -1410,11 +1416,75 @@ fn parse_color_word(word: &str) -> Option<ManaColor> {
 fn extract_replacement_effect(text: &str) -> Option<String> {
     // Find ", " after "would" or "instead" clause
     if let Some(effect) = strip_after(text, ", ").map(str::trim) {
-        if !effect.is_empty() {
-            return Some(effect.to_string());
+        let lower = effect.to_lowercase();
+        let effect = TextPair::new(effect, &lower)
+            .trim_end()
+            .trim_end_matches('.');
+        let effect = effect
+            .strip_suffix(" instead")
+            .map_or(effect, |trimmed| trimmed.trim_end());
+        if !effect.original.is_empty() {
+            return Some(effect.original.to_string());
         }
     }
     None
+}
+
+fn parse_conditional_draw_replacement(text: &str, lower: &str) -> Option<ReplacementDefinition> {
+    let ((condition_len, bonus), rest) = nom_on_lower(text, lower, |input| {
+        let (input, _) = tag("as long as ").parse(input)?;
+        let (input, condition_text) = take_until(", if you would draw ").parse(input)?;
+        let (input, _) = tag(", if you would draw ").parse(input)?;
+        let (input, _) = alt((tag("a card"), tag("one or more cards"))).parse(input)?;
+        let (input, _) = tag(", you draw that many cards plus ").parse(input)?;
+        let (input, bonus) = nom_primitives::parse_number.parse(input)?;
+        let (input, _) = tag(" instead").parse(input)?;
+        let (input, _) = opt(char('.')).parse(input)?;
+        Ok((input, (condition_text.len(), bonus)))
+    })?;
+    if !rest.trim().is_empty() {
+        return None;
+    }
+
+    let condition_start = "as long as ".len();
+    let condition_end = condition_start + condition_len;
+    let condition_text = &lower[condition_start..condition_end];
+    let (condition_rest, condition) = parse_inner_condition(condition_text).ok()?;
+    if !condition_rest.trim().is_empty() {
+        return None;
+    }
+    let offset = i32::try_from(bonus).ok()?;
+
+    let crate::types::ability::StaticCondition::QuantityComparison {
+        lhs,
+        comparator,
+        rhs,
+    } = condition
+    else {
+        return None;
+    };
+
+    Some(
+        ReplacementDefinition::new(ReplacementEvent::Draw)
+            .condition(ReplacementCondition::OnlyIfQuantity {
+                lhs,
+                comparator,
+                rhs,
+                active_player_req: None,
+            })
+            .execute(AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Offset {
+                        inner: Box::new(QuantityExpr::Ref {
+                            qty: QuantityRef::EventContextAmount,
+                        }),
+                        offset,
+                    },
+                },
+            ))
+            .description(text.to_string()),
+    )
 }
 
 /// CR 614.1a: Parse token creation replacement effects.
@@ -1807,7 +1877,9 @@ fn parse_generic_unless_condition(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ability::{QuantityExpr, ShieldKind};
+    use crate::types::ability::{
+        Comparator, ControllerRef, QuantityExpr, QuantityRef, ReplacementCondition, ShieldKind,
+    };
     use crate::types::card_type::Supertype;
     use crate::types::keywords::Keyword;
 
@@ -3181,6 +3253,39 @@ mod tests {
         )
         .unwrap();
         assert_eq!(def.event, ReplacementEvent::BeginTurn);
+    }
+
+    #[test]
+    fn conditional_draw_replacement_parses_quantity_gate_and_offset_draw() {
+        let def = parse_replacement_line(
+            "As long as you have one or fewer cards in hand, if you would draw one or more cards, you draw that many cards plus one instead.",
+            "Quantum Riddler",
+        )
+        .unwrap();
+
+        assert_eq!(def.event, ReplacementEvent::Draw);
+        assert_eq!(
+            def.condition,
+            Some(ReplacementCondition::OnlyIfQuantity {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::HandSize,
+                },
+                comparator: Comparator::LE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+                active_player_req: None,
+            })
+        );
+        assert!(matches!(
+            def.execute.as_deref().map(|ability| &*ability.effect),
+            Some(Effect::Draw {
+                count: QuantityExpr::Offset { inner, offset }
+            }) if matches!(
+                &**inner,
+                QuantityExpr::Ref {
+                    qty: QuantityRef::EventContextAmount
+                }
+            ) && *offset == 1
+        ));
     }
 
     #[test]

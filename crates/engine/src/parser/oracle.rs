@@ -946,6 +946,13 @@ pub fn parse_oracle_text(
         // effect parser at Priority 9. Damage-verb lines are also deferred because
         // parse_effect_chain handles embedded statics via split_clause_sequence.
         if is_static_pattern(&lower) {
+            if lower_starts_with(&lower, "as long as ") && is_replacement_pattern(&lower) {
+                if let Some(rep_def) = parse_replacement_line(&line, card_name) {
+                    result.replacements.push(rep_def);
+                    i += 1;
+                    continue;
+                }
+            }
             // Guard: ability-word-prefixed trigger lines (e.g., "Flurry — Whenever...")
             // handled above at Priority 6b. The check below is kept as a defensive
             // guard for any edge cases that reach Priority 7.
@@ -2046,7 +2053,8 @@ mod tests {
     use super::*;
     use crate::types::ability::{
         ContinuousModification, FilterProp, ManaSpendRestriction, ModalSelectionConstraint,
-        QuantityExpr, QuantityRef, StaticCondition, TargetFilter, TypeFilter, TypedFilter,
+        QuantityExpr, QuantityRef, ReplacementCondition, StaticCondition, TargetFilter, TypeFilter,
+        TypedFilter,
     };
     use crate::types::keywords::{FlashbackCost, KeywordKind};
     use crate::types::mana::ManaCost;
@@ -6195,6 +6203,33 @@ mod tests {
             },
             other => panic!("expected ConditionInstead on sub, got: {other:?}"),
         }
+    }
+
+    #[test]
+    fn quantum_riddler_draw_line_parses_as_replacement_not_static() {
+        let result = parse(
+            "As long as you have one or fewer cards in hand, if you would draw one or more cards, you draw that many cards plus one instead.",
+            "Quantum Riddler",
+            &[],
+            &["Creature"],
+            &["Sphinx"],
+        );
+
+        assert_eq!(
+            result.statics.len(),
+            0,
+            "line should not fall back to static parsing"
+        );
+        assert_eq!(
+            result.replacements.len(),
+            1,
+            "line should parse as one replacement"
+        );
+        assert!(matches!(
+            result.replacements[0].condition,
+            Some(ReplacementCondition::OnlyIfQuantity { .. })
+        ));
+        assert_eq!(result.replacements[0].event, ReplacementEvent::Draw);
     }
 
     /// CR 205.3a: "[Subtype] [CoreType]" subject-predicate patterns like

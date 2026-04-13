@@ -365,16 +365,80 @@ fn destroy_applier(
 // --- 4. Draw ---
 
 fn draw_matcher(event: &ProposedEvent, _source: ObjectId, _state: &GameState) -> bool {
-    matches!(event, ProposedEvent::Draw { .. })
+    matches!(event, ProposedEvent::Draw { count, .. } if *count > 0)
 }
 
 fn draw_applier(
     event: ProposedEvent,
-    _rid: ReplacementId,
-    _state: &mut GameState,
+    rid: ReplacementId,
+    state: &mut GameState,
     _events: &mut Vec<GameEvent>,
 ) -> ApplyResult {
-    ApplyResult::Modified(event)
+    let Some(new_count) = draw_replacement_count(state, rid, &event) else {
+        return ApplyResult::Modified(event);
+    };
+
+    if let ProposedEvent::Draw {
+        player_id, applied, ..
+    } = event
+    {
+        ApplyResult::Modified(ProposedEvent::Draw {
+            player_id,
+            count: new_count,
+            applied,
+        })
+    } else {
+        ApplyResult::Modified(event)
+    }
+}
+
+fn draw_replacement_count(
+    state: &GameState,
+    rid: ReplacementId,
+    event: &ProposedEvent,
+) -> Option<u32> {
+    let ProposedEvent::Draw { count, .. } = event else {
+        return None;
+    };
+
+    let execute = state
+        .objects
+        .get(&rid.source)?
+        .replacement_definitions
+        .get(rid.index)?
+        .execute
+        .as_deref()?;
+
+    match &*execute.effect {
+        Effect::Draw { count: qty } if execute.sub_ability.is_none() => {
+            let resolved = resolve_draw_replacement_quantity(qty, *count)?;
+            Some(resolved.max(0) as u32)
+        }
+        _ => None,
+    }
+}
+
+fn resolve_draw_replacement_quantity(expr: &QuantityExpr, event_count: u32) -> Option<i32> {
+    match expr {
+        QuantityExpr::Ref {
+            qty: crate::types::ability::QuantityRef::EventContextAmount,
+        } => Some(event_count as i32),
+        QuantityExpr::Fixed { value } => Some(*value),
+        QuantityExpr::HalfRounded { inner, rounding } => {
+            let value = resolve_draw_replacement_quantity(inner, event_count)?;
+            Some(match rounding {
+                crate::types::ability::RoundingMode::Up => (value + 1) / 2,
+                crate::types::ability::RoundingMode::Down => value / 2,
+            })
+        }
+        QuantityExpr::Offset { inner, offset } => {
+            Some(resolve_draw_replacement_quantity(inner, event_count)? + offset)
+        }
+        QuantityExpr::Multiply { factor, inner } => {
+            Some(factor * resolve_draw_replacement_quantity(inner, event_count)?)
+        }
+        QuantityExpr::Ref { .. } => None,
+    }
 }
 
 // --- 5. GainLife ---
@@ -1143,6 +1207,26 @@ fn evaluate_replacement_condition(
                 crate::game::quantity::resolve_quantity(state, rhs, controller, source_id);
             !comparator.evaluate(lhs_val, rhs_val)
         }
+        ReplacementCondition::OnlyIfQuantity {
+            lhs,
+            comparator,
+            rhs,
+            active_player_req,
+        } => {
+            let turn_ok = match active_player_req {
+                Some(ControllerRef::You) => state.active_player == controller,
+                Some(ControllerRef::Opponent) => state.active_player != controller,
+                None => true,
+            };
+            if !turn_ok {
+                return false;
+            }
+            let lhs_val =
+                crate::game::quantity::resolve_quantity(state, lhs, controller, source_id);
+            let rhs_val =
+                crate::game::quantity::resolve_quantity(state, rhs, controller, source_id);
+            comparator.evaluate(lhs_val, rhs_val)
+        }
         // CR 702.138c: "escapes with" — applies only when the source was cast via escape.
         // Check cast_from_zone on the entering permanent as a proxy for escape.
         ReplacementCondition::CastViaEscape => state
@@ -1341,7 +1425,9 @@ pub fn find_applicable_replacements(
                     // CR 614.1a: valid_player scope — restricts which player's events
                     // trigger this replacement. For GainLife events, determines whose life
                     // gain is replaced. Default (None) = controller only.
-                    if let ProposedEvent::LifeGain { player_id, .. } = event {
+                    if let ProposedEvent::LifeGain { player_id, .. }
+                    | ProposedEvent::Draw { player_id, .. } = event
+                    {
                         let player_ok = match &repl_def.valid_player {
                             Some(crate::types::ability::ControllerRef::Opponent) => {
                                 *player_id != obj.controller
@@ -1888,6 +1974,106 @@ mod tests {
             }
             other => panic!("expected Execute with LifeGain, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn draw_replacement_uses_event_context_amount_with_offset() {
+        let repl =
+            ReplacementDefinition::new(ReplacementEvent::Draw).execute(AbilityDefinition::new(
+                crate::types::ability::AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Offset {
+                        inner: Box::new(QuantityExpr::Ref {
+                            qty: crate::types::ability::QuantityRef::EventContextAmount,
+                        }),
+                        offset: 1,
+                    },
+                },
+            ));
+        let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
+        let mut events = Vec::new();
+
+        let proposed = ProposedEvent::Draw {
+            player_id: PlayerId(0),
+            count: 3,
+            applied: HashSet::new(),
+        };
+
+        let result = replace_event(&mut state, proposed, &mut events);
+        match result {
+            ReplacementResult::Execute(ProposedEvent::Draw { count, .. }) => {
+                assert_eq!(count, 4);
+            }
+            other => panic!("expected Execute with Draw, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn draw_replacement_does_not_apply_when_quantity_gate_is_false() {
+        let repl = ReplacementDefinition::new(ReplacementEvent::Draw)
+            .condition(ReplacementCondition::OnlyIfQuantity {
+                lhs: QuantityExpr::Ref {
+                    qty: crate::types::ability::QuantityRef::HandSize,
+                },
+                comparator: crate::types::ability::Comparator::LE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+                active_player_req: None,
+            })
+            .execute(AbilityDefinition::new(
+                crate::types::ability::AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Offset {
+                        inner: Box::new(QuantityExpr::Ref {
+                            qty: crate::types::ability::QuantityRef::EventContextAmount,
+                        }),
+                        offset: 1,
+                    },
+                },
+            ));
+        let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
+        state.players[0].hand.extend([ObjectId(20), ObjectId(21)]);
+        let mut events = Vec::new();
+
+        let proposed = ProposedEvent::Draw {
+            player_id: PlayerId(0),
+            count: 3,
+            applied: HashSet::new(),
+        };
+
+        let result = replace_event(&mut state, proposed, &mut events);
+        match result {
+            ReplacementResult::Execute(ProposedEvent::Draw { count, .. }) => {
+                assert_eq!(count, 3);
+            }
+            other => panic!("expected Execute with Draw, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn draw_replacement_does_not_apply_to_zero_card_draws() {
+        let repl =
+            ReplacementDefinition::new(ReplacementEvent::Draw).execute(AbilityDefinition::new(
+                crate::types::ability::AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Offset {
+                        inner: Box::new(QuantityExpr::Ref {
+                            qty: crate::types::ability::QuantityRef::EventContextAmount,
+                        }),
+                        offset: 1,
+                    },
+                },
+            ));
+        let state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
+        let proposed = ProposedEvent::Draw {
+            player_id: PlayerId(0),
+            count: 0,
+            applied: HashSet::new(),
+        };
+        let registry = build_replacement_registry();
+        assert!(
+            find_applicable_replacements(&state, &proposed, &registry).is_empty(),
+            "draw replacements with 'one or more' semantics should not apply to zero-card draws"
+        );
     }
 
     #[test]
@@ -3075,6 +3261,61 @@ mod tests {
         assert!(
             !evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state, None),
             "Should be suppressed (untapped) with no turn requirement"
+        );
+    }
+
+    #[test]
+    fn only_if_quantity_applies_when_condition_is_true() {
+        let mut state = GameState::new_two_player(42);
+        state.players[0].hand.truncate(1);
+        let cond = ReplacementCondition::OnlyIfQuantity {
+            lhs: QuantityExpr::Ref {
+                qty: crate::types::ability::QuantityRef::HandSize,
+            },
+            comparator: crate::types::ability::Comparator::LE,
+            rhs: QuantityExpr::Fixed { value: 1 },
+            active_player_req: None,
+        };
+        assert!(
+            evaluate_replacement_condition(&cond, PlayerId(0), ObjectId(1), &state, None),
+            "Should apply while hand size is one or fewer"
+        );
+    }
+
+    #[test]
+    fn only_if_quantity_is_filtered_for_opponent_draws() {
+        let repl = ReplacementDefinition::new(ReplacementEvent::Draw)
+            .condition(ReplacementCondition::OnlyIfQuantity {
+                lhs: QuantityExpr::Ref {
+                    qty: crate::types::ability::QuantityRef::HandSize,
+                },
+                comparator: crate::types::ability::Comparator::LE,
+                rhs: QuantityExpr::Fixed { value: 1 },
+                active_player_req: None,
+            })
+            .execute(AbilityDefinition::new(
+                crate::types::ability::AbilityKind::Spell,
+                Effect::Draw {
+                    count: QuantityExpr::Offset {
+                        inner: Box::new(QuantityExpr::Ref {
+                            qty: crate::types::ability::QuantityRef::EventContextAmount,
+                        }),
+                        offset: 1,
+                    },
+                },
+            ));
+        let mut state = test_state_with_object(ObjectId(10), Zone::Battlefield, vec![repl]);
+        state.players[0].hand.truncate(1);
+
+        let proposed = ProposedEvent::Draw {
+            player_id: PlayerId(1),
+            count: 2,
+            applied: HashSet::new(),
+        };
+        let registry = build_replacement_registry();
+        assert!(
+            find_applicable_replacements(&state, &proposed, &registry).is_empty(),
+            "Controller-only draw replacement should not apply to opponent draws"
         );
     }
 
