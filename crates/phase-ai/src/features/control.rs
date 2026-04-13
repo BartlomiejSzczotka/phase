@@ -273,18 +273,17 @@ fn is_spot_removal_effect(e: &&Effect) -> bool {
     }
 }
 
-/// Card draw detection. Only `AbilityKind::Spell` abilities count — activated
-/// draw abilities (e.g., on artifacts) and land-activated cantrips are excluded.
-/// Lands are excluded by the caller's `!is_land` gate.
+/// Parts-based card draw classifier. Exported `pub(crate)` so `spellslinger_prowess`
+/// can call it for cantrip detection without re-implementing the impulse-cast
+/// carve-out logic.
 ///
-/// CR 120.1: drawing cards replenishes hand and provides card advantage. An
-/// `Effect::Dig` whose kept-card destination is `Exile` is impulse-cast (e.g.,
-/// Outpost Siege "exile, you may play it this turn") — it doesn't move cards
-/// to hand and doesn't satisfy CR 120.1's definition of card draw, so it is
-/// excluded. Dig variants whose destination is `None` (defaults to Hand) or
-/// explicitly `Hand` are accepted.
-fn is_card_draw(face: &CardFace) -> bool {
-    face.abilities.iter().any(|ability| {
+/// CR 121.1: drawing cards moves them to hand. An `Effect::Dig` whose kept-card
+/// destination is `Exile` is impulse-cast (e.g., Outpost Siege variant) — it
+/// doesn't move cards to hand and doesn't satisfy CR 121.1, so it is excluded.
+/// Dig variants whose destination is `None` (defaults to Hand) or explicitly
+/// `Hand` are accepted. Only `AbilityKind::Spell` abilities count.
+pub(crate) fn is_card_draw_parts(abilities: &[AbilityDefinition]) -> bool {
+    abilities.iter().any(|ability| {
         ability.kind == AbilityKind::Spell
             && collect_chain_effects(ability).iter().any(|e| match e {
                 // Any non-zero draw counts. `Fixed { value: 0 }` is a no-op
@@ -297,6 +296,12 @@ fn is_card_draw(face: &CardFace) -> bool {
                 _ => false,
             })
     })
+}
+
+/// Thin wrapper around `is_card_draw_parts` for callers that have a full
+/// `CardFace`. Lands are excluded by the caller's `!is_land` gate.
+fn is_card_draw(face: &CardFace) -> bool {
+    is_card_draw_parts(&face.abilities)
 }
 
 #[inline]

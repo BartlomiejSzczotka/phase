@@ -26,6 +26,7 @@ mod ramp_timing;
 mod recursion_awareness;
 pub mod registry;
 mod sacrifice_value;
+mod spellslinger_casting;
 pub(crate) mod stack_awareness;
 pub(crate) mod strategy_helpers;
 mod sweeper_timing;

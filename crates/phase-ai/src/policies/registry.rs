@@ -22,6 +22,7 @@ use super::plus_one_counters::PlusOneCountersPolicy;
 use super::ramp_timing::RampTimingPolicy;
 use super::recursion_awareness::RecursionAwarenessPolicy;
 use super::sacrifice_value::SacrificeValuePolicy;
+use super::spellslinger_casting::SpellslingerCastingPolicy;
 use super::sweeper_timing::SweeperTimingPolicy;
 use super::tokens_wide::TokensWidePolicy;
 use super::tribal_lord_priority::TribalLordPriorityPolicy;
@@ -77,6 +78,8 @@ pub enum PolicyId {
     TokensWideMulligan,
     PlusOneCountersTactical,
     PlusOneCountersMulligan,
+    SpellslingerCasting,
+    SpellslingerKeepablesMulligan,
 }
 
 /// Coarse routing kind for a candidate decision. Each policy declares which
@@ -194,6 +197,7 @@ impl Default for PolicyRegistry {
             Box::new(TokensWidePolicy),
             Box::new(AnthemPriorityPolicy),
             Box::new(PlusOneCountersPolicy),
+            Box::new(SpellslingerCastingPolicy),
         ];
         let mut by_kind: HashMap<DecisionKind, Vec<usize>> = HashMap::new();
         for (idx, policy) in policies.iter().enumerate() {

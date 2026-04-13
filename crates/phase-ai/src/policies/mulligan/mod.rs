@@ -34,6 +34,7 @@ pub mod keepables_by_land_count;
 pub mod landfall_keepables;
 pub mod plus_one_counters_keepables;
 pub mod ramp_keepables;
+pub mod spellslinger_keepables;
 pub mod tokens_wide_keepables;
 pub mod tribal_density;
 
@@ -43,6 +44,7 @@ pub use keepables_by_land_count::KeepablesByLandCount;
 pub use landfall_keepables::LandfallKeepablesMulligan;
 pub use plus_one_counters_keepables::PlusOneCountersMulligan;
 pub use ramp_keepables::RampKeepablesMulligan;
+pub use spellslinger_keepables::SpellslingerKeepablesMulligan;
 pub use tokens_wide_keepables::TokensWideKeepablesMulligan;
 pub use tribal_density::TribalDensityMulligan;
 
@@ -107,6 +109,7 @@ impl Default for MulliganRegistry {
                 Box::new(AggroKeepablesMulligan),
                 Box::new(TokensWideKeepablesMulligan),
                 Box::new(PlusOneCountersMulligan),
+                Box::new(SpellslingerKeepablesMulligan),
             ],
         }
     }
