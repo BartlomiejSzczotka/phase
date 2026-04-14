@@ -1058,6 +1058,16 @@ pub enum WaitingFor {
         legend_name: String,
         candidates: Vec<ObjectId>,
     },
+    /// CR 310.10 + CR 704.5w + CR 704.5x: A battle that isn't being attacked has no
+    /// protector, an illegal protector, or (for Sieges) a protector equal to its
+    /// controller. The battle's controller (`player`) chooses a legal protector from
+    /// `candidates`. Emitted only when `candidates.len() > 1`; the SBA auto-applies
+    /// the singleton case and sends the battle to the graveyard when empty.
+    BattleProtectorChoice {
+        player: PlayerId,
+        battle_id: ObjectId,
+        candidates: Vec<PlayerId>,
+    },
     /// CR 701.34a: Player chooses any number of permanents and/or players that have
     /// counters on them, then adds one counter of each kind already there.
     ProliferateChoice {
@@ -1262,6 +1272,7 @@ impl WaitingFor {
             | WaitingFor::ClashCardPlacement { player, .. }
             | WaitingFor::CompanionReveal { player, .. }
             | WaitingFor::ChooseLegend { player, .. }
+            | WaitingFor::BattleProtectorChoice { player, .. }
             | WaitingFor::ProliferateChoice { player, .. }
             | WaitingFor::CategoryChoice { player, .. }
             | WaitingFor::CopyRetarget { player, .. }

@@ -4,6 +4,7 @@ use super::ability::TargetRef;
 use super::game_state::{AutoPassRequest, CombatDamageAssignmentMode};
 use super::identifiers::{CardId, ObjectId};
 use super::match_config::DeckCardCount;
+use super::player::PlayerId;
 use crate::game::combat::AttackTarget;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, strum::IntoStaticStr)]
@@ -166,6 +167,11 @@ pub enum GameAction {
     /// CR 704.5j: Choose which legendary permanent to keep.
     ChooseLegend {
         keep: ObjectId,
+    },
+    /// CR 310.10 + CR 704.5w + CR 704.5x: Choose which player becomes the
+    /// battle's new protector when the SBA pauses with a `BattleProtectorChoice`.
+    ChooseBattleProtector {
+        protector: PlayerId,
     },
     /// Set auto-pass mode for the acting player (CR 117.4).
     SetAutoPass {

@@ -1072,6 +1072,7 @@ impl GameRunner {
             WaitingFor::DiscoverChoice { .. } => "DiscoverChoice",
             WaitingFor::TopOrBottomChoice { .. } => "TopOrBottomChoice",
             WaitingFor::ChooseLegend { .. } => "ChooseLegend",
+            WaitingFor::BattleProtectorChoice { .. } => "BattleProtectorChoice",
             WaitingFor::ProliferateChoice { .. } => "ProliferateChoice",
             WaitingFor::CopyRetarget { .. } => "CopyRetarget",
             WaitingFor::AssignCombatDamage { .. } => "AssignCombatDamage",

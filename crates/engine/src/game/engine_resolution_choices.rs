@@ -43,6 +43,7 @@ pub(super) fn handles(waiting_for: &WaitingFor) -> bool {
             | WaitingFor::ChooseDungeon { .. }
             | WaitingFor::ChooseDungeonRoom { .. }
             | WaitingFor::ChooseLegend { .. }
+            | WaitingFor::BattleProtectorChoice { .. }
             | WaitingFor::CategoryChoice { .. }
     )
 }
@@ -913,6 +914,32 @@ pub(super) fn handle_resolution_choice(
                 .collect();
             for id in to_remove {
                 zones::move_to_zone(state, id, Zone::Graveyard, events);
+            }
+            ResolutionChoiceOutcome::WaitingFor(WaitingFor::Priority {
+                player: state.active_player,
+            })
+        }
+        // CR 310.10 + CR 704.5w + CR 704.5x: controller assigns the battle's new
+        // protector. Re-running the SBA fixpoint (via the Priority resumption) will
+        // find any remaining battles still needing reassignment.
+        (
+            WaitingFor::BattleProtectorChoice {
+                battle_id,
+                candidates,
+                ..
+            },
+            GameAction::ChooseBattleProtector { protector },
+        ) => {
+            if !candidates.contains(&protector) {
+                return Err(EngineError::InvalidAction(
+                    "Invalid battle protector choice — not a candidate".to_string(),
+                ));
+            }
+            if let Some(obj) = state.objects.get_mut(&battle_id) {
+                obj.chosen_attributes
+                    .retain(|a| !matches!(a, ChosenAttribute::Player(_)));
+                obj.chosen_attributes
+                    .push(ChosenAttribute::Player(protector));
             }
             ResolutionChoiceOutcome::WaitingFor(WaitingFor::Priority {
                 player: state.active_player,

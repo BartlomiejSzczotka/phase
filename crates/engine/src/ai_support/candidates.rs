@@ -948,6 +948,19 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
                 )
             })
             .collect(),
+        // CR 310.10 + CR 704.5w + CR 704.5x: controller chooses a new protector.
+        WaitingFor::BattleProtectorChoice {
+            player, candidates, ..
+        } => candidates
+            .iter()
+            .map(|&protector| {
+                candidate(
+                    GameAction::ChooseBattleProtector { protector },
+                    TacticalClass::Selection,
+                    Some(*player),
+                )
+            })
+            .collect(),
         // CR 701.54a: Choose a ring-bearer from candidate creatures.
         WaitingFor::ChooseRingBearer { player, candidates } => candidates
             .iter()

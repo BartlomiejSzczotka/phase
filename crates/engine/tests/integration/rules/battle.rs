@@ -143,6 +143,173 @@ fn battle_attack_defending_player_is_protector() {
     assert!(matches!(info.attack_target, AttackTarget::Battle(id) if id == siege_id));
 }
 
+// ---------------------------------------------------------------------------
+// CR 310.10 + CR 704.5w + CR 704.5x: SBA protector reassignment.
+// Multi-candidate (3+ player) branch must pause with
+// `WaitingFor::BattleProtectorChoice`; singleton (2-player) must auto-apply.
+// ---------------------------------------------------------------------------
+
+/// CR 704.5x: 2-player Siege whose protector equals its controller (illegal).
+/// Only one legal opponent remains, so the SBA auto-applies and never pauses.
+#[test]
+fn battle_protector_auto_applies_with_single_candidate_2p() {
+    let (mut runner, battle) = prime_siege(P0, P0, "Self-Protected Siege", 3);
+    // Baseline: protector == controller (illegal per CR 310.8b / 310.11a).
+    assert_eq!(runner.state().objects[&battle].protector(), Some(P0));
+
+    let mut events = Vec::new();
+    sba::check_state_based_actions(runner.state_mut(), &mut events);
+
+    // SBA auto-picked the only legal opponent (P1). No choice was surfaced.
+    assert_eq!(runner.state().objects[&battle].protector(), Some(P1));
+    assert!(
+        !matches!(
+            runner.state().waiting_for,
+            WaitingFor::BattleProtectorChoice { .. }
+        ),
+        "2-player Siege with a singleton candidate list must not surface a choice"
+    );
+    assert!(runner.state().battlefield.contains(&battle));
+}
+
+/// CR 310.10 + CR 704.5w + CR 704.5x: In a 3-player game the controller has two
+/// legal opponents, so the SBA must pause with `BattleProtectorChoice`. Submitting
+/// `ChooseBattleProtector` assigns the chosen player via `ChosenAttribute::Player`
+/// and resumes the game.
+#[test]
+fn battle_protector_pauses_for_choice_with_multiple_candidates_3p() {
+    const P2: PlayerId = PlayerId(2);
+
+    let mut scenario = GameScenario::new_n_player(3, 7);
+    scenario.at_phase(Phase::PreCombatMain);
+    let battle = scenario.add_creature(P0, "Contested Siege", 0, 0).id();
+    let mut runner = scenario.build();
+    // Seed with controller == protector (illegal per CR 704.5x), so the SBA
+    // fires with both opponents (P1, P2) as legal candidates.
+    make_into_siege(&mut runner, battle, P0, 3);
+
+    let mut events = Vec::new();
+    sba::check_state_based_actions(runner.state_mut(), &mut events);
+
+    // SBA paused with an interactive choice for the battle's controller.
+    match runner.state().waiting_for.clone() {
+        WaitingFor::BattleProtectorChoice {
+            player,
+            battle_id,
+            candidates,
+        } => {
+            assert_eq!(player, P0);
+            assert_eq!(battle_id, battle);
+            assert!(candidates.contains(&P1));
+            assert!(candidates.contains(&P2));
+            assert_eq!(candidates.len(), 2);
+        }
+        other => panic!("Expected BattleProtectorChoice, got {:?}", other),
+    }
+    // Protector field is unchanged while the choice is pending.
+    assert_eq!(runner.state().objects[&battle].protector(), Some(P0));
+
+    // Controller submits their pick (P2) — assignment is applied and the game
+    // resumes at Priority.
+    runner
+        .act(GameAction::ChooseBattleProtector { protector: P2 })
+        .expect("ChooseBattleProtector should resolve");
+
+    assert_eq!(runner.state().objects[&battle].protector(), Some(P2));
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::Priority { .. }
+    ));
+}
+
+/// CR 310.10: Submitting a protector that isn't in the candidate list is rejected.
+#[test]
+fn battle_protector_choice_rejects_invalid_candidate() {
+    const P2: PlayerId = PlayerId(2);
+
+    let mut scenario = GameScenario::new_n_player(3, 11);
+    scenario.at_phase(Phase::PreCombatMain);
+    let battle = scenario.add_creature(P0, "Invalid Choice Siege", 0, 0).id();
+    let mut runner = scenario.build();
+    make_into_siege(&mut runner, battle, P0, 3);
+
+    let mut events = Vec::new();
+    sba::check_state_based_actions(runner.state_mut(), &mut events);
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::BattleProtectorChoice { .. }
+    ));
+
+    // P0 is the controller — not a legal Siege protector (CR 310.11a).
+    let err = runner
+        .act(GameAction::ChooseBattleProtector { protector: P0 })
+        .expect_err("choosing a non-candidate player must be rejected");
+    // Choice is still pending; battle is still on the battlefield.
+    let _ = err;
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::BattleProtectorChoice { .. }
+    ));
+    // Valid choice still resolves.
+    runner
+        .act(GameAction::ChooseBattleProtector { protector: P2 })
+        .expect("valid candidate should resolve");
+    assert_eq!(runner.state().objects[&battle].protector(), Some(P2));
+}
+
+/// CR 310.10 / CR 704.5w: When no legal candidate exists, the battle is put
+/// into its owner's graveyard. This preserves the existing 0-candidate fallback.
+#[test]
+fn battle_with_no_legal_protector_goes_to_graveyard() {
+    // 2-player Siege whose only opponent (P1) has been eliminated — no legal
+    // protector exists, so CR 310.10 sends the battle to the graveyard.
+    let (mut runner, battle) = prime_siege(P0, P0, "Abandoned Siege", 3);
+    runner.state_mut().eliminated_players.push(P1);
+
+    let mut events = Vec::new();
+    sba::check_state_based_actions(runner.state_mut(), &mut events);
+
+    assert_eq!(runner.state().objects[&battle].zone, Zone::Graveyard);
+    assert!(!runner.state().battlefield.contains(&battle));
+    assert!(!matches!(
+        runner.state().waiting_for,
+        WaitingFor::BattleProtectorChoice { .. }
+    ));
+}
+
+/// CR 310.10 + CR 704.5w: AI routing — when the 3-player SBA pauses with a
+/// protector choice, `legal_actions` emits one `ChooseBattleProtector` candidate
+/// per legal opponent, so the AI has a deterministic decision surface.
+#[test]
+fn battle_protector_choice_emits_ai_candidates_per_opponent() {
+    const P2: PlayerId = PlayerId(2);
+
+    let mut scenario = GameScenario::new_n_player(3, 19);
+    scenario.at_phase(Phase::PreCombatMain);
+    let battle = scenario.add_creature(P0, "AI Siege", 0, 0).id();
+    let mut runner = scenario.build();
+    make_into_siege(&mut runner, battle, P0, 3);
+
+    let mut events = Vec::new();
+    sba::check_state_based_actions(runner.state_mut(), &mut events);
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::BattleProtectorChoice { .. }
+    ));
+
+    let actions = engine::ai_support::legal_actions(runner.state());
+    let picks: Vec<PlayerId> = actions
+        .into_iter()
+        .filter_map(|a| match a {
+            GameAction::ChooseBattleProtector { protector } => Some(protector),
+            _ => None,
+        })
+        .collect();
+    assert!(picks.contains(&P1));
+    assert!(picks.contains(&P2));
+    assert_eq!(picks.len(), 2);
+}
+
 /// CR 310.8b: A battle's protector cannot attack it — the declaration is illegal.
 #[test]
 fn battle_protector_cannot_attack_own_battle() {

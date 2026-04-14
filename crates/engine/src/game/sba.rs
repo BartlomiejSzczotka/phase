@@ -648,6 +648,12 @@ fn check_battle_unattached(state: &mut GameState, any_performed: &mut bool) {
 /// attacked has no protector, an illegal protector, or (for Sieges) a protector
 /// that equals its controller, its controller chooses a legal protector. If no
 /// legal player exists, the battle is put into its owner's graveyard.
+///
+/// When multiple legal candidates exist (3+ player games), the SBA pauses with
+/// `WaitingFor::BattleProtectorChoice` so the controller can choose interactively
+/// (mirrors `check_legend_rule`). 2-player games and singleton candidate lists
+/// auto-apply — the CR-mandated "controller chooses" is vacuous over a one-element
+/// choice space.
 fn check_battle_protector(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
@@ -717,26 +723,38 @@ fn check_battle_protector(
             vec![controller]
         };
 
-        if legal_choices.is_empty() {
-            // CR 310.10 / CR 704.5w: No legal protector exists — graveyard.
-            zones::move_to_zone(state, battle_id, Zone::Graveyard, events);
-            *any_performed = true;
-            continue;
+        match legal_choices.len() {
+            0 => {
+                // CR 310.10 / CR 704.5w: No legal protector exists — graveyard.
+                zones::move_to_zone(state, battle_id, Zone::Graveyard, events);
+                *any_performed = true;
+            }
+            1 => {
+                // Singleton choice space — "controller chooses" is vacuous.
+                // Preserves the 2-player fast path (exactly one legal opponent).
+                let chosen = legal_choices[0];
+                if let Some(obj) = state.objects.get_mut(&battle_id) {
+                    obj.chosen_attributes.retain(|a| {
+                        !matches!(a, crate::types::ability::ChosenAttribute::Player(_))
+                    });
+                    obj.chosen_attributes
+                        .push(crate::types::ability::ChosenAttribute::Player(chosen));
+                }
+                *any_performed = true;
+            }
+            _ => {
+                // CR 310.10 + CR 704.5w + CR 704.5x: multiple legal protectors —
+                // the controller must choose. Pause the SBA fixpoint and yield
+                // a WaitingFor (mirrors `check_legend_rule`). The SBA re-runs
+                // on the next apply and finds any remaining battles.
+                state.waiting_for = WaitingFor::BattleProtectorChoice {
+                    player: controller,
+                    battle_id,
+                    candidates: legal_choices,
+                };
+                return;
+            }
         }
-
-        // Deterministic auto-pick: first legal choice. The idiomatic interactive
-        // path would use a NamedChoice WaitingFor, but SBAs must run to fixpoint
-        // without yielding priority (CR 704.3). Auto-assignment matches the
-        // common case (single opponent in 2-player) and is the same fallback the
-        // engine uses for goad targeting during SBAs.
-        let chosen = legal_choices[0];
-        if let Some(obj) = state.objects.get_mut(&battle_id) {
-            obj.chosen_attributes
-                .retain(|a| !matches!(a, crate::types::ability::ChosenAttribute::Player(_)));
-            obj.chosen_attributes
-                .push(crate::types::ability::ChosenAttribute::Player(chosen));
-        }
-        *any_performed = true;
     }
 }
 
