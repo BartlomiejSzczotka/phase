@@ -707,7 +707,13 @@ pub enum CastingPermission {
     AdventureCreature,
     /// Card may be cast from exile for the specified cost by its owner.
     /// Building block for Airbending, Foretell, Suspend, and similar "cast from exile" mechanics.
-    ExileWithAltCost { cost: ManaCost },
+    /// `cast_transformed` causes the spell to resolve to its back face (CR 712.14a); used
+    /// by Siege victory triggers (CR 310.11b: "cast it transformed without paying its mana cost").
+    ExileWithAltCost {
+        cost: ManaCost,
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cast_transformed: bool,
+    },
     /// CR 400.7i: Play from exile until duration expires (impulse draw).
     /// Building block for "exile top N, choose one, you may play it this turn" patterns.
     PlayFromExile { duration: Duration },
@@ -2702,6 +2708,11 @@ pub enum Effect {
         /// CR 601.2 vs CR 305.1: Cast (spells only) vs Play (spells + lands).
         #[serde(default)]
         mode: CardPlayMode,
+        /// CR 712.14a + CR 310.11b: When true, the card is cast transformed — it
+        /// resolves to its back face (used by Siege victory: "cast it transformed
+        /// without paying its mana cost").
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        cast_transformed: bool,
     },
     /// CR 615: Prevent damage to a target.
     PreventDamage {

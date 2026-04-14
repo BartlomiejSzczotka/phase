@@ -28,6 +28,11 @@ pub fn apply_card_face_to_object(obj: &mut GameObject, card_face: &CardFace) {
         .loyalty
         .as_ref()
         .and_then(|value| value.parse::<u32>().ok());
+    // CR 310.4a: Printed defense number for battles.
+    let defense = card_face
+        .defense
+        .as_ref()
+        .and_then(|value| value.parse::<u32>().ok());
     let keywords = card_face.keywords.clone();
     let color = card_face
         .color_override
@@ -38,9 +43,16 @@ pub fn apply_card_face_to_object(obj: &mut GameObject, card_face: &CardFace) {
     obj.power = power;
     obj.toughness = toughness;
     obj.loyalty = loyalty;
+    obj.defense = defense;
     // CR 306.5b: Sync loyalty counters so HasCounters condition works for animation statics.
     if let Some(loy) = loyalty {
         obj.counters.insert(CounterType::Loyalty, loy);
+    }
+    // CR 310.4b + CR 614.1c: Battles have the intrinsic replacement "This permanent
+    // enters with a number of defense counters equal to its printed defense number."
+    // Seed the defense counter so CR 310.4c's "defense = counter count" invariant holds.
+    if let Some(def) = defense {
+        obj.counters.insert(CounterType::Defense, def);
     }
     obj.card_types = card_face.card_type.clone();
     obj.mana_cost = card_face.mana_cost.clone();
@@ -54,6 +66,7 @@ pub fn apply_card_face_to_object(obj: &mut GameObject, card_face: &CardFace) {
     obj.base_toughness = toughness;
     obj.base_name = card_face.name.clone();
     obj.base_loyalty = loyalty;
+    obj.base_defense = defense;
     obj.base_card_types = card_face.card_type.clone();
     obj.base_mana_cost = card_face.mana_cost.clone();
     obj.base_keywords = keywords;
@@ -94,6 +107,11 @@ pub fn apply_card_face_to_back_face(back_face: &mut BackFaceData, card_face: &Ca
         .loyalty
         .as_ref()
         .and_then(|value| value.parse::<u32>().ok());
+    // CR 310.4a: Back-face printed defense for DFCs that transform into battles.
+    let defense = card_face
+        .defense
+        .as_ref()
+        .and_then(|value| value.parse::<u32>().ok());
     let color = card_face
         .color_override
         .clone()
@@ -103,6 +121,7 @@ pub fn apply_card_face_to_back_face(back_face: &mut BackFaceData, card_face: &Ca
     back_face.power = power;
     back_face.toughness = toughness;
     back_face.loyalty = loyalty;
+    back_face.defense = defense;
     back_face.card_types = card_face.card_type.clone();
     back_face.mana_cost = card_face.mana_cost.clone();
     back_face.keywords = card_face.keywords.clone();
@@ -124,6 +143,7 @@ pub fn apply_back_face_to_object(obj: &mut GameObject, back_face: BackFaceData) 
     obj.power = back_face.power;
     obj.toughness = back_face.toughness;
     obj.loyalty = back_face.loyalty;
+    obj.defense = back_face.defense;
     obj.card_types = back_face.card_types.clone();
     obj.mana_cost = back_face.mana_cost.clone();
     obj.keywords = back_face.keywords.clone();
@@ -136,6 +156,7 @@ pub fn apply_back_face_to_object(obj: &mut GameObject, back_face: BackFaceData) 
     obj.base_toughness = back_face.toughness;
     obj.base_name = back_face.name.clone();
     obj.base_loyalty = back_face.loyalty;
+    obj.base_defense = back_face.defense;
     obj.base_card_types = back_face.card_types;
     obj.base_mana_cost = back_face.mana_cost.clone();
     obj.base_keywords = back_face.keywords;
@@ -191,6 +212,7 @@ pub fn snapshot_object_face(obj: &GameObject) -> BackFaceData {
         power: obj.power,
         toughness: obj.toughness,
         loyalty: obj.loyalty,
+        defense: obj.defense,
         card_types: obj.card_types.clone(),
         mana_cost: obj.mana_cost.clone(),
         keywords: obj.keywords.clone(),
@@ -305,6 +327,7 @@ pub fn rehydrate_game_from_card_db(state: &mut GameState, db: &CardDatabase) {
                         power: None,
                         toughness: None,
                         loyalty: None,
+                        defense: None,
                         card_types: Default::default(),
                         mana_cost: Default::default(),
                         keywords: Vec::new(),

@@ -2010,6 +2010,7 @@ mod tests {
                 Effect::GrantCastingPermission {
                     permission: crate::types::ability::CastingPermission::ExileWithAltCost {
                         cost: ManaCost::generic(2),
+                        cast_transformed: false,
                     },
                     target: TargetFilter::TrackedSet {
                         id: TrackedSetId(0),
@@ -2029,7 +2030,7 @@ mod tests {
             assert_eq!(obj.zone, Zone::Exile);
             assert!(obj.casting_permissions.iter().any(|permission| matches!(
                 permission,
-                crate::types::ability::CastingPermission::ExileWithAltCost { cost }
+                crate::types::ability::CastingPermission::ExileWithAltCost { cost, .. }
                     if *cost == ManaCost::generic(2)
             )));
         }
@@ -2092,6 +2093,7 @@ mod tests {
                 Effect::GrantCastingPermission {
                     permission: crate::types::ability::CastingPermission::ExileWithAltCost {
                         cost: ManaCost::generic(2),
+                        cast_transformed: false,
                     },
                     target: TargetFilter::TrackedSet {
                         id: TrackedSetId(0),
@@ -2114,7 +2116,7 @@ mod tests {
             .iter()
             .any(|permission| matches!(
                 permission,
-                crate::types::ability::CastingPermission::ExileWithAltCost { cost }
+                crate::types::ability::CastingPermission::ExileWithAltCost { cost, .. }
                     if *cost == ManaCost::generic(2)
             )));
     }
@@ -2148,6 +2150,7 @@ mod tests {
             Effect::GrantCastingPermission {
                 permission: crate::types::ability::CastingPermission::ExileWithAltCost {
                     cost: ManaCost::generic(2),
+                    cast_transformed: false,
                 },
                 target: TargetFilter::TrackedSet {
                     id: TrackedSetId(0),

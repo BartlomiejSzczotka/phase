@@ -835,7 +835,10 @@ fn try_parse_airbend_clause(tp: TextPair<'_>) -> Option<ParsedEffectClause> {
             AbilityDefinition::new(
                 AbilityKind::Spell,
                 Effect::GrantCastingPermission {
-                    permission: CastingPermission::ExileWithAltCost { cost },
+                    permission: CastingPermission::ExileWithAltCost {
+                        cost,
+                        cast_transformed: false,
+                    },
                     target: TargetFilter::TrackedSet {
                         id: TrackedSetId(0),
                     },
@@ -3593,6 +3596,7 @@ fn try_parse_cast_effect(lower: &str) -> Option<Effect> {
         target,
         without_paying_mana_cost: without_paying,
         mode,
+        cast_transformed: false,
     })
 }
 

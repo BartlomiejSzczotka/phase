@@ -23,11 +23,12 @@ pub fn resolve(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let without_paying = match &ability.effect {
+    let (without_paying, cast_transformed) = match &ability.effect {
         Effect::CastFromZone {
             without_paying_mana_cost,
+            cast_transformed,
             ..
-        } => *without_paying_mana_cost,
+        } => (*without_paying_mana_cost, *cast_transformed),
         _ => return Err(EffectError::MissingParam("CastFromZone".to_string())),
     };
 
@@ -71,7 +72,10 @@ pub fn resolve(
                 obj.mana_cost.clone()
             };
             obj.casting_permissions
-                .push(CastingPermission::ExileWithAltCost { cost });
+                .push(CastingPermission::ExileWithAltCost {
+                    cost,
+                    cast_transformed,
+                });
         }
     }
 
@@ -117,6 +121,7 @@ mod tests {
                 target: TargetFilter::Any,
                 without_paying_mana_cost: true,
                 mode: CardPlayMode::Cast,
+                cast_transformed: false,
             },
             vec![TargetRef::Object(obj_id)],
             ObjectId(999),
@@ -131,7 +136,7 @@ mod tests {
         assert_eq!(obj.zone, Zone::Exile);
         assert!(obj.casting_permissions.iter().any(|p| matches!(
             p,
-            CastingPermission::ExileWithAltCost { cost } if *cost == ManaCost::zero()
+            CastingPermission::ExileWithAltCost { cost, .. } if *cost == ManaCost::zero()
         )));
     }
 
@@ -148,6 +153,7 @@ mod tests {
                 target: TargetFilter::Any,
                 without_paying_mana_cost: true,
                 mode: CardPlayMode::Cast,
+                cast_transformed: false,
             },
             vec![TargetRef::Object(obj_id)],
             ObjectId(999),
@@ -162,7 +168,7 @@ mod tests {
         assert_eq!(obj.zone, Zone::Exile);
         assert!(obj.casting_permissions.iter().any(|p| matches!(
             p,
-            CastingPermission::ExileWithAltCost { cost } if *cost == ManaCost::zero()
+            CastingPermission::ExileWithAltCost { cost, .. } if *cost == ManaCost::zero()
         )));
     }
 
@@ -176,6 +182,7 @@ mod tests {
                 target: TargetFilter::Any,
                 without_paying_mana_cost: false,
                 mode: CardPlayMode::Cast,
+                cast_transformed: false,
             },
             vec![TargetRef::Object(obj_id)],
             ObjectId(999),
@@ -189,7 +196,7 @@ mod tests {
         let obj = state.objects.get(&obj_id).unwrap();
         assert!(obj.casting_permissions.iter().any(|p| matches!(
             p,
-            CastingPermission::ExileWithAltCost { cost } if *cost == ManaCost::generic(3)
+            CastingPermission::ExileWithAltCost { cost, .. } if *cost == ManaCost::generic(3)
         )));
     }
 
@@ -202,6 +209,7 @@ mod tests {
                 target: TargetFilter::Any,
                 without_paying_mana_cost: true,
                 mode: CardPlayMode::Cast,
+                cast_transformed: false,
             },
             vec![],
             ObjectId(999),

@@ -588,7 +588,10 @@ pub(super) fn lower_targeted_action_ast(ast: TargetedImperativeAst) -> Effect {
             keywords: vec![crate::types::keywords::Keyword::Haste],
         },
         TargetedImperativeAst::Airbend { target, cost } => Effect::GrantCastingPermission {
-            permission: crate::types::ability::CastingPermission::ExileWithAltCost { cost },
+            permission: crate::types::ability::CastingPermission::ExileWithAltCost {
+                cost,
+                cast_transformed: false,
+            },
             target,
         },
         TargetedImperativeAst::ZoneCounterProxy(ast) => lower_zone_counter_ast(*ast),
@@ -3365,7 +3368,7 @@ mod tests {
                 assert!(
                     matches!(
                         permission,
-                        crate::types::ability::CastingPermission::ExileWithAltCost { ref cost }
+                        crate::types::ability::CastingPermission::ExileWithAltCost { ref cost, .. }
                             if matches!(cost, crate::types::mana::ManaCost::Cost { generic: 2, .. })
                     ),
                     "Expected ExileWithAltCost with {{2}}, got {permission:?}"
@@ -3388,7 +3391,7 @@ mod tests {
             } => {
                 assert!(matches!(
                     permission,
-                    crate::types::ability::CastingPermission::ExileWithAltCost { ref cost }
+                    crate::types::ability::CastingPermission::ExileWithAltCost { ref cost, .. }
                         if matches!(cost, crate::types::mana::ManaCost::Cost { generic: 2, .. })
                 ));
                 assert!(

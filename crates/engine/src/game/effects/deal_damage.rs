@@ -214,6 +214,23 @@ pub(crate) fn apply_damage_after_replacement(
                     target_obj
                         .counters
                         .insert(CounterType::Loyalty, new_loyalty);
+                } else if target_obj.card_types.core_types.contains(&CoreType::Battle) {
+                    // CR 120.3h + CR 310.6: Damage to a battle removes that many
+                    // defense counters from that battle.
+                    let current = target_obj.defense.unwrap_or(0);
+                    let removed = current.min(actual_amount);
+                    let new_defense = current - removed;
+                    target_obj.defense = Some(new_defense);
+                    target_obj
+                        .counters
+                        .insert(CounterType::Defense, new_defense);
+                    if removed > 0 {
+                        events.push(GameEvent::CounterRemoved {
+                            object_id: *obj_id,
+                            counter_type: CounterType::Defense,
+                            count: removed,
+                        });
+                    }
                 } else {
                     // CR 120.3e: Damage to a creature marks damage.
                     target_obj.damage_marked += actual_amount;
@@ -269,6 +286,11 @@ pub(crate) fn apply_damage_after_replacement(
                     // Loyalty was already decremented, so reconstruct pre-hit value.
                     let pre_loyalty = obj.loyalty.unwrap_or(0) + actual_amount;
                     Some(actual_amount.saturating_sub(pre_loyalty))
+                } else if obj.card_types.core_types.contains(&CoreType::Battle) {
+                    // CR 120.10: Excess for battles = damage beyond pre-hit defense.
+                    // Defense was already decremented, so reconstruct pre-hit value.
+                    let pre_defense = obj.defense.unwrap_or(0) + actual_amount;
+                    Some(actual_amount.saturating_sub(pre_defense))
                 } else {
                     Some(0)
                 }
@@ -490,9 +512,10 @@ pub fn resolve_all(
         .copied()
         .collect();
 
-    // TODO(CR 120.3h): Battle card type not handled — damage to a battle should remove defense counters.
-    // Player damage uses the separate DamageEachPlayer effect type (PlayerFilter +
-    // per-player quantity resolution). DamageAll is intentionally object-only.
+    // CR 120.3h: Damage to a battle in `matching` is routed through
+    // `apply_damage_to_target` below, which now removes defense counters rather
+    // than marking damage. Player damage uses the separate `DamageEachPlayer`
+    // effect (PlayerFilter + per-player quantity). `DamageAll` is object-only.
     let ctx = DamageContext::from_source(state, ability.source_id)
         .unwrap_or_else(|| DamageContext::fallback(ability.source_id, ability.controller));
 
@@ -807,6 +830,83 @@ mod tests {
 
         // Damage exceeds loyalty: clamped to 0 via saturating_sub
         assert_eq!(state.objects[&pw_id].loyalty, Some(0));
+    }
+
+    /// CR 120.3h + CR 310.6: Damage to a battle removes defense counters equal
+    /// to the damage (not damage marked, not loyalty).
+    #[test]
+    fn damage_to_battle_removes_defense_counters() {
+        let mut state = GameState::new_two_player(42);
+        let battle_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Test Siege".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&battle_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Battle);
+            obj.card_types.subtypes.push("Siege".to_string());
+            obj.defense = Some(5);
+            obj.base_defense = Some(5);
+            obj.counters.insert(CounterType::Defense, 5);
+        }
+        let ability = make_ability(3, vec![TargetRef::Object(battle_id)]);
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        let obj = &state.objects[&battle_id];
+        assert_eq!(obj.defense, Some(2), "5 - 3 = 2");
+        assert_eq!(obj.counters.get(&CounterType::Defense).copied(), Some(2));
+        assert_eq!(obj.damage_marked, 0, "battles don't mark damage");
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                GameEvent::CounterRemoved {
+                    counter_type: CounterType::Defense,
+                    count: 3,
+                    ..
+                }
+            )),
+            "CounterRemoved event for 3 defense counters should be emitted"
+        );
+    }
+
+    /// CR 120.3h: When damage exceeds the battle's defense, it saturates at 0 —
+    /// the Siege is not "destroyed" by the damage itself. The zero-defense SBA
+    /// (CR 704.5v, tested separately) is what moves it to the graveyard.
+    #[test]
+    fn lethal_damage_to_battle_clamps_defense_to_zero() {
+        let mut state = GameState::new_two_player(42);
+        let battle_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Fragile Siege".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&battle_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Battle);
+            obj.defense = Some(2);
+            obj.base_defense = Some(2);
+            obj.counters.insert(CounterType::Defense, 2);
+        }
+        let ability = make_ability(5, vec![TargetRef::Object(battle_id)]);
+        let mut events = Vec::new();
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(state.objects[&battle_id].defense, Some(0));
+        assert_eq!(
+            state.objects[&battle_id]
+                .counters
+                .get(&CounterType::Defense)
+                .copied(),
+            Some(0)
+        );
     }
 
     fn make_source_with_keyword(

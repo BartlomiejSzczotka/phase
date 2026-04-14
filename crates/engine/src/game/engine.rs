@@ -7810,6 +7810,7 @@ mod mdfc_land_tests {
             power: None,
             toughness: None,
             loyalty: None,
+            defense: None,
             card_types,
             mana_cost: ManaCost::default(),
             keywords: Vec::new(),

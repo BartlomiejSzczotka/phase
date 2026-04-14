@@ -6,6 +6,10 @@ pub enum CounterType {
     Plus1Plus1,
     Minus1Minus1,
     Loyalty,
+    /// CR 122.1g + CR 310.4: The number of defense counters on a battle on the
+    /// battlefield indicates its defense. A battle with 0 defense is put into
+    /// its owner's graveyard as a state-based action (CR 704.5v).
+    Defense,
     /// CR 122.1g: When a permanent with a stun counter would become untapped during its
     /// controller's untap step, one stun counter is removed instead of untapping.
     Stun,
@@ -20,6 +24,7 @@ impl CounterType {
             CounterType::Plus1Plus1 => "P1P1",
             CounterType::Minus1Minus1 => "M1M1",
             CounterType::Loyalty => "loyalty",
+            CounterType::Defense => "defense",
             CounterType::Stun => "stun",
             CounterType::Lore => "lore",
             CounterType::Generic(s) => s.as_str(),
@@ -45,6 +50,7 @@ pub fn parse_counter_type(text: &str) -> CounterType {
         "P1P1" | "+1/+1" | "plus1plus1" => CounterType::Plus1Plus1,
         "M1M1" | "-1/-1" | "minus1minus1" => CounterType::Minus1Minus1,
         "LOYALTY" | "loyalty" => CounterType::Loyalty,
+        "defense" | "DEFENSE" => CounterType::Defense,
         "stun" => CounterType::Stun,
         "lore" | "LORE" => CounterType::Lore,
         other => CounterType::Generic(other.to_string()),

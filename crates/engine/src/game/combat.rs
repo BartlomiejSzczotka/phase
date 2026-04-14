@@ -817,9 +817,10 @@ pub fn declare_attackers(
                         battle_id
                     ));
                 }
-                // CR 310.8b: A battle's protector can never attack it.
-                if battle.controller == state.active_player {
-                    return Err(format!("Cannot attack your own battle {:?}", battle_id));
+                // CR 310.8b: A battle's protector can never attack it. Notably a
+                // Siege's controller CAN attack it if they are not the protector.
+                if battle.protector() == Some(state.active_player) {
+                    return Err(format!("Protector cannot attack battle {:?}", battle_id));
                 }
             }
         }
@@ -878,12 +879,19 @@ pub fn declare_attackers(
     combat.attackers = attacks
         .iter()
         .map(|(object_id, target)| {
+            // CR 508.5 + CR 310.8d: Defending player for a battle = its protector,
+            // not its controller. For planeswalkers, defending player = controller.
             let defending_player = match target {
                 AttackTarget::Player(pid) => *pid,
-                AttackTarget::Planeswalker(pw_id) | AttackTarget::Battle(pw_id) => state
+                AttackTarget::Planeswalker(pw_id) => state
                     .objects
                     .get(pw_id)
                     .map(|pw| pw.controller)
+                    .unwrap_or(PlayerId(0)),
+                AttackTarget::Battle(battle_id) => state
+                    .objects
+                    .get(battle_id)
+                    .and_then(|b| b.protector())
                     .unwrap_or(PlayerId(0)),
             };
             AttackerInfo::new(*object_id, target.clone(), defending_player)
@@ -1297,19 +1305,30 @@ pub fn get_valid_attack_targets(state: &GameState) -> Vec<AttackTarget> {
         }
     }
 
-    // CR 310.11 + CR 506.2: Battles controlled by opponents are valid attack targets.
+    // CR 310.8b + CR 506.2: A battle can be attacked by any attacking player for whom
+    // its protector is a defending player. Notably a Siege can be attacked by its own
+    // controller if the protector is a different player (CR 310.8b "Siege battle can
+    // be attacked by its own controller"). The only player who cannot attack is the
+    // battle's protector.
     for &id in &state.battlefield {
         if let Some(obj) = state.objects.get(&id) {
-            if obj.controller != active
-                && !allies.contains(&obj.controller)
-                && obj
-                    .card_types
-                    .core_types
-                    .contains(&crate::types::card_type::CoreType::Battle)
-                && !state.eliminated_players.contains(&obj.controller)
+            if !obj
+                .card_types
+                .core_types
+                .contains(&crate::types::card_type::CoreType::Battle)
             {
-                targets.push(AttackTarget::Battle(id));
+                continue;
             }
+            let Some(protector) = obj.protector() else {
+                continue;
+            };
+            if protector == active || allies.contains(&protector) {
+                continue;
+            }
+            if state.eliminated_players.contains(&protector) {
+                continue;
+            }
+            targets.push(AttackTarget::Battle(id));
         }
     }
 

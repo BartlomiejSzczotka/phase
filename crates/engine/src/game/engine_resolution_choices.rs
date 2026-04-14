@@ -123,6 +123,7 @@ pub(super) fn handle_resolution_choice(
                     obj.casting_permissions.push(
                         crate::types::ability::CastingPermission::ExileWithAltCost {
                             cost: crate::types::mana::ManaCost::zero(),
+                            cast_transformed: false,
                         },
                     );
                 }

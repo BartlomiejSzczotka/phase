@@ -740,7 +740,7 @@ fn prepare_spell_cast(
     // ExileWithAltCost: override mana cost when casting from exile with this permission.
     let alt_cost_from_exile = if obj.zone == Zone::Exile {
         obj.casting_permissions.iter().find_map(|p| match p {
-            crate::types::ability::CastingPermission::ExileWithAltCost { cost } => {
+            crate::types::ability::CastingPermission::ExileWithAltCost { cost, .. } => {
                 Some(cost.clone())
             }
             _ => None,
@@ -5514,6 +5514,7 @@ mod tests {
             power: None,
             toughness: None,
             loyalty: None,
+            defense: None,
             card_types: {
                 let mut ct = crate::types::card_type::CardType::default();
                 ct.core_types.push(CoreType::Instant);
@@ -6265,6 +6266,7 @@ mod tests {
             .casting_permissions
             .push(crate::types::ability::CastingPermission::ExileWithAltCost {
                 cost: ManaCost::generic(2),
+                cast_transformed: false,
             });
 
         assert!(is_blocked_by_cast_only_from_zones(
@@ -7364,6 +7366,7 @@ mod tests {
             obj.casting_permissions.push(
                 crate::types::ability::CastingPermission::ExileWithAltCost {
                     cost: obj.mana_cost.clone(),
+                    cast_transformed: false,
                 },
             );
         }

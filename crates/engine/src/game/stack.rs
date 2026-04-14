@@ -1,3 +1,4 @@
+use crate::types::ability::CastingPermission;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{CastingVariant, GameState, StackEntry, StackEntryKind};
 use crate::types::identifiers::ObjectId;
@@ -141,12 +142,36 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
         if dest == Zone::Battlefield {
             // CR 614.1c + CR 608.3: Route battlefield entry through the replacement
             // pipeline so ETB replacements (saga lore counters, enter-tapped, etc.) fire.
-            let proposed = crate::types::proposed_event::ProposedEvent::zone_change(
+            let mut proposed = crate::types::proposed_event::ProposedEvent::zone_change(
                 entry.id,
                 Zone::Stack,
                 Zone::Battlefield,
                 None,
             );
+            // CR 712.14a + CR 310.11b: If this spell was cast via an
+            // ExileWithAltCost permission with `cast_transformed`, the
+            // permanent enters the battlefield transformed (resolving to its
+            // back face). Used by the Siege victory trigger.
+            if let Some(obj) = state.objects.get(&entry.id) {
+                let cast_transformed = obj.casting_permissions.iter().any(|p| {
+                    matches!(
+                        p,
+                        CastingPermission::ExileWithAltCost {
+                            cast_transformed: true,
+                            ..
+                        }
+                    )
+                });
+                if cast_transformed {
+                    if let crate::types::proposed_event::ProposedEvent::ZoneChange {
+                        enter_transformed,
+                        ..
+                    } = &mut proposed
+                    {
+                        *enter_transformed = true;
+                    }
+                }
+            }
 
             match super::replacement::replace_event(state, proposed, events) {
                 super::replacement::ReplacementResult::Execute(event) => {
@@ -156,6 +181,7 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                         enter_tapped,
                         enter_with_counters,
                         controller_override,
+                        enter_transformed,
                         ..
                     } = event
                     {
@@ -174,6 +200,17 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                                 &enter_with_counters,
                                 events,
                             );
+                        }
+                        // CR 712.14a + CR 310.11b: Apply transformation if entering
+                        // transformed (propagated from ExileWithAltCost permission).
+                        if enter_transformed && to == Zone::Battlefield {
+                            if let Some(obj) = state.objects.get(&object_id) {
+                                if obj.back_face.is_some() && !obj.transformed {
+                                    let _ = super::transform::transform_permanent(
+                                        state, object_id, events,
+                                    );
+                                }
+                            }
                         }
                         // CR 614.1c: Apply pending ETB counters from delayed triggers
                         // (e.g., "that creature enters with an additional +1/+1 counter").
@@ -974,6 +1011,7 @@ mod tests {
             obj.casting_permissions
                 .push(CastingPermission::ExileWithAltCost {
                     cost: ManaCost::generic(2),
+                    cast_transformed: false,
                 });
         }
 

@@ -24,6 +24,9 @@ pub struct BackFaceData {
     pub power: Option<i32>,
     pub toughness: Option<i32>,
     pub loyalty: Option<u32>,
+    /// CR 310.4: Defense of a battle (printed number while off the battlefield).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defense: Option<u32>,
     pub card_types: CardType,
     pub mana_cost: ManaCost,
     pub keywords: Vec<Keyword>,
@@ -81,6 +84,10 @@ pub struct GameObject {
     pub power: Option<i32>,
     pub toughness: Option<i32>,
     pub loyalty: Option<u32>,
+    /// CR 310.4c: Defense of a battle on the battlefield — derived from defense
+    /// counters. Kept in sync with `CounterType::Defense` by layer evaluation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub defense: Option<u32>,
     pub card_types: CardType,
     pub mana_cost: ManaCost,
     pub keywords: Vec<Keyword>,
@@ -101,6 +108,9 @@ pub struct GameObject {
     pub base_name: String,
     #[serde(default)]
     pub base_loyalty: Option<u32>,
+    /// CR 310.4a: Printed defense number (off-battlefield defense).
+    #[serde(default)]
+    pub base_defense: Option<u32>,
     pub base_card_types: CardType,
     #[serde(default)]
     pub base_mana_cost: ManaCost,
@@ -368,6 +378,7 @@ impl GameObject {
             power: None,
             toughness: None,
             loyalty: None,
+            defense: None,
             card_types: CardType::default(),
             mana_cost: ManaCost::default(),
             keywords: Vec::new(),
@@ -382,6 +393,7 @@ impl GameObject {
             base_toughness: None,
             base_name: name.clone(),
             base_loyalty: None,
+            base_defense: None,
             base_card_types: CardType::default(),
             base_mana_cost: ManaCost::default(),
             base_keywords: Vec::new(),
@@ -511,6 +523,19 @@ impl GameObject {
     pub fn chosen_number(&self) -> Option<u8> {
         self.chosen_attributes.iter().find_map(|a| match a {
             ChosenAttribute::Number(n) => Some(*n),
+            _ => None,
+        })
+    }
+
+    /// CR 310.8a + CR 310.8e: Return this battle's protector, if any. Derived
+    /// from `ChosenAttribute::Player` stored when the Siege's "As ~ enters"
+    /// replacement resolved. Non-battle permanents return `None`.
+    pub fn protector(&self) -> Option<PlayerId> {
+        if !self.card_types.core_types.contains(&CoreType::Battle) {
+            return None;
+        }
+        self.chosen_attributes.iter().find_map(|a| match a {
+            ChosenAttribute::Player(p) => Some(*p),
             _ => None,
         })
     }

@@ -623,6 +623,7 @@ mod tests {
                 power: Some(5),
                 toughness: Some(4),
                 loyalty: None,
+                defense: None,
                 card_types: CardType {
                     supertypes: vec![],
                     core_types: vec![CoreType::Creature],

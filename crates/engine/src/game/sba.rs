@@ -114,6 +114,18 @@ pub fn check_state_based_actions(state: &mut GameState, events: &mut Vec<GameEve
         // CR 704.5i + CR 306.9: If a planeswalker has loyalty 0, it is put into its owner's graveyard.
         check_zero_loyalty(state, events, &mut any_performed);
 
+        // CR 704.5v + CR 310.7: If a battle has defense 0 and isn't the source of an
+        // ability that has triggered but not yet left the stack, it's put into its
+        // owner's graveyard.
+        check_zero_defense(state, events, &mut any_performed);
+
+        // CR 704.5p + CR 310.9: If a battle is somehow attached to a permanent, unattach it.
+        check_battle_unattached(state, &mut any_performed);
+
+        // CR 704.5w + CR 704.5x + CR 310.10: Battle with no (or illegal) protector —
+        // controller chooses an appropriate protector; graveyard if none can be chosen.
+        check_battle_protector(state, events, &mut any_performed);
+
         // CR 704.5s + CR 714.4: If a Saga has lore counters >= its final chapter number,
         // and no chapter ability has triggered but not yet left the stack, sacrifice it.
         check_saga_sacrifice(state, events, &mut any_performed);
@@ -542,6 +554,182 @@ fn check_zero_loyalty(
 
     for id in to_destroy {
         zones::move_to_zone(state, id, Zone::Graveyard, events);
+        *any_performed = true;
+    }
+}
+
+/// CR 704.5v + CR 310.7: A battle with defense 0 is put into its owner's graveyard,
+/// unless it's the source of an ability that has triggered but not yet left the
+/// stack (e.g., the Siege's victory trigger).
+fn check_zero_defense(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+    any_performed: &mut bool,
+) {
+    use crate::types::game_state::StackEntryKind;
+
+    let to_destroy: Vec<_> = state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|id| {
+            let obj = match state.objects.get(id) {
+                Some(o) => o,
+                None => return false,
+            };
+            if !obj.card_types.core_types.contains(&CoreType::Battle) {
+                return false;
+            }
+            if obj.defense.unwrap_or(0) != 0 {
+                return false;
+            }
+            // CR 310.7: Don't SBA-destroy while one of this battle's triggered
+            // abilities is still on the stack (mirrors CR 714.4 Saga deferral).
+            let ability_on_stack = state.stack.iter().any(|entry| {
+                matches!(
+                    &entry.kind,
+                    StackEntryKind::TriggeredAbility { source_id, .. } if *source_id == *id
+                )
+            });
+            !ability_on_stack
+        })
+        .collect();
+
+    for id in to_destroy {
+        zones::move_to_zone(state, id, Zone::Graveyard, events);
+        *any_performed = true;
+    }
+}
+
+/// CR 704.5p + CR 310.9: A battle can't be attached to players or permanents.
+/// If a battle is somehow attached, it becomes unattached and remains on the battlefield.
+fn check_battle_unattached(state: &mut GameState, any_performed: &mut bool) {
+    let battles_to_unattach: Vec<_> = state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|id| {
+            state
+                .objects
+                .get(id)
+                .map(|obj| {
+                    obj.card_types.core_types.contains(&CoreType::Battle)
+                        && obj.attached_to.is_some()
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+
+    for battle_id in battles_to_unattach {
+        // Remove from host's attachments list first.
+        let host_id = state
+            .objects
+            .get(&battle_id)
+            .and_then(|obj| obj.attached_to);
+        if let Some(host) = host_id {
+            if let Some(host_obj) = state.objects.get_mut(&host) {
+                host_obj.attachments.retain(|&id| id != battle_id);
+            }
+        }
+        if let Some(battle) = state.objects.get_mut(&battle_id) {
+            battle.attached_to = None;
+        }
+        *any_performed = true;
+    }
+}
+
+/// CR 704.5w + CR 704.5x + CR 310.10 + CR 310.11a: If a battle that isn't being
+/// attacked has no protector, an illegal protector, or (for Sieges) a protector
+/// that equals its controller, its controller chooses a legal protector. If no
+/// legal player exists, the battle is put into its owner's graveyard.
+fn check_battle_protector(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+    any_performed: &mut bool,
+) {
+    // Snapshot battlefield battles and whether each is currently being attacked.
+    let being_attacked: HashSet<crate::types::identifiers::ObjectId> = state
+        .combat
+        .as_ref()
+        .map(|combat| {
+            combat
+                .attackers
+                .iter()
+                .filter_map(|a| match a.attack_target {
+                    crate::game::combat::AttackTarget::Battle(id) => Some(id),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let battle_ids: Vec<_> = state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|id| {
+            state
+                .objects
+                .get(id)
+                .is_some_and(|obj| obj.card_types.core_types.contains(&CoreType::Battle))
+        })
+        .collect();
+
+    for battle_id in battle_ids {
+        let Some(battle) = state.objects.get(&battle_id) else {
+            continue;
+        };
+        let controller = battle.controller;
+        let is_siege = battle.card_types.subtypes.iter().any(|s| s == "Siege");
+        let protector = battle.protector();
+
+        // Legal protectors for a Siege are opponents of the controller (CR 310.11a).
+        // For non-Siege battles with no battle type, CR 310.8a says the controller
+        // becomes the protector; we treat the controller as legal in that case.
+        let protector_legal = match protector {
+            Some(p) if is_siege => crate::game::players::opponents(state, controller).contains(&p),
+            Some(_) => true,
+            None => false,
+        };
+
+        if protector_legal {
+            continue;
+        }
+        if being_attacked.contains(&battle_id) {
+            // CR 310.10: Only applies to battles that aren't being attacked.
+            continue;
+        }
+
+        // Compute legal choices.
+        let legal_choices: Vec<PlayerId> = if is_siege {
+            crate::game::players::opponents(state, controller)
+                .into_iter()
+                .filter(|p| !state.eliminated_players.contains(p))
+                .collect()
+        } else {
+            // CR 310.8a: With no battle types, controller is the protector.
+            vec![controller]
+        };
+
+        if legal_choices.is_empty() {
+            // CR 310.10 / CR 704.5w: No legal protector exists — graveyard.
+            zones::move_to_zone(state, battle_id, Zone::Graveyard, events);
+            *any_performed = true;
+            continue;
+        }
+
+        // Deterministic auto-pick: first legal choice. The idiomatic interactive
+        // path would use a NamedChoice WaitingFor, but SBAs must run to fixpoint
+        // without yielding priority (CR 704.3). Auto-assignment matches the
+        // common case (single opponent in 2-player) and is the same fallback the
+        // engine uses for goad targeting during SBAs.
+        let chosen = legal_choices[0];
+        if let Some(obj) = state.objects.get_mut(&battle_id) {
+            obj.chosen_attributes
+                .retain(|a| !matches!(a, crate::types::ability::ChosenAttribute::Player(_)));
+            obj.chosen_attributes
+                .push(crate::types::ability::ChosenAttribute::Player(chosen));
+        }
         *any_performed = true;
     }
 }

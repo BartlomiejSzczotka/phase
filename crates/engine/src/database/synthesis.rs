@@ -4,16 +4,19 @@ use crate::database::mtgjson::{parse_mtgjson_mana_cost, AtomicCard};
 use crate::game::printed_cards::derive_colors_from_mana_cost;
 use crate::parser::oracle::parse_oracle_text;
 use crate::types::ability::{
-    AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost,
-    ContinuousModification, ControllerRef, Duration, Effect, FilterProp, ManaProduction,
-    NinjutsuVariant, PtValue, QuantityExpr, RuntimeHandler, StaticDefinition, TargetFilter,
-    TriggerCondition, TriggerDefinition, TypeFilter, TypedFilter,
+    AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost, CardPlayMode,
+    ChoiceType, ContinuousModification, ControllerRef, CounterTriggerFilter, Duration, Effect,
+    FilterProp, ManaProduction, NinjutsuVariant, PtValue, QuantityExpr, ReplacementDefinition,
+    RuntimeHandler, StaticDefinition, TargetFilter, TriggerCondition, TriggerDefinition,
+    TypeFilter, TypedFilter,
 };
 use crate::types::card::{CardFace, CardLayout};
 use crate::types::card_type::{CardType, CoreType, Supertype};
+use crate::types::counter::CounterType;
 use crate::types::keywords::{Keyword, PartnerType};
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::phase::Phase;
+use crate::types::replacements::ReplacementEvent;
 use crate::types::triggers::TriggerMode;
 use crate::types::zones::Zone;
 
@@ -633,6 +636,108 @@ pub fn synthesize_all(face: &mut CardFace) {
     synthesize_scavenge(face);
     synthesize_casualty(face);
     synthesize_entwine(face);
+    synthesize_siege_intrinsics(face);
+}
+
+/// CR 310.11a + CR 310.11b: Synthesize the two intrinsic abilities every Siege has:
+///   1. As-enters replacement: "As this Siege enters, its controller chooses an
+///      opponent to be its protector." (CR 310.11a)
+///   2. Victory trigger: "When the last defense counter is removed from this
+///      permanent, exile it, then you may cast it transformed without paying
+///      its mana cost." (CR 310.11b)
+///
+/// The defense-counter ETB replacement (CR 310.4b) is handled directly by
+/// `apply_card_face_to_object` which seeds `CounterType::Defense` at load time,
+/// so no separate replacement synthesis is needed for that rule.
+pub fn synthesize_siege_intrinsics(face: &mut CardFace) {
+    let is_battle = face.card_type.core_types.contains(&CoreType::Battle);
+    let is_siege = face.card_type.subtypes.iter().any(|s| s == "Siege");
+    if !is_battle || !is_siege {
+        return;
+    }
+
+    // CR 310.11a: "As a Siege enters the battlefield, its controller must
+    // choose its protector from among their opponents." Modeled as a
+    // self-referential `Moved` replacement that persists the opponent choice
+    // as a `ChosenAttribute::Player`, which `GameObject::protector()` reads.
+    let already_has_protector_choice = face.replacements.iter().any(|r| {
+        matches!(r.event, ReplacementEvent::Moved)
+            && matches!(r.valid_card, Some(TargetFilter::SelfRef))
+            && matches!(
+                r.execute.as_deref().map(|a| &*a.effect),
+                Some(Effect::Choose {
+                    choice_type: ChoiceType::Opponent,
+                    persist: true,
+                })
+            )
+    });
+    if !already_has_protector_choice {
+        let mut protector_replacement = ReplacementDefinition::new(ReplacementEvent::Moved);
+        protector_replacement.valid_card = Some(TargetFilter::SelfRef);
+        protector_replacement.destination_zone = Some(Zone::Battlefield);
+        protector_replacement.description = Some(
+            "CR 310.11a: As a Siege enters, its controller chooses an opponent as its protector."
+                .to_string(),
+        );
+        protector_replacement.execute = Some(Box::new(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Choose {
+                choice_type: ChoiceType::Opponent,
+                persist: true,
+            },
+        )));
+        face.replacements.push(protector_replacement);
+    }
+
+    // CR 310.11b: Victory triggered ability — "When the last defense counter
+    // is removed from this permanent, exile it, then you may cast it
+    // transformed without paying its mana cost."
+    let already_has_victory_trigger = face.triggers.iter().any(|t| {
+        matches!(t.mode, TriggerMode::CounterRemoved)
+            && t.counter_filter
+                .as_ref()
+                .is_some_and(|f| matches!(f.counter_type, CounterType::Defense))
+    });
+    if !already_has_victory_trigger {
+        // exile SelfRef → (optional) cast SelfRef from exile transformed
+        let cast_sub = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::CastFromZone {
+                target: TargetFilter::SelfRef,
+                without_paying_mana_cost: true,
+                mode: CardPlayMode::Cast,
+                cast_transformed: true,
+            },
+        )
+        .optional();
+        let exile_then_cast = AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::ChangeZone {
+                origin: Some(Zone::Battlefield),
+                destination: Zone::Exile,
+                target: TargetFilter::SelfRef,
+                owner_library: false,
+                enter_transformed: false,
+                under_your_control: false,
+                enter_tapped: false,
+                enters_attacking: false,
+                up_to: false,
+            },
+        )
+        .sub_ability(cast_sub);
+
+        let trigger = TriggerDefinition::new(TriggerMode::CounterRemoved)
+            .valid_card(TargetFilter::SelfRef)
+            .counter_filter(CounterTriggerFilter {
+                counter_type: CounterType::Defense,
+                threshold: Some(0),
+            })
+            .execute(exile_then_cast)
+            .description(
+                "CR 310.11b: When the last defense counter is removed from this Siege, exile it, then you may cast it transformed without paying its mana cost.".to_string(),
+            );
+        face.triggers.push(trigger);
+    }
 }
 
 /// Build a `CardFace` from MTGJSON data, running the Oracle text parser and all synthesis.
@@ -1067,5 +1172,123 @@ mod scavenge_runtime_tests {
             counter_count, 4,
             "target must gain +1/+1 counters equal to source's LKI power (4)"
         );
+    }
+}
+
+#[cfg(test)]
+mod siege_synthesis_tests {
+    use super::*;
+    use crate::types::triggers::TriggerMode;
+
+    fn siege_face() -> CardFace {
+        let mut face = CardFace::default();
+        face.card_type.core_types.push(CoreType::Battle);
+        face.card_type.subtypes.push("Siege".to_string());
+        face
+    }
+
+    /// CR 310.11a: Sieges get a synthesized Moved-replacement that asks the
+    /// controller to choose an opponent as the protector.
+    #[test]
+    fn synthesize_adds_protector_choice_replacement() {
+        let mut face = siege_face();
+        synthesize_siege_intrinsics(&mut face);
+        let protector = face
+            .replacements
+            .iter()
+            .find(|r| matches!(r.event, ReplacementEvent::Moved))
+            .expect("Siege should have a Moved replacement");
+        assert_eq!(protector.destination_zone, Some(Zone::Battlefield));
+        assert!(matches!(protector.valid_card, Some(TargetFilter::SelfRef)));
+        assert!(matches!(
+            protector.execute.as_deref().map(|a| &*a.effect),
+            Some(Effect::Choose {
+                choice_type: ChoiceType::Opponent,
+                persist: true,
+            })
+        ));
+    }
+
+    /// CR 310.11b: Sieges get a synthesized `CounterRemoved` trigger with a
+    /// `CounterTriggerFilter` targeting defense at threshold 0 (last counter
+    /// removed). The execute chain exiles the Siege then offers an optional
+    /// `CastFromZone` with both `without_paying_mana_cost` and `cast_transformed`.
+    #[test]
+    fn synthesize_adds_victory_trigger() {
+        let mut face = siege_face();
+        synthesize_siege_intrinsics(&mut face);
+        let trigger = face
+            .triggers
+            .iter()
+            .find(|t| matches!(t.mode, TriggerMode::CounterRemoved))
+            .expect("Siege should have a CounterRemoved trigger");
+        assert!(matches!(trigger.valid_card, Some(TargetFilter::SelfRef)));
+        let filter = trigger
+            .counter_filter
+            .as_ref()
+            .expect("trigger must have counter_filter");
+        assert!(matches!(filter.counter_type, CounterType::Defense));
+        assert_eq!(filter.threshold, Some(0));
+
+        let exec = trigger.execute.as_ref().expect("execute body");
+        // Top-level = ChangeZone to Exile with target SelfRef.
+        let Effect::ChangeZone {
+            destination,
+            ref target,
+            ..
+        } = *exec.effect
+        else {
+            panic!("top-level should be ChangeZone, got {:?}", exec.effect);
+        };
+        assert_eq!(destination, Zone::Exile);
+        assert!(matches!(target, TargetFilter::SelfRef));
+
+        // Sub-ability = optional CastFromZone with both flags set.
+        let sub = exec.sub_ability.as_ref().expect("optional cast sub");
+        assert!(sub.optional);
+        assert!(matches!(
+            *sub.effect,
+            Effect::CastFromZone {
+                target: TargetFilter::SelfRef,
+                without_paying_mana_cost: true,
+                cast_transformed: true,
+                ..
+            }
+        ));
+    }
+
+    /// Non-Sieges are unaffected.
+    #[test]
+    fn synthesize_is_noop_for_non_siege() {
+        let mut face = CardFace::default();
+        face.card_type.core_types.push(CoreType::Creature);
+        synthesize_siege_intrinsics(&mut face);
+        assert!(face.replacements.is_empty());
+        assert!(face.triggers.is_empty());
+    }
+
+    /// Battles without the Siege subtype don't get Siege-specific intrinsics.
+    /// (Currently all printed battles are Sieges, but this keeps the synthesis
+    /// correctly scoped per CR 310.11.)
+    #[test]
+    fn synthesize_is_noop_for_non_siege_battle() {
+        let mut face = CardFace::default();
+        face.card_type.core_types.push(CoreType::Battle);
+        // No Siege subtype.
+        synthesize_siege_intrinsics(&mut face);
+        assert!(face.replacements.is_empty());
+        assert!(face.triggers.is_empty());
+    }
+
+    /// Re-running synthesis on an already-synthesized face is idempotent.
+    #[test]
+    fn synthesize_is_idempotent() {
+        let mut face = siege_face();
+        synthesize_siege_intrinsics(&mut face);
+        let first_trigger_count = face.triggers.len();
+        let first_replacement_count = face.replacements.len();
+        synthesize_siege_intrinsics(&mut face);
+        assert_eq!(face.triggers.len(), first_trigger_count);
+        assert_eq!(face.replacements.len(), first_replacement_count);
     }
 }

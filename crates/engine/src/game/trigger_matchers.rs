@@ -897,12 +897,37 @@ pub(super) fn match_counter_removed(
 ) -> bool {
     if let GameEvent::CounterRemoved {
         object_id,
-        counter_type: _,
+        counter_type,
         ..
     } = event
     {
         if !valid_card_matches(trigger, state, *object_id, source_id) {
             return false;
+        }
+        // CR 310.11b + CR 714.2a-mirror: Apply counter filter (type + optional
+        // "crossed zero" threshold). Used by the Siege victory trigger
+        // "When the last defense counter is removed from this permanent".
+        // A threshold of Some(0) means "fire only when the current count
+        // dropped to 0" — i.e., the last counter was just removed.
+        if let Some(ref filter) = trigger.counter_filter {
+            if filter.counter_type != *counter_type {
+                return false;
+            }
+            if let Some(threshold) = filter.threshold {
+                let current = state
+                    .objects
+                    .get(object_id)
+                    .and_then(|obj| obj.counters.get(&filter.counter_type).copied())
+                    .unwrap_or(0);
+                if threshold == 0 {
+                    // "Last counter removed" — fire only when post-removal count is 0.
+                    if current != 0 {
+                        return false;
+                    }
+                } else {
+                    return false;
+                }
+            }
         }
         true
     } else {
