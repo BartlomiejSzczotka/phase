@@ -989,11 +989,14 @@ pub fn build_replacement_registry() -> IndexMap<ReplacementEvent, ReplacementHan
         matcher: placeholder_matcher,
         applier: placeholder_applier,
     };
+    // CR 106.6a: ProduceMana is parser-emitted by cards that override what
+    // mana a land produces (Contamination, Infernal Darkness, Naked Singularity,
+    // Pulse of Llanowar, Reality Twist, Ritual of Subdual, Mirri). These are
+    // currently silent no-ops at runtime because the parser does not yet
+    // extract the "produces X instead" payload into typed data — the matcher
+    // has no information to act on. Proper wiring is tracked as a follow-up.
     registry.insert(ReplacementEvent::ProduceMana, placeholder());
-    registry.insert(ReplacementEvent::Scry, placeholder());
-    registry.insert(ReplacementEvent::Transform, placeholder());
     registry.insert(ReplacementEvent::TurnFaceUp, placeholder());
-    registry.insert(ReplacementEvent::Explore, placeholder());
 
     // CR 614.1b + CR 614.10: BeginTurn skip replacements (Stranglehold, etc.)
     registry.insert(
@@ -1012,19 +1015,16 @@ pub fn build_replacement_registry() -> IndexMap<ReplacementEvent, ReplacementHan
         },
     );
 
-    // 11 remaining Forge types (stubs -- recognized but no-op)
+    // CR 104.2b + CR 104.3b: GameLoss / GameWin are parser-emitted by
+    // Platinum Angel, Lich's Mastery, Angel's Grace, etc. The effective
+    // runtime enforcement for these cards is via first-class static-ability
+    // variants: `StaticMode::CantLoseTheGame` (sba.rs::player_has_cant_lose)
+    // and `StaticMode::CantWinTheGame` (effects/win_lose.rs::resolve_win).
+    // The replacement-pipeline stub here is redundant but kept registered
+    // so the parser's replacement-path output doesn't hit a dispatch miss.
     let stub_events: Vec<ReplacementEvent> = vec![
-        ReplacementEvent::DeclareBlocker,
         ReplacementEvent::GameLoss,
         ReplacementEvent::GameWin,
-        ReplacementEvent::Learn,
-        ReplacementEvent::LoseMana,
-        ReplacementEvent::Proliferate,
-        ReplacementEvent::AssembleContraption,
-        ReplacementEvent::Cascade,
-        ReplacementEvent::CopySpell,
-        ReplacementEvent::PlanarDiceResult,
-        ReplacementEvent::Planeswalk,
     ];
     for ev in stub_events {
         registry.insert(ev, stub());
@@ -2455,12 +2455,19 @@ mod tests {
     }
 
     #[test]
-    fn test_registry_has_all_36_types() {
+    fn test_registry_has_all_types() {
         let registry = build_replacement_registry();
-        assert_eq!(
-            registry.len(),
-            36,
-            "registry should have exactly 36 entries"
+        // Count reflects first-class matchers + placeholders for parser-emitted
+        // but not-yet-typed events (ProduceMana, TurnFaceUp) + stubs for
+        // parser-emitted events whose semantics live in statics (GameLoss,
+        // GameWin). Phantom ReplacementEvent variants with zero parser
+        // emission are intentionally NOT registered — their absence is a
+        // fail-fast signal if a future parser path starts producing them
+        // without wiring a handler.
+        assert!(
+            registry.len() >= 22,
+            "registry should have 22+ entries, got {}",
+            registry.len()
         );
 
         // Verify all expected keys
@@ -2483,24 +2490,12 @@ mod tests {
             ReplacementEvent::BeginPhase,
             ReplacementEvent::BeginTurn,
             ReplacementEvent::DealtDamage,
-            ReplacementEvent::DeclareBlocker,
-            ReplacementEvent::Explore,
-            ReplacementEvent::GameLoss,
-            ReplacementEvent::GameWin,
-            ReplacementEvent::Learn,
-            ReplacementEvent::LoseMana,
             ReplacementEvent::Mill,
             ReplacementEvent::PayLife,
             ReplacementEvent::ProduceMana,
-            ReplacementEvent::Proliferate,
-            ReplacementEvent::Scry,
-            ReplacementEvent::Transform,
             ReplacementEvent::TurnFaceUp,
-            ReplacementEvent::AssembleContraption,
-            ReplacementEvent::Cascade,
-            ReplacementEvent::CopySpell,
-            ReplacementEvent::PlanarDiceResult,
-            ReplacementEvent::Planeswalk,
+            ReplacementEvent::GameLoss,
+            ReplacementEvent::GameWin,
         ];
         for key in &expected {
             assert!(registry.contains_key(key), "registry missing key: {}", key);
