@@ -627,7 +627,7 @@ fn create_token_applier(
 
     if let ProposedEvent::CreateToken {
         owner,
-        name,
+        spec,
         count,
         applied,
     } = event
@@ -641,7 +641,7 @@ fn create_token_applier(
         };
         ApplyResult::Modified(ProposedEvent::CreateToken {
             owner,
-            name,
+            spec,
             count: new_count,
             applied,
         })

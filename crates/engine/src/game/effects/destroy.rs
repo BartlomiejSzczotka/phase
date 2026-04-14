@@ -10,6 +10,60 @@ use crate::types::game_state::GameState;
 use crate::types::proposed_event::ProposedEvent;
 use crate::types::zones::Zone;
 
+/// CR 701.8a + CR 614: Apply an accepted Destroy proposed event.
+///
+/// Routes the inner `ZoneChange(Battlefield → Graveyard)` through the
+/// replacement pipeline (CR 614.6) so regeneration (CR 701.8c), redirects
+/// (e.g., Rest in Peace → exile), and leaves-the-battlefield replacements
+/// all compose on the destruction event.
+///
+/// Shared by the fresh-destroy path (`resolve`/`resolve_all`) and the
+/// post-replacement-choice delivery path (`handle_replacement_choice`).
+///
+/// Returns `true` on success, `false` if the inner ZoneChange itself
+/// needed a replacement choice (caller must not advance).
+pub fn apply_destroy_after_replacement(
+    state: &mut GameState,
+    event: ProposedEvent,
+    events: &mut Vec<GameEvent>,
+) -> bool {
+    match event {
+        ProposedEvent::Destroy {
+            object_id, source, ..
+        } => {
+            // CR 701.8a: Destruction resolved — now propose the inner ZoneChange
+            // so Moved replacements can intercept the actual zone transfer.
+            let zone_proposed =
+                ProposedEvent::zone_change(object_id, Zone::Battlefield, Zone::Graveyard, source);
+            match replacement::replace_event(state, zone_proposed, events) {
+                ReplacementResult::Execute(zone_event) => {
+                    if let ProposedEvent::ZoneChange {
+                        object_id: oid, to, ..
+                    } = zone_event
+                    {
+                        zones::move_to_zone(state, oid, to, events);
+                        state.layers_dirty = true;
+                    }
+                }
+                ReplacementResult::Prevented => {}
+                ReplacementResult::NeedsChoice(player) => {
+                    state.waiting_for = replacement::replacement_choice_waiting_for(player, state);
+                    return false;
+                }
+            }
+            events.push(GameEvent::CreatureDestroyed { object_id });
+            true
+        }
+        ProposedEvent::ZoneChange { object_id, to, .. } => {
+            // Destroy replacement redirected directly to a zone change.
+            zones::move_to_zone(state, object_id, to, events);
+            state.layers_dirty = true;
+            true
+        }
+        _ => true,
+    }
+}
+
 /// CR 701.8a: Destroy moves permanent from battlefield to owner's graveyard.
 /// CR 701.8b: Indestructible permanents can't be destroyed.
 /// Skips objects with the "indestructible" keyword.
@@ -56,45 +110,8 @@ pub fn resolve(
 
             match replacement::replace_event(state, proposed, events) {
                 ReplacementResult::Execute(event) => {
-                    match event {
-                        ProposedEvent::Destroy {
-                            object_id, source, ..
-                        } => {
-                            // Destruction resolved -- now create a ZoneChange proposal
-                            // so Moved replacements can intercept the actual zone transfer
-                            let zone_proposed = ProposedEvent::zone_change(
-                                object_id,
-                                Zone::Battlefield,
-                                Zone::Graveyard,
-                                source,
-                            );
-                            match replacement::replace_event(state, zone_proposed, events) {
-                                ReplacementResult::Execute(zone_event) => {
-                                    if let ProposedEvent::ZoneChange {
-                                        object_id: oid, to, ..
-                                    } = zone_event
-                                    {
-                                        zones::move_to_zone(state, oid, to, events);
-                                        state.layers_dirty = true;
-                                    }
-                                }
-                                ReplacementResult::Prevented => {}
-                                ReplacementResult::NeedsChoice(player) => {
-                                    state.waiting_for =
-                                        crate::game::replacement::replacement_choice_waiting_for(
-                                            player, state,
-                                        );
-                                    return Ok(());
-                                }
-                            }
-                            events.push(GameEvent::CreatureDestroyed { object_id });
-                        }
-                        ProposedEvent::ZoneChange { object_id, to, .. } => {
-                            // Destroy replacement redirected directly to a zone change
-                            zones::move_to_zone(state, object_id, to, events);
-                            state.layers_dirty = true;
-                        }
-                        _ => {}
+                    if !apply_destroy_after_replacement(state, event, events) {
+                        return Ok(());
                     }
                 }
                 ReplacementResult::Prevented => {}
@@ -169,41 +186,11 @@ pub fn resolve_all(
         };
 
         match replacement::replace_event(state, proposed, events) {
-            ReplacementResult::Execute(event) => match event {
-                ProposedEvent::Destroy {
-                    object_id, source, ..
-                } => {
-                    let zone_proposed = ProposedEvent::zone_change(
-                        object_id,
-                        Zone::Battlefield,
-                        Zone::Graveyard,
-                        source,
-                    );
-                    match replacement::replace_event(state, zone_proposed, events) {
-                        ReplacementResult::Execute(zone_event) => {
-                            if let ProposedEvent::ZoneChange {
-                                object_id: oid, to, ..
-                            } = zone_event
-                            {
-                                zones::move_to_zone(state, oid, to, events);
-                                state.layers_dirty = true;
-                            }
-                        }
-                        ReplacementResult::Prevented => {}
-                        ReplacementResult::NeedsChoice(player) => {
-                            state.waiting_for =
-                                replacement::replacement_choice_waiting_for(player, state);
-                            return Ok(());
-                        }
-                    }
-                    events.push(GameEvent::CreatureDestroyed { object_id });
+            ReplacementResult::Execute(event) => {
+                if !apply_destroy_after_replacement(state, event, events) {
+                    return Ok(());
                 }
-                ProposedEvent::ZoneChange { object_id, to, .. } => {
-                    zones::move_to_zone(state, object_id, to, events);
-                    state.layers_dirty = true;
-                }
-                _ => {}
-            },
+            }
             ReplacementResult::Prevented => {} // Regenerated or other replacement
             ReplacementResult::NeedsChoice(player) => {
                 state.waiting_for = replacement::replacement_choice_waiting_for(player, state);

@@ -9,9 +9,12 @@ use crate::types::zones::Zone;
 
 use super::effects;
 use super::effects::deal_damage::{apply_damage_after_replacement, DamageContext};
+use super::effects::destroy::apply_destroy_after_replacement;
 use super::effects::draw::apply_draw_after_replacement;
 use super::effects::life::{apply_life_gain_after_replacement, apply_life_loss_after_replacement};
+use super::effects::token::apply_create_token_after_replacement;
 use super::engine::EngineError;
+use super::sacrifice::apply_sacrifice_after_replacement;
 use super::zones;
 
 pub(super) fn handle_replacement_choice(
@@ -242,18 +245,29 @@ pub(super) fn handle_replacement_choice(
                         "handle_replacement_choice: BeginPhase is a mandatory-skip replacement and should never surface as a choice"
                     );
                 }
-                // Variants whose apply path re-enters the replacement pipeline
-                // (Destroy/Sacrifice → inner ZoneChange) or requires the full Effect
-                // context not preserved on the ProposedEvent (CreateToken needs parsed
-                // token attrs). Deferred to follow-up batches — see
-                // docs/todo/replacement-choice-non-zone-events.md.
-                other @ (ProposedEvent::CreateToken { .. }
-                | ProposedEvent::Destroy { .. }
-                | ProposedEvent::Sacrifice { .. }) => {
-                    debug_assert!(
-                        false,
-                        "handle_replacement_choice: accepted {other:?} not yet delivered — see docs/todo/replacement-choice-non-zone-events.md",
-                    );
+                // CR 701.8a + CR 614: Destroy accepted after replacement choice —
+                // delegate to the shared helper so the inner ZoneChange (battlefield
+                // → graveyard) re-enters the replacement pipeline. Leaves-the-
+                // battlefield replacements, Rest-in-Peace-style redirects, and death
+                // triggers all compose naturally through the inner event. If the
+                // inner ZoneChange itself needs a choice, the helper sets
+                // `state.waiting_for` and we propagate it back below.
+                destroy @ ProposedEvent::Destroy { .. } => {
+                    if !apply_destroy_after_replacement(state, destroy, events) {
+                        return Ok(state.waiting_for.clone());
+                    }
+                }
+                // CR 701.21a + CR 614: Sacrifice accepted after replacement choice —
+                // delegate to the shared helper. Regeneration cannot apply (CR
+                // 701.21a) but Moved replacements on the graveyard transfer still do.
+                sacrifice @ ProposedEvent::Sacrifice { .. } => {
+                    apply_sacrifice_after_replacement(state, sacrifice, events);
+                }
+                // CR 111.1 + CR 614.1a: CreateToken accepted after replacement choice
+                // — the `spec` field carries the full self-describing token
+                // characteristics. Delegate to the shared helper.
+                create @ ProposedEvent::CreateToken { .. } => {
+                    apply_create_token_after_replacement(state, create, events);
                 }
             }
 
@@ -691,5 +705,256 @@ mod tests {
             state.objects[&target].damage_marked, 0,
             "zero-amount damage event applies zero damage"
         );
+    }
+
+    /// CR 701.8a + CR 614: Destroy accepted after replacement choice must
+    /// route through the shared helper, emitting `CreatureDestroyed` and
+    /// moving the permanent to the graveyard. Also verifies that the helper
+    /// re-enters the replacement pipeline for the inner ZoneChange — a
+    /// mandatory `Moved` redirect to exile on a second source still fires
+    /// after the outer Destroy choice is accepted.
+    #[test]
+    fn destroy_replacement_accepted_applies_and_reenters_pipeline() {
+        use crate::types::ability::{AbilityDefinition, AbilityKind, Effect, TargetFilter};
+
+        let mut state = GameState::new_two_player(42);
+        let victim = make_creature(&mut state, PlayerId(0), "Bear");
+
+        // Outer: Optional Destroy replacement (creates the player choice).
+        install_optional_replacement(&mut state, ReplacementEvent::Destroy);
+
+        // Inner pipeline proof: Rest-in-Peace-style Moved redirect on a
+        // separate source. If the Destroy post-accept helper re-enters the
+        // pipeline on the inner Battlefield→Graveyard ZoneChange, the
+        // victim ends up in exile (redirected), not graveyard.
+        let rip_id = ObjectId(state.next_object_id);
+        state.next_object_id += 1;
+        let mut rip = GameObject::new(
+            rip_id,
+            CardId(888),
+            PlayerId(1),
+            "RIP".to_string(),
+            Zone::Battlefield,
+        );
+        rip.replacement_definitions.push(
+            ReplacementDefinition::new(ReplacementEvent::Moved)
+                .destination_zone(Zone::Graveyard)
+                .execute(AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::ChangeZone {
+                        destination: Zone::Exile,
+                        origin: None,
+                        target: TargetFilter::Any,
+                        owner_library: false,
+                        enter_transformed: false,
+                        under_your_control: false,
+                        enter_tapped: false,
+                        enters_attacking: false,
+                        up_to: false,
+                    },
+                ))
+                .description("Rest in Peace".to_string()),
+        );
+        state.objects.insert(rip_id, rip);
+        state.battlefield.push(rip_id);
+
+        // Surface the outer Destroy replacement choice to the player.
+        let mut events = Vec::new();
+        let proposed = ProposedEvent::Destroy {
+            object_id: victim,
+            source: None,
+            cant_regenerate: false,
+            applied: std::collections::HashSet::new(),
+        };
+        let result = replacement_mod::replace_event(&mut state, proposed, &mut events);
+        let ReplacementResult::NeedsChoice(player) = result else {
+            panic!("expected NeedsChoice, got {result:?}");
+        };
+        state.waiting_for = replacement_mod::replacement_choice_waiting_for(player, &state);
+        state.priority_player = player;
+
+        apply(&mut state, GameAction::ChooseReplacement { index: 0 }).expect("accept");
+
+        // Victim left the battlefield.
+        assert!(
+            !state.battlefield.contains(&victim),
+            "Destroy accepted after replacement choice must leave the battlefield"
+        );
+        // CR 614.6: The inner ZoneChange re-entered the pipeline and hit the
+        // Moved→Exile redirect — the creature is in exile, not graveyard.
+        assert!(
+            state.exile.contains(&victim),
+            "inner ZoneChange(Battlefield→Graveyard) must re-enter the pipeline; Moved redirect should send victim to exile"
+        );
+        assert!(
+            !state.players[0].graveyard.contains(&victim),
+            "victim should not end up in graveyard after Moved→Exile redirect"
+        );
+        // Note: `CreatureDestroyed` is emitted into the engine's internal
+        // event buffer during `apply`, not the pre-choice `events` vec here.
+        // The exile-vs-graveyard assertion above is the load-bearing check
+        // proving both the outer Destroy and the inner ZoneChange were
+        // processed through the replacement pipeline.
+        let _ = events;
+    }
+
+    /// CR 701.21a + CR 614: Sacrifice accepted after replacement choice must
+    /// move the permanent to graveyard and record the sacrifice for
+    /// restriction tracking. `ReplacementEvent::Sacrifice` has no registry
+    /// matcher (sacrifice is mediated through `Moved` on the inner zone
+    /// change), so we exercise `apply_sacrifice_after_replacement` directly
+    /// — the same entry point `handle_replacement_choice` invokes.
+    #[test]
+    fn apply_sacrifice_after_replacement_moves_to_graveyard_and_records() {
+        use crate::types::card_type::CoreType;
+
+        let mut state = GameState::new_two_player(42);
+        let victim = make_creature(&mut state, PlayerId(0), "Artifact Token");
+        // Mark as artifact so we can assert `record_sacrifice` ran.
+        state
+            .objects
+            .get_mut(&victim)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Artifact);
+
+        let event = ProposedEvent::Sacrifice {
+            object_id: victim,
+            player_id: PlayerId(0),
+            applied: std::collections::HashSet::new(),
+        };
+        let mut events = Vec::new();
+        crate::game::sacrifice::apply_sacrifice_after_replacement(&mut state, event, &mut events);
+
+        assert!(
+            !state.battlefield.contains(&victim),
+            "apply_sacrifice must leave the battlefield"
+        );
+        assert!(
+            state.players[0].graveyard.contains(&victim),
+            "apply_sacrifice must move to owner's graveyard (CR 701.21a)"
+        );
+        // CR 701.21: record_sacrifice must run so restriction tracking stays correct.
+        assert!(
+            state
+                .players_who_sacrificed_artifact_this_turn
+                .contains(&PlayerId(0)),
+            "record_sacrifice must run on the post-replacement apply path"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, GameEvent::PermanentSacrificed { object_id, .. } if *object_id == victim)),
+            "PermanentSacrificed event must be emitted"
+        );
+    }
+
+    /// CR 701.21a + CR 614.6: When the inner ZoneChange is redirected (e.g.,
+    /// sacrifice → exile via a `Moved` replacement), the helper honors the
+    /// redirect. Proves pipeline composition for the sacrifice path.
+    #[test]
+    fn apply_sacrifice_after_replacement_honors_zone_change_redirect() {
+        let mut state = GameState::new_two_player(42);
+        let victim = make_creature(&mut state, PlayerId(0), "Bear");
+
+        // Simulate the inner ZoneChange having been redirected to Exile by a
+        // Moved replacement (as Rest in Peace would do).
+        let event = ProposedEvent::ZoneChange {
+            object_id: victim,
+            from: Zone::Battlefield,
+            to: Zone::Exile,
+            cause: None,
+            enter_tapped: false,
+            enter_with_counters: Vec::new(),
+            controller_override: None,
+            enter_transformed: false,
+            applied: std::collections::HashSet::new(),
+        };
+        let mut events = Vec::new();
+        crate::game::sacrifice::apply_sacrifice_after_replacement(&mut state, event, &mut events);
+
+        assert!(
+            state.exile.contains(&victim),
+            "ZoneChange-redirected sacrifice must honor the replaced destination"
+        );
+        assert!(
+            !state.players[0].graveyard.contains(&victim),
+            "redirected sacrifice must not land in graveyard"
+        );
+    }
+
+    /// CR 111.1 + CR 614.1a: CreateToken accepted after replacement choice
+    /// must deliver the full token spec — power, toughness, types, colors,
+    /// keywords are all preserved through the replacement pipeline and
+    /// applied to the created battlefield object.
+    #[test]
+    fn create_token_replacement_accepted_applies_full_spec() {
+        use crate::types::card_type::CoreType;
+        use crate::types::keywords::Keyword;
+        use crate::types::mana::ManaColor;
+        use crate::types::proposed_event::TokenSpec;
+
+        let mut state = GameState::new_two_player(42);
+        install_optional_replacement(&mut state, ReplacementEvent::CreateToken);
+
+        let spec = TokenSpec {
+            display_name: "Soldier".to_string(),
+            script_name: "w_2_2_soldier_flying".to_string(),
+            power: Some(2),
+            toughness: Some(2),
+            core_types: vec![CoreType::Creature],
+            subtypes: vec!["Soldier".to_string()],
+            supertypes: Vec::new(),
+            colors: vec![ManaColor::White],
+            keywords: vec![Keyword::Flying],
+            static_abilities: Vec::new(),
+            enter_with_counters: Vec::new(),
+            tapped: false,
+            enters_attacking: false,
+            sacrifice_at: None,
+            source_id: ObjectId(1),
+            controller: PlayerId(0),
+        };
+
+        let battlefield_before = state.battlefield.clone();
+
+        let mut events = Vec::new();
+        let proposed = ProposedEvent::CreateToken {
+            owner: PlayerId(0),
+            spec: Box::new(spec),
+            count: 1,
+            applied: std::collections::HashSet::new(),
+        };
+        let result = replacement_mod::replace_event(&mut state, proposed, &mut events);
+        let ReplacementResult::NeedsChoice(player) = result else {
+            panic!("expected NeedsChoice, got {result:?}");
+        };
+        state.waiting_for = replacement_mod::replacement_choice_waiting_for(player, &state);
+        state.priority_player = player;
+
+        apply(&mut state, GameAction::ChooseReplacement { index: 0 }).expect("accept");
+
+        // Exactly one new battlefield object was created.
+        let new_ids: Vec<_> = state
+            .battlefield
+            .iter()
+            .filter(|id| !battlefield_before.contains(id))
+            .copied()
+            .collect();
+        assert_eq!(new_ids.len(), 1, "CreateToken accept must create one token");
+        let token_id = new_ids[0];
+
+        // CR 111.1: Full spec was applied — characteristics are preserved
+        // through the replacement pipeline.
+        let token = &state.objects[&token_id];
+        assert!(token.is_token, "created object must be marked as a token");
+        assert_eq!(token.name, "Soldier");
+        assert_eq!(token.power, Some(2));
+        assert_eq!(token.toughness, Some(2));
+        assert!(token.card_types.core_types.contains(&CoreType::Creature));
+        assert!(token.card_types.subtypes.iter().any(|s| s == "Soldier"));
+        assert_eq!(token.color, vec![ManaColor::White]);
+        assert!(token.keywords.contains(&Keyword::Flying));
     }
 }

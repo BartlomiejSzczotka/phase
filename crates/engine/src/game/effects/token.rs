@@ -376,6 +376,9 @@ pub fn resolve(
     };
     let token_owner = resolve_token_owner(state, ability, owner_filter);
 
+    // CR 111.1 + CR 111.4: Resolve the token's characteristics into a
+    // self-describing `TokenSpec`. Script-name parsing takes precedence;
+    // typed `Effect::Token` fields are the fallback path.
     let parsed = parse_token_script(&script_name).or_else(|| {
         build_token_attrs_from_effect(
             &script_name,
@@ -391,157 +394,42 @@ pub fn resolve(
         )
     });
 
-    let display_name = parsed
-        .as_ref()
-        .map(|a| a.display_name.clone())
-        .unwrap_or_else(|| script_name.clone());
+    // CR 122.1a: Resolve ETB counter quantities before proposing — the event
+    // carries fully-resolved counts, not quantity expressions.
+    let resolved_etb_counters: Vec<(String, u32)> = etb_counters
+        .iter()
+        .map(|(ct, qty)| {
+            let n = resolve_quantity_with_targets(state, qty, ability).max(0) as u32;
+            (ct.clone(), n)
+        })
+        .collect();
+
+    let spec = build_token_spec(
+        &script_name,
+        parsed.as_ref(),
+        &fallback_power,
+        &fallback_toughness,
+        tapped,
+        enters_attacking,
+        token_statics,
+        resolved_etb_counters,
+        ability,
+        state,
+    );
 
     // CR 614.1a: Propose entire token batch for replacement pipeline.
     // Replacement effects (Doubling Season, Primal Vigor) modify count.
     let proposed = ProposedEvent::CreateToken {
         owner: token_owner,
-        name: display_name.clone(),
+        spec: Box::new(spec),
         count,
         applied: HashSet::new(),
     };
 
     match replacement::replace_event(state, proposed, events) {
         ReplacementResult::Execute(event) => {
-            if let ProposedEvent::CreateToken {
-                owner,
-                name: token_name,
-                count: final_count,
-                ..
-            } = event
-            {
-                for _ in 0..final_count {
-                    let obj_id = zones::create_object(
-                        state,
-                        CardId(0),
-                        owner,
-                        token_name.clone(),
-                        Zone::Battlefield,
-                    );
-
-                    let fallback_pt = if parsed.is_none() {
-                        let rp = resolve_pt_value(
-                            &fallback_power,
-                            state,
-                            ability.controller,
-                            ability.source_id,
-                        );
-                        let rt = resolve_pt_value(
-                            &fallback_toughness,
-                            state,
-                            ability.controller,
-                            ability.source_id,
-                        );
-                        Some((rp, rt))
-                    } else {
-                        None
-                    };
-                    if let Some(obj) = state.objects.get_mut(&obj_id) {
-                        // CR 111.1: Mark as token for SBA cleanup (CR 704.5d)
-                        obj.is_token = true;
-                        if let Some(attrs) = &parsed {
-                            obj.power = attrs.power;
-                            obj.toughness = attrs.toughness;
-                            obj.base_power = attrs.power;
-                            obj.base_toughness = attrs.toughness;
-                            obj.card_types = CardType {
-                                supertypes: attrs.supertypes.clone(),
-                                core_types: attrs.core_types.clone(),
-                                subtypes: attrs.subtypes.clone(),
-                            };
-                            obj.base_card_types = obj.card_types.clone();
-                            obj.color = attrs.colors.clone();
-                            obj.base_color = attrs.colors.clone();
-                            obj.keywords = attrs.keywords.clone();
-                            obj.base_keywords = attrs.keywords.clone();
-                        } else {
-                            let (resolved_power, resolved_toughness) =
-                                fallback_pt.unwrap_or((0, 0));
-                            if resolved_power != 0 || resolved_toughness != 0 {
-                                obj.power = Some(resolved_power);
-                                obj.toughness = Some(resolved_toughness);
-                                obj.base_power = Some(resolved_power);
-                                obj.base_toughness = Some(resolved_toughness);
-                                obj.card_types.core_types.push(CoreType::Creature);
-                                obj.base_card_types = obj.card_types.clone();
-                            }
-                        }
-                        obj.tapped = tapped;
-
-                        // Apply static abilities from the token definition
-                        // (e.g., "This token can't block.").
-                        for static_def in &token_statics {
-                            obj.static_definitions.push(static_def.clone());
-                        }
-                    }
-
-                    // CR 508.4: Token enters attacking — not declared as attacker.
-                    // Uses shared helper for defending player resolution.
-                    if enters_attacking {
-                        crate::game::combat::enter_attacking(
-                            state,
-                            obj_id,
-                            ability.source_id,
-                            ability.controller,
-                        );
-                    }
-
-                    // CR 122.1a: Place counters on the token as it enters the battlefield.
-                    // Used by "The token enters with X +1/+1 counters on it" patterns.
-                    for (counter_type_str, qty_expr) in &etb_counters {
-                        let counter_count =
-                            resolve_quantity_with_targets(state, qty_expr, ability).max(0) as u32;
-                        if counter_count > 0 {
-                            let ct = crate::types::counter::parse_counter_type(counter_type_str);
-                            super::counters::add_counter_with_replacement(
-                                state,
-                                obj_id,
-                                ct,
-                                counter_count,
-                                events,
-                            );
-                        }
-                    }
-
-                    // CR 111.10a–v: Inject predefined abilities for known token subtypes.
-                    inject_predefined_token_abilities(state, obj_id);
-                    state.layers_dirty = true;
-                    crate::game::restrictions::record_battlefield_entry(state, obj_id);
-                    crate::game::restrictions::record_token_created(state, obj_id);
-
-                    events.push(GameEvent::TokenCreated {
-                        object_id: obj_id,
-                        name: token_name.clone(),
-                    });
-
-                    // CR 603.7: Tokens with a limited duration get a delayed sacrifice trigger.
-                    // Used by Mobilize and similar keywords that create temporary attacking tokens.
-                    if matches!(ability.duration, Some(Duration::UntilEndOfCombat)) {
-                        state.delayed_triggers.push(DelayedTrigger {
-                            condition: DelayedTriggerCondition::AtNextPhase {
-                                phase: Phase::EndCombat,
-                            },
-                            ability: ResolvedAbility::new(
-                                Effect::Sacrifice {
-                                    target: TargetFilter::Any,
-                                    up_to: false,
-                                },
-                                vec![TargetRef::Object(obj_id)],
-                                ability.source_id,
-                                ability.controller,
-                            ),
-                            controller: ability.controller,
-                            source_id: ability.source_id,
-                            one_shot: true,
-                        });
-                    }
-                } // for _ in 0..final_count
-            } // if let ProposedEvent::CreateToken
-        } // Execute
+            apply_create_token_after_replacement(state, event, events);
+        }
         ReplacementResult::Prevented => {
             // Token creation was prevented entirely
         }
@@ -573,6 +461,203 @@ pub fn resolve(
     });
 
     Ok(())
+}
+
+/// CR 111.1 + CR 111.4 + CR 111.10: Build the resolved `TokenSpec` for a
+/// token creation event, combining parsed script attributes with typed
+/// `Effect::Token` fallback fields and ability context (source/controller/
+/// duration) needed on the post-accept apply path.
+#[allow(clippy::too_many_arguments)]
+fn build_token_spec(
+    script_name: &str,
+    parsed: Option<&TokenAttrs>,
+    fallback_power: &PtValue,
+    fallback_toughness: &PtValue,
+    tapped: bool,
+    enters_attacking: bool,
+    static_abilities: Vec<crate::types::ability::StaticDefinition>,
+    enter_with_counters: Vec<(String, u32)>,
+    ability: &ResolvedAbility,
+    state: &GameState,
+) -> crate::types::proposed_event::TokenSpec {
+    use crate::types::proposed_event::TokenSpec;
+
+    let (display_name, power, toughness, core_types, subtypes, supertypes, colors, keywords) =
+        if let Some(attrs) = parsed {
+            (
+                attrs.display_name.clone(),
+                attrs.power,
+                attrs.toughness,
+                attrs.core_types.clone(),
+                attrs.subtypes.clone(),
+                attrs.supertypes.clone(),
+                attrs.colors.clone(),
+                attrs.keywords.clone(),
+            )
+        } else {
+            // No parsed attrs — resolve fallback P/T, and defer type/color
+            // inference to the apply path's creature-only fallback branch.
+            let rp = resolve_pt_value(fallback_power, state, ability.controller, ability.source_id);
+            let rt = resolve_pt_value(
+                fallback_toughness,
+                state,
+                ability.controller,
+                ability.source_id,
+            );
+            let (p, t, core) = if rp != 0 || rt != 0 {
+                (Some(rp), Some(rt), vec![CoreType::Creature])
+            } else {
+                (None, None, Vec::new())
+            };
+            (
+                script_name.to_string(),
+                p,
+                t,
+                core,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+            )
+        };
+
+    TokenSpec {
+        display_name,
+        script_name: script_name.to_string(),
+        power,
+        toughness,
+        core_types,
+        subtypes,
+        supertypes,
+        colors,
+        keywords,
+        static_abilities,
+        enter_with_counters,
+        tapped,
+        enters_attacking,
+        sacrifice_at: ability.duration.clone(),
+        source_id: ability.source_id,
+        controller: ability.controller,
+    }
+}
+
+/// CR 111.1 + CR 614.1a: Apply an accepted `CreateToken` proposed event.
+///
+/// Extracted from `resolve` so `handle_replacement_choice` can deliver tokens
+/// accepted after a replacement prompt (Doubling Season on a prompted token
+/// creation, etc.) through the same code path.
+///
+/// `event` must be a `ProposedEvent::CreateToken`; other variants are no-ops.
+pub fn apply_create_token_after_replacement(
+    state: &mut GameState,
+    event: ProposedEvent,
+    events: &mut Vec<GameEvent>,
+) {
+    let ProposedEvent::CreateToken {
+        owner,
+        spec,
+        count: final_count,
+        ..
+    } = event
+    else {
+        return;
+    };
+
+    for _ in 0..final_count {
+        let obj_id = zones::create_object(
+            state,
+            CardId(0),
+            owner,
+            spec.display_name.clone(),
+            Zone::Battlefield,
+        );
+
+        if let Some(obj) = state.objects.get_mut(&obj_id) {
+            // CR 111.1: Mark as token for SBA cleanup (CR 704.5d)
+            obj.is_token = true;
+            let has_attrs = spec.power.is_some()
+                || spec.toughness.is_some()
+                || !spec.core_types.is_empty()
+                || !spec.subtypes.is_empty()
+                || !spec.supertypes.is_empty()
+                || !spec.colors.is_empty()
+                || !spec.keywords.is_empty();
+            if has_attrs {
+                obj.power = spec.power;
+                obj.toughness = spec.toughness;
+                obj.base_power = spec.power;
+                obj.base_toughness = spec.toughness;
+                obj.card_types = CardType {
+                    supertypes: spec.supertypes.clone(),
+                    core_types: spec.core_types.clone(),
+                    subtypes: spec.subtypes.clone(),
+                };
+                obj.base_card_types = obj.card_types.clone();
+                obj.color = spec.colors.clone();
+                obj.base_color = spec.colors.clone();
+                obj.keywords = spec.keywords.clone();
+                obj.base_keywords = spec.keywords.clone();
+            }
+            obj.tapped = spec.tapped;
+
+            // CR 113.3d: Apply static abilities from the token definition.
+            for static_def in &spec.static_abilities {
+                obj.static_definitions.push(static_def.clone());
+            }
+        }
+
+        // CR 508.4: Token enters attacking — not declared as attacker.
+        if spec.enters_attacking {
+            crate::game::combat::enter_attacking(state, obj_id, spec.source_id, spec.controller);
+        }
+
+        // CR 122.1a: Place counters on the token as it enters the battlefield.
+        for (counter_type_str, counter_count) in &spec.enter_with_counters {
+            if *counter_count > 0 {
+                let ct = crate::types::counter::parse_counter_type(counter_type_str);
+                super::counters::add_counter_with_replacement(
+                    state,
+                    obj_id,
+                    ct,
+                    *counter_count,
+                    events,
+                );
+            }
+        }
+
+        // CR 111.10a–v: Inject predefined abilities for known token subtypes.
+        inject_predefined_token_abilities(state, obj_id);
+        state.layers_dirty = true;
+        crate::game::restrictions::record_battlefield_entry(state, obj_id);
+        crate::game::restrictions::record_token_created(state, obj_id);
+
+        events.push(GameEvent::TokenCreated {
+            object_id: obj_id,
+            name: spec.display_name.clone(),
+        });
+
+        // CR 603.7: Tokens with a limited duration get a delayed sacrifice trigger.
+        // Used by Mobilize and similar keywords that create temporary attacking tokens.
+        if matches!(spec.sacrifice_at, Some(Duration::UntilEndOfCombat)) {
+            state.delayed_triggers.push(DelayedTrigger {
+                condition: DelayedTriggerCondition::AtNextPhase {
+                    phase: Phase::EndCombat,
+                },
+                ability: ResolvedAbility::new(
+                    Effect::Sacrifice {
+                        target: TargetFilter::Any,
+                        up_to: false,
+                    },
+                    vec![TargetRef::Object(obj_id)],
+                    spec.source_id,
+                    spec.controller,
+                ),
+                controller: spec.controller,
+                source_id: spec.source_id,
+                one_shot: true,
+            });
+        }
+    }
 }
 
 fn resolve_token_owner(

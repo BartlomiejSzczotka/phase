@@ -4,9 +4,11 @@ use serde::{Deserialize, Serialize};
 
 use super::counter::CounterType;
 
-use super::ability::TargetRef;
+use super::ability::{Duration, StaticDefinition, TargetRef};
+use super::card_type::{CoreType, Supertype};
 use super::identifiers::ObjectId;
-use super::mana::ManaType;
+use super::keywords::Keyword;
+use super::mana::{ManaColor, ManaType};
 use super::phase::Phase;
 use super::player::PlayerId;
 use super::zones::Zone;
@@ -15,6 +17,56 @@ use super::zones::Zone;
 pub struct ReplacementId {
     pub source: ObjectId,
     pub index: usize,
+}
+
+/// CR 111.1 + CR 111.4 + CR 111.10: Fully-resolved token creation specification.
+///
+/// `Effect::Token` carries authoring-time fields (`PtValue`, `QuantityExpr`,
+/// `TargetFilter owner`) that must be resolved against game state before the
+/// token hits the replacement pipeline. `TokenSpec` captures the resolved,
+/// self-describing form used by `ProposedEvent::CreateToken` and the
+/// post-accept apply path, so replacement matchers and modifiers see the full
+/// characteristics of the token that's about to be created.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TokenSpec {
+    /// CR 111.4: The token's display name (same as its subtype(s) + "Token"
+    /// unless the creating effect specifies otherwise).
+    pub display_name: String,
+    /// Original Forge-style script name (or custom name) used by the token
+    /// parser on the apply path to re-derive attributes. Preserved so the
+    /// existing `parse_token_script` dispatch still fires after widening.
+    pub script_name: String,
+    /// CR 208.2: Fixed power, or `None` for non-creature tokens.
+    pub power: Option<i32>,
+    /// CR 208.2: Fixed toughness, or `None` for non-creature tokens.
+    pub toughness: Option<i32>,
+    pub core_types: Vec<CoreType>,
+    pub subtypes: Vec<String>,
+    pub supertypes: Vec<Supertype>,
+    pub colors: Vec<ManaColor>,
+    pub keywords: Vec<Keyword>,
+    /// CR 113.3d: Static abilities granted to the token (e.g., "This token
+    /// can't block.").
+    pub static_abilities: Vec<StaticDefinition>,
+    /// CR 122.1a: Counters placed on the token as it enters the battlefield
+    /// (resolved from `QuantityExpr` at propose time).
+    pub enter_with_counters: Vec<(String, u32)>,
+    /// CR 614.1: Token enters tapped.
+    pub tapped: bool,
+    /// CR 508.4: Token enters the battlefield attacking (not declared as
+    /// attacker).
+    pub enters_attacking: bool,
+    /// CR 603.7: When set, the token is sacrificed at the end of the given
+    /// duration (e.g., Mobilize tokens sacrificed at end of combat).
+    pub sacrifice_at: Option<Duration>,
+    /// CR 107.3a: Ability source — the object that created the token. Needed
+    /// on the apply path for defending-player resolution (`enters_attacking`)
+    /// and for the delayed-trigger source.
+    pub source_id: ObjectId,
+    /// CR 107.3a: Ability controller — the player who controls the effect
+    /// creating the token (distinct from `owner`, the player to whom the
+    /// token belongs).
+    pub controller: PlayerId,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -74,9 +126,20 @@ pub enum ProposedEvent {
         count: u32,
         applied: HashSet<ReplacementId>,
     },
+    /// CR 111.1 + CR 614.1a: Token creation event carrying the full
+    /// self-describing token specification. Replacement effects can modify
+    /// `count` (Doubling Season, Primal Vigor) or inspect `spec` for
+    /// characteristic-based gating (e.g., "whenever a creature token you
+    /// control would enter ...").
+    ///
+    /// `spec` is boxed so this variant doesn't dominate the enum size —
+    /// `TokenSpec` is ~400 bytes of resolved characteristics, and most
+    /// other variants are small IDs.
     CreateToken {
         owner: PlayerId,
-        name: String,
+        /// Resolved token characteristics, keyed by replacement pipeline
+        /// matchers on the apply path to reproduce the token faithfully.
+        spec: Box<TokenSpec>,
         /// CR 614.1a: Number of tokens to create. May be modified by replacement effects.
         count: u32,
         applied: HashSet<ReplacementId>,
@@ -338,7 +401,24 @@ mod tests {
             },
             ProposedEvent::CreateToken {
                 owner: PlayerId(0),
-                name: "Soldier".to_string(),
+                spec: Box::new(TokenSpec {
+                    display_name: "Soldier".to_string(),
+                    script_name: "w_1_1_soldier".to_string(),
+                    power: Some(1),
+                    toughness: Some(1),
+                    core_types: Vec::new(),
+                    subtypes: Vec::new(),
+                    supertypes: Vec::new(),
+                    colors: Vec::new(),
+                    keywords: Vec::new(),
+                    static_abilities: Vec::new(),
+                    enter_with_counters: Vec::new(),
+                    tapped: false,
+                    enters_attacking: false,
+                    sacrifice_at: None,
+                    source_id: ObjectId(1),
+                    controller: PlayerId(0),
+                }),
                 count: 1,
                 applied: HashSet::new(),
             },

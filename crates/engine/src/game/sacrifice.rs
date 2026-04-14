@@ -58,29 +58,9 @@ pub(crate) fn sacrifice_permanent(
     };
 
     match replacement::replace_event(state, proposed, events) {
-        ReplacementResult::Execute(event) => match event {
-            ProposedEvent::Sacrifice {
-                object_id: oid,
-                player_id: pid,
-                ..
-            } => {
-                zones::move_to_zone(state, oid, Zone::Graveyard, events);
-                state.layers_dirty = true;
-                restrictions::record_sacrifice(state, oid, pid);
-                events.push(GameEvent::PermanentSacrificed {
-                    object_id: oid,
-                    player_id: pid,
-                });
-            }
-            ProposedEvent::ZoneChange {
-                object_id: oid, to, ..
-            } => {
-                // Replacement redirected (e.g., exile instead of graveyard)
-                zones::move_to_zone(state, oid, to, events);
-                state.layers_dirty = true;
-            }
-            _ => {}
-        },
+        ReplacementResult::Execute(event) => {
+            apply_sacrifice_after_replacement(state, event, events)
+        }
         ReplacementResult::Prevented => {}
         ReplacementResult::NeedsChoice(choice_player) => {
             return Ok(SacrificeOutcome::NeedsReplacementChoice(choice_player));
@@ -88,6 +68,45 @@ pub(crate) fn sacrifice_permanent(
     }
 
     Ok(SacrificeOutcome::Complete)
+}
+
+/// CR 701.21a + CR 614: Apply an accepted Sacrifice proposed event.
+///
+/// Moves the permanent to its owner's graveyard (or the replaced destination
+/// if a `Moved` replacement redirected the inner zone change), records the
+/// sacrifice for restriction tracking (CR 701.21), and emits the
+/// `PermanentSacrificed` event.
+///
+/// Shared by the cost/effect path (`sacrifice_permanent`) and the
+/// post-replacement-choice delivery path (`handle_replacement_choice`).
+pub(crate) fn apply_sacrifice_after_replacement(
+    state: &mut GameState,
+    event: ProposedEvent,
+    events: &mut Vec<GameEvent>,
+) {
+    match event {
+        ProposedEvent::Sacrifice {
+            object_id: oid,
+            player_id: pid,
+            ..
+        } => {
+            zones::move_to_zone(state, oid, Zone::Graveyard, events);
+            state.layers_dirty = true;
+            restrictions::record_sacrifice(state, oid, pid);
+            events.push(GameEvent::PermanentSacrificed {
+                object_id: oid,
+                player_id: pid,
+            });
+        }
+        ProposedEvent::ZoneChange {
+            object_id: oid, to, ..
+        } => {
+            // Replacement redirected (e.g., exile instead of graveyard)
+            zones::move_to_zone(state, oid, to, events);
+            state.layers_dirty = true;
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]
