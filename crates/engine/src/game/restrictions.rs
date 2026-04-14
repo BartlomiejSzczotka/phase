@@ -205,28 +205,13 @@ pub fn record_battlefield_entry(
 /// CR 400.7: Record a zone-change snapshot for data-driven condition queries.
 pub fn record_zone_change(
     state: &mut crate::types::game_state::GameState,
-    object_id: ObjectId,
-    from: Zone,
-    to: Zone,
+    record: crate::types::game_state::ZoneChangeRecord,
 ) {
-    let Some(obj) = state.objects.get(&object_id) else {
-        return;
-    };
-
-    let record = crate::types::game_state::ZoneChangeRecord {
-        object_id,
-        name: obj.name.clone(),
-        core_types: obj.card_types.core_types.clone(),
-        subtypes: obj.card_types.subtypes.clone(),
-        supertypes: obj.card_types.supertypes.clone(),
-        controller: obj.controller,
-        owner: obj.owner,
-        from_zone: from,
-        to_zone: to,
-    };
+    let object_id = record.object_id;
+    let to_zone = record.to_zone;
     state.zone_changes_this_turn.push(record);
 
-    if to == Zone::Battlefield {
+    if to_zone == Zone::Battlefield {
         record_battlefield_entry(state, object_id);
     }
 }
@@ -1160,15 +1145,13 @@ mod tests {
         state
             .zone_changes_this_turn
             .push(crate::types::game_state::ZoneChangeRecord {
-                object_id: ObjectId(99),
                 name: "Grizzly Bears".to_string(),
                 core_types: vec![CoreType::Creature],
-                subtypes: vec![],
-                supertypes: vec![],
-                controller: PlayerId(0),
-                owner: PlayerId(0),
-                from_zone: Zone::Battlefield,
-                to_zone: Zone::Graveyard,
+                ..crate::types::game_state::ZoneChangeRecord::test_minimal(
+                    ObjectId(99),
+                    Zone::Battlefield,
+                    Zone::Graveyard,
+                )
             });
 
         assert!(parse_and_evaluate_condition(
@@ -1214,15 +1197,12 @@ mod tests {
             state
                 .zone_changes_this_turn
                 .push(crate::types::game_state::ZoneChangeRecord {
-                    object_id: ObjectId(100 + i),
                     name: format!("Card {}", i),
-                    core_types: vec![],
-                    subtypes: vec![],
-                    supertypes: vec![],
-                    controller: PlayerId(0),
-                    owner: PlayerId(0),
-                    from_zone: Zone::Graveyard,
-                    to_zone: Zone::Exile,
+                    ..crate::types::game_state::ZoneChangeRecord::test_minimal(
+                        ObjectId(100 + i),
+                        Zone::Graveyard,
+                        Zone::Exile,
+                    )
                 });
         }
 

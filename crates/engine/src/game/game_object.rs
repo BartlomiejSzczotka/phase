@@ -270,6 +270,34 @@ pub struct GameObject {
 }
 
 impl GameObject {
+    /// CR 603.10 + CR 400.7: Snapshot this object's public characteristics
+    /// for a zone-change event. The record captures state *at the moment of
+    /// the move* so zone-change trigger filters and past-tense conditions
+    /// evaluate against the event-time object, not its post-move shape.
+    pub fn snapshot_for_zone_change(
+        &self,
+        object_id: ObjectId,
+        from: Zone,
+        to: Zone,
+    ) -> crate::types::game_state::ZoneChangeRecord {
+        crate::types::game_state::ZoneChangeRecord {
+            object_id,
+            name: self.name.clone(),
+            core_types: self.card_types.core_types.clone(),
+            subtypes: self.card_types.subtypes.clone(),
+            supertypes: self.card_types.supertypes.clone(),
+            keywords: self.keywords.clone(),
+            power: self.power,
+            toughness: self.toughness,
+            colors: self.color.clone(),
+            mana_value: self.mana_cost.mana_value(),
+            controller: self.controller,
+            owner: self.owner,
+            from_zone: from,
+            to_zone: to,
+        }
+    }
+
     pub fn sync_missing_base_characteristics(&mut self) {
         if self.base_characteristics_initialized {
             return;

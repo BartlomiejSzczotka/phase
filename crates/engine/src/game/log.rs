@@ -252,6 +252,7 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
             object_id,
             from,
             to,
+            ..
         } => vec![
             card_seg(state, *object_id),
             text(" moves from "),

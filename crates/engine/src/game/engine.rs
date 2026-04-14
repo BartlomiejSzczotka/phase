@@ -5753,7 +5753,7 @@ mod trigger_target_tests {
 mod exile_return_tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::game_state::{ExileLink, ExileLinkKind};
+    use crate::types::game_state::{ExileLink, ExileLinkKind, ZoneChangeRecord};
     use crate::types::identifiers::CardId;
 
     #[test]
@@ -5792,10 +5792,14 @@ mod exile_return_tests {
         });
 
         // Simulate events where source leaves the battlefield
-        let events = vec![crate::types::events::GameEvent::ZoneChanged {
+        let events = vec![GameEvent::ZoneChanged {
             object_id: source_id,
             from: Zone::Battlefield,
             to: Zone::Graveyard,
+            record: Box::new(ZoneChangeRecord {
+                name: "Banishing Light".to_string(),
+                ..ZoneChangeRecord::test_minimal(source_id, Zone::Battlefield, Zone::Graveyard)
+            }),
         }];
 
         // Call check_exile_returns
@@ -5853,10 +5857,14 @@ mod exile_return_tests {
             },
         });
 
-        let events = vec![crate::types::events::GameEvent::ZoneChanged {
+        let events = vec![GameEvent::ZoneChanged {
             object_id: source_id,
             from: Zone::Battlefield,
             to: Zone::Graveyard,
+            record: Box::new(ZoneChangeRecord {
+                name: "Deep-Cavern Bat".to_string(),
+                ..ZoneChangeRecord::test_minimal(source_id, Zone::Battlefield, Zone::Graveyard)
+            }),
         }];
 
         check_exile_returns(&mut state, &mut events.clone());
@@ -5906,10 +5914,14 @@ mod exile_return_tests {
             },
         });
 
-        let events = vec![crate::types::events::GameEvent::ZoneChanged {
+        let events = vec![GameEvent::ZoneChanged {
             object_id: source_id,
             from: Zone::Battlefield,
             to: Zone::Graveyard,
+            record: Box::new(ZoneChangeRecord {
+                name: "Source".to_string(),
+                ..ZoneChangeRecord::test_minimal(source_id, Zone::Battlefield, Zone::Graveyard)
+            }),
         }];
 
         // Should not panic -- gracefully handle already-moved card
@@ -5972,10 +5984,14 @@ mod exile_return_tests {
             },
         });
 
-        let events = vec![crate::types::events::GameEvent::ZoneChanged {
+        let events = vec![GameEvent::ZoneChanged {
             object_id: source_id,
             from: Zone::Battlefield,
             to: Zone::Graveyard,
+            record: Box::new(ZoneChangeRecord {
+                name: "Source".to_string(),
+                ..ZoneChangeRecord::test_minimal(source_id, Zone::Battlefield, Zone::Graveyard)
+            }),
         }];
 
         check_exile_returns(&mut state, &mut events.clone());

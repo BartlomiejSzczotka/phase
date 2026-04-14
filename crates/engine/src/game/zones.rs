@@ -1,6 +1,8 @@
 use crate::types::card_type::CoreType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
+#[cfg(test)]
+use crate::types::game_state::ZoneChangeRecord;
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::player::PlayerId;
 use crate::types::statics::StaticMode;
@@ -161,6 +163,7 @@ pub fn move_to_zone(
     let obj = state.objects.get(&object_id).expect("object exists");
     let from = obj.zone;
     let owner = obj.owner;
+    let zone_change_record = obj.snapshot_for_zone_change(object_id, from, to);
 
     apply_zone_exit_cleanup(state, object_id, from);
 
@@ -200,12 +203,13 @@ pub fn move_to_zone(
         state.layers_dirty = true;
     }
 
-    super::restrictions::record_zone_change(state, object_id, from, to);
+    super::restrictions::record_zone_change(state, zone_change_record.clone());
 
     events.push(GameEvent::ZoneChanged {
         object_id,
         from,
         to,
+        record: Box::new(zone_change_record),
     });
 }
 
@@ -234,6 +238,7 @@ pub fn move_to_library_at_index(
     let obj = state.objects.get(&object_id).expect("object exists");
     let from = obj.zone;
     let owner = obj.owner;
+    let zone_change_record = obj.snapshot_for_zone_change(object_id, from, Zone::Library);
 
     apply_zone_exit_cleanup(state, object_id, from);
 
@@ -257,12 +262,13 @@ pub fn move_to_library_at_index(
         obj_mut.zone = Zone::Library;
     }
 
-    super::restrictions::record_zone_change(state, object_id, from, Zone::Library);
+    super::restrictions::record_zone_change(state, zone_change_record.clone());
 
     events.push(GameEvent::ZoneChanged {
         object_id,
         from,
         to: Zone::Library,
+        record: Box::new(zone_change_record),
     });
 }
 
@@ -438,10 +444,14 @@ mod tests {
                 object_id,
                 from,
                 to,
+                record,
             } => {
                 assert_eq!(*object_id, id);
                 assert_eq!(*from, Zone::Hand);
                 assert_eq!(*to, Zone::Battlefield);
+                assert_eq!(record.object_id, id);
+                assert_eq!(record.from_zone, Zone::Hand);
+                assert_eq!(record.to_zone, Zone::Battlefield);
             }
             _ => panic!("expected ZoneChanged event"),
         }
@@ -567,6 +577,10 @@ mod tests {
                 object_id: id,
                 from: Zone::Hand,
                 to: Zone::Graveyard,
+                record: Box::new(ZoneChangeRecord {
+                    name: "Card".to_string(),
+                    ..ZoneChangeRecord::test_minimal(id, Zone::Hand, Zone::Graveyard)
+                }),
             }
         );
     }

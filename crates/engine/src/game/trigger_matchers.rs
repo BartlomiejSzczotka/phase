@@ -534,9 +534,10 @@ pub(super) fn match_changes_zone(
     state: &GameState,
 ) -> bool {
     if let GameEvent::ZoneChanged {
-        object_id,
+        object_id: _,
         from,
         to,
+        record,
     } = event
     {
         // Check origin zone using typed field
@@ -552,8 +553,13 @@ pub(super) fn match_changes_zone(
             }
         }
         // Check valid_card filter
-        if !valid_card_matches(trigger, state, *object_id, source_id) {
-            return false;
+        if let Some(filter) = &trigger.valid_card {
+            let ctx = super::filter::FilterContext::from_source(state, source_id);
+            if !super::filter::matches_target_filter_on_zone_change_record(
+                state, record, filter, &ctx,
+            ) {
+                return false;
+            }
         }
         true
     } else {
@@ -1607,6 +1613,7 @@ pub(super) fn match_leaves_battlefield(
         object_id,
         from,
         to: _,
+        ..
     } = event
     {
         if *from != Zone::Battlefield {
@@ -2085,7 +2092,9 @@ mod tests {
     };
     use crate::types::card_type::CoreType;
     use crate::types::events::{GameEvent, PlayerActionKind};
-    use crate::types::game_state::{CastingVariant, GameState, StackEntry, StackEntryKind};
+    use crate::types::game_state::{
+        CastingVariant, GameState, StackEntry, StackEntryKind, ZoneChangeRecord,
+    };
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
     use crate::types::zones::Zone;
@@ -2110,6 +2119,26 @@ mod tests {
         TriggerDefinition::new(mode)
     }
 
+    fn zone_changed_event(
+        object_id: ObjectId,
+        from: Zone,
+        to: Zone,
+        core_types: Vec<CoreType>,
+        subtypes: Vec<&str>,
+    ) -> GameEvent {
+        GameEvent::ZoneChanged {
+            object_id,
+            from,
+            to,
+            record: Box::new(ZoneChangeRecord {
+                name: "Test Object".to_string(),
+                core_types,
+                subtypes: subtypes.into_iter().map(str::to_string).collect(),
+                ..ZoneChangeRecord::test_minimal(object_id, from, to)
+            }),
+        }
+    }
+
     #[test]
     fn changes_zone_etb_matches() {
         let state = setup();
@@ -2117,11 +2146,13 @@ mod tests {
         // Origin: any (None means any), Destination: Battlefield
         trigger.destination = Some(Zone::Battlefield);
 
-        let event = GameEvent::ZoneChanged {
-            object_id: ObjectId(5),
-            from: Zone::Hand,
-            to: Zone::Battlefield,
-        };
+        let event = zone_changed_event(
+            ObjectId(5),
+            Zone::Hand,
+            Zone::Battlefield,
+            Vec::new(),
+            Vec::new(),
+        );
         assert!(match_changes_zone(&event, &trigger, ObjectId(1), &state));
     }
 
@@ -2237,11 +2268,13 @@ mod tests {
         trigger.origin = Some(Zone::Battlefield);
         trigger.destination = Some(Zone::Graveyard);
 
-        let event = GameEvent::ZoneChanged {
-            object_id: ObjectId(5),
-            from: Zone::Battlefield,
-            to: Zone::Graveyard,
-        };
+        let event = zone_changed_event(
+            ObjectId(5),
+            Zone::Battlefield,
+            Zone::Graveyard,
+            Vec::new(),
+            Vec::new(),
+        );
         assert!(match_changes_zone(&event, &trigger, ObjectId(1), &state));
     }
 
@@ -2251,12 +2284,106 @@ mod tests {
         let mut trigger = make_trigger(TriggerMode::ChangesZone);
         trigger.destination = Some(Zone::Battlefield);
 
-        let event = GameEvent::ZoneChanged {
-            object_id: ObjectId(5),
-            from: Zone::Hand,
-            to: Zone::Graveyard,
-        };
+        let event = zone_changed_event(
+            ObjectId(5),
+            Zone::Hand,
+            Zone::Graveyard,
+            Vec::new(),
+            Vec::new(),
+        );
         assert!(!match_changes_zone(&event, &trigger, ObjectId(1), &state));
+    }
+
+    #[test]
+    fn changes_zone_uses_event_snapshot_for_subtype_filters() {
+        let mut state = setup();
+        let source_id = create_object(
+            &mut state,
+            CardId(15),
+            PlayerId(0),
+            "Ygra".to_string(),
+            Zone::Battlefield,
+        );
+        let mut trigger = make_trigger(TriggerMode::ChangesZone);
+        trigger.origin = Some(Zone::Battlefield);
+        trigger.destination = Some(Zone::Graveyard);
+        trigger.valid_card = Some(TargetFilter::Typed(
+            TypedFilter::default().with_type(TypeFilter::Subtype("Food".to_string())),
+        ));
+
+        let event = zone_changed_event(
+            ObjectId(77),
+            Zone::Battlefield,
+            Zone::Graveyard,
+            vec![CoreType::Creature, CoreType::Artifact],
+            vec!["Food"],
+        );
+        assert!(match_changes_zone(&event, &trigger, source_id, &state));
+    }
+
+    #[test]
+    fn changes_zone_uses_event_snapshot_for_power_filter() {
+        // CR 603.10: "Whenever a creature with power 4 or greater dies" must read
+        // event-time power from the zone-change snapshot, not from the post-move
+        // object (which has left the battlefield and no longer has a power).
+        let mut state = setup();
+        let source_id = create_object(
+            &mut state,
+            CardId(30),
+            PlayerId(0),
+            "Big Death Trigger".to_string(),
+            Zone::Battlefield,
+        );
+        let mut trigger = make_trigger(TriggerMode::ChangesZone);
+        trigger.origin = Some(Zone::Battlefield);
+        trigger.destination = Some(Zone::Graveyard);
+        trigger.valid_card = Some(TargetFilter::Typed(TypedFilter::creature().properties(
+            vec![crate::types::ability::FilterProp::PowerGE {
+                value: crate::types::ability::QuantityExpr::Fixed { value: 4 },
+            }],
+        )));
+
+        let base_event = zone_changed_event(
+            ObjectId(500),
+            Zone::Battlefield,
+            Zone::Graveyard,
+            vec![CoreType::Creature],
+            Vec::new(),
+        );
+        // A 5/5 dying should fire the trigger.
+        let event_5 = match base_event {
+            GameEvent::ZoneChanged {
+                object_id,
+                from,
+                to,
+                record,
+            } => GameEvent::ZoneChanged {
+                object_id,
+                from,
+                to,
+                record: Box::new(ZoneChangeRecord {
+                    power: Some(5),
+                    toughness: Some(5),
+                    ..*record
+                }),
+            },
+            _ => unreachable!(),
+        };
+        assert!(match_changes_zone(&event_5, &trigger, source_id, &state));
+
+        // A 2/2 dying should not fire.
+        let event_2 = GameEvent::ZoneChanged {
+            object_id: ObjectId(501),
+            from: Zone::Battlefield,
+            to: Zone::Graveyard,
+            record: Box::new(ZoneChangeRecord {
+                core_types: vec![CoreType::Creature],
+                power: Some(2),
+                toughness: Some(2),
+                ..ZoneChangeRecord::test_minimal(ObjectId(501), Zone::Battlefield, Zone::Graveyard)
+            }),
+        };
+        assert!(!match_changes_zone(&event_2, &trigger, source_id, &state));
     }
 
     #[test]
@@ -2460,11 +2587,13 @@ mod tests {
     #[test]
     fn exiled_matches_zone_change_to_exile() {
         let state = setup();
-        let event = GameEvent::ZoneChanged {
-            object_id: ObjectId(5),
-            from: Zone::Battlefield,
-            to: Zone::Exile,
-        };
+        let event = zone_changed_event(
+            ObjectId(5),
+            Zone::Battlefield,
+            Zone::Exile,
+            Vec::new(),
+            Vec::new(),
+        );
         let trigger = make_trigger(TriggerMode::Exiled);
         assert!(match_exiled(&event, &trigger, ObjectId(5), &state));
     }
@@ -2472,11 +2601,13 @@ mod tests {
     #[test]
     fn exiled_does_not_match_other_zones() {
         let state = setup();
-        let event = GameEvent::ZoneChanged {
-            object_id: ObjectId(5),
-            from: Zone::Battlefield,
-            to: Zone::Graveyard,
-        };
+        let event = zone_changed_event(
+            ObjectId(5),
+            Zone::Battlefield,
+            Zone::Graveyard,
+            Vec::new(),
+            Vec::new(),
+        );
         let trigger = make_trigger(TriggerMode::Exiled);
         assert!(!match_exiled(&event, &trigger, ObjectId(5), &state));
     }
@@ -2484,11 +2615,13 @@ mod tests {
     #[test]
     fn milled_matches_library_to_graveyard() {
         let state = setup();
-        let event = GameEvent::ZoneChanged {
-            object_id: ObjectId(5),
-            from: Zone::Library,
-            to: Zone::Graveyard,
-        };
+        let event = zone_changed_event(
+            ObjectId(5),
+            Zone::Library,
+            Zone::Graveyard,
+            Vec::new(),
+            Vec::new(),
+        );
         let trigger = make_trigger(TriggerMode::Milled);
         assert!(match_milled(&event, &trigger, ObjectId(1), &state));
     }
@@ -2496,11 +2629,13 @@ mod tests {
     #[test]
     fn milled_does_not_match_hand_to_graveyard() {
         let state = setup();
-        let event = GameEvent::ZoneChanged {
-            object_id: ObjectId(5),
-            from: Zone::Hand,
-            to: Zone::Graveyard,
-        };
+        let event = zone_changed_event(
+            ObjectId(5),
+            Zone::Hand,
+            Zone::Graveyard,
+            Vec::new(),
+            Vec::new(),
+        );
         let trigger = make_trigger(TriggerMode::Milled);
         assert!(!match_milled(&event, &trigger, ObjectId(1), &state));
     }

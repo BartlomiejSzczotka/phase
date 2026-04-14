@@ -2,9 +2,9 @@ use std::borrow::Cow;
 use std::str::FromStr;
 
 use nom::branch::alt;
-use nom::bytes::complete::{tag, tag_no_case};
+use nom::bytes::complete::{tag, tag_no_case, take_until};
 use nom::character::complete::{alpha1, space1};
-use nom::combinator::value;
+use nom::combinator::{opt, rest, value};
 use nom::sequence::{preceded, terminated};
 use nom::Parser;
 
@@ -1699,6 +1699,15 @@ fn parse_subject_continuous_static(text: &str) -> Option<StaticDefinition> {
     let lower = text.to_lowercase();
     let tp = TextPair::new(text, &lower);
 
+    // Additive-type clauses do not use any of the get/has/have/lose verbs that
+    // `find_continuous_predicate_start` scans for. They split on "are"/"is"
+    // instead and may embed a " have " inside a granted-ability quote that
+    // would otherwise confuse the verb scanner. Route them to their own
+    // extractor before falling through to the general predicate parser.
+    if let Some(def) = parse_subject_additive_type_static(text) {
+        return Some(def);
+    }
+
     let subject_end = find_continuous_predicate_start(tp.lower)?;
     let subject = tp.original[..subject_end].trim();
     let predicate = tp.original[subject_end + 1..].trim();
@@ -1733,6 +1742,145 @@ fn parse_subject_continuous_static(text: &str) -> Option<StaticDefinition> {
     }
 
     None
+}
+
+/// CR 205.1 / CR 205.3a: Top-level dispatcher for additive-type-only statics
+/// whose predicate begins with `"are"` / `"is"` — e.g.
+/// `"Other creatures are Food artifacts in addition to their other types and
+/// have \"…\""`. These do not contain a get/has/have/lose verb at the
+/// grammatical top level, so `parse_subject_continuous_static`'s main path
+/// would mis-split on a " have " buried inside the granted-ability quote.
+///
+/// Compound predicates (P/T + additive type, e.g. Kudo:
+/// `"have base power and toughness 2/2 and are Bears in addition to their
+/// other types"`) go through the main path instead and reach the same
+/// extractor via `parse_continuous_modifications`.
+fn parse_subject_additive_type_static(text: &str) -> Option<StaticDefinition> {
+    type VE<'a> = nom_language::error::VerboseError<&'a str>;
+    let lower = text.to_lowercase();
+    let (subject_lower, predicate_lower) = nom_primitives::scan_split_at_phrase(&lower, |i| {
+        alt((tag::<_, _, VE>("are "), tag::<_, _, VE>("is "))).parse(i)
+    })?;
+    let subject = text[..subject_lower.len()].trim();
+    let predicate = &text[text.len() - predicate_lower.len()..];
+    let affected = parse_continuous_subject_filter(subject)?;
+    let modifications = parse_additive_type_clause_modifications(predicate)?;
+    Some(
+        StaticDefinition::continuous()
+            .affected(affected)
+            .modifications(modifications)
+            .description(text.to_string()),
+    )
+}
+
+/// CR 205.1 / CR 205.3a: Extract additive-type modifications from a predicate
+/// like `"are Food artifacts in addition to their other types"` or its
+/// compound/granted-ability variants. Used both as the body of
+/// `parse_subject_additive_type_static` (pure additive predicates) and as a
+/// fallback inside `parse_continuous_modifications` (compound predicates
+/// whose leading `have …` clause is already consumed upstream).
+///
+/// Returns `None` when:
+/// * the clause does not contain an additive-type phrase,
+/// * the type-word region is a placeholder handled by another specialized
+///   extractor (`every basic land type`, `the chosen type`), or
+/// * no valid type or subtype was recognized (unknown words are dropped —
+///   the curated `SUBTYPES` list is authoritative).
+fn parse_additive_type_clause_modifications(text: &str) -> Option<Vec<ContinuousModification>> {
+    type VE<'a> = nom_language::error::VerboseError<&'a str>;
+
+    let lower = text.to_lowercase();
+    let tp = TextPair::new(text, &lower)
+        .trim_start()
+        .trim_end()
+        .trim_end_matches('.');
+    let (_, clause_lower) = nom_primitives::scan_split_at_phrase(tp.lower, |i| {
+        alt((
+            tag::<_, _, VE>("are "),
+            tag::<_, _, VE>("is "),
+            tag::<_, _, VE>("and are "),
+            tag::<_, _, VE>("and is "),
+        ))
+        .parse(i)
+    })?;
+    let clause_original = &tp.original[tp.original.len() - clause_lower.len()..];
+    let (after_verb_lower, _) = alt((
+        tag::<_, _, VE>("are "),
+        tag::<_, _, VE>("is "),
+        tag::<_, _, VE>("and are "),
+        tag::<_, _, VE>("and is "),
+    ))
+    .parse(clause_lower)
+    .ok()?;
+    let after_verb_original = &clause_original[clause_original.len() - after_verb_lower.len()..];
+    let (after_suffix_lower, type_words_lower) = terminated(
+        take_until::<_, _, VE>(" in addition to "),
+        alt((
+            tag::<_, _, VE>(" in addition to its other types"),
+            tag::<_, _, VE>(" in addition to its other land types"),
+            tag::<_, _, VE>(" in addition to their other types"),
+            tag::<_, _, VE>(" in addition to their other land types"),
+        )),
+    )
+    .parse(after_verb_lower)
+    .ok()?;
+    let type_words = &after_verb_original[..type_words_lower.len()];
+    let normalized_type_words = type_words_lower.trim();
+    // Placeholders owned by other specialized extractors (basic-land-type copies,
+    // chosen-type statics). Let those branches produce the correct modification.
+    if matches!(
+        normalized_type_words,
+        "every basic land type" | "the chosen type"
+    ) {
+        return None;
+    }
+    let granted_lower = opt(preceded(
+        alt((tag::<_, _, VE>(" and have "), tag::<_, _, VE>(" and has "))),
+        rest::<_, VE>,
+    ))
+    .parse(after_suffix_lower)
+    .ok()?
+    .1;
+    let granted_modifications = granted_lower
+        .map(|granted| &clause_original[clause_original.len() - granted.len()..])
+        .map(parse_quoted_ability_modifications)
+        .unwrap_or_default();
+
+    let mut modifications = Vec::new();
+    for raw_word in type_words.split_whitespace() {
+        let word = raw_word.trim_matches(|c: char| c == ',' || c == '.');
+        if word.is_empty() {
+            continue;
+        }
+        let lower_word = word.to_lowercase();
+        if let Some(core_type) = core_type_from_additive_word(lower_word.as_str()) {
+            modifications.push(ContinuousModification::AddType { core_type });
+            continue;
+        }
+        // CR 205.3a: Only canonical subtypes from the curated list may be
+        // added. Unrecognized words are silently dropped rather than
+        // fabricated — a heuristic capitalize-and-strip-s would synthesize
+        // non-MTG subtypes from noise tokens.
+        if let Some((canonical, _)) = parse_subtype(lower_word.as_str()) {
+            modifications.push(ContinuousModification::AddSubtype { subtype: canonical });
+        }
+    }
+
+    modifications.extend(granted_modifications);
+    (!modifications.is_empty()).then_some(modifications)
+}
+
+/// CR 205.1: Map a bare type word (singular or plural) to its `CoreType`.
+fn core_type_from_additive_word(word: &str) -> Option<CoreType> {
+    match word {
+        "artifact" | "artifacts" => Some(CoreType::Artifact),
+        "creature" | "creatures" => Some(CoreType::Creature),
+        "enchantment" | "enchantments" => Some(CoreType::Enchantment),
+        "land" | "lands" => Some(CoreType::Land),
+        "planeswalker" | "planeswalkers" => Some(CoreType::Planeswalker),
+        "battle" | "battles" => Some(CoreType::Battle),
+        _ => None,
+    }
 }
 
 /// Parse compound condition + animation pattern:
@@ -3791,6 +3939,10 @@ pub(crate) fn parse_continuous_modifications(text: &str) -> Vec<ContinuousModifi
 
     for modification in parse_quoted_ability_modifications(text_stripped) {
         modifications.push(modification);
+    }
+
+    if let Some(additive_modifications) = parse_additive_type_clause_modifications(text_stripped) {
+        modifications.extend(additive_modifications);
     }
 
     // CR 702: Guard "can't have or gain [keyword]" from extract_keyword_clause —
@@ -9209,6 +9361,59 @@ mod tests {
         } else {
             panic!("Expected Typed filter, got {:?}", def.affected);
         }
+    }
+
+    #[test]
+    fn static_ygra_additive_food_artifact_grants_food_ability() {
+        let def = parse_static_line(
+            "Other creatures are Food artifacts in addition to their other types and have \"{2}, {T}, Sacrifice this permanent: You gain 3 life.\"",
+        )
+        .unwrap();
+        assert_eq!(def.mode, StaticMode::Continuous);
+        assert_eq!(
+            def.affected,
+            Some(TargetFilter::Typed(
+                TypedFilter::creature().properties(vec![FilterProp::Another]),
+            ))
+        );
+        assert!(def
+            .modifications
+            .contains(&ContinuousModification::AddSubtype {
+                subtype: "Food".to_string(),
+            }));
+        assert!(def
+            .modifications
+            .contains(&ContinuousModification::AddType {
+                core_type: CoreType::Artifact,
+            }));
+        let grant = def
+            .modifications
+            .iter()
+            .find(|m| matches!(m, ContinuousModification::GrantAbility { .. }));
+        assert!(grant.is_some(), "expected granted activated Food ability");
+        if let Some(ContinuousModification::GrantAbility { definition }) = grant {
+            assert_eq!(definition.kind, AbilityKind::Activated);
+            assert!(definition.cost.is_some());
+        }
+    }
+
+    #[test]
+    fn static_kudo_adds_bear_subtype_alongside_base_pt() {
+        let def = parse_static_line(
+            "Other creatures have base power and toughness 2/2 and are Bears in addition to their other types.",
+        )
+        .unwrap();
+        assert!(def
+            .modifications
+            .contains(&ContinuousModification::SetPower { value: 2 }));
+        assert!(def
+            .modifications
+            .contains(&ContinuousModification::SetToughness { value: 2 }));
+        assert!(def
+            .modifications
+            .contains(&ContinuousModification::AddSubtype {
+                subtype: "Bear".to_string(),
+            }));
     }
 
     #[test]

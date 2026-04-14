@@ -1290,6 +1290,18 @@ fn evaluate_condition(
             });
             if let Some(id) = target_id {
                 if *use_lki {
+                    if let Some(GameEvent::ZoneChanged { record, .. }) =
+                        state.current_trigger_event.as_ref()
+                    {
+                        if record.object_id == id {
+                            return crate::game::filter::matches_target_filter_on_zone_change_record(
+                                state,
+                                record,
+                                filter,
+                                &crate::game::filter::FilterContext::from_ability(ability),
+                            );
+                        }
+                    }
                     // CR 400.7: Check last-known information for past-tense conditions.
                     // Try LKI cache first, fall back to current state if object still exists.
                     if let Some(lki) = state.lki_cache.get(&id) {

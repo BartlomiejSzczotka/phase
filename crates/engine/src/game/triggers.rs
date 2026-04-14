@@ -1734,11 +1734,11 @@ pub mod tests {
     use crate::types::ability::{
         AbilityDefinition, AbilityKind, Comparator, ControllerRef, Effect, FilterProp,
         GainLifePlayer, QuantityExpr, QuantityRef, TargetFilter, TriggerCondition,
-        TriggerConstraint, TriggerDefinition, TypedFilter,
+        TriggerConstraint, TriggerDefinition, TypeFilter, TypedFilter,
     };
     use crate::types::card_type::CoreType;
     use crate::types::events::GameEvent;
-    use crate::types::game_state::{GameState, SpellCastRecord};
+    use crate::types::game_state::{GameState, SpellCastRecord, ZoneChangeRecord};
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::keywords::Keyword;
     use crate::types::mana::ManaColor;
@@ -1753,6 +1753,26 @@ pub mod tests {
     /// Helper to create a minimal TriggerDefinition with typed fields.
     fn make_trigger(mode: TriggerMode) -> TriggerDefinition {
         TriggerDefinition::new(mode)
+    }
+
+    fn zone_changed_event(
+        object_id: ObjectId,
+        from: Zone,
+        to: Zone,
+        core_types: Vec<CoreType>,
+        subtypes: Vec<&str>,
+    ) -> GameEvent {
+        GameEvent::ZoneChanged {
+            object_id,
+            from,
+            to,
+            record: Box::new(ZoneChangeRecord {
+                name: "Test Object".to_string(),
+                core_types,
+                subtypes: subtypes.into_iter().map(str::to_string).collect(),
+                ..ZoneChangeRecord::test_minimal(object_id, from, to)
+            }),
+        }
     }
 
     #[test]
@@ -1809,11 +1829,13 @@ pub mod tests {
         }
 
         // Trigger event
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: ObjectId(99),
-            from: Zone::Hand,
-            to: Zone::Battlefield,
-        }];
+        let events = vec![zone_changed_event(
+            ObjectId(99),
+            Zone::Hand,
+            Zone::Battlefield,
+            Vec::new(),
+            Vec::new(),
+        )];
 
         process_triggers(&mut state, &events);
 
@@ -1977,11 +1999,13 @@ pub mod tests {
         }
 
         // Simulate a ZoneChanged event (another creature enters)
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: ObjectId(99),
-            from: Zone::Hand,
-            to: Zone::Battlefield,
-        }];
+        let events = vec![zone_changed_event(
+            ObjectId(99),
+            Zone::Hand,
+            Zone::Battlefield,
+            Vec::new(),
+            Vec::new(),
+        )];
 
         process_triggers(&mut state, &events);
 
@@ -2057,11 +2081,13 @@ pub mod tests {
             );
         }
 
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: ObjectId(99),
-            from: Zone::Hand,
-            to: Zone::Battlefield,
-        }];
+        let events = vec![zone_changed_event(
+            ObjectId(99),
+            Zone::Hand,
+            Zone::Battlefield,
+            Vec::new(),
+            Vec::new(),
+        )];
 
         process_triggers(&mut state, &events);
 
@@ -2118,11 +2144,13 @@ pub mod tests {
             .push(CoreType::Land);
 
         // Land enters -- should NOT trigger (valid_card = Creature)
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: land,
-            from: Zone::Hand,
-            to: Zone::Battlefield,
-        }];
+        let events = vec![zone_changed_event(
+            land,
+            Zone::Hand,
+            Zone::Battlefield,
+            vec![CoreType::Land],
+            Vec::new(),
+        )];
         process_triggers(&mut state, &events);
         assert_eq!(
             state.stack.len(),
@@ -2146,11 +2174,13 @@ pub mod tests {
             .core_types
             .push(CoreType::Creature);
 
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: creature,
-            from: Zone::Hand,
-            to: Zone::Battlefield,
-        }];
+        let events = vec![zone_changed_event(
+            creature,
+            Zone::Hand,
+            Zone::Battlefield,
+            vec![CoreType::Creature],
+            Vec::new(),
+        )];
         process_triggers(&mut state, &events);
         assert_eq!(
             state.stack.len(),
@@ -2440,11 +2470,13 @@ pub mod tests {
         }
 
         // Fire an ETB event for the trigger creature
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: trigger_creature,
-            from: Zone::Hand,
-            to: Zone::Battlefield,
-        }];
+        let events = vec![zone_changed_event(
+            trigger_creature,
+            Zone::Hand,
+            Zone::Battlefield,
+            vec![CoreType::Enchantment],
+            Vec::new(),
+        )];
 
         process_triggers(&mut state, &events);
 
@@ -2520,11 +2552,13 @@ pub mod tests {
             );
         }
 
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: trigger_creature,
-            from: Zone::Hand,
-            to: Zone::Battlefield,
-        }];
+        let events = vec![zone_changed_event(
+            trigger_creature,
+            Zone::Hand,
+            Zone::Battlefield,
+            vec![CoreType::Enchantment],
+            Vec::new(),
+        )];
 
         process_triggers(&mut state, &events);
 
@@ -2589,11 +2623,13 @@ pub mod tests {
             );
         }
 
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: trigger_creature,
-            from: Zone::Hand,
-            to: Zone::Battlefield,
-        }];
+        let events = vec![zone_changed_event(
+            trigger_creature,
+            Zone::Hand,
+            Zone::Battlefield,
+            vec![CoreType::Enchantment],
+            Vec::new(),
+        )];
 
         process_triggers(&mut state, &events);
 
@@ -2661,11 +2697,13 @@ pub mod tests {
             .core_types
             .push(CoreType::Land);
 
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: source,
-            from: Zone::Hand,
-            to: Zone::Battlefield,
-        }];
+        let events = vec![zone_changed_event(
+            source,
+            Zone::Hand,
+            Zone::Battlefield,
+            vec![CoreType::Enchantment],
+            Vec::new(),
+        )];
 
         process_triggers(&mut state, &events);
 
@@ -2698,11 +2736,13 @@ pub mod tests {
             );
         }
 
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: ObjectId(99),
-            from: Zone::Hand,
-            to: Zone::Battlefield,
-        }];
+        let events = vec![zone_changed_event(
+            ObjectId(99),
+            Zone::Hand,
+            Zone::Battlefield,
+            Vec::new(),
+            Vec::new(),
+        )];
 
         process_triggers(&mut state, &events);
 
@@ -2740,11 +2780,13 @@ pub mod tests {
             );
         }
 
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: ObjectId(99),
-            from: Zone::Hand,
-            to: Zone::Battlefield,
-        }];
+        let events = vec![zone_changed_event(
+            ObjectId(99),
+            Zone::Hand,
+            Zone::Battlefield,
+            Vec::new(),
+            Vec::new(),
+        )];
 
         process_triggers(&mut state, &events);
 
@@ -2960,6 +3002,12 @@ pub mod tests {
             object_id: bird,
             from: Zone::Hand,
             to: Zone::Battlefield,
+            record: Box::new(ZoneChangeRecord {
+                name: "Bird".to_string(),
+                core_types: vec![CoreType::Creature],
+                keywords: vec![Keyword::Flying],
+                ..ZoneChangeRecord::test_minimal(bird, Zone::Hand, Zone::Battlefield)
+            }),
         }];
 
         process_triggers(&mut state, &events);
@@ -3025,11 +3073,13 @@ pub mod tests {
         }
 
         // Simulate bat entering battlefield
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: bat,
-            from: Zone::Stack,
-            to: Zone::Battlefield,
-        }];
+        let events = vec![zone_changed_event(
+            bat,
+            Zone::Stack,
+            Zone::Battlefield,
+            vec![CoreType::Creature],
+            Vec::new(),
+        )];
 
         process_triggers(&mut state, &events);
 
@@ -3492,11 +3542,13 @@ pub mod tests {
         }
 
         // Simulate the ZoneChanged event from sacrifice
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: mite_id,
-            from: Zone::Battlefield,
-            to: Zone::Graveyard,
-        }];
+        let events = vec![zone_changed_event(
+            mite_id,
+            Zone::Battlefield,
+            Zone::Graveyard,
+            vec![CoreType::Creature, CoreType::Artifact],
+            Vec::new(),
+        )];
 
         process_triggers(&mut state, &events);
 
@@ -3550,17 +3602,69 @@ pub mod tests {
         }
 
         // Event is from graveyard to exile, not from battlefield
-        let events = vec![GameEvent::ZoneChanged {
-            object_id: obj_id,
-            from: Zone::Graveyard,
-            to: Zone::Exile,
-        }];
+        let events = vec![zone_changed_event(
+            obj_id,
+            Zone::Graveyard,
+            Zone::Exile,
+            vec![CoreType::Creature],
+            Vec::new(),
+        )];
 
         process_triggers(&mut state, &events);
         assert!(
             state.stack.is_empty(),
             "Trigger should not fire for non-battlefield origin zone changes"
         );
+    }
+
+    #[test]
+    fn food_leaves_battlefield_trigger_uses_zone_change_snapshot() {
+        let mut state = setup();
+        state.turn_number = 3;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+        state.phase = Phase::PreCombatMain;
+
+        let ygra_id = create_object(
+            &mut state,
+            CardId(300),
+            PlayerId(0),
+            "Ygra, Eater of All".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let ygra = state.objects.get_mut(&ygra_id).unwrap();
+            ygra.controller = PlayerId(0);
+            ygra.card_types.core_types.push(CoreType::Creature);
+            ygra.trigger_definitions.push(
+                TriggerDefinition::new(TriggerMode::ChangesZone)
+                    .valid_card(TargetFilter::Typed(
+                        TypedFilter::default().with_type(TypeFilter::Subtype("Food".to_string())),
+                    ))
+                    .origin(Zone::Battlefield)
+                    .destination(Zone::Graveyard)
+                    .trigger_zones(vec![Zone::Battlefield])
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Spell,
+                        Effect::PutCounter {
+                            counter_type: "P1P1".to_string(),
+                            count: QuantityExpr::Fixed { value: 2 },
+                            target: TargetFilter::SelfRef,
+                        },
+                    )),
+            );
+        }
+
+        let events = vec![zone_changed_event(
+            ObjectId(301),
+            Zone::Battlefield,
+            Zone::Graveyard,
+            vec![CoreType::Creature, CoreType::Artifact],
+            vec!["Food"],
+        )];
+
+        process_triggers(&mut state, &events);
+        assert_eq!(state.stack.len(), 1, "Ygra trigger should be on the stack");
     }
 
     // === extract_target_filter_from_effect private zone tests ===

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use super::counter::CounterType;
 
 use super::ability::{EffectKind, TargetRef};
+use super::game_state::ZoneChangeRecord;
 use super::identifiers::{CardId, ObjectId};
 use super::mana::ManaType;
 use super::phase::Phase;
@@ -67,6 +68,10 @@ pub enum GameEvent {
         object_id: ObjectId,
         from: Zone,
         to: Zone,
+        /// CR 603.10: Boxed to keep `GameEvent` variant size small. The record
+        /// can be ~200 bytes and is only populated for this one variant; every
+        /// other consumer (and every other event) would pay that cost inline.
+        record: Box<ZoneChangeRecord>,
     },
     LifeChanged {
         player_id: PlayerId,
@@ -397,11 +402,16 @@ mod tests {
             object_id: ObjectId(5),
             from: Zone::Hand,
             to: Zone::Battlefield,
+            record: Box::new(ZoneChangeRecord {
+                name: "Test".to_string(),
+                ..ZoneChangeRecord::test_minimal(ObjectId(5), Zone::Hand, Zone::Battlefield)
+            }),
         };
         let json = serde_json::to_value(&event).unwrap();
         assert_eq!(json["type"], "ZoneChanged");
         assert_eq!(json["data"]["from"], "Hand");
         assert_eq!(json["data"]["to"], "Battlefield");
+        assert_eq!(json["data"]["record"]["name"], "Test");
     }
 
     #[test]

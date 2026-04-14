@@ -189,7 +189,12 @@ pub enum NextSpellModifier {
 }
 
 /// CR 400.7: Snapshot of an object's properties at the time of a zone change,
-/// enabling data-driven filtered counting at resolution time.
+/// enabling data-driven filtered counting at resolution time and event-time
+/// trigger-filter evaluation (CR 603.10) after the object has moved zones.
+///
+/// Fields are captured at move-time so that subsequent filter evaluations
+/// (e.g. "whenever a creature with power 4 or greater dies") can read the
+/// event-time characteristics instead of chasing the object to its new zone.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ZoneChangeRecord {
     pub object_id: ObjectId,
@@ -197,10 +202,47 @@ pub struct ZoneChangeRecord {
     pub core_types: Vec<CoreType>,
     pub subtypes: Vec<String>,
     pub supertypes: Vec<Supertype>,
+    pub keywords: Vec<Keyword>,
+    /// CR 208.1: Power as of the zone change.
+    pub power: Option<i32>,
+    /// CR 208.1: Toughness as of the zone change.
+    pub toughness: Option<i32>,
+    /// CR 105.1 / CR 202.2: Colors as of the zone change.
+    pub colors: Vec<ManaColor>,
+    /// CR 202.3: Mana value as of the zone change.
+    pub mana_value: u32,
     pub controller: PlayerId,
     pub owner: PlayerId,
     pub from_zone: Zone,
     pub to_zone: Zone,
+}
+
+#[cfg(test)]
+impl ZoneChangeRecord {
+    /// Minimal skeleton for tests. Non-transition fields default to empty/zero;
+    /// override specific fields with struct update syntax:
+    ///   `ZoneChangeRecord { core_types: vec![..], ..ZoneChangeRecord::test_minimal(id, from, to) }`
+    ///
+    /// Production code must use `GameObject::snapshot_for_zone_change` — the
+    /// authoritative constructor that copies from a live object.
+    pub fn test_minimal(object_id: ObjectId, from: Zone, to: Zone) -> Self {
+        Self {
+            object_id,
+            name: String::new(),
+            core_types: Vec::new(),
+            subtypes: Vec::new(),
+            supertypes: Vec::new(),
+            keywords: Vec::new(),
+            power: None,
+            toughness: None,
+            colors: Vec::new(),
+            mana_value: 0,
+            controller: PlayerId(0),
+            owner: PlayerId(0),
+            from_zone: from,
+            to_zone: to,
+        }
+    }
 }
 
 /// CR 403.3: Snapshot of an object's properties at the time it enters the battlefield,

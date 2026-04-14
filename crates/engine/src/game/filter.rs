@@ -13,7 +13,7 @@ use crate::types::ability::{
     TargetFilter, TargetRef, TypeFilter, TypedFilter,
 };
 use crate::types::card_type::CoreType;
-use crate::types::game_state::{GameState, SpellCastRecord};
+use crate::types::game_state::{GameState, SpellCastRecord, ZoneChangeRecord};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::ManaColor;
 use crate::types::player::PlayerId;
@@ -136,6 +136,29 @@ pub fn matches_target_filter(
     filter_inner(
         state,
         object_id,
+        filter,
+        ctx.source_id,
+        ctx.source_controller,
+        ctx.ability,
+    )
+}
+
+/// CR 603.10: Check whether a zone-change snapshot matches a target filter.
+///
+/// This is the shared past-tense matcher for zone-change events whose subject has
+/// already left its original zone but must still be checked against trigger or
+/// condition filters using its event-time public characteristics. The snapshot is
+/// authoritative for Group 1 predicates (see `zone_change_record_matches_property`);
+/// Group 2 predicates join the snapshot against the live source object.
+pub fn matches_target_filter_on_zone_change_record(
+    state: &GameState,
+    record: &ZoneChangeRecord,
+    filter: &TargetFilter,
+    ctx: &FilterContext<'_>,
+) -> bool {
+    zone_change_filter_inner(
+        state,
+        record,
         filter,
         ctx.source_id,
         ctx.source_controller,
@@ -276,6 +299,107 @@ fn filter_inner(
     }
 }
 
+fn zone_change_filter_inner(
+    state: &GameState,
+    record: &ZoneChangeRecord,
+    filter: &TargetFilter,
+    source_id: ObjectId,
+    source_controller: Option<PlayerId>,
+    ability: Option<&ResolvedAbility>,
+) -> bool {
+    match filter {
+        TargetFilter::None => false,
+        TargetFilter::Any => true,
+        TargetFilter::Player => false,
+        TargetFilter::Controller => false,
+        TargetFilter::SelfRef => record.object_id == source_id,
+        TargetFilter::Typed(TypedFilter {
+            type_filters,
+            controller,
+            properties,
+        }) => {
+            if !type_filters
+                .iter()
+                .all(|tf| zone_change_record_matches_type_filter(record, tf))
+            {
+                return false;
+            }
+
+            if let Some(ctrl) = controller {
+                match ctrl {
+                    ControllerRef::You if source_controller != Some(record.controller) => {
+                        return false;
+                    }
+                    ControllerRef::Opponent if source_controller == Some(record.controller) => {
+                        return false;
+                    }
+                    _ => {}
+                }
+            }
+
+            let source_obj = state.objects.get(&source_id);
+            let source_attached_to = source_obj.and_then(|s| s.attached_to);
+            let source_chosen_creature_type =
+                source_obj.and_then(|s| s.chosen_creature_type().map(|t| t.to_string()));
+            let empty_attrs: Vec<crate::types::ability::ChosenAttribute> = Vec::new();
+            let source_chosen_attributes = source_obj
+                .map(|s| s.chosen_attributes.as_slice())
+                .unwrap_or(empty_attrs.as_slice());
+            let source_ctx = SourceContext {
+                id: source_id,
+                controller: source_controller,
+                attached_to: source_attached_to,
+                chosen_creature_type: source_chosen_creature_type.as_deref(),
+                chosen_attributes: source_chosen_attributes,
+                ability,
+            };
+
+            properties
+                .iter()
+                .all(|prop| zone_change_record_matches_property(prop, state, record, &source_ctx))
+        }
+        TargetFilter::Not { filter: inner } => {
+            !zone_change_filter_inner(state, record, inner, source_id, source_controller, ability)
+        }
+        TargetFilter::Or { filters } => filters.iter().any(|inner| {
+            zone_change_filter_inner(state, record, inner, source_id, source_controller, ability)
+        }),
+        TargetFilter::And { filters } => filters.iter().all(|inner| {
+            zone_change_filter_inner(state, record, inner, source_id, source_controller, ability)
+        }),
+        TargetFilter::SpecificObject { id } => record.object_id == *id,
+        TargetFilter::HasChosenName => {
+            let chosen_name = state.objects.get(&source_id).and_then(|obj| {
+                obj.chosen_attributes.iter().find_map(|a| match a {
+                    ChosenAttribute::CardName(n) => Some(n.as_str()),
+                    _ => None,
+                })
+            });
+            chosen_name.is_some_and(|name| record.name == name)
+        }
+        TargetFilter::Named { name } => record.name == *name,
+
+        // Relational / stack / battlefield-live selectors. A zone-change
+        // subject has already left its zone; these selectors reference either
+        // live state (stack entries, current attachments) or trigger-context
+        // players that are resolved by the caller before this function runs.
+        // When reached here they do not match a zone-change record.
+        TargetFilter::AttachedTo
+        | TargetFilter::LastCreated
+        | TargetFilter::TrackedSet { .. }
+        | TargetFilter::ExiledBySource
+        | TargetFilter::TriggeringSpellController
+        | TargetFilter::TriggeringSpellOwner
+        | TargetFilter::TriggeringPlayer
+        | TargetFilter::TriggeringSource
+        | TargetFilter::ParentTarget
+        | TargetFilter::ParentTargetController
+        | TargetFilter::DefendingPlayer
+        | TargetFilter::StackAbility
+        | TargetFilter::StackSpell => false,
+    }
+}
+
 /// Check if an object matches a TypeFilter variant.
 /// Check if an object's card types match a `TypeFilter`.
 /// CR 205.2a: Each card type has its own rules for how it behaves.
@@ -314,6 +438,36 @@ pub fn type_filter_matches(tf: &TypeFilter, obj: &GameObject) -> bool {
             .any(|s| s.eq_ignore_ascii_case(sub)),
         // CR 608.2b: Disjunction — matches if any inner filter matches.
         TypeFilter::AnyOf(ref filters) => filters.iter().any(|f| type_filter_matches(f, obj)),
+    }
+}
+
+fn zone_change_record_matches_type_filter(record: &ZoneChangeRecord, tf: &TypeFilter) -> bool {
+    match tf {
+        TypeFilter::Creature => record.core_types.contains(&CoreType::Creature),
+        TypeFilter::Land => record.core_types.contains(&CoreType::Land),
+        TypeFilter::Artifact => record.core_types.contains(&CoreType::Artifact),
+        TypeFilter::Enchantment => record.core_types.contains(&CoreType::Enchantment),
+        TypeFilter::Instant => record.core_types.contains(&CoreType::Instant),
+        TypeFilter::Sorcery => record.core_types.contains(&CoreType::Sorcery),
+        TypeFilter::Planeswalker => record.core_types.contains(&CoreType::Planeswalker),
+        TypeFilter::Battle => record.core_types.contains(&CoreType::Battle),
+        TypeFilter::Permanent => {
+            record.core_types.contains(&CoreType::Creature)
+                || record.core_types.contains(&CoreType::Artifact)
+                || record.core_types.contains(&CoreType::Enchantment)
+                || record.core_types.contains(&CoreType::Land)
+                || record.core_types.contains(&CoreType::Planeswalker)
+                || record.core_types.contains(&CoreType::Battle)
+        }
+        TypeFilter::Card | TypeFilter::Any => true,
+        TypeFilter::Non(inner) => !zone_change_record_matches_type_filter(record, inner),
+        TypeFilter::Subtype(subtype) => record
+            .subtypes
+            .iter()
+            .any(|candidate| candidate.eq_ignore_ascii_case(subtype)),
+        TypeFilter::AnyOf(filters) => filters
+            .iter()
+            .any(|inner| zone_change_record_matches_type_filter(record, inner)),
     }
 }
 
@@ -830,6 +984,135 @@ fn matches_filter_prop(
         // the stack entry's actual targets.
         FilterProp::Targets { .. } => true,
         FilterProp::Other { .. } => false, // Fail-closed for unrecognized properties
+    }
+}
+
+/// CR 603.10: Evaluate a `FilterProp` against a zone-change event snapshot.
+///
+/// Properties fall into four groups:
+/// 1. **Snapshot-derivable.** Read directly from the captured record — P/T, colors, CMC,
+///    keywords, supertypes, types, owner/controller, name.
+/// 2. **Source/event relational.** Compare the record against the source object or its
+///    chosen attributes — `Another`, `Owned`, `IsChosenCreatureType`, `Named`.
+/// 3. **Dynamic battlefield state.** Inherently requires the live object (tapped,
+///    attacking, blocking, counters, attached-to). A zone-change subject has already
+///    left its public zone, so these are semantically not applicable and return `false`.
+/// 4. **Not-yet-supported.** Could plausibly be snapshotted or cross-referenced but
+///    are not currently required. Returning `false` is a known conservative gap.
+fn zone_change_record_matches_property(
+    prop: &FilterProp,
+    state: &GameState,
+    record: &ZoneChangeRecord,
+    source: &SourceContext<'_>,
+) -> bool {
+    match prop {
+        // -------- Group 1: snapshot-derivable --------
+        // CR 702: Keyword presence on the event-time object.
+        FilterProp::WithKeyword { value } => record.keywords.iter().any(|k| k == value),
+        FilterProp::HasKeywordKind { value } => record.keywords.iter().any(|k| k.kind() == *value),
+        FilterProp::WithoutKeyword { value } => !record.keywords.iter().any(|k| k == value),
+        FilterProp::WithoutKeywordKind { value } => {
+            !record.keywords.iter().any(|k| k.kind() == *value)
+        }
+        // CR 205.4a: Supertype membership as of the zone change.
+        FilterProp::HasSupertype { value } => record.supertypes.contains(value),
+        FilterProp::NotSupertype { value } => !record.supertypes.contains(value),
+        // CR 201.2: Name match (case-insensitive) on the event-time object.
+        FilterProp::Named { name } => record.name.eq_ignore_ascii_case(name),
+        // CR 208.1: Power threshold on the event-time object. A `None` power
+        // (non-creature in some zones) treats as 0 — matches live-state behavior.
+        FilterProp::PowerLE { value } => {
+            record.power.unwrap_or(0) <= resolve_filter_threshold(state, value, source)
+        }
+        FilterProp::PowerGE { value } => {
+            record.power.unwrap_or(0) >= resolve_filter_threshold(state, value, source)
+        }
+        // CR 202.3: Mana value threshold on the event-time object.
+        FilterProp::CmcGE { value } => {
+            record.mana_value as i32 >= resolve_filter_threshold(state, value, source)
+        }
+        FilterProp::CmcLE { value } => {
+            record.mana_value as i32 <= resolve_filter_threshold(state, value, source)
+        }
+        FilterProp::CmcEQ { value } => {
+            record.mana_value as i32 == resolve_filter_threshold(state, value, source)
+        }
+        // CR 105.1 / CR 202.2: Color membership on the event-time object.
+        FilterProp::HasColor { color } => record.colors.contains(color),
+        FilterProp::NotColor { color } => !record.colors.contains(color),
+        FilterProp::Multicolored => record.colors.len() > 1,
+        FilterProp::Colorless => record.colors.is_empty(),
+        // CR 208.1 / CR 107.2: `toughness > power` comparison on the snapshot.
+        FilterProp::ToughnessGTPower => record.toughness.unwrap_or(0) > record.power.unwrap_or(0),
+
+        // -------- Group 2: source/event relational --------
+        // CR 109.1 "another": same-object check against the triggering source.
+        FilterProp::Another => record.object_id != source.id,
+        // CR 400.1: "from [zone]" — the record's origin zone.
+        FilterProp::InZone { zone } => record.from_zone == *zone,
+        // CR 109.5: Ownership relative to the source's controller.
+        FilterProp::Owned { controller } => match controller {
+            ControllerRef::You => source.controller == Some(record.owner),
+            ControllerRef::Opponent => {
+                source.controller.is_some() && source.controller != Some(record.owner)
+            }
+        },
+        // CR 701.12: Source's chosen creature type applied to the snapshot subtypes.
+        FilterProp::IsChosenCreatureType => source.chosen_creature_type.is_some_and(|chosen| {
+            record
+                .subtypes
+                .iter()
+                .any(|candidate| candidate.eq_ignore_ascii_case(chosen))
+        }),
+        // CR 509.1b: Power comparison against the live source.
+        FilterProp::PowerGTSource => {
+            let source_power = state
+                .objects
+                .get(&source.id)
+                .and_then(|o| o.power)
+                .unwrap_or(0);
+            record.power.unwrap_or(0) > source_power
+        }
+        // CR 201.2: Same-name match against the tracked source object.
+        FilterProp::SameName => state
+            .objects
+            .get(&source.id)
+            .is_some_and(|s| s.name.eq_ignore_ascii_case(&record.name)),
+
+        // -------- Group 3: dynamic battlefield state (N/A once left zone) --------
+        // These predicates query live battlefield state (tap status, combat role,
+        // attachment, current counters, face-down). The snapshot has already left
+        // its public zone, so the predicate is semantically not applicable.
+        FilterProp::Tapped
+        | FilterProp::Untapped
+        | FilterProp::Attacking
+        | FilterProp::Blocking
+        | FilterProp::Unblocked
+        | FilterProp::AttackedThisTurn
+        | FilterProp::BlockedThisTurn
+        | FilterProp::AttackedOrBlockedThisTurn
+        | FilterProp::EnchantedBy
+        | FilterProp::EquippedBy
+        | FilterProp::FaceDown
+        | FilterProp::CountersGE { .. }
+        | FilterProp::Token => false,
+
+        // -------- Group 4: not-yet-supported (known conservative gaps) --------
+        // These could be snapshotted (e.g. suspected status, damage-dealt-this-turn)
+        // or require state joins that aren't plumbed to this evaluator. Expand as
+        // trigger-filter coverage grows.
+        FilterProp::IsChosenColor
+        | FilterProp::IsChosenCardType
+        | FilterProp::HasSingleTarget
+        | FilterProp::Suspected
+        | FilterProp::DifferentNameFrom { .. }
+        | FilterProp::InAnyZone { .. }
+        | FilterProp::SharesQuality { .. }
+        | FilterProp::WasDealtDamageThisTurn
+        | FilterProp::EnteredThisTurn
+        | FilterProp::TargetsOnly { .. }
+        | FilterProp::Targets { .. }
+        | FilterProp::Other { .. } => false,
     }
 }
 
