@@ -80,44 +80,7 @@ pub fn resolve(
     // CR 614.1a: Route draw through replacement pipeline (e.g. Dredge, Abundance).
     match replacement::replace_event(state, proposed, events) {
         ReplacementResult::Execute(event) => {
-            if let ProposedEvent::Draw {
-                player_id, count, ..
-            } = event
-            {
-                let allowed_count = allowed_draw_count(state, player_id, count);
-                let player = state
-                    .players
-                    .iter()
-                    .find(|p| p.id == player_id)
-                    .ok_or(EffectError::PlayerNotFound)?;
-
-                let cards_to_draw: Vec<_> = player
-                    .library
-                    .iter()
-                    .take(allowed_count as usize)
-                    .copied()
-                    .collect();
-
-                // CR 704.5b: If library has fewer cards than requested, mark the player.
-                // CR 121.4: Partial draws are legal — draw what's available.
-                if allowed_count > 0 && cards_to_draw.len() < allowed_count as usize {
-                    if let Some(player) = state.players.iter_mut().find(|p| p.id == player_id) {
-                        player.drew_from_empty_library = true;
-                    }
-                }
-
-                for obj_id in cards_to_draw {
-                    zones::move_to_zone(state, obj_id, Zone::Hand, events);
-                    events.push(GameEvent::CardDrawn {
-                        player_id,
-                        object_id: obj_id,
-                    });
-                    if let Some(player) = state.players.iter_mut().find(|p| p.id == player_id) {
-                        player.cards_drawn_this_turn =
-                            player.cards_drawn_this_turn.saturating_add(1);
-                    }
-                }
-            }
+            apply_draw_after_replacement(state, event, events);
         }
         ReplacementResult::Prevented => {
             // Draw was prevented, skip
@@ -135,6 +98,59 @@ pub fn resolve(
     });
 
     Ok(())
+}
+
+/// CR 121.1: Apply a post-replacement `ProposedEvent::Draw` to the game state.
+///
+/// Extracted from `resolve`'s Execute arm so the same logic can be invoked by
+/// `handle_replacement_choice` when a player accepts a draw-replacement choice.
+/// Caller is responsible for emitting `EffectResolved`.
+pub fn apply_draw_after_replacement(
+    state: &mut GameState,
+    event: ProposedEvent,
+    events: &mut Vec<GameEvent>,
+) {
+    let ProposedEvent::Draw {
+        player_id, count, ..
+    } = event
+    else {
+        debug_assert!(
+            false,
+            "apply_draw_after_replacement called with non-Draw ProposedEvent"
+        );
+        return;
+    };
+
+    let allowed_count = allowed_draw_count(state, player_id, count);
+    let Some(player) = state.players.iter().find(|p| p.id == player_id) else {
+        return;
+    };
+
+    let cards_to_draw: Vec<_> = player
+        .library
+        .iter()
+        .take(allowed_count as usize)
+        .copied()
+        .collect();
+
+    // CR 704.5b: If library has fewer cards than requested, mark the player.
+    // CR 121.4: Partial draws are legal — draw what's available.
+    if allowed_count > 0 && cards_to_draw.len() < allowed_count as usize {
+        if let Some(player) = state.players.iter_mut().find(|p| p.id == player_id) {
+            player.drew_from_empty_library = true;
+        }
+    }
+
+    for obj_id in cards_to_draw {
+        zones::move_to_zone(state, obj_id, Zone::Hand, events);
+        events.push(GameEvent::CardDrawn {
+            player_id,
+            object_id: obj_id,
+        });
+        if let Some(player) = state.players.iter_mut().find(|p| p.id == player_id) {
+            player.cards_drawn_this_turn = player.cards_drawn_this_turn.saturating_add(1);
+        }
+    }
 }
 
 #[cfg(test)]

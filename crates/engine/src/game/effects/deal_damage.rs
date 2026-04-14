@@ -141,152 +141,9 @@ pub(crate) fn apply_damage_to_target(
     };
 
     match replacement::replace_event(state, proposed, events) {
-        ReplacementResult::Execute(event) => {
-            if let ProposedEvent::Damage {
-                target: ref t,
-                amount: actual_amount,
-                ..
-            } = event
-            {
-                match t {
-                    TargetRef::Object(obj_id) => {
-                        if ctx.has_wither || ctx.has_infect {
-                            // CR 702.80 + CR 702.90: Wither/infect deals damage as -1/-1 counters.
-                            if let Some(target_obj) = state.objects.get_mut(obj_id) {
-                                let entry = target_obj
-                                    .counters
-                                    .entry(CounterType::Minus1Minus1)
-                                    .or_insert(0);
-                                *entry += actual_amount;
-                                if ctx.has_deathtouch {
-                                    target_obj.dealt_deathtouch_damage = true;
-                                }
-                            }
-                            state.layers_dirty = true;
-                        } else if let Some(target_obj) = state.objects.get_mut(obj_id) {
-                            if target_obj
-                                .card_types
-                                .core_types
-                                .contains(&CoreType::Planeswalker)
-                            {
-                                // CR 120.3c / CR 306.8: Damage to a planeswalker removes loyalty counters.
-                                let current = target_obj.loyalty.unwrap_or(0);
-                                let new_loyalty = current.saturating_sub(actual_amount);
-                                target_obj.loyalty = Some(new_loyalty);
-                                target_obj
-                                    .counters
-                                    .insert(CounterType::Loyalty, new_loyalty);
-                            } else {
-                                // CR 120.3e: Damage to a creature marks damage.
-                                target_obj.damage_marked += actual_amount;
-                                // CR 702.2b: Track deathtouch for SBA lethal-damage check.
-                                if ctx.has_deathtouch {
-                                    target_obj.dealt_deathtouch_damage = true;
-                                }
-                            }
-                        }
-                    }
-                    TargetRef::Player(player_id) => {
-                        if ctx.has_infect {
-                            // CR 702.90: Infect deals damage to players as poison counters.
-                            if let Some(player) =
-                                state.players.iter_mut().find(|p| p.id == *player_id)
-                            {
-                                player.poison_counters += actual_amount;
-                            }
-                        } else {
-                            // CR 120.3a: Damage to a player causes life loss.
-                            if super::life::apply_damage_life_loss(
-                                state,
-                                *player_id,
-                                actual_amount,
-                                events,
-                            )
-                            .is_err()
-                            {
-                                // CR 614.7: Life loss replacement needs player choice.
-                                return Ok(DamageResult::NeedsChoice);
-                            }
-                        }
-                    }
-                }
-
-                // CR 120.10: Compute excess damage beyond lethal for creatures/planeswalkers.
-                let excess = match &t {
-                    TargetRef::Object(obj_id) => {
-                        state
-                            .objects
-                            .get(obj_id)
-                            .and_then(|obj| {
-                                if obj.card_types.core_types.contains(&CoreType::Creature) {
-                                    obj.toughness.map(|toughness| {
-                                        // damage_marked already includes actual_amount (line 158)
-                                        let damage_before =
-                                            obj.damage_marked.saturating_sub(actual_amount);
-                                        let lethal = if ctx.has_deathtouch {
-                                            // CR 702.2c: Any nonzero damage from deathtouch = lethal
-                                            if damage_before == 0 {
-                                                1u32
-                                            } else {
-                                                0
-                                            }
-                                        } else {
-                                            (toughness as u32).saturating_sub(damage_before)
-                                        };
-                                        actual_amount.saturating_sub(lethal)
-                                    })
-                                } else if obj
-                                    .card_types
-                                    .core_types
-                                    .contains(&CoreType::Planeswalker)
-                                {
-                                    // CR 120.10: Excess for planeswalkers = damage beyond pre-hit loyalty.
-                                    // Loyalty was already decremented, so reconstruct pre-hit value.
-                                    let pre_loyalty = obj.loyalty.unwrap_or(0) + actual_amount;
-                                    Some(actual_amount.saturating_sub(pre_loyalty))
-                                } else {
-                                    Some(0)
-                                }
-                            })
-                            .unwrap_or(0)
-                    }
-                    TargetRef::Player(_) => 0,
-                };
-
-                events.push(GameEvent::DamageDealt {
-                    source_id: ctx.source_id,
-                    target: t.clone(),
-                    amount: actual_amount,
-                    is_combat,
-                    excess,
-                });
-
-                // CR 120.1: Record damage for "was dealt damage by" condition queries.
-                if actual_amount > 0 {
-                    state.damage_dealt_this_turn.push(DamageRecord {
-                        source_id: ctx.source_id,
-                        target: t.clone(),
-                        amount: actual_amount,
-                        is_combat,
-                    });
-                }
-
-                // CR 702.15b / CR 120.3f: Lifelink — controller gains life equal to damage dealt.
-                if ctx.has_lifelink
-                    && actual_amount > 0
-                    && super::life::apply_life_gain(state, ctx.controller, actual_amount, events)
-                        .is_err()
-                {
-                    // CR 614.7: Life gain replacement needs player choice.
-                    // Damage was already dealt; lifelink gain is deferred.
-                    return Ok(DamageResult::NeedsChoice);
-                }
-
-                Ok(DamageResult::Applied(actual_amount))
-            } else {
-                Ok(DamageResult::Applied(0))
-            }
-        }
+        ReplacementResult::Execute(event) => Ok(apply_damage_after_replacement(
+            state, ctx, event, is_combat, events,
+        )),
         ReplacementResult::Prevented => Ok(DamageResult::Applied(0)),
         ReplacementResult::NeedsChoice(player) => {
             // Only set waiting_for for non-combat damage; combat damage cannot pause mid-resolution.
@@ -296,6 +153,159 @@ pub(crate) fn apply_damage_to_target(
             Ok(DamageResult::NeedsChoice)
         }
     }
+}
+
+/// CR 120.3 + CR 120.4b: Apply a post-replacement `ProposedEvent::Damage` to the game state.
+///
+/// Extracted from `apply_damage_to_target`'s Execute arm so the same logic can be
+/// invoked by `handle_replacement_choice` when a player accepts a damage replacement
+/// choice. Handles wither/infect (CR 702.80 / CR 702.90), planeswalker loyalty
+/// (CR 120.3c / CR 306.8), creature damage marking (CR 120.3e), poison (CR 702.90),
+/// life loss (CR 120.3a), excess damage (CR 120.10), damage record tracking, and
+/// lifelink (CR 702.15b / CR 120.3f).
+///
+/// Caller is responsible for emitting `EffectResolved`. This helper only emits
+/// `DamageDealt` (and downstream `LifeChanged` via the life helpers).
+pub(crate) fn apply_damage_after_replacement(
+    state: &mut GameState,
+    ctx: &DamageContext,
+    event: ProposedEvent,
+    is_combat: bool,
+    events: &mut Vec<GameEvent>,
+) -> DamageResult {
+    let ProposedEvent::Damage {
+        target: ref t,
+        amount: actual_amount,
+        ..
+    } = event
+    else {
+        debug_assert!(
+            false,
+            "apply_damage_after_replacement called with non-Damage ProposedEvent"
+        );
+        return DamageResult::Applied(0);
+    };
+
+    match t {
+        TargetRef::Object(obj_id) => {
+            if ctx.has_wither || ctx.has_infect {
+                // CR 702.80 + CR 702.90: Wither/infect deals damage as -1/-1 counters.
+                if let Some(target_obj) = state.objects.get_mut(obj_id) {
+                    let entry = target_obj
+                        .counters
+                        .entry(CounterType::Minus1Minus1)
+                        .or_insert(0);
+                    *entry += actual_amount;
+                    if ctx.has_deathtouch {
+                        target_obj.dealt_deathtouch_damage = true;
+                    }
+                }
+                state.layers_dirty = true;
+            } else if let Some(target_obj) = state.objects.get_mut(obj_id) {
+                if target_obj
+                    .card_types
+                    .core_types
+                    .contains(&CoreType::Planeswalker)
+                {
+                    // CR 120.3c / CR 306.8: Damage to a planeswalker removes loyalty counters.
+                    let current = target_obj.loyalty.unwrap_or(0);
+                    let new_loyalty = current.saturating_sub(actual_amount);
+                    target_obj.loyalty = Some(new_loyalty);
+                    target_obj
+                        .counters
+                        .insert(CounterType::Loyalty, new_loyalty);
+                } else {
+                    // CR 120.3e: Damage to a creature marks damage.
+                    target_obj.damage_marked += actual_amount;
+                    // CR 702.2b: Track deathtouch for SBA lethal-damage check.
+                    if ctx.has_deathtouch {
+                        target_obj.dealt_deathtouch_damage = true;
+                    }
+                }
+            }
+        }
+        TargetRef::Player(player_id) => {
+            if ctx.has_infect {
+                // CR 702.90: Infect deals damage to players as poison counters.
+                if let Some(player) = state.players.iter_mut().find(|p| p.id == *player_id) {
+                    player.poison_counters += actual_amount;
+                }
+            } else {
+                // CR 120.3a: Damage to a player causes life loss.
+                if super::life::apply_damage_life_loss(state, *player_id, actual_amount, events)
+                    .is_err()
+                {
+                    // CR 614.7: Life loss replacement needs player choice.
+                    return DamageResult::NeedsChoice;
+                }
+            }
+        }
+    }
+
+    // CR 120.10: Compute excess damage beyond lethal for creatures/planeswalkers.
+    let excess = match &t {
+        TargetRef::Object(obj_id) => state
+            .objects
+            .get(obj_id)
+            .and_then(|obj| {
+                if obj.card_types.core_types.contains(&CoreType::Creature) {
+                    obj.toughness.map(|toughness| {
+                        // damage_marked already includes actual_amount
+                        let damage_before = obj.damage_marked.saturating_sub(actual_amount);
+                        let lethal = if ctx.has_deathtouch {
+                            // CR 702.2c: Any nonzero damage from deathtouch = lethal
+                            if damage_before == 0 {
+                                1u32
+                            } else {
+                                0
+                            }
+                        } else {
+                            (toughness as u32).saturating_sub(damage_before)
+                        };
+                        actual_amount.saturating_sub(lethal)
+                    })
+                } else if obj.card_types.core_types.contains(&CoreType::Planeswalker) {
+                    // CR 120.10: Excess for planeswalkers = damage beyond pre-hit loyalty.
+                    // Loyalty was already decremented, so reconstruct pre-hit value.
+                    let pre_loyalty = obj.loyalty.unwrap_or(0) + actual_amount;
+                    Some(actual_amount.saturating_sub(pre_loyalty))
+                } else {
+                    Some(0)
+                }
+            })
+            .unwrap_or(0),
+        TargetRef::Player(_) => 0,
+    };
+
+    events.push(GameEvent::DamageDealt {
+        source_id: ctx.source_id,
+        target: t.clone(),
+        amount: actual_amount,
+        is_combat,
+        excess,
+    });
+
+    // CR 120.1: Record damage for "was dealt damage by" condition queries.
+    if actual_amount > 0 {
+        state.damage_dealt_this_turn.push(DamageRecord {
+            source_id: ctx.source_id,
+            target: t.clone(),
+            amount: actual_amount,
+            is_combat,
+        });
+    }
+
+    // CR 702.15b / CR 120.3f: Lifelink — controller gains life equal to damage dealt.
+    if ctx.has_lifelink
+        && actual_amount > 0
+        && super::life::apply_life_gain(state, ctx.controller, actual_amount, events).is_err()
+    {
+        // CR 614.7: Life gain replacement needs player choice.
+        // Damage was already dealt; lifelink gain is deferred.
+        return DamageResult::NeedsChoice;
+    }
+
+    DamageResult::Applied(actual_amount)
 }
 
 /// CR 120.3 + CR 616.1e: Build a one-shot, single-target non-combat `DealDamage`

@@ -7,6 +7,9 @@ node_modules/
 # GSD
 .planning/
 
+# Local TODO notes (per-item follow-up specs, not shared via git)
+docs/todo/
+
 # WASM output (generated — keep .d.ts for CI type-checking)
 client/src/wasm/*.js
 client/src/wasm/*.wasm

@@ -342,10 +342,6 @@ mod tests {
     /// replacement choice, the second direction must be stashed as
     /// `pending_continuation` so it resumes after the choice is answered — not
     /// silently vanish.
-    ///
-    /// NOTE: This verifies the continuation structure only. End-to-end resolution
-    /// through `handle_replacement_choice` for Damage events is tracked separately
-    /// — that handler currently only re-applies ZoneChange results post-choice.
     #[test]
     fn fight_with_damage_replacement_on_first_direction() {
         use crate::game::game_object::GameObject;
@@ -408,5 +404,86 @@ mod tests {
         assert_eq!(cont.targets, vec![TargetRef::Object(bear)]);
         // Bear hasn't taken damage yet — second direction is still pending.
         assert_eq!(state.objects[&bear].damage_marked, 0);
+    }
+
+    /// CR 120.3 + CR 616.1e: End-to-end fight+replacement accept delivery.
+    /// After accepting the replacement for the first direction, BOTH the
+    /// first direction (bear → wolf, previously dropped by handle_replacement_choice)
+    /// AND the second direction (wolf → bear, via pending_continuation) must land.
+    #[test]
+    fn fight_replacement_accepted_delivers_both_directions() {
+        use crate::game::engine::apply;
+        use crate::game::game_object::GameObject;
+        use crate::types::ability::{ReplacementDefinition, ReplacementMode};
+        use crate::types::actions::GameAction;
+        use crate::types::game_state::WaitingFor;
+        use crate::types::replacements::ReplacementEvent;
+
+        let mut state = GameState::new_two_player(42);
+        let bear = make_creature(&mut state, PlayerId(0), "Bear", 3, 3);
+        let wolf = make_creature(&mut state, PlayerId(1), "Wolf", 2, 2);
+
+        // Optional DamageDone replacement — fires once, so the first direction pauses
+        // for a choice but the second direction applies without prompting.
+        let shield_id = ObjectId(state.next_object_id);
+        state.next_object_id += 1;
+        let mut shield = GameObject::new(
+            shield_id,
+            CardId(99),
+            PlayerId(1),
+            "Shield".to_string(),
+            Zone::Battlefield,
+        );
+        shield.replacement_definitions.push(
+            ReplacementDefinition::new(ReplacementEvent::DamageDone)
+                .mode(ReplacementMode::Optional { decline: None })
+                .description("Shield".to_string()),
+        );
+        state.objects.insert(shield_id, shield);
+        state.battlefield.push(shield_id);
+
+        // Ensure the controlling player matches the waiting_for player so apply() accepts the action.
+        state.priority_player = PlayerId(1);
+        state.active_player = PlayerId(1);
+
+        let ability = make_fight_ability(bear, wolf);
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        let WaitingFor::ReplacementChoice { player, .. } = &state.waiting_for else {
+            panic!("expected ReplacementChoice, got {:?}", state.waiting_for);
+        };
+        // Set the priority/active player to match the replacement choice player.
+        state.priority_player = *player;
+        state.waiting_for = WaitingFor::ReplacementChoice {
+            player: *player,
+            candidate_count: 1,
+            candidate_descriptions: vec!["Shield".to_string()],
+        };
+
+        // Accept the replacement for bear → wolf (first direction).
+        apply(&mut state, GameAction::ChooseReplacement { index: 0 }).expect("accept replacement");
+
+        // First direction must have landed (previously this was silently dropped).
+        assert_eq!(
+            state.objects[&wolf].damage_marked, 3,
+            "first direction (bear → wolf, 3 damage) must apply on accept"
+        );
+
+        // The continuation (wolf → bear) also triggers the Optional Shield replacement.
+        // Accept it so the second direction lands.
+        if matches!(state.waiting_for, WaitingFor::ReplacementChoice { .. }) {
+            apply(&mut state, GameAction::ChooseReplacement { index: 0 })
+                .expect("accept second-direction replacement");
+        }
+
+        assert_eq!(
+            state.objects[&bear].damage_marked, 2,
+            "second direction (wolf → bear, 2 damage) must apply via pending_continuation + accept"
+        );
+        assert!(
+            state.pending_continuation.is_none(),
+            "continuation must be consumed"
+        );
     }
 }

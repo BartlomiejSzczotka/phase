@@ -120,25 +120,7 @@ pub fn apply_life_gain(
     };
     match replacement::replace_event(state, proposed, events) {
         ReplacementResult::Execute(event) => {
-            if let ProposedEvent::LifeGain {
-                player_id: pid,
-                amount: gain_amount,
-                ..
-            } = event
-            {
-                if let Some(player) = state.players.iter_mut().find(|p| p.id == pid) {
-                    player.life += gain_amount as i32;
-                    player.life_gained_this_turn += gain_amount;
-                }
-                state.layers_dirty = true;
-                events.push(GameEvent::LifeChanged {
-                    player_id: pid,
-                    amount: gain_amount as i32,
-                });
-                Ok(gain_amount)
-            } else {
-                Ok(0)
-            }
+            Ok(apply_life_gain_after_replacement(state, event, events))
         }
         ReplacementResult::Prevented => Ok(0),
         ReplacementResult::NeedsChoice(player) => {
@@ -148,6 +130,40 @@ pub fn apply_life_gain(
             Err(ReplacementDeferred)
         }
     }
+}
+
+/// CR 119.1: Apply a post-replacement `ProposedEvent::LifeGain` to the game state.
+///
+/// Extracted from `apply_life_gain`'s Execute arm so the same mutation can be
+/// invoked by `handle_replacement_choice` when a player accepts a life-gain
+/// replacement choice. Caller is responsible for emitting `EffectResolved`.
+pub fn apply_life_gain_after_replacement(
+    state: &mut GameState,
+    event: ProposedEvent,
+    events: &mut Vec<GameEvent>,
+) -> u32 {
+    let ProposedEvent::LifeGain {
+        player_id: pid,
+        amount: gain_amount,
+        ..
+    } = event
+    else {
+        debug_assert!(
+            false,
+            "apply_life_gain_after_replacement called with non-LifeGain ProposedEvent"
+        );
+        return 0;
+    };
+    if let Some(player) = state.players.iter_mut().find(|p| p.id == pid) {
+        player.life += gain_amount as i32;
+        player.life_gained_this_turn += gain_amount;
+    }
+    state.layers_dirty = true;
+    events.push(GameEvent::LifeChanged {
+        player_id: pid,
+        amount: gain_amount as i32,
+    });
+    gain_amount
 }
 
 /// CR 120.3: Damage to a player causes that much life loss.
@@ -170,25 +186,7 @@ pub fn apply_damage_life_loss(
     };
     match replacement::replace_event(state, proposed, events) {
         ReplacementResult::Execute(event) => {
-            if let ProposedEvent::LifeLoss {
-                player_id: pid,
-                amount: loss_amount,
-                ..
-            } = event
-            {
-                if let Some(player) = state.players.iter_mut().find(|p| p.id == pid) {
-                    player.life -= loss_amount as i32;
-                    player.life_lost_this_turn += loss_amount;
-                }
-                state.layers_dirty = true;
-                events.push(GameEvent::LifeChanged {
-                    player_id: pid,
-                    amount: -(loss_amount as i32),
-                });
-                Ok(loss_amount)
-            } else {
-                Ok(0)
-            }
+            Ok(apply_life_loss_after_replacement(state, event, events))
         }
         ReplacementResult::Prevented => Ok(0),
         ReplacementResult::NeedsChoice(player) => {
@@ -198,6 +196,40 @@ pub fn apply_damage_life_loss(
             Err(ReplacementDeferred)
         }
     }
+}
+
+/// CR 120.3: Apply a post-replacement `ProposedEvent::LifeLoss` to the game state.
+///
+/// Extracted from `apply_damage_life_loss`'s Execute arm so the same mutation can
+/// be invoked by `handle_replacement_choice` when a player accepts a life-loss
+/// replacement choice. Caller is responsible for emitting `EffectResolved`.
+pub fn apply_life_loss_after_replacement(
+    state: &mut GameState,
+    event: ProposedEvent,
+    events: &mut Vec<GameEvent>,
+) -> u32 {
+    let ProposedEvent::LifeLoss {
+        player_id: pid,
+        amount: loss_amount,
+        ..
+    } = event
+    else {
+        debug_assert!(
+            false,
+            "apply_life_loss_after_replacement called with non-LifeLoss ProposedEvent"
+        );
+        return 0;
+    };
+    if let Some(player) = state.players.iter_mut().find(|p| p.id == pid) {
+        player.life -= loss_amount as i32;
+        player.life_lost_this_turn += loss_amount;
+    }
+    state.layers_dirty = true;
+    events.push(GameEvent::LifeChanged {
+        player_id: pid,
+        amount: -(loss_amount as i32),
+    });
+    loss_amount
 }
 
 /// CR 119.3: If an effect causes a player to lose life, adjust their life total.
