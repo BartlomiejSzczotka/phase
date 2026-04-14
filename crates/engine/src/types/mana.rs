@@ -475,6 +475,60 @@ impl ManaCost {
         }
     }
 
+    /// CR 508.1h + CR 509.1d: Aggregate this cost with another cost, producing a
+    /// combined "locked in" total. Used for combat-tax aggregation where multiple
+    /// UnlessPay static abilities apply to the same attacker/blocker (e.g., two
+    /// Ghostly Prisons on the battlefield).
+    ///
+    /// Semantics: generic mana accumulates, shards are concatenated verbatim. The
+    /// result is `NoCost` only when both operands are `NoCost`. `SelfManaCost` is
+    /// never produced by combat tax aggregation; if either operand is
+    /// `SelfManaCost` the caller is misusing the API, so we treat it as
+    /// zero-contribution (no shards, no generic).
+    pub fn plus(&self, other: &ManaCost) -> ManaCost {
+        let (a_shards, a_generic) = match self {
+            ManaCost::Cost { shards, generic } => (shards.as_slice(), *generic),
+            _ => (&[] as &[ManaCostShard], 0),
+        };
+        let (b_shards, b_generic) = match other {
+            ManaCost::Cost { shards, generic } => (shards.as_slice(), *generic),
+            _ => (&[] as &[ManaCostShard], 0),
+        };
+        if a_shards.is_empty() && b_shards.is_empty() && a_generic == 0 && b_generic == 0 {
+            return ManaCost::zero();
+        }
+        let mut shards = Vec::with_capacity(a_shards.len() + b_shards.len());
+        shards.extend_from_slice(a_shards);
+        shards.extend_from_slice(b_shards);
+        ManaCost::Cost {
+            shards,
+            generic: a_generic + b_generic,
+        }
+    }
+
+    /// CR 508.1h: Scale this cost by an integer multiplier, as used for
+    /// "for each of those creatures" per-attacker aggregation on combat taxes.
+    /// `factor == 0` produces `ManaCost::zero()`; `factor == 1` returns a clone.
+    /// Shards are repeated `factor` times, generic mana is multiplied.
+    pub fn scaled(&self, factor: u32) -> ManaCost {
+        if factor == 0 {
+            return ManaCost::zero();
+        }
+        match self {
+            ManaCost::Cost { shards, generic } => {
+                let mut scaled_shards = Vec::with_capacity(shards.len() * factor as usize);
+                for _ in 0..factor {
+                    scaled_shards.extend_from_slice(shards);
+                }
+                ManaCost::Cost {
+                    shards: scaled_shards,
+                    generic: generic * factor,
+                }
+            }
+            other => other.clone(),
+        }
+    }
+
     /// CR 107.1b + CR 601.2f: Replace every `ManaCostShard::X` in this cost with
     /// `value * x_count` generic mana. Called after the caster commits to an X
     /// value, so mana payment sees a concrete cost with no symbolic X remaining.

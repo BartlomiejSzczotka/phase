@@ -82,6 +82,7 @@ pub enum PolicyId {
     PlusOneCountersMulligan,
     SpellslingerCasting,
     SpellslingerKeepablesMulligan,
+    CombatTaxPayment,
 }
 
 /// Coarse routing kind for a candidate decision. Each policy declares which
@@ -201,6 +202,7 @@ impl Default for PolicyRegistry {
             Box::new(AnthemPriorityPolicy),
             Box::new(PlusOneCountersPolicy),
             Box::new(SpellslingerCastingPolicy),
+            Box::new(super::combat_tax::CombatTaxPaymentPolicy),
         ];
         let mut by_kind: HashMap<DecisionKind, Vec<usize>> = HashMap::new();
         for (idx, policy) in policies.iter().enumerate() {

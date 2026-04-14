@@ -116,6 +116,14 @@ pub enum GameAction {
     PayUnlessCost {
         pay: bool,
     },
+    /// CR 508.1d + CR 508.1h + CR 509.1c + CR 509.1d: Pay or decline the aggregate
+    /// combat tax (Ghostly Prison, Propaganda, Sphere of Safety, Windborn Muse).
+    /// On accept the engine deducts the locked-in total and completes the paused
+    /// attack/block declaration; on decline the engine strips the taxed creatures
+    /// from the declaration and completes with the remaining, untaxed subset.
+    PayCombatTax {
+        accept: bool,
+    },
     /// CR 701.54a: Choose a creature to be the ring-bearer.
     ChooseRingBearer {
         target: ObjectId,

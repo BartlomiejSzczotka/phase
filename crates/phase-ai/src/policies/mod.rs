@@ -5,6 +5,7 @@ mod anti_self_harm;
 mod board_development;
 mod board_wipe_telegraph;
 mod card_advantage;
+mod combat_tax;
 pub(crate) mod context;
 mod copy_value;
 mod downside_awareness;

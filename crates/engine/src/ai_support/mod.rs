@@ -114,6 +114,7 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
         | (WaitingFor::OpponentMayChoice { .. }, GameAction::DecideOptionalEffect { .. })
         | (WaitingFor::TributeChoice { .. }, GameAction::DecideOptionalEffect { .. })
         | (WaitingFor::UnlessPayment { .. }, GameAction::PayUnlessCost { .. })
+        | (WaitingFor::CombatTaxPayment { .. }, GameAction::PayCombatTax { .. })
         | (WaitingFor::AdventureCastChoice { .. }, GameAction::ChooseAdventureFace { .. })
         | (WaitingFor::ModalFaceChoice { .. }, GameAction::ChooseModalFace { .. })
         | (WaitingFor::WarpCostChoice { .. }, GameAction::ChooseWarpCost { .. }) => false,

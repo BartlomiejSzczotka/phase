@@ -202,6 +202,18 @@ pub enum GameEvent {
     BlockersDeclared {
         assignments: Vec<(ObjectId, ObjectId)>,
     },
+    /// CR 508.1h + CR 509.1d: The aggregate combat tax was paid; the declaration
+    /// proceeds with every declared creature intact.
+    CombatTaxPaid {
+        player: PlayerId,
+        total_mana_value: u32,
+    },
+    /// CR 508.1d + CR 509.1c: The combat tax was declined; the listed taxed
+    /// creatures have been dropped from the declaration before it completes.
+    CombatTaxDeclined {
+        player: PlayerId,
+        dropped: Vec<ObjectId>,
+    },
     BecomesTarget {
         object_id: ObjectId,
         source_id: ObjectId,

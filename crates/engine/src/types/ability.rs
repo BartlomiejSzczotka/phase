@@ -1458,6 +1458,40 @@ pub enum SolveCondition {
     Text { description: String },
 }
 
+/// CR 508.1h + CR 509.1d: How an `UnlessPay` combat-tax cost scales when multiple
+/// creatures are covered by the restriction.
+///
+/// - `Flat`: the cost is paid once regardless of how many affected creatures there are
+///   (e.g., Brainwash — a single enchanted creature, cost {3}).
+/// - `PerAffectedCreature`: the cost is paid per creature that the restriction applies
+///   to in the declared attack/block (e.g., Ghostly Prison — "pays {2} for each creature
+///   they control that's attacking you").
+/// - `PerQuantityRef`: the cost is paid once, scaled by the resolved value of the
+///   dynamic `QuantityRef` (useful for "{X}" where X is defined as a game-state count
+///   without a per-creature multiplier).
+/// - `PerAffectedAndQuantityRef`: the cost is multiplied by the resolved quantity AND
+///   paid once per affected creature (e.g., Sphere of Safety — "pays {X} for each of
+///   those creatures, where X is the number of enchantments you control").
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(tag = "type", content = "data")]
+pub enum UnlessPayScaling {
+    #[default]
+    Flat,
+    PerAffectedCreature,
+    PerQuantityRef {
+        quantity: QuantityRef,
+    },
+    PerAffectedAndQuantityRef {
+        quantity: QuantityRef,
+    },
+}
+
+impl UnlessPayScaling {
+    pub fn is_flat(&self) -> bool {
+        matches!(self, UnlessPayScaling::Flat)
+    }
+}
+
 /// Condition for static ability applicability.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -1536,14 +1570,22 @@ pub enum StaticCondition {
     OpponentPoisonAtLeast {
         count: u32,
     },
-    /// CR 118.12a: "unless [player] pays [cost]" — an optional cost condition.
-    /// Used for Ghostly Prison, Propaganda, etc. The restriction applies unless
-    /// the relevant player pays the specified cost. Currently evaluated as false
-    /// (restriction active) by `layers::evaluate_condition` — the per-attacker /
-    /// per-blocker optional cost payment round-trip is an unimplemented
-    /// interactive feature, not a stub.
+    /// CR 118.12a + CR 508.1d + CR 509.1c: "unless [player] pays [cost]" — an optional cost
+    /// condition attached to a combat restriction (attack tax / block tax).
+    ///
+    /// `cost` is the base cost per activation of the condition. `scaling` determines how the
+    /// total is computed when the static applies across multiple creatures — e.g.
+    /// Ghostly Prison scales per affected creature, Sphere of Safety scales per enchantment
+    /// the defender controls, and Brainwash scales flat.
+    ///
+    /// `layers::evaluate_condition` returns `false` for this variant (restriction active) —
+    /// the per-attacker / per-blocker optional cost payment round-trip is performed at
+    /// declaration time via `WaitingFor::CombatTaxPayment`, not inside the pure layer
+    /// evaluator.
     UnlessPay {
         cost: ManaCost,
+        #[serde(default, skip_serializing_if = "UnlessPayScaling::is_flat")]
+        scaling: UnlessPayScaling,
     },
     /// Condition text that the parser could not yet decompose into a typed variant.
     /// Evaluated permissively (always true) so the static effect still applies.

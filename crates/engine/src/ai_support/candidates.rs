@@ -894,6 +894,23 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
                 ),
             ]
         }
+        // CR 508.1d + CR 509.1c: Combat tax — active player (attacks) or defending
+        // player (blocks) chooses to pay the locked-in aggregate cost or decline
+        // (dropping the taxed creatures from the declaration).
+        WaitingFor::CombatTaxPayment { player, .. } => {
+            vec![
+                candidate(
+                    GameAction::PayCombatTax { accept: true },
+                    TacticalClass::Selection,
+                    Some(*player),
+                ),
+                candidate(
+                    GameAction::PayCombatTax { accept: false },
+                    TacticalClass::Selection,
+                    Some(*player),
+                ),
+            ]
+        }
         // CR 702.21a: Ward discard cost — choose a card from hand.
         WaitingFor::WardDiscardChoice { player, cards, .. } => cards
             .iter()

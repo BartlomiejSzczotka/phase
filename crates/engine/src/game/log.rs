@@ -178,6 +178,9 @@ fn categorize(event: &GameEvent) -> LogCategory {
         | GameEvent::InitiativeTaken { .. }
         | GameEvent::Clash { .. }
         | GameEvent::XValueChosen { .. } => LogCategory::Special,
+        GameEvent::CombatTaxPaid { .. } | GameEvent::CombatTaxDeclined { .. } => {
+            LogCategory::Combat
+        }
     }
 }
 
@@ -767,6 +770,21 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
         GameEvent::XValueChosen { value, .. } => {
             vec![text("Chose X = "), text(&value.to_string())]
         }
+        GameEvent::CombatTaxPaid {
+            player,
+            total_mana_value,
+        } => vec![
+            player_seg(state, *player),
+            text(" paid combat tax ("),
+            num(*total_mana_value as i32),
+            text(" mana)"),
+        ],
+        GameEvent::CombatTaxDeclined { player, dropped } => vec![
+            player_seg(state, *player),
+            text(" declined combat tax ("),
+            num(dropped.len() as i32),
+            text(" creature(s) dropped)"),
+        ],
     }
 }
 

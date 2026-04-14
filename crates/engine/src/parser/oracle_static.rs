@@ -12,6 +12,7 @@ use super::oracle_cost::parse_oracle_cost;
 use super::oracle_effect::parse_effect_chain;
 use super::oracle_nom::bridge::nom_on_lower;
 use super::oracle_nom::condition as nom_condition;
+use super::oracle_nom::error::OracleResult;
 use super::oracle_nom::filter as nom_filter;
 use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_nom::target as nom_target;
@@ -33,7 +34,7 @@ use crate::types::keywords::Keyword;
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::phase::Phase;
 use crate::types::statics::{
-    CastingProhibitionCondition, ProhibitionScope, HandSizeModification, StaticMode,
+    CastingProhibitionCondition, HandSizeModification, ProhibitionScope, StaticMode,
 };
 use crate::types::zones::Zone;
 
@@ -778,6 +779,24 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
             }
             return Some(def);
         }
+    }
+
+    // --- "Creatures can't attack [you | you or planeswalkers you control] unless
+    //     their controller pays {N} [for each of those creatures]" ---
+    // CR 508.1d + CR 508.1h + CR 118.12a: Attack-tax static family
+    // (Ghostly Prison, Propaganda, Sphere of Safety, Windborn Muse, Archangel of
+    // Tithes, Baird, etc.). Produces a typed UnlessPay condition with
+    // per-affected-creature scaling, so the runtime can aggregate across every
+    // declared attacker covered by the filter.
+    //
+    // Also covers the block side ("Creatures can't block unless...") via a
+    // shared combinator, and the "Enchanted creature can't attack unless its
+    // controller pays {N}" aura variant (Brainwash) via `~ can't attack`
+    // below — the aura variant already yields `TargetFilter::SelfRef` and
+    // `StaticMode::CantAttack`, so only the unless-scaling needs to flow
+    // through.
+    if let Some(def) = parse_combat_tax_static(&tp, &text) {
+        return Some(def);
     }
 
     // --- "~ can't block" ---
@@ -2275,6 +2294,215 @@ fn parse_unless_static_condition(tp: &TextPair<'_>) -> Option<StaticCondition> {
     parse_static_condition(unless_text.original)
 }
 
+/// CR 508.1d + CR 508.1h + CR 509.1c + CR 118.12a: Parse the combat-tax static family:
+///
+/// - "Creatures can't attack [you | you or planeswalkers you control] unless their
+///   controller pays {N} [for each of those creatures][, where X is the number of
+///   <filter>][.]"
+/// - "Creatures can't block unless their controller pays {N} [for each of those
+///   creatures]."
+///
+/// Nom-driven: every detection and dispatch step is a typed combinator, no
+/// `contains()`/`starts_with()` substring heuristics. Produces a
+/// `StaticDefinition` with the typed `UnlessPayScaling` variant matching the
+/// Oracle text's scaling hint.
+///
+/// Returns `None` if the text does not match this family. Callers fall through
+/// to the general "~ can't attack/block" handlers below.
+fn parse_combat_tax_static(tp: &TextPair<'_>, text: &str) -> Option<StaticDefinition> {
+    // Run on the ORIGINAL-case text so `{X}` mana shards and `X` in the dynamic
+    // clause are preserved for nom's `parse_mana_cost` (which is case-sensitive
+    // on X). All structural tags use `tag_no_case` to remain robust to
+    // capitalization at the start of the line.
+    let original = tp.original.trim_end_matches('.');
+    let (rest, outcome) = parse_combat_tax_body(original).ok()?;
+    if !rest.is_empty() {
+        return None;
+    }
+    let CombatTaxParse {
+        mode,
+        affected,
+        base_cost,
+        scaling,
+    } = outcome;
+    let mut def = StaticDefinition::new(mode)
+        .affected(affected)
+        .description(text.to_string());
+    def.condition = Some(StaticCondition::UnlessPay {
+        cost: base_cost,
+        scaling,
+    });
+    Some(def)
+}
+
+/// Result of the combat-tax nom parse.
+struct CombatTaxParse {
+    mode: StaticMode,
+    affected: TargetFilter,
+    base_cost: ManaCost,
+    scaling: crate::types::ability::UnlessPayScaling,
+}
+
+/// Subject axis of the combat-tax grammar.
+#[derive(Debug, Clone, Copy)]
+enum CombatTaxSubject {
+    /// "Creatures [can't attack you]" — applies to opponents' creatures.
+    Creatures,
+    /// "Enchanted creature [can't attack]" — aura attached-to creature form (Brainwash).
+    EnchantedCreature,
+}
+
+/// Nom 8.0 parser for the combat-tax body.
+///
+/// Grammar (case-insensitive, leading "creatures " already consumed by nom):
+///   body      := subject restriction scope? " unless " payer mana_cost suffix?
+///   subject   := "creatures "
+///   restriction := "can't attack" | "can't block"
+///   scope     := " you" | " you or planeswalkers you control"
+///   payer     := "their controller pays " | "its controller pays "
+///   suffix    := " for each of those creatures" dynamic_x?
+///   dynamic_x := ", where x is the number of " <filter-phrase>
+fn parse_combat_tax_body(input: &str) -> OracleResult<'_, CombatTaxParse> {
+    use crate::types::ability::UnlessPayScaling;
+    use nom_language::error::VerboseError;
+
+    // Subject: either "Creatures " (opponents' creatures — the prison family) or
+    // "Enchanted creature " (aura form — Brainwash). Each subject type drives the
+    // affected-filter shape independently.
+    let (input, subject) = alt((
+        value(
+            CombatTaxSubject::Creatures,
+            tag_no_case::<_, _, VerboseError<&str>>("creatures "),
+        ),
+        value(
+            CombatTaxSubject::EnchantedCreature,
+            tag_no_case::<_, _, VerboseError<&str>>("enchanted creature "),
+        ),
+    ))
+    .parse(input)?;
+
+    let (input, is_attack) = alt((
+        value(
+            true,
+            tag_no_case::<_, _, VerboseError<&str>>("can't attack"),
+        ),
+        value(
+            false,
+            tag_no_case::<_, _, VerboseError<&str>>("can't block"),
+        ),
+    ))
+    .parse(input)?;
+
+    // Optional attack scope: " you" or " you or planeswalkers you control".
+    // For the block side the scope is implicit ("can't block" has no "you").
+    let (input, _scope) = opt(alt((
+        tag_no_case::<_, _, VerboseError<&str>>(" you or planeswalkers you control"),
+        tag_no_case::<_, _, VerboseError<&str>>(" you"),
+    )))
+    .parse(input)?;
+
+    let (input, _) = tag_no_case::<_, _, VerboseError<&str>>(" unless ").parse(input)?;
+    let (input, _) = alt((
+        tag_no_case::<_, _, VerboseError<&str>>("their controller pays "),
+        tag_no_case::<_, _, VerboseError<&str>>("its controller pays "),
+    ))
+    .parse(input)?;
+
+    let (input, base_cost) = nom_primitives::parse_mana_cost(input)?;
+
+    // Optional "for each ..." tail → PerAffectedCreature scaling. Attested
+    // phrasings in the live catalog:
+    //   - " for each of those creatures" (Sphere of Safety, Archangel of Tithes)
+    //   - " for each creature they control that's attacking you" (Ghostly Prison,
+    //     Propaganda, Windborn Muse, Baird). This phrasing further filters the
+    //     tax to "attacking-you" creatures — already implicit in the affected
+    //     filter for the attack side.
+    let (input, per_affected) = opt(alt((
+        tag_no_case::<_, _, VerboseError<&str>>(" for each of those creatures"),
+        tag_no_case::<_, _, VerboseError<&str>>(
+            " for each creature they control that's attacking you or a planeswalker you control",
+        ),
+        tag_no_case::<_, _, VerboseError<&str>>(
+            " for each creature they control that's attacking you",
+        ),
+        tag_no_case::<_, _, VerboseError<&str>>(" for each attacking creature they control"),
+    )))
+    .parse(input)?;
+
+    // Optional ", where X is the number of <filter>" — only valid when the base
+    // cost carried an {X} shard. Used by Sphere of Safety.
+    let (input, dynamic_qty) = opt(parse_dynamic_x_clause).parse(input)?;
+
+    let mode = if is_attack {
+        StaticMode::CantAttack
+    } else {
+        StaticMode::CantBlock
+    };
+
+    // Subject-driven affected filter:
+    //   - `Creatures` (Ghostly Prison family): opponents' creatures. `ControllerRef::Opponent`
+    //     resolves against the static's controller (the player benefiting from the tax).
+    //   - `EnchantedCreature` (Brainwash): the attached-to creature — property `EnchantedBy`
+    //     matches the aura's enchant target at runtime.
+    let affected = match subject {
+        CombatTaxSubject::Creatures => TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            controller: Some(ControllerRef::Opponent),
+            properties: vec![],
+        }),
+        CombatTaxSubject::EnchantedCreature => TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            controller: None,
+            properties: vec![FilterProp::EnchantedBy],
+        }),
+    };
+
+    let scaling = match (per_affected.is_some(), dynamic_qty) {
+        (true, Some(qty)) => UnlessPayScaling::PerAffectedAndQuantityRef { quantity: qty },
+        (true, None) => UnlessPayScaling::PerAffectedCreature,
+        (false, Some(qty)) => UnlessPayScaling::PerQuantityRef { quantity: qty },
+        (false, None) => UnlessPayScaling::Flat,
+    };
+
+    Ok((
+        input,
+        CombatTaxParse {
+            mode,
+            affected,
+            base_cost,
+            scaling,
+        },
+    ))
+}
+
+/// Parse ", where X is the number of <filter>" → `QuantityRef::ObjectCount {...}`.
+/// Used by Sphere of Safety. Delegates to the shared `parse_quantity_ref`
+/// which handles "the number of <filter>" as a single alternative.
+fn parse_dynamic_x_clause(input: &str) -> OracleResult<'_, QuantityRef> {
+    use nom_language::error::VerboseError;
+
+    let (input, _) = tag_no_case::<_, _, VerboseError<&str>>(", where x is ").parse(input)?;
+    // Delegate to the shared quantity-ref combinator which is case-sensitive on
+    // lowercase patterns ("the number of"). Normalize to lowercase for the
+    // remaining phrase so the upstream combinators match.
+    let lowered = input.to_lowercase();
+    let (_, quantity) =
+        super::oracle_nom::quantity::parse_quantity_ref(&lowered).map_err(|e| match e {
+            nom::Err::Error(_) | nom::Err::Failure(_) => {
+                nom::Err::Error(nom_language::error::VerboseError {
+                    errors: vec![(
+                        input,
+                        nom_language::error::VerboseErrorKind::Nom(nom::error::ErrorKind::Tag),
+                    )],
+                })
+            }
+            nom::Err::Incomplete(n) => nom::Err::Incomplete(n),
+        })?;
+    // Don't try to keep a &str reference into the lowered string — accept that the
+    // dynamic-X clause consumes the rest of the phrase and return empty remainder.
+    Ok(("", quantity))
+}
+
 /// Parse "your devotion to [color(s)] is less than N" or "is N or greater".
 fn parse_devotion_condition(lower: &str) -> Option<StaticCondition> {
     let rest = nom_tag_lower(lower, lower, "your devotion to ")?;
@@ -3171,9 +3399,7 @@ fn strip_casting_prohibition_subject(tp: &str) -> Option<(ProhibitionScope, &str
     nom_tag_lower(tp, tp, "each opponent ")
         .or_else(|| nom_tag_lower(tp, tp, "your opponents "))
         .map(|rest| (ProhibitionScope::Opponents, rest))
-        .or_else(|| {
-            nom_tag_lower(tp, tp, "you ").map(|rest| (ProhibitionScope::Controller, rest))
-        })
+        .or_else(|| nom_tag_lower(tp, tp, "you ").map(|rest| (ProhibitionScope::Controller, rest)))
         .or_else(|| {
             nom_tag_lower(tp, tp, "each player ")
                 .or_else(|| nom_tag_lower(tp, tp, "players "))

@@ -334,3 +334,173 @@ fn dies_trigger_fires_from_combat_damage() {
         "Dies trigger should fire and grant 3 life to controller"
     );
 }
+
+// ---------------------------------------------------------------------------
+// CR 508.1d + CR 508.1h + CR 509.1c + CR 509.1d: Combat tax (UnlessPay) family
+// ---------------------------------------------------------------------------
+
+use engine::parser::oracle_static::parse_static_line;
+use engine::types::card_type::CoreType as Core;
+use engine::types::game_state::CombatTaxContext;
+use engine::types::mana::{ManaColor, ManaCostShard};
+
+fn add_ghostly_prison(scenario: &mut GameScenario, player: PlayerId) -> ObjectId {
+    // Ghostly Prison is an Enchantment (no P/T). Use a 2/2 creature shell only
+    // so `add_creature` gives us a live permanent without SBAs killing it
+    // (a 0/0 creature dies to CR 704.5f on the first state-based check after
+    // entering). The test asserts only on the Prison's static-driven tax
+    // behavior, not the source's card type.
+    let def = parse_static_line(
+        "Creatures can't attack you unless their controller pays {2} for each creature they control that's attacking you.",
+    )
+    .expect("Ghostly Prison should parse");
+    let mut builder = scenario.add_creature(player, "Ghostly Prison", 2, 2);
+    builder.with_static_definition(def);
+    builder.id()
+}
+
+/// CR 508.1d + CR 508.1h: Ghostly Prison on defender's side with two attackers
+/// computes a {4} total tax (two creatures × {2}). Accepting pays the mana and
+/// completes the attack.
+#[test]
+fn ghostly_prison_accept_pays_tax_and_attacks_proceed() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    // Defender controls Ghostly Prison.
+    let _prison = add_ghostly_prison(&mut scenario, P1);
+    // Attacker has two bears.
+    let a1 = scenario.add_creature(P0, "Bear 1", 2, 2).id();
+    let a2 = scenario.add_creature(P0, "Bear 2", 2, 2).id();
+    // Attacker has 4 Plains for the tax.
+    for _ in 0..4 {
+        scenario.add_basic_land(P0, ManaColor::White);
+    }
+    let mut runner = scenario.build();
+    runner.pass_both_players();
+
+    let attacks = vec![
+        (a1, AttackTarget::Player(P1)),
+        (a2, AttackTarget::Player(P1)),
+    ];
+    runner
+        .act(GameAction::DeclareAttackers { attacks })
+        .expect("DeclareAttackers should pause with CombatTaxPayment");
+
+    // Verify we're paused with the right total ({4}) and two per-creature entries.
+    match &runner.state().waiting_for {
+        WaitingFor::CombatTaxPayment {
+            player,
+            context,
+            total_cost,
+            per_creature,
+            ..
+        } => {
+            assert_eq!(*player, P0, "active player owes the tax");
+            assert!(matches!(context, CombatTaxContext::Attacking));
+            assert_eq!(total_cost.mana_value(), 4);
+            assert_eq!(per_creature.len(), 2);
+        }
+        other => panic!("expected CombatTaxPayment, got {other:?}"),
+    }
+
+    // Tap four Plains for mana (ManaPayment is not required here — pay_unless_cost
+    // goes through the unified mana-payment pipeline).
+    // Simpler path: accept and let the engine draw from the mana pool. We need
+    // mana available — tap the lands by activating their mana abilities.
+    let plains: Vec<ObjectId> = runner
+        .state()
+        .battlefield
+        .iter()
+        .filter(|&&id| {
+            let obj = runner.state().objects.get(&id).unwrap();
+            obj.controller == P0 && obj.card_types.core_types.contains(&Core::Land)
+        })
+        .copied()
+        .collect();
+    for land in plains {
+        runner
+            .act(GameAction::TapLandForMana { object_id: land })
+            .ok();
+    }
+
+    // Accept the tax.
+    runner
+        .act(GameAction::PayCombatTax { accept: true })
+        .expect("PayCombatTax accept should succeed");
+
+    // The attack should now be declared — attackers are tapped (unless vigilance).
+    let state = runner.state();
+    assert!(
+        state.combat.is_some(),
+        "Combat state must be populated after tax paid"
+    );
+    let combat = state.combat.as_ref().unwrap();
+    assert_eq!(combat.attackers.len(), 2);
+}
+
+/// CR 508.1d + CR 509.1c: Declining the tax drops the taxed attackers. With
+/// Ghostly Prison on defender and only two taxed attackers, decline → zero
+/// attackers → combat ends (CR 508.8).
+#[test]
+fn ghostly_prison_decline_removes_taxed_attackers() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let _prison = add_ghostly_prison(&mut scenario, P1);
+    let a1 = scenario.add_creature(P0, "Bear 1", 2, 2).id();
+    let a2 = scenario.add_creature(P0, "Bear 2", 2, 2).id();
+    let mut runner = scenario.build();
+    runner.pass_both_players();
+
+    let attacks = vec![
+        (a1, AttackTarget::Player(P1)),
+        (a2, AttackTarget::Player(P1)),
+    ];
+    runner
+        .act(GameAction::DeclareAttackers { attacks })
+        .expect("DeclareAttackers should pause with CombatTaxPayment");
+
+    // Decline the tax.
+    runner
+        .act(GameAction::PayCombatTax { accept: false })
+        .expect("PayCombatTax decline should succeed");
+
+    // CR 508.8: No attackers remain → combat ends.
+    let state = runner.state();
+    assert!(
+        state.combat.is_none() || state.combat.as_ref().unwrap().attackers.is_empty(),
+        "After declining the tax, no attackers should remain"
+    );
+    // The attackers should not be tapped (tap is only applied after tax is paid
+    // per CR 508.1f).
+    let a1_obj = &state.objects[&a1];
+    let a2_obj = &state.objects[&a2];
+    assert!(
+        !a1_obj.tapped && !a2_obj.tapped,
+        "declined attackers stay untapped"
+    );
+}
+
+/// CR 508.1h: Two Ghostly Prisons stacked aggregate to {4} per attacker.
+#[test]
+fn two_prisons_stack_tax() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let _p1 = add_ghostly_prison(&mut scenario, P1);
+    let _p2 = add_ghostly_prison(&mut scenario, P1);
+    let a1 = scenario.add_creature(P0, "Bear", 2, 2).id();
+    let mut runner = scenario.build();
+    runner.pass_both_players();
+
+    let attacks = vec![(a1, AttackTarget::Player(P1))];
+    runner
+        .act(GameAction::DeclareAttackers { attacks })
+        .expect("DeclareAttackers should pause with CombatTaxPayment");
+
+    match &runner.state().waiting_for {
+        WaitingFor::CombatTaxPayment { total_cost, .. } => {
+            // 1 attacker × {2} × 2 prisons = {4}.
+            assert_eq!(total_cost.mana_value(), 4);
+        }
+        other => panic!("expected CombatTaxPayment, got {other:?}"),
+    }
+}

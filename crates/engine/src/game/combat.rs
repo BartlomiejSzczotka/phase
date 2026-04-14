@@ -691,6 +691,218 @@ pub fn validate_blockers(
     Ok(())
 }
 
+/// CR 508.1d + CR 508.1h + CR 509.1c + CR 509.1d: Walk every battlefield / command-zone
+/// static ability that imposes `CantAttack`/`CantAttackOrBlock` or `CantBlock`/
+/// `CantAttackOrBlock` with a `StaticCondition::UnlessPay` condition, compute the
+/// per-creature cost that the taxed player owes for each declared attacker/blocker,
+/// and aggregate the locked-in total.
+///
+/// `context` selects which side of combat we're computing for. For `Attacking` the
+/// mode filter is `CantAttack | CantAttackOrBlock` and the candidates are attackers.
+/// For `Blocking` the mode filter is `CantBlock | CantAttackOrBlock` and the
+/// candidates are blockers.
+///
+/// Returns `None` when no UnlessPay statics apply (the declaration should proceed
+/// without pausing). Returns `Some((total, per_creature))` otherwise — callers pause
+/// with `WaitingFor::CombatTaxPayment`, and the per-creature breakdown drives the
+/// decline branch (which removes taxed creatures from the declaration).
+pub fn compute_combat_tax(
+    state: &GameState,
+    creature_ids: &[ObjectId],
+    context: crate::types::game_state::CombatTaxContext,
+) -> Option<(
+    crate::types::mana::ManaCost,
+    Vec<(ObjectId, crate::types::mana::ManaCost)>,
+)> {
+    use crate::types::ability::{StaticCondition, UnlessPayScaling};
+    use crate::types::game_state::CombatTaxContext;
+    use crate::types::mana::ManaCost;
+
+    if creature_ids.is_empty() {
+        return None;
+    }
+
+    // Pre-collect the affected creature count for scaling — used by
+    // PerAffectedCreature (count of declared creatures this static touches) so
+    // the arithmetic is order-independent.
+    let mut per_creature: Vec<(ObjectId, ManaCost)> = creature_ids
+        .iter()
+        .map(|&id| (id, ManaCost::zero()))
+        .collect();
+    let mut any_tax = false;
+
+    // CR 114.4: Emblems in the command zone contribute their statics too.
+    let zones = state.battlefield.iter().chain(state.command_zone.iter());
+    for &source_id in zones {
+        let Some(source_obj) = state.objects.get(&source_id) else {
+            continue;
+        };
+        if source_obj.zone == Zone::Command && !source_obj.is_emblem {
+            continue;
+        }
+        // CR 702.26b: Phased-out permanents' statics don't function.
+        if source_obj.is_phased_out() {
+            continue;
+        }
+
+        for def in &source_obj.static_definitions {
+            let mode_matches = match context {
+                CombatTaxContext::Attacking => matches!(
+                    def.mode,
+                    StaticMode::CantAttack | StaticMode::CantAttackOrBlock
+                ),
+                CombatTaxContext::Blocking => matches!(
+                    def.mode,
+                    StaticMode::CantBlock | StaticMode::CantAttackOrBlock
+                ),
+            };
+            if !mode_matches {
+                continue;
+            }
+            let Some(StaticCondition::UnlessPay {
+                cost: base_cost,
+                scaling,
+            }) = def.condition.as_ref()
+            else {
+                continue;
+            };
+
+            // For each declared creature, determine if this static's affected filter matches.
+            let mut affected_ids: Vec<ObjectId> = Vec::new();
+            let ctx = FilterContext::from_source(state, source_id);
+            for &cid in creature_ids {
+                let creature_matches = match &def.affected {
+                    Some(filter) => matches_target_filter(state, cid, filter, &ctx),
+                    // No affected filter — treat as "applies to all taxed creatures",
+                    // matching the behavior of `check_static_ability` when `affected`
+                    // is None.
+                    None => true,
+                };
+                if creature_matches {
+                    affected_ids.push(cid);
+                }
+            }
+            if affected_ids.is_empty() {
+                continue;
+            }
+
+            // Compute per-creature contribution for this static.
+            let per_match_cost: ManaCost = match scaling {
+                UnlessPayScaling::Flat => {
+                    // CR 118.12a: Flat "pays {N}" — for taxes, distribute across all
+                    // affected creatures so the decline branch can drop individuals
+                    // cleanly. Brainwash has exactly one affected creature by
+                    // construction (the enchanted creature), so the distribution
+                    // collapses to a single per-creature cost.
+                    base_cost.clone()
+                }
+                UnlessPayScaling::PerAffectedCreature => {
+                    // CR 508.1h: "pays {N} for each of those creatures" — every affected
+                    // creature contributes base_cost. Distributed as base_cost per
+                    // affected id so the decline branch can drop individuals cleanly.
+                    base_cost.clone()
+                }
+                UnlessPayScaling::PerQuantityRef { quantity } => {
+                    // CR 202.3e: X-style dynamic cost resolved once for the whole
+                    // static (no per-affected multiplier). The full scaled cost is
+                    // attributed to the first affected creature so the decline branch
+                    // drops all affected creatures together (they share one logical
+                    // tax).
+                    let n = crate::game::quantity::resolve_quantity(
+                        state,
+                        &crate::types::ability::QuantityExpr::Ref {
+                            qty: quantity.clone(),
+                        },
+                        source_obj.controller,
+                        source_id,
+                    );
+                    let total = base_cost.scaled(n.max(0) as u32);
+                    if let Some(first) = affected_ids.first() {
+                        if let Some((_, slot)) =
+                            per_creature.iter_mut().find(|(cid, _)| cid == first)
+                        {
+                            *slot = slot.plus(&total);
+                            any_tax = true;
+                        }
+                    }
+                    continue;
+                }
+                UnlessPayScaling::PerAffectedAndQuantityRef { quantity } => {
+                    // CR 508.1h + CR 202.3e: Sphere of Safety — "pays {X} for each of
+                    // those creatures, where X is the number of enchantments you
+                    // control". Resolve X once, multiply base_cost, then attribute to
+                    // each affected creature.
+                    let n = crate::game::quantity::resolve_quantity(
+                        state,
+                        &crate::types::ability::QuantityExpr::Ref {
+                            qty: quantity.clone(),
+                        },
+                        source_obj.controller,
+                        source_id,
+                    );
+                    base_cost.scaled(n.max(0) as u32)
+                }
+            };
+
+            for aid in &affected_ids {
+                if let Some((_, slot)) = per_creature.iter_mut().find(|(cid, _)| cid == aid) {
+                    *slot = slot.plus(&per_match_cost);
+                    any_tax = true;
+                }
+            }
+        }
+    }
+
+    if !any_tax {
+        return None;
+    }
+
+    // Drop creatures with no tax — keep per_creature as the subset that is actually taxed.
+    per_creature.retain(|(_, cost)| cost.mana_value() > 0 || !matches!(cost, ManaCost::NoCost));
+    if per_creature.is_empty() {
+        return None;
+    }
+    let total = per_creature
+        .iter()
+        .fold(ManaCost::zero(), |acc, (_, c)| acc.plus(c));
+    if total.mana_value() == 0 {
+        return None;
+    }
+    Some((total, per_creature))
+}
+
+/// CR 508.1d + CR 508.1h: Specialization of `compute_combat_tax` for the attack step.
+pub fn compute_attack_tax(
+    state: &GameState,
+    attacks: &[(ObjectId, AttackTarget)],
+) -> Option<(
+    crate::types::mana::ManaCost,
+    Vec<(ObjectId, crate::types::mana::ManaCost)>,
+)> {
+    let ids: Vec<ObjectId> = attacks.iter().map(|(id, _)| *id).collect();
+    compute_combat_tax(
+        state,
+        &ids,
+        crate::types::game_state::CombatTaxContext::Attacking,
+    )
+}
+
+/// CR 509.1c + CR 509.1d: Specialization of `compute_combat_tax` for the block step.
+pub fn compute_block_tax(
+    state: &GameState,
+    assignments: &[(ObjectId, ObjectId)],
+) -> Option<(
+    crate::types::mana::ManaCost,
+    Vec<(ObjectId, crate::types::mana::ManaCost)>,
+)> {
+    let ids: Vec<ObjectId> = assignments.iter().map(|(b, _)| *b).collect();
+    compute_combat_tax(
+        state,
+        &ids,
+        crate::types::game_state::CombatTaxContext::Blocking,
+    )
+}
+
 /// Declare attackers: validate, tap (unless vigilance), populate CombatState, emit event.
 /// Accepts per-creature attack targets as (attacker_id, target) pairs.
 pub fn declare_attackers(
@@ -2567,5 +2779,94 @@ mod tests {
 
         // CR 701.15a: Goad expires at the goading player's next turn.
         assert!(state.objects.get(&goaded).unwrap().goaded_by.is_empty());
+    }
+
+    // --- Combat tax computation (CR 508.1d + 508.1h + 509.1c + 509.1d) ---
+
+    fn create_ghostly_prison(state: &mut GameState, controller: PlayerId) -> ObjectId {
+        use crate::types::ability::{
+            ControllerRef, StaticCondition, StaticDefinition, TargetFilter, TypeFilter,
+            TypedFilter, UnlessPayScaling,
+        };
+        use crate::types::mana::ManaCost;
+        use crate::types::statics::StaticMode;
+
+        let id = create_object(
+            state,
+            CardId(state.next_object_id),
+            controller,
+            "Ghostly Prison".to_string(),
+            crate::types::zones::Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Enchantment);
+        let mut def = StaticDefinition::new(StaticMode::CantAttack)
+            .affected(TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Creature],
+                controller: Some(ControllerRef::Opponent),
+                properties: vec![],
+            }))
+            .description("Ghostly Prison".to_string());
+        def.condition = Some(StaticCondition::UnlessPay {
+            cost: ManaCost::generic(2),
+            scaling: UnlessPayScaling::PerAffectedCreature,
+        });
+        obj.static_definitions.push(def);
+        id
+    }
+
+    #[test]
+    fn compute_attack_tax_aggregates_per_attacker_with_ghostly_prison() {
+        let mut state = setup();
+        // Defender (PlayerId(1)) controls Ghostly Prison.
+        let _prison = create_ghostly_prison(&mut state, PlayerId(1));
+        // Active player declares two attackers.
+        let a1 = create_creature(&mut state, PlayerId(0), "A1", 2, 2);
+        let a2 = create_creature(&mut state, PlayerId(0), "A2", 2, 2);
+        let attacks = vec![
+            (a1, AttackTarget::Player(PlayerId(1))),
+            (a2, AttackTarget::Player(PlayerId(1))),
+        ];
+        let (total, per_creature) = compute_attack_tax(&state, &attacks).expect("tax applies");
+        // Two attackers × {2} each = {4} total.
+        assert_eq!(total.mana_value(), 4);
+        assert_eq!(per_creature.len(), 2);
+        assert!(per_creature.iter().all(|(_, c)| c.mana_value() == 2));
+    }
+
+    #[test]
+    fn compute_attack_tax_stacks_two_prisons() {
+        let mut state = setup();
+        let _p1 = create_ghostly_prison(&mut state, PlayerId(1));
+        let _p2 = create_ghostly_prison(&mut state, PlayerId(1));
+        let a1 = create_creature(&mut state, PlayerId(0), "A1", 2, 2);
+        let attacks = vec![(a1, AttackTarget::Player(PlayerId(1)))];
+        let (total, per_creature) = compute_attack_tax(&state, &attacks).expect("tax applies");
+        // One attacker × {2} × 2 prisons = {4}.
+        assert_eq!(total.mana_value(), 4);
+        assert_eq!(per_creature.len(), 1);
+        assert_eq!(per_creature[0].1.mana_value(), 4);
+    }
+
+    #[test]
+    fn compute_attack_tax_returns_none_when_no_static_applies() {
+        let mut state = setup();
+        let a1 = create_creature(&mut state, PlayerId(0), "A1", 2, 2);
+        let attacks = vec![(a1, AttackTarget::Player(PlayerId(1)))];
+        assert!(compute_attack_tax(&state, &attacks).is_none());
+    }
+
+    #[test]
+    fn compute_attack_tax_skips_own_creatures() {
+        let mut state = setup();
+        // Active player controls their own prison (hypothetical) — their own
+        // creatures shouldn't be filtered since `ControllerRef::Opponent` is
+        // relative to the static's controller (the active player).
+        let _prison = create_ghostly_prison(&mut state, PlayerId(0));
+        let a1 = create_creature(&mut state, PlayerId(0), "A1", 2, 2);
+        let attacks = vec![(a1, AttackTarget::Player(PlayerId(1)))];
+        // The static's controller (PlayerId(0)) is the attacker's controller;
+        // their creature is NOT an opponent's creature → filter doesn't match.
+        assert!(compute_attack_tax(&state, &attacks).is_none());
     }
 }

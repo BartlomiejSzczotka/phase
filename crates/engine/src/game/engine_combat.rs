@@ -1,6 +1,9 @@
 use crate::game::combat::{AttackTarget, DamageAssignment, DamageTarget, TrampleKind};
 use crate::types::events::GameEvent;
-use crate::types::game_state::{CombatDamageAssignmentMode, DamageSlot, GameState, WaitingFor};
+use crate::types::game_state::{
+    CombatDamageAssignmentMode, CombatTaxContext, CombatTaxPending, DamageSlot, GameState,
+    WaitingFor,
+};
 use crate::types::identifiers::ObjectId;
 use crate::types::phase::Phase;
 use crate::types::player::PlayerId;
@@ -19,6 +22,23 @@ pub(super) fn handle_declare_attackers(
 ) -> Result<WaitingFor, EngineError> {
     if state.active_player != player {
         return Err(EngineError::WrongPlayer);
+    }
+    // CR 508.1d + CR 508.1h: Enumerate UnlessPay static abilities (Ghostly Prison,
+    // Propaganda, Sphere of Safety, etc.) before tapping attackers. If any apply,
+    // pause the declaration so the active player can pay or decline the locked-in
+    // aggregate cost. The actual `declare_attackers` call (which taps creatures
+    // per CR 508.1f and populates CombatState) is deferred until the payment is
+    // accepted or declined.
+    if let Some((total_cost, per_creature)) = super::combat::compute_attack_tax(state, attacks) {
+        return Ok(WaitingFor::CombatTaxPayment {
+            player,
+            context: CombatTaxContext::Attacking,
+            total_cost,
+            per_creature,
+            pending: CombatTaxPending::Attack {
+                attacks: attacks.to_vec(),
+            },
+        });
     }
     super::combat::declare_attackers(state, attacks, events).map_err(EngineError::InvalidAction)?;
 
@@ -49,6 +69,148 @@ pub(super) fn handle_declare_blockers(
     assignments: &[(ObjectId, ObjectId)],
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    // CR 509.1c + CR 509.1d: Enumerate UnlessPay block-tax static abilities before
+    // finalizing the blocker declaration. Defending player pays or declines the
+    // locked-in total; on decline, taxed blockers are dropped from the assignment
+    // list (CR 509.1c: "that player is not required to pay that cost").
+    if let Some((total_cost, per_creature)) = super::combat::compute_block_tax(state, assignments) {
+        let defending_player = state
+            .combat
+            .as_ref()
+            .and_then(|c| c.attackers.first())
+            .map(|info| info.defending_player)
+            .unwrap_or_else(|| super::players::next_player(state, state.active_player));
+        return Ok(WaitingFor::CombatTaxPayment {
+            player: defending_player,
+            context: CombatTaxContext::Blocking,
+            total_cost,
+            per_creature,
+            pending: CombatTaxPending::Block {
+                assignments: assignments.to_vec(),
+            },
+        });
+    }
+    super::combat::declare_blockers(state, assignments, events)
+        .map_err(EngineError::InvalidAction)?;
+
+    triggers::process_triggers(state, events);
+    if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
+        return Ok(waiting_for);
+    }
+
+    priority::reset_priority(state);
+    Ok(WaitingFor::Priority {
+        player: state.active_player,
+    })
+}
+
+/// CR 508.1d + CR 508.1h + CR 509.1c + CR 509.1d: Resume a combat declaration after
+/// the combat-tax choice is made.
+///
+/// - `accept = true`: deduct the locked-in total via the shared mana-payment pipeline,
+///   then run the pending declaration with every creature intact (CR 508.1i–k:
+///   mana-abilities chance → pay costs → become attacking).
+/// - `accept = false`: drop the taxed creatures from the declaration and submit the
+///   remaining untaxed subset. If no creatures remain on the attack side, the engine
+///   ends combat via `handle_empty_attackers` (CR 508.8); on the block side, submit
+///   the filtered assignments.
+pub(super) fn handle_pay_combat_tax(
+    state: &mut GameState,
+    waiting_for: WaitingFor,
+    accept: bool,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    let WaitingFor::CombatTaxPayment {
+        player,
+        context,
+        total_cost,
+        per_creature,
+        pending,
+    } = waiting_for
+    else {
+        return Err(EngineError::InvalidAction(
+            "Not waiting for combat tax payment".to_string(),
+        ));
+    };
+
+    if accept {
+        // CR 508.1i–j / CR 509.1e–f: pay the locked-in total through the shared
+        // unless-cost mana path. Failures bubble up to the caller.
+        super::casting::pay_unless_cost(state, player, &total_cost, events)?;
+        events.push(GameEvent::CombatTaxPaid {
+            player,
+            total_mana_value: total_cost.mana_value(),
+        });
+        match pending {
+            CombatTaxPending::Attack { attacks } => {
+                return resume_declare_attackers(state, &attacks, events);
+            }
+            CombatTaxPending::Block { assignments } => {
+                return resume_declare_blockers(state, &assignments, events);
+            }
+        }
+    }
+
+    // Decline — filter the taxed creatures out of the pending declaration.
+    let taxed: std::collections::HashSet<ObjectId> =
+        per_creature.iter().map(|(id, _)| *id).collect();
+    match pending {
+        CombatTaxPending::Attack { attacks } => {
+            let filtered: Vec<(ObjectId, AttackTarget)> = attacks
+                .into_iter()
+                .filter(|(id, _)| !taxed.contains(id))
+                .collect();
+            events.push(GameEvent::CombatTaxDeclined {
+                player,
+                dropped: taxed.iter().copied().collect(),
+            });
+            resume_declare_attackers(state, &filtered, events)
+        }
+        CombatTaxPending::Block { assignments } => {
+            let filtered: Vec<(ObjectId, ObjectId)> = assignments
+                .into_iter()
+                .filter(|(blocker, _)| !taxed.contains(blocker))
+                .collect();
+            events.push(GameEvent::CombatTaxDeclined {
+                player,
+                dropped: taxed.iter().copied().collect(),
+            });
+            let _ = context; // suppresses unused in this branch; kept for symmetry
+            resume_declare_blockers(state, &filtered, events)
+        }
+    }
+}
+
+fn resume_declare_attackers(
+    state: &mut GameState,
+    attacks: &[(ObjectId, AttackTarget)],
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    if attacks.is_empty() {
+        // CR 508.8: No creatures declared as attackers — skip to end of combat.
+        return handle_empty_attackers(state, events);
+    }
+    super::combat::declare_attackers(state, attacks, events).map_err(EngineError::InvalidAction)?;
+
+    triggers::process_triggers(state, events);
+    if let Some(waiting_for) = begin_pending_trigger_target_selection(state)? {
+        return Ok(waiting_for);
+    }
+
+    priority::reset_priority(state);
+    Ok(WaitingFor::Priority {
+        player: state.active_player,
+    })
+}
+
+fn resume_declare_blockers(
+    state: &mut GameState,
+    assignments: &[(ObjectId, ObjectId)],
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    if assignments.is_empty() {
+        return handle_empty_blockers(state, events);
+    }
     super::combat::declare_blockers(state, assignments, events)
         .map_err(EngineError::InvalidAction)?;
 

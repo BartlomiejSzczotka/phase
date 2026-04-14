@@ -236,7 +236,8 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             | GameAction::PlayLand { .. }
             | GameAction::CastSpell { .. }
             | GameAction::CancelCast
-            | GameAction::PayUnlessCost { .. } => {
+            | GameAction::PayUnlessCost { .. }
+            | GameAction::PayCombatTax { .. } => {
                 state.lands_tapped_for_mana.remove(&player);
             }
             _ => {}
@@ -745,6 +746,16 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 pay,
                 &mut events,
             );
+        }
+        // CR 508.1d + CR 508.1h + CR 509.1c + CR 509.1d: Player decided whether to
+        // pay the locked-in combat tax. Resumes the paused attack/block declaration
+        // with the matching sanitization per the accept/decline branch.
+        (
+            waiting_for @ WaitingFor::CombatTaxPayment { .. },
+            GameAction::PayCombatTax { accept },
+        ) => {
+            triggers_processed_inline = true;
+            engine_combat::handle_pay_combat_tax(state, waiting_for.clone(), accept, &mut events)?
         }
         // Allow mana abilities during unless-payment choice (CR 118.12)
         (

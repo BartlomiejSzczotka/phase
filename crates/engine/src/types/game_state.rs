@@ -498,6 +498,32 @@ pub enum TargetSelectionConstraint {
     DifferentTargetPlayers,
 }
 
+/// CR 508.1d + CR 509.1c: Which combat step a `WaitingFor::CombatTaxPayment` belongs to.
+///
+/// Drives the resume branch after the tax decision — on accept, the engine submits the
+/// stored attacker / blocker declaration; on decline, the engine filters the taxed
+/// creatures out of that declaration and submits the remainder.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum CombatTaxContext {
+    Attacking,
+    Blocking,
+}
+
+/// CR 508.1d + CR 509.1c: The declaration that is paused awaiting a combat-tax
+/// decision. Keyed by `CombatTaxContext` — the engine resumes the matching
+/// variant on `GameAction::PayCombatTax`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum CombatTaxPending {
+    Attack {
+        attacks: Vec<(ObjectId, crate::game::combat::AttackTarget)>,
+    },
+    Block {
+        assignments: Vec<(ObjectId, ObjectId)>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PlayerDeckPool {
     pub player: PlayerId,
@@ -1106,6 +1132,28 @@ pub enum WaitingFor {
         current_targets: Vec<TargetRef>,
         legal_new_targets: Vec<TargetRef>,
     },
+    /// CR 508.1d + CR 508.1h + CR 509.1c + CR 509.1d: A combat declaration is paused
+    /// because one or more declared creatures are covered by "can't attack/block unless
+    /// [player] pays [cost]" static abilities (Ghostly Prison, Propaganda, Sphere of
+    /// Safety, Windborn Muse, etc.).
+    ///
+    /// CR 508.1h / 509.1d: `total_cost` is the "locked in" aggregate across all affected
+    /// creatures. `per_creature` exposes the breakdown so the UI (and AI policy) can
+    /// reason about which attackers/blockers the decline path would strip from the
+    /// declaration.
+    ///
+    /// On `GameAction::PayCombatTax { accept: true }` the engine pays `total_cost` and
+    /// resumes the declaration in `pending`. On `accept: false` the engine filters the
+    /// taxed creatures out of `pending` (or, if all declared creatures are taxed and the
+    /// controller declines, submits an empty declaration — CR 508.8 handles the "no
+    /// attackers" path).
+    CombatTaxPayment {
+        player: PlayerId,
+        context: CombatTaxContext,
+        total_cost: crate::types::mana::ManaCost,
+        per_creature: Vec<(ObjectId, crate::types::mana::ManaCost)>,
+        pending: CombatTaxPending,
+    },
 }
 
 /// CR 707.10c: A target slot on a copied spell, showing current target and alternatives.
@@ -1223,6 +1271,7 @@ impl WaitingFor {
             | WaitingFor::WardDiscardChoice { player, .. }
             | WaitingFor::WardSacrificeChoice { player, .. }
             | WaitingFor::ConniveDiscard { player, .. }
+            | WaitingFor::CombatTaxPayment { player, .. }
             | WaitingFor::DiscardChoice { player, .. } => Some(*player),
             WaitingFor::GameOver { .. } => None,
         }

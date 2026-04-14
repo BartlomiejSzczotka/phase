@@ -1071,7 +1071,13 @@ fn parse_unless_pay_condition(input: &str) -> OracleResult<'_, StaticCondition> 
     ))
     .parse(input)?;
     let (rest, cost) = parse_mana_cost(rest)?;
-    Ok((rest, StaticCondition::UnlessPay { cost }))
+    Ok((
+        rest,
+        StaticCondition::UnlessPay {
+            cost,
+            scaling: crate::types::ability::UnlessPayScaling::Flat,
+        },
+    ))
 }
 
 /// Parse an "unless" condition, wrapping the inner condition in `Not`.
@@ -1739,7 +1745,7 @@ mod tests {
         let (rest, c) = parse_inner_condition("you pay {2}").unwrap();
         assert_eq!(rest, "");
         match c {
-            StaticCondition::UnlessPay { cost } => {
+            StaticCondition::UnlessPay { cost, scaling } => {
                 assert_eq!(
                     cost,
                     ManaCost::Cost {
@@ -1747,6 +1753,7 @@ mod tests {
                         generic: 2
                     }
                 );
+                assert_eq!(scaling, crate::types::ability::UnlessPayScaling::Flat);
             }
             other => panic!("expected UnlessPay, got {other:?}"),
         }

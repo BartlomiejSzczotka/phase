@@ -1087,6 +1087,7 @@ impl GameRunner {
             WaitingFor::ClashCardPlacement { .. } => "ClashCardPlacement",
             WaitingFor::CategoryChoice { .. } => "CategoryChoice",
             WaitingFor::ChooseXValue { .. } => "ChooseXValue",
+            WaitingFor::CombatTaxPayment { .. } => "CombatTaxPayment",
         }
     }
 

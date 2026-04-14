@@ -28,6 +28,15 @@ pub fn classify(waiting_for: &WaitingFor, action: &GameAction) -> DecisionKind {
         | WaitingFor::DistributeAmong { .. } => DecisionKind::SelectTarget,
         WaitingFor::DeclareAttackers { .. } => DecisionKind::DeclareAttackers,
         WaitingFor::DeclareBlockers { .. } => DecisionKind::DeclareBlockers,
+        // CR 508.1d + CR 509.1c: Combat tax — route by context so the attack-tax
+        // policy sees `DeclareAttackers` candidates and the block-tax policy sees
+        // `DeclareBlockers` candidates.
+        WaitingFor::CombatTaxPayment { context, .. } => match context {
+            engine::types::game_state::CombatTaxContext::Attacking => {
+                DecisionKind::DeclareAttackers
+            }
+            engine::types::game_state::CombatTaxContext::Blocking => DecisionKind::DeclareBlockers,
+        },
         // Priority — dispatch on the action being scored.
         WaitingFor::Priority { .. } => match action {
             GameAction::PlayLand { .. } => DecisionKind::PlayLand,
