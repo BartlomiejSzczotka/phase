@@ -24,6 +24,7 @@ pub mod mulligan;
 mod plus_one_counters;
 mod ramp_timing;
 mod recursion_awareness;
+mod redundancy_avoidance;
 pub mod registry;
 mod sacrifice_value;
 mod spellslinger_casting;

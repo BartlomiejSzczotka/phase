@@ -21,6 +21,7 @@ use super::life_total_resource::LifeTotalResourcePolicy;
 use super::plus_one_counters::PlusOneCountersPolicy;
 use super::ramp_timing::RampTimingPolicy;
 use super::recursion_awareness::RecursionAwarenessPolicy;
+use super::redundancy_avoidance::RedundancyAvoidancePolicy;
 use super::sacrifice_value::SacrificeValuePolicy;
 use super::spellslinger_casting::SpellslingerCastingPolicy;
 use super::sweeper_timing::SweeperTimingPolicy;
@@ -62,6 +63,7 @@ pub enum PolicyId {
     CardAdvantage,
     LandfallTiming,
     RampTiming,
+    RedundancyAvoidance,
     KeepablesByLandCount,
     LandfallKeepablesMulligan,
     RampKeepablesMulligan,
@@ -189,6 +191,7 @@ impl Default for PolicyRegistry {
             Box::new(CardAdvantagePolicy),
             Box::new(LandfallTimingPolicy),
             Box::new(RampTimingPolicy),
+            Box::new(RedundancyAvoidancePolicy),
             Box::new(TribalLordPriorityPolicy),
             Box::new(HoldManaUpForInteractionPolicy),
             Box::new(SweeperTimingPolicy),
