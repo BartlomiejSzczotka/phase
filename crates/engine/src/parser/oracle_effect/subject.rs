@@ -1050,6 +1050,35 @@ fn build_restriction_clause(
 /// Parse restriction predicates into one or more `StaticMode` variants.
 /// Handles simple ("can't block") and compound ("can't attack or block") patterns.
 pub(crate) fn parse_restriction_modes(lower: &str) -> Option<Vec<StaticMode>> {
+    // CR 701.21: "~ can't be sacrificed" — prohibition on sacrifice.
+    if lower == "can't be sacrificed" || lower == "cannot be sacrificed" {
+        return Some(vec![StaticMode::Other("CantBeSacrificed".to_string())]);
+    }
+    // CR 702.5: "~ can't be enchanted [by other auras]" — aura attachment prohibition.
+    if lower == "can't be enchanted"
+        || lower == "cannot be enchanted"
+        || lower == "can't be enchanted by other auras"
+        || lower == "cannot be enchanted by other auras"
+    {
+        return Some(vec![StaticMode::Other("CantBeEnchanted".to_string())]);
+    }
+    // CR 702.6: "~ can't be equipped" — equipment attachment prohibition.
+    if lower == "can't be equipped" || lower == "cannot be equipped" {
+        return Some(vec![StaticMode::Other("CantBeEquipped".to_string())]);
+    }
+    // CR 701.3 + CR 702.5 + CR 702.6: "can't be equipped or enchanted" compound —
+    // binds to both attach-type prohibitions. Fortifications are excluded by the
+    // Oracle wording, so we do NOT emit CantBeAttached (which is a superset).
+    if lower == "can't be equipped or enchanted" || lower == "cannot be equipped or enchanted" {
+        return Some(vec![
+            StaticMode::Other("CantBeEquipped".to_string()),
+            StaticMode::Other("CantBeEnchanted".to_string()),
+        ]);
+    }
+    // CR 701.27: "~ can't transform" — prohibition on transform (e.g., Immerwolf).
+    if lower == "can't transform" || lower == "cannot transform" {
+        return Some(vec![StaticMode::Other("CantTransform".to_string())]);
+    }
     // Simple restrictions
     if lower == "can't block" || lower == "cannot block" {
         return Some(vec![StaticMode::CantBlock]);
@@ -1514,5 +1543,60 @@ mod tests {
         assert!(starts_with_subject_prefix(
             "any number of target creatures each get +1/+1"
         ));
+    }
+
+    // --- Group: prohibition-family restriction predicates ---
+    // Each test proves `parse_restriction_modes` emits the canonical
+    // `StaticMode::Other("...")` name(s) for the given predicate after
+    // subject stripping (e.g., "Creatures you control can't be sacrificed"
+    // reduces to the "can't be sacrificed" predicate here).
+
+    #[test]
+    fn parse_restriction_modes_cant_be_sacrificed() {
+        assert_eq!(
+            parse_restriction_modes("can't be sacrificed"),
+            Some(vec![StaticMode::Other("CantBeSacrificed".to_string())])
+        );
+    }
+
+    #[test]
+    fn parse_restriction_modes_cant_be_enchanted_variants() {
+        assert_eq!(
+            parse_restriction_modes("can't be enchanted"),
+            Some(vec![StaticMode::Other("CantBeEnchanted".to_string())])
+        );
+        assert_eq!(
+            parse_restriction_modes("can't be enchanted by other auras"),
+            Some(vec![StaticMode::Other("CantBeEnchanted".to_string())])
+        );
+    }
+
+    #[test]
+    fn parse_restriction_modes_cant_be_equipped() {
+        assert_eq!(
+            parse_restriction_modes("can't be equipped"),
+            Some(vec![StaticMode::Other("CantBeEquipped".to_string())])
+        );
+    }
+
+    #[test]
+    fn parse_restriction_modes_cant_be_equipped_or_enchanted_compound() {
+        // Compound phrase emits BOTH CantBeEquipped and CantBeEnchanted, in that order.
+        // CantBeAttached is intentionally NOT emitted (it includes Fortifications).
+        assert_eq!(
+            parse_restriction_modes("can't be equipped or enchanted"),
+            Some(vec![
+                StaticMode::Other("CantBeEquipped".to_string()),
+                StaticMode::Other("CantBeEnchanted".to_string()),
+            ])
+        );
+    }
+
+    #[test]
+    fn parse_restriction_modes_cant_transform() {
+        assert_eq!(
+            parse_restriction_modes("can't transform"),
+            Some(vec![StaticMode::Other("CantTransform".to_string())])
+        );
     }
 }

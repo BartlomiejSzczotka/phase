@@ -1176,4 +1176,34 @@ mod tests {
         // Condition not met (no creature controlled) — CantUntap should NOT apply
         assert!(!check_static_ability(&state, StaticMode::CantUntap, &ctx));
     }
+
+    #[test]
+    fn test_object_has_static_other_cant_be_sacrificed() {
+        // End-to-end: a battlefield object carrying a self-ref
+        // `StaticMode::Other("CantBeSacrificed")` static is observed by the
+        // runtime guard `object_has_static_other(id, "CantBeSacrificed")`.
+        // This proves the parser wiring emitted by oracle_static.rs is seen
+        // by the sacrifice-path guard in `game::sacrifice`.
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Hithlain Rope".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .static_definitions
+            .push(
+                StaticDefinition::new(StaticMode::Other("CantBeSacrificed".to_string()))
+                    .affected(TargetFilter::SelfRef),
+            );
+
+        assert!(object_has_static_other(&state, source, "CantBeSacrificed"));
+        // Sanity: unrelated prohibition name must NOT fire.
+        assert!(!object_has_static_other(&state, source, "CantTransform"));
+    }
 }

@@ -850,10 +850,57 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         );
     }
 
-    // --- "~ can't be sacrificed" ---
+    // --- "~ can't be sacrificed" (CR 701.21) ---
+    // Self-referential prohibition on sacrifice. Runtime enforcement lives in
+    // `game::sacrifice` via `object_has_static_other(state, id, "CantBeSacrificed")`.
     if nom_primitives::scan_contains(tp.lower, "can't be sacrificed") {
         return Some(
-            StaticDefinition::continuous()
+            StaticDefinition::new(StaticMode::Other("CantBeSacrificed".to_string()))
+                .affected(TargetFilter::SelfRef)
+                .description(text.to_string()),
+        );
+    }
+
+    // --- "~ can't be equipped or enchanted" (CR 701.3 + CR 702.5 + CR 702.6) ---
+    // Compound attach prohibition. MUST be scanned BEFORE the solo "can't be enchanted"
+    // and "can't be equipped" blocks below, otherwise the compound phrase falls through
+    // and only a single definition is emitted here (losing one half of the prohibition).
+    // The full two-definition form is produced by `parse_static_line_multi` so callers
+    // that iterate all statics on a line get both. Here we return the first mode so
+    // `parse_static_line` has a non-None answer for the self-ref case.
+    if nom_primitives::scan_contains(tp.lower, "can't be equipped or enchanted") {
+        return Some(
+            StaticDefinition::new(StaticMode::Other("CantBeEquipped".to_string()))
+                .affected(TargetFilter::SelfRef)
+                .description(text.to_string()),
+        );
+    }
+
+    // --- "~ can't be enchanted [by other auras]" (CR 702.5) ---
+    if nom_primitives::scan_contains(tp.lower, "can't be enchanted") {
+        return Some(
+            StaticDefinition::new(StaticMode::Other("CantBeEnchanted".to_string()))
+                .affected(TargetFilter::SelfRef)
+                .description(text.to_string()),
+        );
+    }
+
+    // --- "~ can't be equipped" (CR 702.6) ---
+    if nom_primitives::scan_contains(tp.lower, "can't be equipped") {
+        return Some(
+            StaticDefinition::new(StaticMode::Other("CantBeEquipped".to_string()))
+                .affected(TargetFilter::SelfRef)
+                .description(text.to_string()),
+        );
+    }
+
+    // --- "~ can't transform" (CR 701.27) ---
+    // Self-referential transform prohibition (e.g., Immerwolf for non-Human Werewolves).
+    // Runtime enforcement lives in `game::transform` via
+    // `object_has_static_other(state, id, "CantTransform")`.
+    if nom_primitives::scan_contains(tp.lower, "can't transform") {
+        return Some(
+            StaticDefinition::new(StaticMode::Other("CantTransform".to_string()))
                 .affected(TargetFilter::SelfRef)
                 .description(text.to_string()),
         );
@@ -1094,6 +1141,21 @@ pub fn parse_static_line(text: &str) -> Option<StaticDefinition> {
         );
     }
 
+    // --- "can't play lands" (CR 305.1) ---
+    // CR 305.1: A player may play a land card from their hand during a main phase
+    // of their turn when the stack is empty. Static effects can prohibit this.
+    // Runtime enforcement lives via `player_has_static_other(state, pid, "CantPlayLand")`.
+    if nom_primitives::scan_contains(tp.lower, "can't play lands")
+        || nom_primitives::scan_contains(tp.lower, "cannot play lands")
+    {
+        let affected = parse_player_scope_filter(&tp);
+        return Some(
+            StaticDefinition::new(StaticMode::Other("CantPlayLand".to_string()))
+                .affected(affected)
+                .description(text.to_string()),
+        );
+    }
+
     // --- "can't win the game" / "can't lose the game" (CR 104.3a/b) ---
     if nom_primitives::scan_contains(tp.lower, "can't win the game") {
         let affected = parse_player_scope_filter(&tp);
@@ -1200,6 +1262,20 @@ pub fn parse_static_line_multi(text: &str) -> Vec<StaticDefinition> {
     // Check compound must-attack/block first — may return multiple.
     if let Some(defs) = try_parse_scoped_must_attack_block(&lower, &stripped) {
         return defs;
+    }
+
+    // CR 701.3 + CR 702.5 + CR 702.6: Compound "can't be equipped or enchanted"
+    // produces two static definitions (CantBeEquipped + CantBeEnchanted). Fortifications
+    // are intentionally excluded by the Oracle wording, so CantBeAttached is NOT emitted.
+    if nom_primitives::scan_contains(&lower, "can't be equipped or enchanted") {
+        return vec![
+            StaticDefinition::new(StaticMode::Other("CantBeEquipped".to_string()))
+                .affected(TargetFilter::SelfRef)
+                .description(stripped.to_string()),
+            StaticDefinition::new(StaticMode::Other("CantBeEnchanted".to_string()))
+                .affected(TargetFilter::SelfRef)
+                .description(stripped.to_string()),
+        ];
     }
 
     // CR 602.5: Compound "can't attack/block" + "activated abilities can't be activated"
@@ -6097,8 +6173,15 @@ mod tests {
 
     #[test]
     fn static_cant_be_sacrificed() {
+        // CR 701.21: Self-referential sacrifice prohibition emits the canonical
+        // `StaticMode::Other("CantBeSacrificed")` so the runtime guard in
+        // `game::sacrifice` (`object_has_static_other(id, "CantBeSacrificed")`)
+        // can observe it.
         let def = parse_static_line("Sigarda, Host of Herons can't be sacrificed.").unwrap();
-        assert_eq!(def.mode, StaticMode::Continuous);
+        assert_eq!(
+            def.mode,
+            StaticMode::Other("CantBeSacrificed".to_string())
+        );
         assert!(def.description.is_some());
     }
 
@@ -9636,5 +9719,86 @@ mod tests {
             }
             other => panic!("Expected Some(Typed filter), got {other:?}"),
         }
+    }
+
+    // --- Group: Prohibition-family statics (CR 305.1, 701.21, 701.27, 702.5, 702.6) ---
+    // Each test proves that `parse_static_line` / `parse_static_line_multi` emits the
+    // canonical `StaticMode::Other("...")` name so the corresponding runtime guard in
+    // the engine (e.g., `object_has_static_other(id, "CantBeSacrificed")`) can observe it.
+
+    #[test]
+    fn static_cant_be_sacrificed_self_ref() {
+        // CR 701.21: Hithlain Rope — "This artifact can't be sacrificed."
+        let def = parse_static_line("This artifact can't be sacrificed.").unwrap();
+        assert_eq!(def.mode, StaticMode::Other("CantBeSacrificed".to_string()));
+        assert_eq!(def.affected, Some(TargetFilter::SelfRef));
+    }
+
+    #[test]
+    fn static_cant_be_enchanted_self_ref() {
+        // CR 702.5: Anti-Magic Aura variant — "This creature can't be enchanted by other Auras."
+        let def = parse_static_line("This creature can't be enchanted by other Auras.").unwrap();
+        assert_eq!(def.mode, StaticMode::Other("CantBeEnchanted".to_string()));
+        assert_eq!(def.affected, Some(TargetFilter::SelfRef));
+    }
+
+    #[test]
+    fn static_cant_be_equipped_self_ref() {
+        // CR 702.6: Goblin Brawler — "This creature can't be equipped."
+        let def = parse_static_line("This creature can't be equipped.").unwrap();
+        assert_eq!(def.mode, StaticMode::Other("CantBeEquipped".to_string()));
+        assert_eq!(def.affected, Some(TargetFilter::SelfRef));
+    }
+
+    #[test]
+    fn static_cant_be_equipped_or_enchanted_compound_multi() {
+        // CR 701.3 + CR 702.5 + CR 702.6: The compound phrase must emit BOTH
+        // CantBeEquipped and CantBeEnchanted. Fortifications are excluded by wording,
+        // so CantBeAttached must NOT be emitted.
+        let defs = parse_static_line_multi("This creature can't be equipped or enchanted.");
+        let modes: Vec<_> = defs.iter().map(|d| d.mode.clone()).collect();
+        assert!(
+            modes.contains(&StaticMode::Other("CantBeEquipped".to_string())),
+            "expected CantBeEquipped in {modes:?}"
+        );
+        assert!(
+            modes.contains(&StaticMode::Other("CantBeEnchanted".to_string())),
+            "expected CantBeEnchanted in {modes:?}"
+        );
+        assert!(
+            !modes.contains(&StaticMode::Other("CantBeAttached".to_string())),
+            "CantBeAttached is a superset and must not be emitted"
+        );
+    }
+
+    #[test]
+    fn static_cant_transform_self_ref() {
+        // CR 701.27: Immerwolf-style "non-Human Werewolves you control can't transform"
+        // after subject-stripping reduces to the self-ref form in parse_static_line.
+        let def = parse_static_line("This creature can't transform.").unwrap();
+        assert_eq!(def.mode, StaticMode::Other("CantTransform".to_string()));
+        assert_eq!(def.affected, Some(TargetFilter::SelfRef));
+    }
+
+    #[test]
+    fn static_cant_play_lands_you() {
+        // CR 305.1: Aggressive Mining — "You can't play lands."
+        let def = parse_static_line("You can't play lands.").unwrap();
+        assert_eq!(def.mode, StaticMode::Other("CantPlayLand".to_string()));
+        assert!(
+            def.affected.is_some(),
+            "affected player-scope filter required"
+        );
+    }
+
+    #[test]
+    fn static_cant_play_lands_players() {
+        // CR 305.1: Worms of the Earth — "Players can't play lands."
+        let def = parse_static_line("Players can't play lands.").unwrap();
+        assert_eq!(def.mode, StaticMode::Other("CantPlayLand".to_string()));
+        assert!(
+            def.affected.is_some(),
+            "affected player-scope filter required"
+        );
     }
 }
