@@ -74,10 +74,7 @@ pub(super) fn resume_pending_continuation_if_priority(
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EngineError> {
     if matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-        if let Some(continuation) = state.pending_continuation.take() {
-            effects::resolve_ability_chain(state, &continuation, events, 0)
-                .map_err(|e| EngineError::InvalidAction(format!("{e:?}")))?;
-        }
+        effects::drain_pending_continuation(state, events);
     }
     Ok(())
 }
@@ -1313,9 +1310,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             });
             state.waiting_for = WaitingFor::Priority { player: p };
             state.priority_player = p;
-            if let Some(cont) = state.pending_continuation.take() {
-                let _ = effects::resolve_ability_chain(state, &cont, &mut events, 0);
-            }
+            effects::drain_pending_continuation(state, &mut events);
             state.waiting_for.clone()
         }
         // CR 707.10c: Copy retarget — player chose new targets for the copy.
@@ -1348,9 +1343,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             });
             state.waiting_for = WaitingFor::Priority { player: p };
             state.priority_player = p;
-            if let Some(cont) = state.pending_continuation.take() {
-                let _ = effects::resolve_ability_chain(state, &cont, &mut events, 0);
-            }
+            effects::drain_pending_continuation(state, &mut events);
             state.waiting_for.clone()
         }
         // CR 510.1c/d: Combat damage assignment from attacker to blockers.
@@ -1454,9 +1447,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 // Resolution-time distribution (triggered ability path).
                 state.waiting_for = WaitingFor::Priority { player: p };
                 state.priority_player = p;
-                if let Some(cont) = state.pending_continuation.take() {
-                    let _ = effects::resolve_ability_chain(state, &cont, &mut events, 0);
-                }
+                effects::drain_pending_continuation(state, &mut events);
                 state.waiting_for.clone()
             }
         }
@@ -1503,9 +1494,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             });
             state.waiting_for = WaitingFor::Priority { player: p };
             state.priority_player = p;
-            if let Some(cont) = state.pending_continuation.take() {
-                let _ = effects::resolve_ability_chain(state, &cont, &mut events, 0);
-            }
+            effects::drain_pending_continuation(state, &mut events);
             state.waiting_for.clone()
         }
         (waiting, action) => {
@@ -4977,15 +4966,17 @@ mod tests {
         );
 
         // Pre-set pending_continuation to verify it's consumed normally
-        state.pending_continuation = Some(Box::new(ResolvedAbility::new(
-            Effect::GainLife {
-                amount: QuantityExpr::Fixed { value: 1 },
-                player: crate::types::ability::GainLifePlayer::Controller,
-            },
-            vec![],
-            source,
-            PlayerId(0),
-        )));
+        state.pending_continuation = Some(crate::types::game_state::PendingContinuation::new(
+            Box::new(ResolvedAbility::new(
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                    player: crate::types::ability::GainLifePlayer::Controller,
+                },
+                vec![],
+                source,
+                PlayerId(0),
+            )),
+        ));
 
         let learn_ability = ResolvedAbility::new(Effect::Learn, vec![], source, PlayerId(0));
         let mut events = Vec::new();
@@ -7129,15 +7120,17 @@ mod phase_trigger_regression_tests {
             enters_attacking: false,
             owner_library: false,
         };
-        state.pending_continuation = Some(Box::new(ResolvedAbility::new(
-            Effect::GainLife {
-                amount: QuantityExpr::Fixed { value: 2 },
-                player: crate::types::ability::GainLifePlayer::Controller,
-            },
-            vec![],
-            source_id,
-            PlayerId(0),
-        )));
+        state.pending_continuation = Some(crate::types::game_state::PendingContinuation::new(
+            Box::new(ResolvedAbility::new(
+                Effect::GainLife {
+                    amount: QuantityExpr::Fixed { value: 2 },
+                    player: crate::types::ability::GainLifePlayer::Controller,
+                },
+                vec![],
+                source_id,
+                PlayerId(0),
+            )),
+        ));
 
         let result = apply(
             &mut state,

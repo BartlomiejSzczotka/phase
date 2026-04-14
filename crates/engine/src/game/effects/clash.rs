@@ -1,6 +1,6 @@
 use crate::types::ability::{EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::{ClashResult, GameEvent};
-use crate::types::game_state::{GameState, WaitingFor};
+use crate::types::game_state::{GameState, PendingContinuation, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
 
@@ -84,7 +84,7 @@ pub fn resolve(
     // redundant sub_ability processing.
     let stash_sub = |state: &mut GameState| {
         if let Some(sub) = original_sub {
-            state.pending_continuation = Some(Box::new(sub));
+            state.pending_continuation = Some(PendingContinuation::new(Box::new(sub)));
         }
     };
 

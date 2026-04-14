@@ -3,7 +3,7 @@ use crate::game::quantity::resolve_quantity;
 use crate::types::ability::{Effect, EffectError, EffectKind, QuantityExpr, ResolvedAbility};
 use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
-use crate::types::game_state::{GameState, WaitingFor};
+use crate::types::game_state::{GameState, PendingContinuation, WaitingFor};
 use crate::types::identifiers::ObjectId;
 
 /// CR 701.39a: Bolster N.
@@ -89,7 +89,7 @@ pub fn resolve(
             controller,
         );
 
-        state.pending_continuation = Some(Box::new(continuation));
+        state.pending_continuation = Some(PendingContinuation::new(Box::new(continuation)));
         state.waiting_for = WaitingFor::ChooseFromZoneChoice {
             player: controller,
             cards: tied,

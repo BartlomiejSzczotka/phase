@@ -1,7 +1,7 @@
 use crate::game::filter;
 use crate::types::ability::{AbilityCondition, Effect, EffectKind, TargetRef, UnlessCost};
 use crate::types::events::GameEvent;
-use crate::types::game_state::{ActionResult, GameState, WaitingFor};
+use crate::types::game_state::{ActionResult, GameState, PendingContinuation, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::zones::Zone;
 
@@ -102,7 +102,7 @@ pub(super) fn handle_opponent_may_choice(
             if let Some(legal) = target_selection {
                 if !legal.is_empty() {
                     if let Some(sub) = ability.sub_ability.take() {
-                        state.pending_continuation = Some(sub);
+                        state.pending_continuation = Some(PendingContinuation::new(sub));
                     }
                     state.waiting_for = WaitingFor::MultiTargetSelection {
                         player: promptee,

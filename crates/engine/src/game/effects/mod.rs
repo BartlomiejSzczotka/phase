@@ -3,12 +3,12 @@ use std::borrow::Cow;
 use crate::game::filter;
 use crate::game::speed::has_max_speed;
 use crate::types::ability::{
-    AbilityCondition, AbilityKind, ControllerRef, Effect, EffectError, FilterProp, PlayerFilter,
-    QuantityExpr, QuantityRef, ResolvedAbility, SharedQuality, TargetFilter, TargetRef, TypeFilter,
-    UnlessCost,
+    AbilityCondition, AbilityKind, ControllerRef, Effect, EffectError, EffectKind, FilterProp,
+    PlayerFilter, QuantityExpr, QuantityRef, ResolvedAbility, SharedQuality, TargetFilter,
+    TargetRef, TypeFilter, UnlessCost,
 };
 use crate::types::events::GameEvent;
-use crate::types::game_state::{GameState, WaitingFor};
+use crate::types::game_state::{GameState, PendingContinuation, WaitingFor};
 use crate::types::identifiers::{ObjectId, TrackedSetId};
 use crate::types::mana::ManaCost;
 use crate::types::player::PlayerId;
@@ -149,6 +149,38 @@ fn matches_player_scope(
         })
 }
 
+/// Record the outer effect's `EffectKind` on the current `pending_continuation`
+/// so the drain re-emits the parent `EffectResolved` event that the non-pause
+/// tail of the resolver would have emitted. Must be called after
+/// `append_to_pending_continuation` has stashed the chain — if no continuation
+/// has been stashed the parent event is dropped (the chain is the carrier).
+pub(crate) fn mark_pending_continuation_parent(state: &mut GameState, kind: EffectKind) {
+    if let Some(cont) = state.pending_continuation.as_mut() {
+        cont.parent_kind = Some(kind);
+    }
+}
+
+/// Drain `state.pending_continuation`: resolve the stashed chain, then emit
+/// the stashed parent `EffectResolved` event (if any) so trigger matchers
+/// keyed on the outer effect's kind (`EffectKind::Fight`, `DamageAll`,
+/// `DamageEachPlayer`, etc.) fire the same way they do on the non-pause
+/// path. Safe to call when no continuation is pending (no-op).
+///
+/// All `pending_continuation.take()` sites should use this helper rather
+/// than rolling their own `take + resolve_ability_chain`, so the parent
+/// event is never silently dropped.
+pub(crate) fn drain_pending_continuation(state: &mut GameState, events: &mut Vec<GameEvent>) {
+    let Some(cont) = state.pending_continuation.take() else {
+        return;
+    };
+    let PendingContinuation { chain, parent_kind } = cont;
+    let source_id = chain.source_id;
+    let _ = resolve_ability_chain(state, &chain, events, 0);
+    if let Some(kind) = parent_kind {
+        events.push(GameEvent::EffectResolved { kind, source_id });
+    }
+}
+
 pub(crate) fn append_to_pending_continuation(
     state: &mut GameState,
     tail: Option<Box<ResolvedAbility>>,
@@ -158,7 +190,7 @@ pub(crate) fn append_to_pending_continuation(
     };
 
     if let Some(existing) = state.pending_continuation.as_mut() {
-        let mut cursor = existing.as_mut();
+        let mut cursor = existing.chain.as_mut();
         let tail = Some(tail);
         loop {
             if cursor.sub_ability.is_none() {
@@ -172,7 +204,7 @@ pub(crate) fn append_to_pending_continuation(
                 .as_mut();
         }
     } else {
-        state.pending_continuation = Some(tail);
+        state.pending_continuation = Some(PendingContinuation::new(tail));
     }
 }
 
@@ -928,7 +960,8 @@ pub fn resolve_ability_chain(
                             state.pending_continuation.is_none(),
                             "pending_continuation overwritten before consumption — else_ability chain will be lost"
                         );
-                        state.pending_continuation = Some(Box::new(resolved));
+                        state.pending_continuation =
+                            Some(PendingContinuation::new(Box::new(resolved)));
                     } else {
                         resolve_ability_chain(state, &resolved, events, depth + 1)?;
                     }
@@ -954,7 +987,8 @@ pub fn resolve_ability_chain(
                             state.pending_continuation.is_none(),
                             "pending_continuation overwritten before consumption — else_ability chain will be lost"
                         );
-                        state.pending_continuation = Some(Box::new(resolved));
+                        state.pending_continuation =
+                            Some(PendingContinuation::new(Box::new(resolved)));
                     } else {
                         resolve_ability_chain(state, &resolved, events, depth + 1)?;
                     }
@@ -1090,7 +1124,7 @@ pub fn resolve_ability_chain(
                 state.pending_continuation.is_none(),
                 "pending_continuation overwritten before consumption — sub_ability chain will be lost"
             );
-            state.pending_continuation = Some(Box::new(sub_clone));
+            state.pending_continuation = Some(PendingContinuation::new(Box::new(sub_clone)));
             return Ok(());
         }
 

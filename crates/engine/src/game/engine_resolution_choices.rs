@@ -4,7 +4,7 @@ use crate::types::ability::{
 };
 use crate::types::actions::{GameAction, LearnOption};
 use crate::types::events::GameEvent;
-use crate::types::game_state::{ActionResult, GameState, WaitingFor};
+use crate::types::game_state::{ActionResult, GameState, PendingContinuation, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::zones::Zone;
 
@@ -165,7 +165,7 @@ pub(super) fn handle_resolution_choice(
                             state.pending_continuation.is_none(),
                             "Learn rummage overwriting pending_continuation"
                         );
-                        state.pending_continuation = Some(Box::new(draw));
+                        state.pending_continuation = Some(PendingContinuation::new(Box::new(draw)));
                         events.push(GameEvent::EffectResolved {
                             kind: EffectKind::Learn,
                             source_id: ObjectId(0),
@@ -364,10 +364,10 @@ pub(super) fn handle_resolution_choice(
             }
 
             set_priority(state, player);
-            if let Some(mut cont) = state.pending_continuation.take() {
-                cont.targets = vec![TargetRef::Object(chosen_id)];
-                let _ = effects::resolve_ability_chain(state, &cont, events, 0);
+            if let Some(cont) = state.pending_continuation.as_mut() {
+                cont.chain.targets = vec![TargetRef::Object(chosen_id)];
             }
+            effects::drain_pending_continuation(state, events);
             ResolutionChoiceOutcome::WaitingFor(state.waiting_for.clone())
         }
         (
@@ -413,10 +413,10 @@ pub(super) fn handle_resolution_choice(
             }
 
             set_priority(state, player);
-            if let Some(mut cont) = state.pending_continuation.take() {
-                cont.targets = chosen.iter().map(|&id| TargetRef::Object(id)).collect();
-                let _ = effects::resolve_ability_chain(state, &cont, events, 0);
+            if let Some(cont) = state.pending_continuation.as_mut() {
+                cont.chain.targets = chosen.iter().map(|&id| TargetRef::Object(id)).collect();
             }
+            effects::drain_pending_continuation(state, events);
             ResolutionChoiceOutcome::WaitingFor(state.waiting_for.clone())
         }
         (
@@ -465,17 +465,19 @@ pub(super) fn handle_resolution_choice(
                 .filter(|id| !chosen.contains(id))
                 .copied()
                 .collect();
-            if let Some(mut cont) = state.pending_continuation.take() {
-                let controller = cont.controller;
-                set_priority(state, controller);
-                cont.targets = chosen.iter().map(|&id| TargetRef::Object(id)).collect();
-                if let Some(ref mut next_sub) = cont.sub_ability {
+            let priority_player = state
+                .pending_continuation
+                .as_ref()
+                .map(|cont| cont.chain.controller)
+                .unwrap_or(player);
+            set_priority(state, priority_player);
+            if let Some(cont) = state.pending_continuation.as_mut() {
+                cont.chain.targets = chosen.iter().map(|&id| TargetRef::Object(id)).collect();
+                if let Some(ref mut next_sub) = cont.chain.sub_ability {
                     next_sub.targets = unchosen.iter().map(|&id| TargetRef::Object(id)).collect();
                 }
-                let _ = effects::resolve_ability_chain(state, &cont, events, 0);
-            } else {
-                set_priority(state, player);
             }
+            effects::drain_pending_continuation(state, events);
             ResolutionChoiceOutcome::WaitingFor(state.waiting_for.clone())
         }
         (
@@ -853,8 +855,8 @@ pub(super) fn handle_resolution_choice(
                         events,
                     )?;
                 }
-            } else if let Some(cont) = state.pending_continuation.take() {
-                let _ = effects::resolve_ability_chain(state, &cont, events, 0);
+            } else {
+                effects::drain_pending_continuation(state, events);
             }
             state.last_named_choice = None;
             ResolutionChoiceOutcome::WaitingFor(state.waiting_for.clone())
@@ -1037,9 +1039,7 @@ fn finish_with_continuation(
     events: &mut Vec<GameEvent>,
 ) -> WaitingFor {
     set_priority(state, player);
-    if let Some(cont) = state.pending_continuation.take() {
-        let _ = effects::resolve_ability_chain(state, &cont, events, 0);
-    }
+    effects::drain_pending_continuation(state, events);
     state.waiting_for.clone()
 }
 

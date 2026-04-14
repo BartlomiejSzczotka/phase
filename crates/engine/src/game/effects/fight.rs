@@ -1,6 +1,6 @@
 use crate::game::ability_utils::append_to_sub_chain;
-use crate::game::effects::append_to_pending_continuation;
 use crate::game::effects::deal_damage::{apply_damage_to_target, DamageContext, DamageResult};
+use crate::game::effects::{append_to_pending_continuation, mark_pending_continuation_parent};
 use crate::types::ability::{
     Effect, EffectError, EffectKind, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef,
 };
@@ -116,6 +116,11 @@ pub fn resolve(
             } else if let Some(sub) = ability.sub_ability.as_ref() {
                 append_to_pending_continuation(state, Some(Box::new(sub.as_ref().clone())));
             }
+            // CR 701.14a: Tag the stashed chain with the parent `EffectKind::Fight`
+            // so the drain re-emits the parent `EffectResolved` that the non-pause
+            // tail (line ~154) fires. "When a creature fights" triggers in
+            // `trigger_matchers.rs::match_fight` key on this event.
+            mark_pending_continuation_parent(state, EffectKind::Fight);
             return Ok(());
         }
     }
@@ -137,6 +142,13 @@ pub fn resolve(
             if let Some(sub) = ability.sub_ability.as_ref() {
                 append_to_pending_continuation(state, Some(Box::new(sub.as_ref().clone())));
             }
+            // CR 701.14a: Tag the stashed chain (the sub_ability, if any) with the
+            // parent `EffectKind::Fight` so the drain re-emits the parent event the
+            // non-pause tail (line ~154) fires. If there is no sub_ability the chain
+            // is absent and the parent event cannot ride anything out — the replacement
+            // delivery still resolves the fight's second direction, but fight triggers
+            // are lost in that corner case (a 0-power fighter with no follow-up sub).
+            mark_pending_continuation_parent(state, EffectKind::Fight);
             return Ok(());
         }
     }
@@ -388,7 +400,7 @@ mod tests {
             .as_ref()
             .expect("expected pending_continuation for second-direction fight damage");
         // Continuation is a single-target DealDamage from wolf to bear.
-        match &cont.effect {
+        match &cont.chain.effect {
             Effect::DealDamage {
                 amount: QuantityExpr::Fixed { value },
                 ..
@@ -398,10 +410,15 @@ mod tests {
             other => panic!("expected DealDamage continuation, got {other:?}"),
         }
         assert_eq!(
-            cont.source_id, wolf,
+            cont.chain.source_id, wolf,
             "wolf deals the second-direction damage"
         );
-        assert_eq!(cont.targets, vec![TargetRef::Object(bear)]);
+        assert_eq!(cont.chain.targets, vec![TargetRef::Object(bear)]);
+        assert_eq!(
+            cont.parent_kind,
+            Some(EffectKind::Fight),
+            "fight pause must record parent kind so the drain re-emits the Fight event",
+        );
         // Bear hasn't taken damage yet — second direction is still pending.
         assert_eq!(state.objects[&bear].damage_marked, 0);
     }
@@ -462,7 +479,9 @@ mod tests {
         };
 
         // Accept the replacement for bear → wolf (first direction).
-        apply(&mut state, GameAction::ChooseReplacement { index: 0 }).expect("accept replacement");
+        let result = apply(&mut state, GameAction::ChooseReplacement { index: 0 })
+            .expect("accept replacement");
+        let mut all_events = result.events;
 
         // First direction must have landed (previously this was silently dropped).
         assert_eq!(
@@ -473,8 +492,9 @@ mod tests {
         // The continuation (wolf → bear) also triggers the Optional Shield replacement.
         // Accept it so the second direction lands.
         if matches!(state.waiting_for, WaitingFor::ReplacementChoice { .. }) {
-            apply(&mut state, GameAction::ChooseReplacement { index: 0 })
+            let result = apply(&mut state, GameAction::ChooseReplacement { index: 0 })
                 .expect("accept second-direction replacement");
+            all_events.extend(result.events);
         }
 
         assert_eq!(
@@ -484,6 +504,29 @@ mod tests {
         assert!(
             state.pending_continuation.is_none(),
             "continuation must be consumed"
+        );
+
+        // CR 701.14a: The parent `EffectKind::Fight` event must be emitted on the
+        // pause-and-resume path so "when a creature fights" triggers (see
+        // `trigger_matchers.rs::match_fight`) fire the same way they do on the
+        // non-pause tail. Without parent_kind on PendingContinuation, the drain
+        // would emit only per-node DealDamage events and the Fight event would
+        // be silently lost.
+        let fight_events = all_events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    GameEvent::EffectResolved {
+                        kind: EffectKind::Fight,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            fight_events, 1,
+            "exactly one EffectKind::Fight event must fire across the pause-and-resume path; got events = {all_events:#?}",
         );
     }
 }

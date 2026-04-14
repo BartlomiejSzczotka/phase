@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 
 use crate::game::ability_utils::append_to_sub_chain;
-use crate::game::effects::append_to_pending_continuation;
+use crate::game::effects::{append_to_pending_continuation, mark_pending_continuation_parent};
 use crate::game::filter;
 use crate::game::keywords;
 use crate::game::quantity::resolve_quantity_with_targets;
@@ -513,6 +513,9 @@ pub fn resolve_all(
                     .iter()
                     .map(|&id| (TargetRef::Object(id), num_dmg));
                 stash_remaining_damage_chain(state, ability, ctx.source_id, remaining);
+                // Tag the stashed chain with the parent `EffectKind::DamageAll` so the
+                // drain re-emits the parent event the non-pause tail fires.
+                mark_pending_continuation_parent(state, EffectKind::DamageAll);
                 return Ok(());
             }
         }
@@ -615,6 +618,9 @@ pub fn resolve_each_player(
                         })
                         .collect();
                     stash_remaining_damage_chain(state, ability, ctx.source_id, remaining);
+                    // Tag the stashed chain with the parent `EffectKind::DamageEachPlayer`
+                    // so the drain re-emits the parent event the non-pause tail fires.
+                    mark_pending_continuation_parent(state, EffectKind::DamageEachPlayer);
                     return Ok(());
                 }
             }
@@ -635,6 +641,7 @@ mod tests {
     use crate::game::zones::create_object;
     use crate::types::ability::{QuantityExpr, TargetFilter, TypedFilter};
     use crate::types::card_type::CoreType;
+    use crate::types::game_state::WaitingFor;
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
     use crate::types::zones::Zone;
@@ -1406,7 +1413,7 @@ mod tests {
             .expect("expected pending_continuation for remaining batch targets");
 
         // Every remaining creature must be encoded as its own chain node.
-        let summary = collect_chain_summary(cont);
+        let summary = collect_chain_summary(&cont.chain);
         assert_eq!(
             summary.len(),
             2,
@@ -1458,7 +1465,7 @@ mod tests {
             .as_ref()
             .expect("expected pending_continuation for remaining-player damage");
 
-        let summary = collect_chain_summary(cont);
+        let summary = collect_chain_summary(&cont.chain);
         assert_eq!(
             summary.len(),
             1,
@@ -1520,9 +1527,191 @@ mod tests {
             .pending_continuation
             .as_ref()
             .expect("expected pending_continuation for remaining multi-target damage");
-        let summary = collect_chain_summary(cont);
+        let summary = collect_chain_summary(&cont.chain);
         assert_eq!(summary.len(), 1, "one remaining target; got {summary:?}");
         assert_eq!(summary[0].1, TargetRef::Object(b));
         assert_eq!(summary[0].2, 1);
+    }
+
+    /// CR 120.3: DamageAll paused mid-resolution by a replacement proposal must
+    /// re-emit `EffectKind::DamageAll` after the drain so trigger matchers keyed
+    /// on the parent kind observe the event on the pause-and-resume path the
+    /// same way they do on the non-pause tail.
+    #[test]
+    fn damage_all_replacement_accepted_emits_parent_effect_resolved() {
+        use crate::game::engine::apply;
+        use crate::types::actions::GameAction;
+
+        let mut state = GameState::new_two_player(1);
+        // Two creatures on the battlefield so DamageAll has at least one
+        // follow-up target queued behind the paused first target.
+        let grizzly = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Grizzly".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&grizzly)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let ogre = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Ogre".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&ogre)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        // Single-use Optional DamageDone replacement — the first damage event
+        // surfaces a ReplacementChoice prompt.
+        install_optional_damage_replacement(&mut state);
+
+        state.priority_player = PlayerId(0);
+        state.active_player = PlayerId(0);
+
+        // "Deal 1 damage to each creature".
+        let ability = ResolvedAbility::new(
+            Effect::DamageAll {
+                amount: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![crate::types::ability::TypeFilter::Creature],
+                    controller: None,
+                    properties: vec![],
+                }),
+            },
+            vec![],
+            ogre,
+            PlayerId(0),
+        );
+
+        let mut events = Vec::new();
+        resolve_all(&mut state, &ability, &mut events).expect("DamageAll initial resolve");
+
+        assert_eq!(
+            state
+                .pending_continuation
+                .as_ref()
+                .and_then(|c| c.parent_kind),
+            Some(EffectKind::DamageAll),
+            "the stashed continuation must carry EffectKind::DamageAll so the drain re-emits the parent event",
+        );
+        assert!(matches!(
+            state.waiting_for,
+            WaitingFor::ReplacementChoice { .. }
+        ));
+
+        // Accept the replacement — the drain resolves the chain and emits DamageAll.
+        let result = apply(&mut state, GameAction::ChooseReplacement { index: 0 })
+            .expect("accept DamageAll replacement");
+        let damage_all_events = result
+            .events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    GameEvent::EffectResolved {
+                        kind: EffectKind::DamageAll,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            damage_all_events, 1,
+            "DamageAll parent event must fire exactly once on pause-and-resume; got events = {:#?}",
+            result.events,
+        );
+        assert!(
+            state.pending_continuation.is_none(),
+            "continuation must be consumed after drain"
+        );
+    }
+
+    /// CR 120.3: DamageEachPlayer paused mid-resolution by a replacement must
+    /// re-emit `EffectKind::DamageEachPlayer` after the drain.
+    #[test]
+    fn damage_each_player_replacement_accepted_emits_parent_effect_resolved() {
+        use crate::game::engine::apply;
+        use crate::types::ability::PlayerFilter;
+        use crate::types::actions::GameAction;
+
+        let mut state = GameState::new_two_player(2);
+        state.priority_player = PlayerId(0);
+        state.active_player = PlayerId(0);
+
+        // Optional DamageDone shield — first player damaged in APNAP order
+        // surfaces a ReplacementChoice prompt.
+        install_optional_damage_replacement(&mut state);
+
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Source".to_string(),
+            Zone::Battlefield,
+        );
+        let ability = ResolvedAbility::new(
+            Effect::DamageEachPlayer {
+                amount: QuantityExpr::Fixed { value: 1 },
+                player_filter: PlayerFilter::All,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+
+        let mut events = Vec::new();
+        resolve_each_player(&mut state, &ability, &mut events)
+            .expect("DamageEachPlayer initial resolve");
+
+        assert_eq!(
+            state
+                .pending_continuation
+                .as_ref()
+                .and_then(|c| c.parent_kind),
+            Some(EffectKind::DamageEachPlayer),
+            "the stashed continuation must carry EffectKind::DamageEachPlayer",
+        );
+        assert!(matches!(
+            state.waiting_for,
+            WaitingFor::ReplacementChoice { .. }
+        ));
+
+        let result = apply(&mut state, GameAction::ChooseReplacement { index: 0 })
+            .expect("accept DamageEachPlayer replacement");
+        let each_player_events = result
+            .events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    GameEvent::EffectResolved {
+                        kind: EffectKind::DamageEachPlayer,
+                        ..
+                    }
+                )
+            })
+            .count();
+        assert_eq!(
+            each_player_events, 1,
+            "DamageEachPlayer parent event must fire exactly once on pause-and-resume; got events = {:#?}",
+            result.events,
+        );
+        assert!(
+            state.pending_continuation.is_none(),
+            "continuation must be consumed after drain"
+        );
     }
 }

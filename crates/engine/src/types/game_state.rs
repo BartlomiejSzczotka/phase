@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use super::ability::{
     AbilityCost, AbilityDefinition, AdditionalCost, ChoiceType, ChoiceValue,
     ChooseFromZoneConstraint, ContinuousModification, DelayedTriggerCondition, Duration,
-    GameRestriction, ModalChoice, ResolvedAbility, StaticCondition, TargetFilter, TargetRef,
-    TriggerCondition, UnlessCost,
+    EffectKind, GameRestriction, ModalChoice, ResolvedAbility, StaticCondition, TargetFilter,
+    TargetRef, TriggerCondition, UnlessCost,
 };
 use super::card::CardFace;
 use super::card_type::{CoreType, Supertype};
@@ -290,6 +290,58 @@ pub struct CommanderDamageEntry {
     pub player: PlayerId,
     pub commander: ObjectId,
     pub damage: u32,
+}
+
+/// Resume state for an ability chain paused mid-resolution.
+///
+/// When `resolve_ability_chain` cannot advance because an effect entered an
+/// interactive state (scry/surveil/dig, search, discard-to-hand-size,
+/// replacement-choice, etc.) or because a damage replacement proposal needs
+/// a player choice, the remainder of the chain is stashed here and replayed
+/// once the choice resolves.
+///
+/// `parent_kind` carries the outer effect's `EffectKind` when that parent
+/// normally emits an `EffectResolved { kind, source_id }` at the tail of its
+/// resolver — but the pause path returned early before it could fire. The
+/// drain step (see `drain_pending_continuation`) resolves the chain and then
+/// emits the parent event, so trigger matchers keyed on the parent kind
+/// (e.g. `match_fight` on `EffectKind::Fight` in `trigger_matchers.rs`) fire
+/// on the pause path as well. `None` means the chain has no distinct parent
+/// event — each chain node emits its own `EffectResolved` and that is the
+/// correct observable behavior.
+///
+/// The chain and its parent-kind metadata are coupled in one type so they
+/// cannot go out of sync; two parallel `Option`s would let one be set
+/// without the other and break the "pause emits the same event as
+/// non-pause" invariant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingContinuation {
+    pub chain: Box<ResolvedAbility>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_kind: Option<EffectKind>,
+}
+
+impl PendingContinuation {
+    /// Construct a continuation with no parent-kind emission. Used for chains
+    /// whose per-node `EffectResolved` events are the full observable story
+    /// (targeted damage continuations, Learn rummage, Bolster, Clash, etc.).
+    pub fn new(chain: Box<ResolvedAbility>) -> Self {
+        Self {
+            chain,
+            parent_kind: None,
+        }
+    }
+
+    /// Construct a continuation whose drain must re-emit the outer effect's
+    /// `EffectResolved { kind, source_id }` once the chain completes. The
+    /// `source_id` used for emission is read from `chain.source_id` at drain
+    /// time, matching the non-pause path.
+    pub fn with_parent_kind(chain: Box<ResolvedAbility>, parent_kind: EffectKind) -> Self {
+        Self {
+            chain,
+            parent_kind: Some(parent_kind),
+        }
+    }
 }
 
 /// CR 603.7: A delayed triggered ability created during resolution of a spell or ability.
@@ -1625,11 +1677,14 @@ pub struct GameState {
     #[serde(default)]
     pub revealed_cards: HashSet<ObjectId>,
 
-    // Pending ability continuation after a player choice (Scry/Dig/Surveil).
-    // When resolve_ability_chain pauses mid-chain for a choice state, the remaining
-    // sub-ability is stored here and executed after the player responds.
+    // Pending ability continuation after a player choice (Scry/Dig/Surveil,
+    // SearchChoice, ChooseFromZoneChoice, replacement-choice, etc.) or after
+    // a replacement proposal pauses mid-chain. See `PendingContinuation` for
+    // how parent-kind metadata is carried alongside the chain so the drain
+    // re-emits the parent `EffectResolved` event that the non-pause path
+    // fires at the tail of its resolver.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_continuation: Option<Box<crate::types::ability::ResolvedAbility>>,
+    pub pending_continuation: Option<PendingContinuation>,
 
     /// Pending optional effect ability chain, awaiting player accept/decline.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -282,16 +282,16 @@ pub(super) fn handle_replacement_choice(
                 }
             }
 
-            if matches!(waiting_for, WaitingFor::Priority { .. }) {
-                if let Some(cont) = state.pending_continuation.take() {
-                    let _ = effects::resolve_ability_chain(state, &cont, events, 0);
-                    // CR 616.1e: The continuation may itself pause on another replacement
-                    // (e.g., the second direction of fight damage hitting the same shield),
-                    // in which case it sets `state.waiting_for` to the next ReplacementChoice.
-                    // Propagate that back so the engine surfaces the correct prompt.
-                    if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
-                        waiting_for = state.waiting_for.clone();
-                    }
+            if matches!(waiting_for, WaitingFor::Priority { .. })
+                && state.pending_continuation.is_some()
+            {
+                effects::drain_pending_continuation(state, events);
+                // CR 616.1e: The continuation may itself pause on another replacement
+                // (e.g., the second direction of fight damage hitting the same shield),
+                // in which case it sets `state.waiting_for` to the next ReplacementChoice.
+                // Propagate that back so the engine surfaces the correct prompt.
+                if !matches!(state.waiting_for, WaitingFor::Priority { .. }) {
+                    waiting_for = state.waiting_for.clone();
                 }
             }
 
@@ -365,9 +365,7 @@ pub(super) fn handle_copy_target_choice(
         });
     let _ = effects::resolve_ability_chain(state, &ability, events, 0);
     state.layers_dirty = true;
-    if let Some(cont) = state.pending_continuation.take() {
-        let _ = effects::resolve_ability_chain(state, &cont, events, 0);
-    }
+    effects::drain_pending_continuation(state, events);
     Ok(WaitingFor::Priority {
         player: state.active_player,
     })
