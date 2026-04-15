@@ -53,7 +53,7 @@ pub(super) fn default_earthbend_target() -> TargetFilter {
 /// tail (CR 722.1 doesn't require it; some cards like Emrakul grant it).
 /// Returns `None` when the suffix doesn't apply, allowing the caller to treat
 /// the match as a different effect (e.g., plain `GainControl`).
-fn try_parse_control_next_turn_suffix(text: &str, rest: &str) -> Option<(TargetFilter, bool)> {
+fn try_parse_control_next_turn_suffix(_text: &str, rest: &str) -> Option<(TargetFilter, bool)> {
     let (target_text, _) = super::strip_optional_target_prefix(rest);
     let (target, rem) = parse_target(target_text);
     let rem_lower = rem.to_ascii_lowercase();
@@ -77,7 +77,7 @@ fn try_parse_control_next_turn_suffix(text: &str, rest: &str) -> Option<(TargetF
         (rem_after_during, false)
     };
     #[cfg(debug_assertions)]
-    super::types::assert_no_compound_remainder(_tail, text);
+    super::types::assert_no_compound_remainder(_tail, _text);
     Some((target, grant_extra_turn_after))
 }
 
@@ -507,9 +507,9 @@ pub(super) fn parse_targeted_action_ast(text: &str, lower: &str) -> Option<Targe
             });
         }
         let (target_text, _) = super::strip_optional_target_prefix(rest);
-        let (target, rem) = parse_target(target_text);
+        let (target, _rem) = parse_target(target_text);
         #[cfg(debug_assertions)]
-        super::types::assert_no_compound_remainder(rem, text);
+        super::types::assert_no_compound_remainder(_rem, text);
         return Some(TargetedImperativeAst::GainControl { target });
     }
     // Earthbend: "earthbend [N] [target <type>]"
