@@ -534,6 +534,59 @@ pub fn player_has_cant_lose_life(state: &GameState, player_id: PlayerId) -> bool
     )
 }
 
+/// CR 702.16j: Check if a player has active "protection from everything".
+///
+/// Scans `state.transient_continuous_effects` for effects whose `affected`
+/// filter pins this specific player and whose modifications include an
+/// `AddKeyword { Protection(ProtectionTarget::Everything) }`. Respects the
+/// optional `condition` on each transient.
+///
+/// This is the single authority for player-scoped protection-from-everything
+/// enforcement — consulted by targeting (CR 702.16b + 702.16j), damage
+/// (CR 702.16j + CR 615.1), and attack-target legality (CR 508.1b +
+/// CR 702.16j). Callers never inspect the transient_continuous_effects
+/// table directly.
+///
+/// Note: player-scoped protection uses the transient-effect table rather than
+/// the battlefield-object `static_definitions` scan used by `CantGainLife`
+/// etc. because a protected player can have zero permanents on the
+/// battlefield (e.g., right after Teferi's Protection phases them all out).
+pub fn player_has_protection_from_everything(state: &GameState, player_id: PlayerId) -> bool {
+    use crate::types::ability::ContinuousModification;
+    use crate::types::keywords::{Keyword, ProtectionTarget};
+    for tce in &state.transient_continuous_effects {
+        let TargetFilter::SpecificPlayer { id: affected_id } = tce.affected else {
+            continue;
+        };
+        if affected_id != player_id {
+            continue;
+        }
+        // CR 611.2b: ForAsLongAs durations re-evaluate their condition each cycle.
+        if let crate::types::ability::Duration::ForAsLongAs { ref condition } = tce.duration {
+            if !evaluate_condition(state, condition, tce.controller, tce.source_id) {
+                continue;
+            }
+        }
+        if let Some(ref condition) = tce.condition {
+            if !evaluate_condition(state, condition, tce.controller, tce.source_id) {
+                continue;
+            }
+        }
+        let grants_everything = tce.modifications.iter().any(|m| {
+            matches!(
+                m,
+                ContinuousModification::AddKeyword {
+                    keyword: Keyword::Protection(ProtectionTarget::Everything),
+                }
+            )
+        });
+        if grants_everything {
+            return true;
+        }
+    }
+    false
+}
+
 /// Allocation-free equivalent of `check_static_ability` for
 /// `StaticMode::Other(String)` variants. Scans battlefield + command zone
 /// for a static whose mode is `Other(s)` with `s == name`, whose `affected`
@@ -1262,5 +1315,115 @@ mod tests {
         assert!(object_has_static_other(&state, source, "CantBeSacrificed"));
         // Sanity: unrelated prohibition name must NOT fire.
         assert!(!object_has_static_other(&state, source, "CantTransform"));
+    }
+
+    /// CR 702.16j: When a transient continuous effect grants a specific player
+    /// `AddKeyword(Protection(Everything))`, the query returns true for that
+    /// player and false for every other player — scoping is per-player.
+    #[test]
+    fn player_protection_query_per_player_scoping() {
+        use crate::types::ability::{ContinuousModification, Duration};
+        use crate::types::keywords::{Keyword, ProtectionTarget};
+
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Teferi's Protection Source".to_string(),
+            Zone::Battlefield,
+        );
+
+        // Baseline: neither player has protection.
+        assert!(!player_has_protection_from_everything(&state, PlayerId(0)));
+        assert!(!player_has_protection_from_everything(&state, PlayerId(1)));
+
+        // Register a transient effect granting protection to PlayerId(0).
+        state.add_transient_continuous_effect(
+            source,
+            PlayerId(0),
+            Duration::UntilEndOfTurn,
+            TargetFilter::SpecificPlayer { id: PlayerId(0) },
+            vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Protection(ProtectionTarget::Everything),
+            }],
+            None,
+        );
+
+        assert!(
+            player_has_protection_from_everything(&state, PlayerId(0)),
+            "PlayerId(0) must be protected"
+        );
+        assert!(
+            !player_has_protection_from_everything(&state, PlayerId(1)),
+            "PlayerId(1) must not be protected — per-player scoping"
+        );
+    }
+
+    /// CR 702.16j: Only `Protection(Everything)` triggers the query. Other
+    /// protection qualities (color, card type) on a player do NOT satisfy
+    /// `player_has_protection_from_everything` — they would have their own
+    /// dedicated queries (deferred from this batch).
+    #[test]
+    fn player_protection_query_rejects_non_everything_qualities() {
+        use crate::types::ability::{ContinuousModification, Duration};
+        use crate::types::keywords::{Keyword, ProtectionTarget};
+        use crate::types::mana::ManaColor;
+
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Not Teferi".to_string(),
+            Zone::Battlefield,
+        );
+
+        state.add_transient_continuous_effect(
+            source,
+            PlayerId(0),
+            Duration::UntilEndOfTurn,
+            TargetFilter::SpecificPlayer { id: PlayerId(0) },
+            vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Protection(ProtectionTarget::Color(ManaColor::Red)),
+            }],
+            None,
+        );
+
+        // Color protection is not "everything" — query returns false.
+        assert!(!player_has_protection_from_everything(&state, PlayerId(0)));
+    }
+
+    /// CR 704.5: When the transient effect is expired/removed, the player is
+    /// no longer protected.
+    #[test]
+    fn player_protection_query_false_after_effect_removed() {
+        use crate::types::ability::{ContinuousModification, Duration};
+        use crate::types::keywords::{Keyword, ProtectionTarget};
+
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Teferi's Protection Source".to_string(),
+            Zone::Battlefield,
+        );
+
+        state.add_transient_continuous_effect(
+            source,
+            PlayerId(0),
+            Duration::UntilEndOfTurn,
+            TargetFilter::SpecificPlayer { id: PlayerId(0) },
+            vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Protection(ProtectionTarget::Everything),
+            }],
+            None,
+        );
+        assert!(player_has_protection_from_everything(&state, PlayerId(0)));
+
+        // Remove the transient — mirrors the cleanup path in layers.rs.
+        state.transient_continuous_effects.clear();
+        assert!(!player_has_protection_from_everything(&state, PlayerId(0)));
     }
 }

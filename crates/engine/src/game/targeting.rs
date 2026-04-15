@@ -51,6 +51,12 @@ pub fn find_legal_targets(
                 if player.is_phased_out() {
                     continue;
                 }
+                // CR 702.16b + CR 702.16j: A player with protection from
+                // everything can't be targeted by spells or abilities.
+                if super::static_abilities::player_has_protection_from_everything(state, player.id)
+                {
+                    continue;
+                }
                 let is_opponent = player.id != source_controller;
                 let include = match controller {
                     Some(ControllerRef::Opponent) => is_opponent,
@@ -491,6 +497,11 @@ fn add_players(state: &GameState, targets: &mut Vec<TargetRef>) {
     // applied to players via card Oracle text like "you phase out").
     for player in &state.players {
         if player.is_phased_out() {
+            continue;
+        }
+        // CR 702.16b + CR 702.16j: A player with protection from everything
+        // can't be targeted by spells or abilities — any source, any quality.
+        if super::static_abilities::player_has_protection_from_everything(state, player.id) {
             continue;
         }
         targets.push(TargetRef::Player(player.id));
@@ -1520,5 +1531,85 @@ mod tests {
 
         let obj = state.objects.get(&c1).unwrap();
         assert!(!can_target(obj, PlayerId(0), source_id, &state));
+    }
+
+    /// CR 702.16b + CR 702.16j: A player with protection from everything
+    /// cannot be a legal target of any spell or ability from any source.
+    /// `find_legal_targets` must exclude that player from the "any target"
+    /// scan.
+    #[test]
+    fn find_legal_targets_excludes_player_protection_from_everything() {
+        use crate::types::ability::{ContinuousModification, Duration};
+        use crate::types::keywords::Keyword;
+
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Source Spell".to_string(),
+            Zone::Battlefield,
+        );
+        // Protect PlayerId(1) via a transient continuous effect.
+        state.add_transient_continuous_effect(
+            source,
+            PlayerId(1),
+            Duration::UntilEndOfTurn,
+            TargetFilter::SpecificPlayer { id: PlayerId(1) },
+            vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Protection(ProtectionTarget::Everything),
+            }],
+            None,
+        );
+
+        // "any target" should list PlayerId(0) (unprotected) but not PlayerId(1).
+        let targets = find_legal_targets(&state, &TargetFilter::Any, PlayerId(0), source);
+        assert!(
+            targets.contains(&TargetRef::Player(PlayerId(0))),
+            "PlayerId(0) should be a legal target, got {:?}",
+            targets
+        );
+        assert!(
+            !targets.contains(&TargetRef::Player(PlayerId(1))),
+            "PlayerId(1) has protection from everything — must NOT be targetable, got {:?}",
+            targets
+        );
+    }
+
+    /// CR 702.16b + CR 702.16j: "target opponent" (Typed filter with no
+    /// type_filters and ControllerRef::Opponent) must also exclude a protected
+    /// opponent — verifies the typed-player-target branch was updated.
+    #[test]
+    fn find_legal_targets_typed_opponent_excludes_protected_player() {
+        use crate::types::ability::{ContinuousModification, ControllerRef, Duration, TypedFilter};
+        use crate::types::keywords::Keyword;
+
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Source Spell".to_string(),
+            Zone::Battlefield,
+        );
+        state.add_transient_continuous_effect(
+            source,
+            PlayerId(1),
+            Duration::UntilEndOfTurn,
+            TargetFilter::SpecificPlayer { id: PlayerId(1) },
+            vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Protection(ProtectionTarget::Everything),
+            }],
+            None,
+        );
+
+        let filter =
+            TargetFilter::Typed(TypedFilter::default().controller(ControllerRef::Opponent));
+        let targets = find_legal_targets(&state, &filter, PlayerId(0), source);
+        assert!(
+            !targets.contains(&TargetRef::Player(PlayerId(1))),
+            "protected opponent must not be a legal target, got {:?}",
+            targets
+        );
     }
 }

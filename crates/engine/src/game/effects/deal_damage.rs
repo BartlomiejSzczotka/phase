@@ -132,6 +132,21 @@ pub(crate) fn apply_damage_to_target(
         }
     }
 
+    // CR 702.16j + CR 615.1: "All damage that would be dealt to [a player with
+    // protection from everything] is prevented." Mirror the object-protection
+    // gate above for player targets. Emits DamagePrevented so prevention-
+    // triggered abilities still observe the event.
+    if let TargetRef::Player(player_id) = &target {
+        if crate::game::static_abilities::player_has_protection_from_everything(state, *player_id) {
+            events.push(GameEvent::DamagePrevented {
+                source_id: ctx.source_id,
+                target: target.clone(),
+                amount,
+            });
+            return Ok(DamageResult::Applied(0));
+        }
+    }
+
     let proposed = ProposedEvent::Damage {
         source_id: ctx.source_id,
         target: target.clone(),
@@ -739,6 +754,57 @@ mod tests {
         assert!(events
             .iter()
             .any(|e| matches!(e, GameEvent::EffectResolved { .. })));
+    }
+
+    /// CR 702.16j + CR 615.1: A player with protection from everything has
+    /// all damage to them prevented. The player's life total is unchanged and
+    /// a `DamagePrevented` event is emitted.
+    #[test]
+    fn deal_damage_to_player_with_protection_from_everything_prevented() {
+        use crate::types::ability::{ContinuousModification, Duration};
+        use crate::types::keywords::{Keyword, ProtectionTarget};
+
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(10),
+            PlayerId(1),
+            "Teferi's Protection source".to_string(),
+            Zone::Battlefield,
+        );
+        state.add_transient_continuous_effect(
+            source,
+            PlayerId(1),
+            Duration::UntilEndOfTurn,
+            TargetFilter::SpecificPlayer { id: PlayerId(1) },
+            vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Protection(ProtectionTarget::Everything),
+            }],
+            None,
+        );
+
+        let life_before = state.players[1].life;
+        let ability = make_ability(5, vec![TargetRef::Player(PlayerId(1))]);
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(
+            state.players[1].life, life_before,
+            "protected player's life must be unchanged"
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, GameEvent::DamagePrevented { amount: 5, .. })),
+            "expected DamagePrevented event, got {:?}",
+            events
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, GameEvent::DamageDealt { .. })),
+            "must not emit DamageDealt for prevented damage"
+        );
     }
 
     #[test]

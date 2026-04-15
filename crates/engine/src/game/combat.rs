@@ -1526,12 +1526,21 @@ pub fn get_valid_attack_targets(state: &GameState) -> Vec<AttackTarget> {
     };
     let mut targets = Vec::new();
 
+    // CR 508.1b + CR 702.16j: A player with protection from everything can't
+    // be declared as the player each attacking creature is attacking — the
+    // attack declaration would fail because the protected player is not a
+    // legal attack target.
+    let protected = |pid: PlayerId| -> bool {
+        super::static_abilities::player_has_protection_from_everything(state, pid)
+    };
+
     // All non-eliminated, phased-in opponents (excluding teammates)
     for player in &state.players {
         if player.id != active
             && !state.eliminated_players.contains(&player.id)
             && !allies.contains(&player.id)
             && player.is_phased_in()
+            && !protected(player.id)
         {
             targets.push(AttackTarget::Player(player.id));
         }
@@ -2899,5 +2908,45 @@ mod tests {
         // The static's controller (PlayerId(0)) is the attacker's controller;
         // their creature is NOT an opponent's creature → filter doesn't match.
         assert!(compute_attack_tax(&state, &attacks).is_none());
+    }
+
+    /// CR 508.1b + CR 702.16j: A player with protection from everything is
+    /// not a legal attack target. `get_valid_attack_targets` must exclude
+    /// them from the list opposing creatures can declare as their attack
+    /// target.
+    #[test]
+    fn get_valid_attack_targets_excludes_protected_player() {
+        use crate::types::ability::{ContinuousModification, Duration, TargetFilter};
+        use crate::types::keywords::{Keyword, ProtectionTarget};
+
+        let mut state = setup();
+        // Source — a battlefield object to hang the transient effect off.
+        let source = create_object(
+            &mut state,
+            CardId(99),
+            PlayerId(1),
+            "Teferi's Protection source".to_string(),
+            Zone::Battlefield,
+        );
+        state.add_transient_continuous_effect(
+            source,
+            PlayerId(1),
+            Duration::UntilEndOfTurn,
+            TargetFilter::SpecificPlayer { id: PlayerId(1) },
+            vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Protection(ProtectionTarget::Everything),
+            }],
+            None,
+        );
+
+        // Active player is PlayerId(0) (default for new_two_player).
+        let targets = get_valid_attack_targets(&state);
+        assert!(
+            !targets
+                .iter()
+                .any(|t| matches!(t, AttackTarget::Player(id) if *id == PlayerId(1))),
+            "protected PlayerId(1) must not be a valid attack target, got {:?}",
+            targets
+        );
     }
 }

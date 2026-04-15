@@ -333,4 +333,101 @@ mod tests {
             }
         );
     }
+
+    /// CR 702.16j end-to-end: parse Teferi's-Protection-style clause, feed
+    /// the parsed effect into `resolve`, and verify the single-authority
+    /// query reports the controller as protected. This exercises the full
+    /// pipeline from Oracle text to runtime enforcement hook.
+    #[test]
+    fn parse_and_resolve_you_gain_protection_from_everything_grants_player_protection() {
+        use crate::parser::oracle_effect::parse_effect_chain;
+        use crate::types::ability::AbilityKind;
+
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Teferi's Protection".to_string(),
+            Zone::Battlefield,
+        );
+
+        let parsed = parse_effect_chain("you gain protection from everything", AbilityKind::Spell);
+        let ability = ResolvedAbility::new((*parsed.effect).clone(), vec![], source, PlayerId(0))
+            .duration(Duration::UntilEndOfTurn);
+
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert!(
+            crate::game::static_abilities::player_has_protection_from_everything(
+                &state,
+                PlayerId(0)
+            ),
+            "controller must be protected after resolution"
+        );
+        assert!(
+            !crate::game::static_abilities::player_has_protection_from_everything(
+                &state,
+                PlayerId(1)
+            ),
+            "opponent must NOT gain protection — scoping is per-controller"
+        );
+    }
+
+    /// CR 113.10 + CR 702.16j: When a GenericEffect carries `affected:
+    /// Controller`, `register_transient_effect` must bind the transient to
+    /// `SpecificPlayer { id: ability.controller }`. This is the runtime hook
+    /// for Teferi's-Protection-style player-scoped keyword grants.
+    #[test]
+    fn generic_effect_controller_affected_binds_to_specific_player() {
+        use crate::types::ability::TargetFilter;
+        use crate::types::keywords::{Keyword, ProtectionTarget};
+
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Teferi's Protection".to_string(),
+            Zone::Battlefield,
+        );
+
+        let static_def = StaticDefinition::continuous()
+            .affected(TargetFilter::Controller)
+            .modifications(vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Protection(ProtectionTarget::Everything),
+            }]);
+
+        let ability = ResolvedAbility::new(
+            Effect::GenericEffect {
+                static_abilities: vec![static_def],
+                duration: Some(Duration::UntilEndOfTurn),
+                target: None,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        )
+        .duration(Duration::UntilEndOfTurn);
+
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(state.transient_continuous_effects.len(), 1);
+        let tce = &state.transient_continuous_effects[0];
+        assert_eq!(
+            tce.affected,
+            TargetFilter::SpecificPlayer { id: PlayerId(0) },
+            "Controller-scoped keyword grant must bind to SpecificPlayer for the ability's controller"
+        );
+        // End-to-end: the registered effect is observable via the single-
+        // authority query used by targeting/damage/attack enforcement.
+        assert!(
+            crate::game::static_abilities::player_has_protection_from_everything(
+                &state,
+                PlayerId(0)
+            )
+        );
+    }
 }
