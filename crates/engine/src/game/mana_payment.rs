@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::types::events::GameEvent;
-use crate::types::game_state::GameState;
+use crate::types::game_state::{GameState, ShardChoice};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::{ManaCost, ManaCostShard, ManaPool, ManaType, ManaUnit, SpellMeta};
 use crate::types::player::PlayerId;
@@ -370,11 +370,31 @@ pub fn pay_cost_with_demand(
     spell: Option<&SpellMeta>,
     any_color: bool,
 ) -> Result<(Vec<ManaUnit>, Vec<LifePayment>), PaymentError> {
+    pay_cost_with_demand_and_choices(pool, cost, hand_demand, spell, any_color, None)
+}
+
+/// Pay a mana cost with an optional explicit Phyrexian choice vector.
+///
+/// CR 107.4f + CR 601.2f: When `phyrexian_choices` is `Some`, the caller has pre-resolved
+/// the per-shard mana-vs-2-life decision (see `WaitingFor::PhyrexianPayment`). Each
+/// Phyrexian shard consumes one choice from the vector in order; `PayLife` produces a
+/// `LifePayment`, `PayMana` spends one mana of the shard's color (hybrid-Phyrexian picks
+/// via `auto_pay_hybrid`). A `None` choice vector preserves the existing auto-decision
+/// behavior: prefer mana when available, fall back to 2 life.
+pub fn pay_cost_with_demand_and_choices(
+    pool: &mut ManaPool,
+    cost: &ManaCost,
+    hand_demand: Option<&ColorDemand>,
+    spell: Option<&SpellMeta>,
+    any_color: bool,
+    phyrexian_choices: Option<&[ShardChoice]>,
+) -> Result<(Vec<ManaUnit>, Vec<LifePayment>), PaymentError> {
     match cost {
         ManaCost::NoCost | ManaCost::SelfManaCost => Ok((Vec::new(), Vec::new())),
         ManaCost::Cost { shards, generic } => {
             let mut spent = Vec::new();
             let mut life_payments = Vec::new();
+            let mut choice_cursor = 0usize;
 
             // CR 107.4a: Pay colored shards first (exact color match required).
             for shard in shards {
@@ -406,22 +426,47 @@ pub fn pay_cost_with_demand(
                     }
                     // CR 107.4f: Phyrexian mana — pay color or 2 life.
                     ShardRequirement::Phyrexian(color) => {
-                        if any_color {
-                            if let Some(unit) = spend_any_eligible(pool, spell) {
-                                spent.push(unit);
-                            } else {
+                        let explicit_choice = phyrexian_choices
+                            .and_then(|choices| choices.get(choice_cursor).copied());
+                        if explicit_choice.is_some() {
+                            choice_cursor += 1;
+                        }
+                        match explicit_choice {
+                            Some(ShardChoice::PayLife) => {
                                 life_payments.push(LifePayment {
                                     player_id: PlayerId(0),
                                     amount: 2,
                                 });
                             }
-                        } else if let Some(unit) = spend_eligible(pool, color, spell) {
-                            spent.push(unit);
-                        } else {
-                            life_payments.push(LifePayment {
-                                player_id: PlayerId(0), // Caller should set correct player
-                                amount: 2,
-                            });
+                            Some(ShardChoice::PayMana) => {
+                                let unit = if any_color {
+                                    spend_any_eligible(pool, spell)
+                                } else {
+                                    spend_eligible(pool, color, spell)
+                                }
+                                .ok_or(PaymentError::InsufficientMana)?;
+                                spent.push(unit);
+                            }
+                            None => {
+                                // CR 107.4f: Auto-decide — prefer mana when available.
+                                if any_color {
+                                    if let Some(unit) = spend_any_eligible(pool, spell) {
+                                        spent.push(unit);
+                                    } else {
+                                        life_payments.push(LifePayment {
+                                            player_id: PlayerId(0),
+                                            amount: 2,
+                                        });
+                                    }
+                                } else if let Some(unit) = spend_eligible(pool, color, spell) {
+                                    spent.push(unit);
+                                } else {
+                                    life_payments.push(LifePayment {
+                                        player_id: PlayerId(0),
+                                        amount: 2,
+                                    });
+                                }
+                            }
                         }
                     }
                     // CR 107.4e: Monocolored hybrid {2/C} — pay 1 colored or 2 generic.
@@ -464,24 +509,49 @@ pub fn pay_cost_with_demand(
                     }
                     // CR 107.4f: Hybrid Phyrexian — pay either color or 2 life.
                     ShardRequirement::HybridPhyrexian(a, b) => {
-                        if any_color {
-                            if let Some(unit) = spend_any_eligible(pool, spell) {
-                                spent.push(unit);
-                            } else {
+                        let explicit_choice = phyrexian_choices
+                            .and_then(|choices| choices.get(choice_cursor).copied());
+                        if explicit_choice.is_some() {
+                            choice_cursor += 1;
+                        }
+                        match explicit_choice {
+                            Some(ShardChoice::PayLife) => {
                                 life_payments.push(LifePayment {
                                     player_id: PlayerId(0),
                                     amount: 2,
                                 });
                             }
-                        } else {
-                            let color = auto_pay_hybrid(pool, a, b, hand_demand);
-                            if let Some(unit) = spend_eligible(pool, color, spell) {
+                            Some(ShardChoice::PayMana) => {
+                                let unit = if any_color {
+                                    spend_any_eligible(pool, spell)
+                                } else {
+                                    let color = auto_pay_hybrid(pool, a, b, hand_demand);
+                                    spend_eligible(pool, color, spell)
+                                }
+                                .ok_or(PaymentError::InsufficientMana)?;
                                 spent.push(unit);
-                            } else {
-                                life_payments.push(LifePayment {
-                                    player_id: PlayerId(0),
-                                    amount: 2,
-                                });
+                            }
+                            None => {
+                                if any_color {
+                                    if let Some(unit) = spend_any_eligible(pool, spell) {
+                                        spent.push(unit);
+                                    } else {
+                                        life_payments.push(LifePayment {
+                                            player_id: PlayerId(0),
+                                            amount: 2,
+                                        });
+                                    }
+                                } else {
+                                    let color = auto_pay_hybrid(pool, a, b, hand_demand);
+                                    if let Some(unit) = spend_eligible(pool, color, spell) {
+                                        spent.push(unit);
+                                    } else {
+                                        life_payments.push(LifePayment {
+                                            player_id: PlayerId(0),
+                                            amount: 2,
+                                        });
+                                    }
+                                }
                             }
                         }
                     }
@@ -497,6 +567,182 @@ pub fn pay_cost_with_demand(
 
             Ok((spent, life_payments))
         }
+    }
+}
+
+/// CR 107.4f + CR 601.2f: Compute the per-shard `ShardOptions` for each Phyrexian shard
+/// in `cost`, given the caster's post-auto-tap pool, spell context, and life budget.
+///
+/// Returns `Vec<PhyrexianShard>` aligned with the order of Phyrexian shards in `cost`.
+/// Each shard records the colored mana availability (`ManaOnly`, `LifeOnly`, or `ManaOrLife`)
+/// so the UI can render only legal choices and the engine can decide whether to pause at
+/// `WaitingFor::PhyrexianPayment` (pause iff any shard has `ShardOptions::ManaOrLife`).
+///
+/// The computation is a simulated dry-run: we spend mana from a cloned pool in order,
+/// checking each Phyrexian shard's mana option against the pool state *after* previous
+/// non-Phyrexian shards have consumed their mana. This matches the ordering used by
+/// `pay_cost_with_demand_and_choices`.
+pub fn compute_phyrexian_shards(
+    pool: &ManaPool,
+    cost: &ManaCost,
+    spell: Option<&SpellMeta>,
+    any_color: bool,
+    max_life_payments: u32,
+) -> Vec<crate::types::game_state::PhyrexianShard> {
+    use crate::types::game_state::{PhyrexianShard, ShardOptions};
+
+    let shards = match cost {
+        ManaCost::Cost { shards, .. } => shards,
+        _ => return Vec::new(),
+    };
+
+    let mut sim = pool.clone();
+    let mut results = Vec::new();
+    // CR 107.4f + CR 118.3 + CR 119.8: Mana preference within the dry-run matches
+    // `pay_cost_with_demand_and_choices`' auto-decision. `life_budget` tracks how many
+    // life payments remain unspent — once exhausted, subsequent shards report `ManaOnly`
+    // (or `LifeOnly`/unpayable would have failed `can_pay_for_spell` upstream).
+    let mut life_budget = max_life_payments;
+
+    for (idx, shard) in shards.iter().enumerate() {
+        match shard_to_mana_type(*shard) {
+            ShardRequirement::Single(mt) => {
+                if any_color {
+                    let _ = spend_any_eligible(&mut sim, spell);
+                } else {
+                    let _ = spend_eligible(&mut sim, mt, spell);
+                }
+            }
+            ShardRequirement::Hybrid(a, b) => {
+                if any_color {
+                    let _ = spend_any_eligible(&mut sim, spell);
+                } else {
+                    let color = auto_pay_hybrid(&sim, a, b, None);
+                    let _ = spend_eligible(&mut sim, color, spell);
+                }
+            }
+            ShardRequirement::Phyrexian(color) => {
+                let mana_available = sim_phyrexian_mana_available(&sim, spell, any_color, color);
+                let life_available = life_budget > 0;
+                let options = match (mana_available, life_available) {
+                    (true, true) => ShardOptions::ManaOrLife,
+                    (true, false) => ShardOptions::ManaOnly,
+                    (false, true) => ShardOptions::LifeOnly,
+                    // Unpayable: this should be gated by `can_pay_for_spell` upstream.
+                    // If we reach here, treat as ManaOnly — payment will error, surfaced
+                    // to the caller as ActionNotAllowed.
+                    (false, false) => ShardOptions::ManaOnly,
+                };
+                results.push(PhyrexianShard {
+                    shard_index: idx,
+                    color: mana_type_to_color_fallback(color),
+                    options,
+                });
+                // Simulated commit: prefer mana path for later shard availability;
+                // if mana is unavailable, consume one life payment from budget.
+                if mana_available {
+                    let _ = if any_color {
+                        spend_any_eligible(&mut sim, spell)
+                    } else {
+                        spend_eligible(&mut sim, color, spell)
+                    };
+                } else {
+                    life_budget = life_budget.saturating_sub(1);
+                }
+            }
+            ShardRequirement::TwoGenericHybrid(color) => {
+                if any_color {
+                    let _ = spend_any_eligible(&mut sim, spell);
+                } else if spend_eligible(&mut sim, color, spell).is_none() {
+                    for _ in 0..2 {
+                        let _ = spend_any_eligible(&mut sim, spell);
+                    }
+                }
+            }
+            ShardRequirement::Snow => {
+                let _ = spend_snow_unit(&mut sim);
+            }
+            ShardRequirement::X => {}
+            ShardRequirement::ColorlessHybrid(color) => {
+                if any_color {
+                    let _ = spend_any_eligible(&mut sim, spell);
+                } else if spend_eligible(&mut sim, ManaType::Colorless, spell).is_none() {
+                    let _ = spend_eligible(&mut sim, color, spell);
+                }
+            }
+            ShardRequirement::HybridPhyrexian(a, b) => {
+                let mana_available = if any_color {
+                    sim_any_color_available(&sim, spell)
+                } else {
+                    sim_color_available(&sim, spell, a) || sim_color_available(&sim, spell, b)
+                };
+                let life_available = life_budget > 0;
+                let options = match (mana_available, life_available) {
+                    (true, true) => ShardOptions::ManaOrLife,
+                    (true, false) => ShardOptions::ManaOnly,
+                    (false, true) => ShardOptions::LifeOnly,
+                    (false, false) => ShardOptions::ManaOnly,
+                };
+                // CR 107.4f: The printed hybrid-Phyrexian shard shows two colors; surface the
+                // first component in `PhyrexianShard.color` for UI display. The payment path
+                // chooses the actual spend color via `auto_pay_hybrid`.
+                results.push(PhyrexianShard {
+                    shard_index: idx,
+                    color: mana_type_to_color_fallback(a),
+                    options,
+                });
+                if mana_available {
+                    let _ = if any_color {
+                        spend_any_eligible(&mut sim, spell)
+                    } else {
+                        let color = auto_pay_hybrid(&sim, a, b, None);
+                        spend_eligible(&mut sim, color, spell)
+                    };
+                } else {
+                    life_budget = life_budget.saturating_sub(1);
+                }
+            }
+        }
+    }
+
+    results
+}
+
+fn sim_phyrexian_mana_available(
+    pool: &ManaPool,
+    spell: Option<&SpellMeta>,
+    any_color: bool,
+    color: ManaType,
+) -> bool {
+    if any_color {
+        sim_any_color_available(pool, spell)
+    } else {
+        sim_color_available(pool, spell, color)
+    }
+}
+
+fn sim_any_color_available(pool: &ManaPool, spell: Option<&SpellMeta>) -> bool {
+    let mut clone = pool.clone();
+    spend_any_eligible(&mut clone, spell).is_some()
+}
+
+fn sim_color_available(pool: &ManaPool, spell: Option<&SpellMeta>, color: ManaType) -> bool {
+    let mut clone = pool.clone();
+    spend_eligible(&mut clone, color, spell).is_some()
+}
+
+/// CR 107.4a: Phyrexian shards always reference one of the five colors; `Colorless`
+/// cannot appear in a `Phyrexian` shard requirement. Default to `White` if we somehow
+/// encounter a colorless mapping (defensive fallback; unreachable via `shard_to_mana_type`).
+fn mana_type_to_color_fallback(mt: ManaType) -> crate::types::mana::ManaColor {
+    use crate::types::mana::ManaColor;
+    match mt {
+        ManaType::White => ManaColor::White,
+        ManaType::Blue => ManaColor::Blue,
+        ManaType::Black => ManaColor::Black,
+        ManaType::Red => ManaColor::Red,
+        ManaType::Green => ManaColor::Green,
+        ManaType::Colorless => ManaColor::White,
     }
 }
 

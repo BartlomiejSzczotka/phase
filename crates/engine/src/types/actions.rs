@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use super::ability::TargetRef;
-use super::game_state::{AutoPassRequest, CombatDamageAssignmentMode};
+use super::game_state::{AutoPassRequest, CombatDamageAssignmentMode, ShardChoice};
 use super::identifiers::{CardId, ObjectId};
 use super::match_config::DeckCardCount;
 use super::player::PlayerId;
@@ -213,6 +213,12 @@ pub enum GameAction {
     /// before mana is paid.
     ChooseX {
         value: u32,
+    },
+    /// CR 107.4f + CR 601.2f: Caster submits their per-shard payment choice
+    /// (mana or 2 life) for each Phyrexian shard in the spell's cost. The length
+    /// of `choices` MUST equal `WaitingFor::PhyrexianPayment.shards.len()`.
+    SubmitPhyrexianChoices {
+        choices: Vec<ShardChoice>,
     },
     /// CR 104.3a: A player may concede the game at any time. That player leaves the game.
     /// CR 800.4a: When a player leaves a multiplayer game, all objects owned by that player

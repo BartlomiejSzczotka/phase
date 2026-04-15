@@ -18,7 +18,9 @@ pub fn classify(waiting_for: &WaitingFor, action: &GameAction) -> DecisionKind {
         WaitingFor::MulliganDecision { .. } | WaitingFor::MulliganBottomCards { .. } => {
             DecisionKind::Mulligan
         }
-        WaitingFor::ManaPayment { .. } => DecisionKind::ManaPayment,
+        WaitingFor::ManaPayment { .. } | WaitingFor::PhyrexianPayment { .. } => {
+            DecisionKind::ManaPayment
+        }
         WaitingFor::ChooseXValue { .. } => DecisionKind::ChooseX,
         WaitingFor::TargetSelection { .. }
         | WaitingFor::TriggerTargetSelection { .. }

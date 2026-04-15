@@ -699,6 +699,39 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
                 Some(*player),
             ),
         ],
+        // CR 107.4f + CR 601.2f: AI picks per-shard Phyrexian payment.
+        // Heuristic (life threshold): with life > 6, the AI prefers 2-life per shard for
+        // tempo (keep mana for other plays); with life <= 6, the AI preserves life.
+        // Shards with only one viable option use that option.
+        WaitingFor::PhyrexianPayment { player, shards, .. } => {
+            use crate::types::game_state::{ShardChoice, ShardOptions};
+            let life = state
+                .players
+                .iter()
+                .find(|p| p.id == *player)
+                .map(|p| p.life)
+                .unwrap_or(0);
+            let prefer_life = life > 6;
+            let choices: Vec<ShardChoice> = shards
+                .iter()
+                .map(|shard| match shard.options {
+                    ShardOptions::ManaOnly => ShardChoice::PayMana,
+                    ShardOptions::LifeOnly => ShardChoice::PayLife,
+                    ShardOptions::ManaOrLife => {
+                        if prefer_life {
+                            ShardChoice::PayLife
+                        } else {
+                            ShardChoice::PayMana
+                        }
+                    }
+                })
+                .collect();
+            vec![candidate(
+                GameAction::SubmitPhyrexianChoices { choices },
+                TacticalClass::Selection,
+                Some(*player),
+            )]
+        }
         // CR 601.2b: Defiler cycle — accept or decline life payment for mana reduction.
         WaitingFor::DefilerPayment { player, .. } => vec![
             candidate(

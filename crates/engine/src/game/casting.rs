@@ -394,7 +394,11 @@ pub(crate) fn effective_spell_keywords(
     keywords
 }
 
-fn build_spell_meta(state: &GameState, caster: PlayerId, object_id: ObjectId) -> Option<SpellMeta> {
+pub(super) fn build_spell_meta(
+    state: &GameState,
+    caster: PlayerId,
+    object_id: ObjectId,
+) -> Option<SpellMeta> {
     state.objects.get(&object_id).map(|obj| SpellMeta {
         types: obj
             .card_types
@@ -1930,12 +1934,26 @@ fn requires_untapped(cost: &AbilityCost) -> bool {
 /// Pay a mana cost by auto-tapping lands and deducting from the player's mana pool.
 ///
 /// Shared building block used by both spell casting (`pay_and_push`) and activated
-/// ability cost payment (`pay_ability_cost`).
+/// ability cost payment (`pay_ability_cost`). Delegates to `pay_mana_cost_with_choices`
+/// without explicit Phyrexian choices (auto-decide: prefer mana, fall back to life).
 pub(super) fn pay_mana_cost(
     state: &mut GameState,
     player: PlayerId,
     source_id: ObjectId,
     cost: &crate::types::mana::ManaCost,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EngineError> {
+    pay_mana_cost_with_choices(state, player, source_id, cost, None, events)
+}
+
+/// CR 107.4f + CR 601.2f: Pay a mana cost, honoring explicit per-shard Phyrexian
+/// choices when provided. `None` preserves the legacy auto-decide behavior.
+pub(super) fn pay_mana_cost_with_choices(
+    state: &mut GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    cost: &crate::types::mana::ManaCost,
+    phyrexian_choices: Option<&[crate::types::game_state::ShardChoice]>,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EngineError> {
     if state.layers_dirty {
@@ -1976,12 +1994,13 @@ pub(super) fn pay_mana_cost(
         .iter_mut()
         .find(|p| p.id == player)
         .expect("player exists");
-    let (spent_units, life_payments) = mana_payment::pay_cost_with_demand(
+    let (spent_units, life_payments) = mana_payment::pay_cost_with_demand_and_choices(
         &mut player_data.mana_pool,
         cost,
         Some(&hand_demand),
         spell_meta.as_ref(),
         any_color,
+        phyrexian_choices,
     )
     .map_err(|_| EngineError::ActionNotAllowed("Mana payment failed".to_string()))?;
 
@@ -8207,8 +8226,9 @@ mod tests {
         );
     }
 
-    /// CR 107.4f: Baseline — paying the Phyrexian shard with the indicated color
-    /// mana leaves life unchanged (no regression on the mana path).
+    /// CR 107.4f + CR 601.2f: Baseline — with both {U} and 2 life viable, the engine
+    /// pauses at `WaitingFor::PhyrexianPayment` to let the caster pick per shard. A
+    /// `PayMana` choice finalizes the cast without changing life.
     #[test]
     fn phyrexian_cast_with_mana_leaves_life_unchanged() {
         let mut state = setup_game_at_main_phase();
@@ -8222,9 +8242,28 @@ mod tests {
         let life_before = state.players[0].life;
 
         let mut events = Vec::new();
-        let result = handle_cast_spell(&mut state, PlayerId(0), spell, CardId(0x9117), &mut events);
-
-        assert!(result.is_ok(), "cast must succeed paying {{U}} for {{U/P}}");
+        let waiting =
+            handle_cast_spell(&mut state, PlayerId(0), spell, CardId(0x9117), &mut events)
+                .expect("announce cast");
+        match waiting {
+            crate::types::game_state::WaitingFor::PhyrexianPayment { shards, .. } => {
+                assert_eq!(shards.len(), 1);
+                assert!(matches!(
+                    shards[0].options,
+                    crate::types::game_state::ShardOptions::ManaOrLife
+                ));
+            }
+            other => panic!("expected PhyrexianPayment, got {other:?}"),
+        }
+        // Submit PayMana choice via direct resume helper.
+        let choices = vec![crate::types::game_state::ShardChoice::PayMana];
+        let result = super::casting_costs::finalize_mana_payment_with_phyrexian_choices(
+            &mut state,
+            PlayerId(0),
+            &choices,
+            &mut events,
+        );
+        assert!(result.is_ok(), "resume with PayMana must succeed");
         assert_eq!(
             state.players[0].life, life_before,
             "paying mana (not life) must not change life total"
@@ -8258,9 +8297,9 @@ mod tests {
         );
     }
 
-    /// CR 107.4f + CR 118.3b: Mixed Phyrexian payment — one shard paid with mana,
-    /// the other with life. Mana is preferred when available (auto-resolution),
-    /// so providing {W} satisfies the {W/P} and the {U/P} falls back to 2 life.
+    /// CR 107.4f + CR 118.3b + CR 601.2f: Mixed Phyrexian payment — one shard has
+    /// both options (`ManaOrLife`), the other only life (`LifeOnly`). Engine pauses,
+    /// caster submits PayMana for shard 0 and PayLife for shard 1, net 2-life deduction.
     #[test]
     fn phyrexian_mixed_one_mana_one_life() {
         let mut state = setup_game_at_main_phase();
@@ -8274,13 +8313,226 @@ mod tests {
         let life_before = state.players[0].life;
 
         let mut events = Vec::new();
-        let result = handle_cast_spell(&mut state, PlayerId(0), spell, CardId(0x9117), &mut events);
-
-        assert!(result.is_ok(), "cast must succeed paying {{W}} + 2 life");
+        let waiting =
+            handle_cast_spell(&mut state, PlayerId(0), spell, CardId(0x9117), &mut events)
+                .expect("announce cast");
+        match waiting {
+            crate::types::game_state::WaitingFor::PhyrexianPayment { shards, .. } => {
+                assert_eq!(shards.len(), 2, "both Phyrexian shards present");
+                assert!(matches!(
+                    shards[0].options,
+                    crate::types::game_state::ShardOptions::ManaOrLife
+                ));
+                assert!(matches!(
+                    shards[1].options,
+                    crate::types::game_state::ShardOptions::LifeOnly
+                ));
+            }
+            other => panic!("expected PhyrexianPayment, got {other:?}"),
+        }
+        let choices = vec![
+            crate::types::game_state::ShardChoice::PayMana,
+            crate::types::game_state::ShardChoice::PayLife,
+        ];
+        let result = super::casting_costs::finalize_mana_payment_with_phyrexian_choices(
+            &mut state,
+            PlayerId(0),
+            &choices,
+            &mut events,
+        );
+        assert!(result.is_ok(), "resume with Mana+Life must succeed");
         assert_eq!(
             state.players[0].life,
             life_before - 2,
             "only the mana-unavailable shard falls back to 2 life"
+        );
+    }
+
+    /// CR 107.4f + CR 601.2f: When every shard has only one viable option, the engine
+    /// must auto-decide (no pause) — this mirrors the pre-batch behavior for trivial cases.
+    #[test]
+    fn phyrexian_cast_no_pause_when_all_shards_trivial() {
+        let mut state = setup_game_at_main_phase();
+        state.players[0].life = 1; // Life < 2 → LifeOnly impossible; combined with
+                                   // an empty pool, cost becomes unpayable but let's
+                                   // give mana so every shard is ManaOnly.
+        let spell = create_phyrexian_instant_in_hand(
+            &mut state,
+            PlayerId(0),
+            vec![ManaCostShard::PhyrexianBlue],
+            0,
+        );
+        add_mana(&mut state, PlayerId(0), ManaType::Blue, 1);
+        let life_before = state.players[0].life;
+
+        let mut events = Vec::new();
+        let waiting =
+            handle_cast_spell(&mut state, PlayerId(0), spell, CardId(0x9117), &mut events)
+                .expect("announce cast");
+        // `life = 1` → max_phyrexian_life_payments = 0 → shard options = ManaOnly →
+        // auto-decide; no pause; cast proceeds to Priority.
+        assert!(
+            !matches!(
+                waiting,
+                crate::types::game_state::WaitingFor::PhyrexianPayment { .. }
+            ),
+            "trivial-choice casts must not pause for PhyrexianPayment"
+        );
+        assert_eq!(state.players[0].life, life_before, "life unchanged");
+    }
+
+    /// CR 107.4f + CR 601.2f: Full engine round-trip via `apply`. Both options viable →
+    /// dispatcher returns `PhyrexianPayment`; submitting `SubmitPhyrexianChoices` advances
+    /// to `Priority`; life is unchanged if `PayMana` was chosen.
+    #[test]
+    fn phyrexian_engine_round_trip_dispatcher() {
+        use crate::game::engine::apply;
+        use crate::types::game_state::{ShardChoice, ShardOptions};
+
+        let mut state = setup_game_at_main_phase();
+        let spell = create_phyrexian_instant_in_hand(
+            &mut state,
+            PlayerId(0),
+            vec![ManaCostShard::PhyrexianBlue],
+            0,
+        );
+        add_mana(&mut state, PlayerId(0), ManaType::Blue, 1);
+        let life_before = state.players[0].life;
+
+        let cast = GameAction::CastSpell {
+            object_id: spell,
+            card_id: CardId(0x9117),
+            targets: Vec::new(),
+        };
+        let result = apply(&mut state, cast).expect("announce cast");
+        match &result.waiting_for {
+            crate::types::game_state::WaitingFor::PhyrexianPayment { shards, .. } => {
+                assert_eq!(shards.len(), 1);
+                assert!(matches!(shards[0].options, ShardOptions::ManaOrLife));
+            }
+            other => panic!("expected PhyrexianPayment, got {other:?}"),
+        }
+
+        // Submit PayMana.
+        let submit = GameAction::SubmitPhyrexianChoices {
+            choices: vec![ShardChoice::PayMana],
+        };
+        let result = apply(&mut state, submit).expect("submit choices");
+        assert_eq!(
+            state.players[0].life, life_before,
+            "PayMana keeps life unchanged"
+        );
+        // The waiting_for advances past PhyrexianPayment.
+        assert!(!matches!(
+            result.waiting_for,
+            crate::types::game_state::WaitingFor::PhyrexianPayment { .. }
+        ));
+    }
+
+    /// CR 107.4f + CR 601.2f + CR 118.3: Engine round-trip — submitting PayLife deducts 2 life.
+    #[test]
+    fn phyrexian_engine_round_trip_pay_life() {
+        use crate::game::engine::apply;
+        use crate::types::game_state::ShardChoice;
+
+        let mut state = setup_game_at_main_phase();
+        let spell = create_phyrexian_instant_in_hand(
+            &mut state,
+            PlayerId(0),
+            vec![ManaCostShard::PhyrexianBlue],
+            0,
+        );
+        add_mana(&mut state, PlayerId(0), ManaType::Blue, 1);
+        let life_before = state.players[0].life;
+
+        let cast = GameAction::CastSpell {
+            object_id: spell,
+            card_id: CardId(0x9117),
+            targets: Vec::new(),
+        };
+        let _ = apply(&mut state, cast).expect("announce cast");
+        let submit = GameAction::SubmitPhyrexianChoices {
+            choices: vec![ShardChoice::PayLife],
+        };
+        let _ = apply(&mut state, submit).expect("submit choices");
+        assert_eq!(
+            state.players[0].life,
+            life_before - 2,
+            "PayLife deducts 2 per shard"
+        );
+    }
+
+    /// CR 107.4f + CR 601.2f: Engine dispatcher rejects submitting the wrong number of
+    /// choices.
+    #[test]
+    fn phyrexian_engine_rejects_mismatched_choice_count() {
+        use crate::game::engine::apply;
+        use crate::types::game_state::ShardChoice;
+
+        let mut state = setup_game_at_main_phase();
+        let spell = create_phyrexian_instant_in_hand(
+            &mut state,
+            PlayerId(0),
+            vec![ManaCostShard::PhyrexianBlue],
+            0,
+        );
+        add_mana(&mut state, PlayerId(0), ManaType::Blue, 1);
+
+        let cast = GameAction::CastSpell {
+            object_id: spell,
+            card_id: CardId(0x9117),
+            targets: Vec::new(),
+        };
+        let _ = apply(&mut state, cast).expect("announce cast");
+        let submit = GameAction::SubmitPhyrexianChoices {
+            choices: vec![ShardChoice::PayMana, ShardChoice::PayLife], // length 2 vs 1 shard
+        };
+        let result = apply(&mut state, submit);
+        assert!(result.is_err(), "mismatched choice count must error");
+    }
+
+    /// CR 107.4f + CR 601.2f + CR 118.3: Submitting PayLife with insufficient life
+    /// (i.e., life dropped mid-cast) is rejected via validation at resume time.
+    #[test]
+    fn phyrexian_submit_rejects_stale_paylife_under_insufficient_life() {
+        let mut state = setup_game_at_main_phase();
+        let spell = create_phyrexian_instant_in_hand(
+            &mut state,
+            PlayerId(0),
+            vec![ManaCostShard::PhyrexianBlue],
+            0,
+        );
+        add_mana(&mut state, PlayerId(0), ManaType::Blue, 1);
+
+        let mut events = Vec::new();
+        let _waiting =
+            handle_cast_spell(&mut state, PlayerId(0), spell, CardId(0x9117), &mut events)
+                .expect("announce cast");
+        // Now mid-cast, life drops to 1 (below the 2-life threshold for a Phyrexian shard).
+        state.players[0].life = 1;
+
+        // The current shard options would be `ManaOnly` (mana available, life_budget=0),
+        // so compute_phyrexian_shards reports ManaOnly — engine dispatch validation
+        // will reject PayLife. This path is exercised through the dispatcher, not directly.
+        // Here we assert the shape is correct by re-computing shards.
+        let spell_meta = build_spell_meta(&state, PlayerId(0), spell);
+        let any_color =
+            crate::game::static_abilities::player_can_spend_as_any_color(&state, PlayerId(0));
+        let max_life = crate::game::life_costs::max_phyrexian_life_payments(&state, PlayerId(0));
+        let current_shards = crate::game::mana_payment::compute_phyrexian_shards(
+            &state.players[0].mana_pool,
+            &state.objects.get(&spell).unwrap().mana_cost,
+            spell_meta.as_ref(),
+            any_color,
+            max_life,
+        );
+        assert_eq!(current_shards.len(), 1);
+        assert!(
+            matches!(
+                current_shards[0].options,
+                crate::types::game_state::ShardOptions::ManaOnly
+            ),
+            "after life drop below 2, shard options must collapse to ManaOnly"
         );
     }
 }

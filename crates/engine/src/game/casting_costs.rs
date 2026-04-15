@@ -1091,6 +1091,19 @@ pub(super) fn pay_and_push_adventure(
         return enter_payment_step(state, player, convoke_mode, events);
     }
 
+    // CR 107.4f + CR 601.2f: Pause for interactive Phyrexian choice when the cost has
+    // at least one shard with both mana and 2-life viable. The resume handler calls
+    // `finalize_mana_payment_with_phyrexian_choices` which finishes the cast.
+    if let Some(waiting) = maybe_pause_for_phyrexian_choice(state, player, object_id, cost, events)
+    {
+        let mut pending = PendingCast::new(object_id, card_id, ability, cost.clone());
+        pending.casting_variant = casting_variant;
+        pending.distribute = distribute;
+        pending.origin_zone = origin_zone;
+        state.pending_cast = Some(Box::new(pending));
+        return Ok(waiting);
+    }
+
     finalize_cast(
         state,
         player,
@@ -1136,6 +1149,36 @@ pub(super) fn finalize_cast(
     origin_zone: Zone,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    finalize_cast_with_phyrexian_choices(
+        state,
+        player,
+        object_id,
+        card_id,
+        ability,
+        cost,
+        casting_variant,
+        origin_zone,
+        None,
+        events,
+    )
+}
+
+/// CR 107.4f + CR 601.2f: Variant of `finalize_cast` that threads explicit per-shard
+/// Phyrexian choices through `pay_mana_cost_with_choices`. `None` preserves
+/// auto-decide behavior.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn finalize_cast_with_phyrexian_choices(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    card_id: CardId,
+    ability: ResolvedAbility,
+    cost: &crate::types::mana::ManaCost,
+    casting_variant: CastingVariant,
+    origin_zone: Zone,
+    phyrexian_choices: Option<&[crate::types::game_state::ShardChoice]>,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
     // CR 700.14: Snapshot pool size before payment to compute actual mana spent.
     let pool_before = state
         .players
@@ -1144,7 +1187,14 @@ pub(super) fn finalize_cast(
         .map(|p| p.mana_pool.total())
         .unwrap_or(0);
 
-    super::casting::pay_mana_cost(state, player, object_id, cost, events)?;
+    super::casting::pay_mana_cost_with_choices(
+        state,
+        player,
+        object_id,
+        cost,
+        phyrexian_choices,
+        events,
+    )?;
 
     // CR 700.14: Compute actual mana deducted from pool (not declared cost).
     let pool_after = state
@@ -1609,6 +1659,20 @@ pub fn finalize_mana_payment(
     player: PlayerId,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
+    // CR 107.4f + CR 601.2f: Pause for per-shard Phyrexian choice if the cost contains
+    // Phyrexian mana AND at least one shard has both mana and life options available.
+    // `PendingCast` stays in `state.pending_cast` across the pause — the resume handler
+    // in `engine.rs` calls `finalize_mana_payment_with_phyrexian_choices`.
+    if let Some(pending_ref) = state.pending_cast.as_ref() {
+        let cost = pending_ref.cost.clone();
+        let source_id = pending_ref.object_id;
+        if let Some(waiting) =
+            maybe_pause_for_phyrexian_choice(state, player, source_id, &cost, events)
+        {
+            return Ok(waiting);
+        }
+    }
+
     let pending = state
         .pending_cast
         .take()
@@ -1711,6 +1775,202 @@ pub fn finalize_mana_payment(
         pending.origin_zone,
         events,
     )
+}
+
+/// CR 107.4f + CR 601.2f: Resume cast completion after the caster submits their
+/// per-shard Phyrexian choices. Mirrors `finalize_mana_payment` but threads the
+/// explicit choices through `pay_mana_cost_with_choices`.
+///
+/// Caller (engine dispatcher) is responsible for validating choice count and current
+/// affordability via `compute_phyrexian_shards` before invoking this helper. If the
+/// revalidation fails, the caller returns `EngineError::ActionNotAllowed` instead.
+pub fn finalize_mana_payment_with_phyrexian_choices(
+    state: &mut GameState,
+    player: PlayerId,
+    phyrexian_choices: &[crate::types::game_state::ShardChoice],
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    let pending = state
+        .pending_cast
+        .take()
+        .ok_or_else(|| EngineError::InvalidAction("No pending cast to finalize".to_string()))?;
+
+    if let Some(ability_index) = pending.activation_ability_index {
+        super::casting::pay_mana_cost_with_choices(
+            state,
+            player,
+            pending.object_id,
+            &pending.cost,
+            Some(phyrexian_choices),
+            events,
+        )?;
+        return push_activated_ability_to_stack(
+            state,
+            player,
+            pending.object_id,
+            ability_index,
+            pending.ability,
+            pending.activation_cost.as_ref(),
+            events,
+        );
+    }
+
+    if let Some(unit) = pending.distribute {
+        // CR 601.2d: X + distribution + Phyrexian is extremely rare (no known current cards).
+        // Fall through to the auto-decision distribution path for safety — the Phyrexian
+        // choices were already consumed via pay_mana_cost_with_choices above (the X-spell
+        // distribution path is orthogonal).
+        let pool_before = state
+            .players
+            .iter()
+            .find(|pl| pl.id == player)
+            .map(|pl| pl.mana_pool.total())
+            .unwrap_or(0);
+
+        super::casting::pay_mana_cost_with_choices(
+            state,
+            player,
+            pending.object_id,
+            &pending.cost,
+            Some(phyrexian_choices),
+            events,
+        )?;
+
+        let pool_after = state
+            .players
+            .iter()
+            .find(|pl| pl.id == player)
+            .map(|pl| pl.mana_pool.total())
+            .unwrap_or(0);
+        let non_x_cost = pending.cost.mana_value();
+        let total_paid = pool_before.saturating_sub(pool_after) as u32;
+        let x_value = pending
+            .ability
+            .chosen_x
+            .unwrap_or_else(|| total_paid.saturating_sub(non_x_cost));
+
+        let targets = super::ability_utils::flatten_targets_in_chain(&pending.ability);
+        let mut pending_resumed = PendingCast::new(
+            pending.object_id,
+            pending.card_id,
+            pending.ability,
+            crate::types::mana::ManaCost::NoCost,
+        );
+        pending_resumed.casting_variant = pending.casting_variant;
+        pending_resumed.origin_zone = pending.origin_zone;
+
+        if unit == DistributionUnit::EvenSplitDamage && !targets.is_empty() {
+            let num = targets.len() as u32;
+            let per_target = x_value / num;
+            let distribution: Vec<_> = targets.iter().map(|t| (t.clone(), per_target)).collect();
+            pending_resumed.ability.distribution = Some(distribution);
+            state.pending_cast = Some(Box::new(pending_resumed));
+
+            let pending = state.pending_cast.take().unwrap();
+            return finalize_cast(
+                state,
+                player,
+                pending.object_id,
+                pending.card_id,
+                pending.ability,
+                &pending.cost,
+                pending.casting_variant,
+                pending.origin_zone,
+                events,
+            );
+        }
+
+        state.pending_cast = Some(Box::new(pending_resumed));
+        return Ok(WaitingFor::DistributeAmong {
+            player,
+            total: x_value,
+            targets,
+            unit,
+        });
+    }
+
+    finalize_cast_with_phyrexian_choices(
+        state,
+        player,
+        pending.object_id,
+        pending.card_id,
+        pending.ability,
+        &pending.cost,
+        pending.casting_variant,
+        pending.origin_zone,
+        Some(phyrexian_choices),
+        events,
+    )
+}
+
+/// CR 107.4f + CR 601.2f: Determine whether this cast needs to pause for per-shard
+/// Phyrexian payment choice, and construct the matching `WaitingFor::PhyrexianPayment`
+/// if so.
+///
+/// Auto-taps mana sources first (idempotent: already-tapped lands are skipped) so the
+/// shard-options computation reflects the pool the caster will actually spend from.
+/// Returns `Some(WaitingFor::PhyrexianPayment {...})` when at least one Phyrexian shard
+/// has `ShardOptions::ManaOrLife`; otherwise returns `None` so the caller proceeds with
+/// the existing auto-decision path.
+pub(super) fn maybe_pause_for_phyrexian_choice(
+    state: &mut GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    cost: &crate::types::mana::ManaCost,
+    events: &mut Vec<GameEvent>,
+) -> Option<WaitingFor> {
+    // Fast reject: no Phyrexian shards → no pause.
+    match cost {
+        crate::types::mana::ManaCost::Cost { shards, .. } => {
+            if !shards.iter().any(|s| {
+                matches!(
+                    mana_payment::shard_to_mana_type(*s),
+                    mana_payment::ShardRequirement::Phyrexian(..)
+                        | mana_payment::ShardRequirement::HybridPhyrexian(..)
+                )
+            }) {
+                return None;
+            }
+        }
+        _ => return None,
+    }
+
+    // CR 601.2h + CR 605: Auto-tap mana sources before shard-options computation so
+    // the simulation reflects the actual post-tap pool.
+    auto_tap_mana_sources(state, player, cost, events, Some(source_id));
+
+    let spell_meta = super::casting::build_spell_meta(state, player, source_id);
+    let any_color = super::static_abilities::player_can_spend_as_any_color(state, player);
+    let max_life = super::life_costs::max_phyrexian_life_payments(state, player);
+
+    let shards = {
+        let player_data = state.players.iter().find(|p| p.id == player)?;
+        mana_payment::compute_phyrexian_shards(
+            &player_data.mana_pool,
+            cost,
+            spell_meta.as_ref(),
+            any_color,
+            max_life,
+        )
+    };
+
+    // CR 107.4f + CR 601.2f: Pause iff the choice is meaningful — at least one shard
+    // has both options viable. Trivial-choice shards auto-resolve without pausing.
+    let has_meaningful_choice = shards.iter().any(|s| {
+        matches!(
+            s.options,
+            crate::types::game_state::ShardOptions::ManaOrLife
+        )
+    });
+    if !has_meaningful_choice {
+        return None;
+    }
+
+    Some(WaitingFor::PhyrexianPayment {
+        player,
+        spell_object: source_id,
+        shards,
+    })
 }
 
 /// Return true if the given cost contains a `ManaCostShard::X` shard.

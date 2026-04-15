@@ -890,6 +890,96 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
         (WaitingFor::ManaPayment { player, .. }, GameAction::PassPriority) => {
             casting_costs::finalize_mana_payment(state, *player, &mut events)?
         }
+        // CR 107.4f + CR 601.2f + CR 601.2h: Caster submitted per-shard Phyrexian
+        // choices. Validate choice count + current affordability, then resume the
+        // cast via `finalize_mana_payment_with_phyrexian_choices`.
+        (
+            WaitingFor::PhyrexianPayment {
+                player,
+                spell_object,
+                shards,
+            },
+            GameAction::SubmitPhyrexianChoices { choices },
+        ) => {
+            let player = *player;
+            let spell_object = *spell_object;
+            let expected_len = shards.len();
+            if choices.len() != expected_len {
+                return Err(EngineError::InvalidAction(format!(
+                    "Phyrexian choice count mismatch: expected {expected_len}, got {}",
+                    choices.len()
+                )));
+            }
+            // CR 118.3: Re-validate affordability against current state — life may have
+            // dropped mid-cast (e.g., a life-loss replacement fired), so `PayLife` choices
+            // on shards that now show `LifeOnly`/`ManaOrLife` must still have life available.
+            {
+                let pending_ref = state.pending_cast.as_ref().ok_or_else(|| {
+                    EngineError::InvalidAction("No pending cast for Phyrexian payment".to_string())
+                })?;
+                let cost = pending_ref.cost.clone();
+                let spell_meta = casting::build_spell_meta(state, player, spell_object);
+                let any_color =
+                    super::static_abilities::player_can_spend_as_any_color(state, player);
+                let max_life = super::life_costs::max_phyrexian_life_payments(state, player);
+                let player_pool = state
+                    .players
+                    .iter()
+                    .find(|p| p.id == player)
+                    .map(|p| p.mana_pool.clone())
+                    .ok_or_else(|| EngineError::InvalidAction("Player not found".to_string()))?;
+                let current_shards = mana_payment::compute_phyrexian_shards(
+                    &player_pool,
+                    &cost,
+                    spell_meta.as_ref(),
+                    any_color,
+                    max_life,
+                );
+                if current_shards.len() != expected_len {
+                    return Err(EngineError::ActionNotAllowed(
+                        "Phyrexian shard count changed during pause".to_string(),
+                    ));
+                }
+                for (choice, shard) in choices.iter().zip(current_shards.iter()) {
+                    match (choice, shard.options) {
+                        (
+                            crate::types::game_state::ShardChoice::PayLife,
+                            crate::types::game_state::ShardOptions::ManaOnly,
+                        ) => {
+                            return Err(EngineError::ActionNotAllowed(
+                                "Cannot pay life for shard — only mana available".to_string(),
+                            ));
+                        }
+                        (
+                            crate::types::game_state::ShardChoice::PayMana,
+                            crate::types::game_state::ShardOptions::LifeOnly,
+                        ) => {
+                            return Err(EngineError::ActionNotAllowed(
+                                "Cannot pay mana for shard — only life available".to_string(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            casting_costs::finalize_mana_payment_with_phyrexian_choices(
+                state,
+                player,
+                &choices,
+                &mut events,
+            )?
+        }
+        // CR 601.2i: CancelCast during Phyrexian payment rolls back the cast —
+        // mirrors the ManaPayment CancelCast path.
+        (WaitingFor::PhyrexianPayment { player, .. }, GameAction::CancelCast) => {
+            let player = *player;
+            match state.pending_cast.take() {
+                Some(pending) => {
+                    engine_casting::cancel_pending_cast(state, player, &pending, &mut events)
+                }
+                None => WaitingFor::Priority { player },
+            }
+        }
         // Allow mana abilities during mana payment (mid-cast)
         (
             WaitingFor::ManaPayment {

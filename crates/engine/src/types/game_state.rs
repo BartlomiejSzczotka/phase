@@ -524,6 +524,46 @@ pub enum CombatTaxPending {
     },
 }
 
+/// CR 107.4f + CR 601.2f: Which legal payments a single Phyrexian shard offers to the
+/// caster. Computed from the mana pool state (Phyrexian color availability) combined with
+/// the caster's life total and CantLoseLife status (CR 118.3 + CR 119.8).
+///
+/// The engine only pauses for a `WaitingFor::PhyrexianPayment` when at least one shard
+/// carries `ManaOrLife` — otherwise the choice is trivial and auto-resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ShardOptions {
+    /// Both mana and 2 life are legal payments; player must choose.
+    ManaOrLife,
+    /// Only mana is legal (insufficient life or CR 119.8 CantLoseLife lock).
+    ManaOnly,
+    /// Only 2 life is legal (no mana of the shard's color available, given restrictions).
+    LifeOnly,
+}
+
+/// CR 107.4f + CR 601.2f: The caster's resolved choice for one Phyrexian shard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum ShardChoice {
+    /// Pay one mana of the shard's color (or either component color for hybrid-Phyrexian).
+    PayMana,
+    /// Pay 2 life.
+    PayLife,
+}
+
+/// CR 107.4f: Per-shard payment context surfaced to the UI during `WaitingFor::PhyrexianPayment`.
+///
+/// `shard_index` identifies the shard's position within the cost's `shards` vector so that
+/// the resume handler can align `Vec<ShardChoice>` to the shards that actually need a choice.
+/// `color` is the printed shard color (one color for plain Phyrexian, one representative for
+/// hybrid-Phyrexian display — the full hybrid routing happens inside payment).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PhyrexianShard {
+    pub shard_index: usize,
+    pub color: ManaColor,
+    pub options: ShardOptions,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct PlayerDeckPool {
     pub player: PlayerId,
@@ -1164,6 +1204,22 @@ pub enum WaitingFor {
         per_creature: Vec<(ObjectId, crate::types::mana::ManaCost)>,
         pending: CombatTaxPending,
     },
+    /// CR 107.4f + CR 601.2f + CR 601.2h: Caster must choose mana-or-2-life for each
+    /// Phyrexian shard that has both options viable. Only pauses when the choice is
+    /// meaningful — if every shard resolves to `ShardOptions::ManaOnly` or
+    /// `ShardOptions::LifeOnly`, the engine auto-decides and skips this state.
+    ///
+    /// The `PendingCast` still lives in `GameState::pending_cast` (same ManaPayment
+    /// convention), so multiplayer visibility filtering continues to clear inner detail
+    /// for opponents while they see the spell on the stack.
+    PhyrexianPayment {
+        player: PlayerId,
+        /// The spell object being cast.
+        spell_object: ObjectId,
+        /// One entry per Phyrexian shard in the cost. `shards.len()` is the required
+        /// length of the submitted `Vec<ShardChoice>`.
+        shards: Vec<PhyrexianShard>,
+    },
 }
 
 /// CR 707.10c: A target slot on a copied spell, showing current target and alternatives.
@@ -1283,6 +1339,7 @@ impl WaitingFor {
             | WaitingFor::WardSacrificeChoice { player, .. }
             | WaitingFor::ConniveDiscard { player, .. }
             | WaitingFor::CombatTaxPayment { player, .. }
+            | WaitingFor::PhyrexianPayment { player, .. }
             | WaitingFor::DiscardChoice { player, .. } => Some(*player),
             WaitingFor::GameOver { .. } => None,
         }
@@ -1339,7 +1396,11 @@ impl WaitingFor {
     /// inside a spell's mana payment still routes the cast via the outer
     /// `ManaPayment` state (which is a cast state).
     pub fn has_pending_cast(&self) -> bool {
-        self.pending_cast_ref().is_some() || matches!(self, WaitingFor::ManaPayment { .. })
+        self.pending_cast_ref().is_some()
+            || matches!(
+                self,
+                WaitingFor::ManaPayment { .. } | WaitingFor::PhyrexianPayment { .. }
+            )
     }
 }
 

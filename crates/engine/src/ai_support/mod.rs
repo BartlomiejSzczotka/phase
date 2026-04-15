@@ -92,6 +92,22 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
                 || indices.len() < modal.min_choices
                 || indices.len() > modal.max_choices
         }
+        (
+            WaitingFor::PhyrexianPayment { shards, .. },
+            GameAction::SubmitPhyrexianChoices { choices },
+        ) => {
+            if choices.len() != shards.len() {
+                return true;
+            }
+            use crate::types::game_state::{ShardChoice, ShardOptions};
+            choices.iter().zip(shards.iter()).any(|(choice, shard)| {
+                matches!(
+                    (choice, shard.options),
+                    (ShardChoice::PayLife, ShardOptions::ManaOnly)
+                        | (ShardChoice::PayMana, ShardOptions::LifeOnly)
+                )
+            })
+        }
         (WaitingFor::NamedChoice { options, .. }, GameAction::ChooseOption { choice }) => {
             !options.is_empty() && !options.iter().any(|option| option == choice)
         }
