@@ -1456,7 +1456,13 @@ fn priority_actions(state: &GameState, player: PlayerId) -> Vec<CandidateAction>
                             crate::game::static_abilities::player_can_spend_as_any_color(
                                 state, player,
                             );
-                        crate::game::mana_payment::can_pay_for_spell(pool, &cost, None, any_color)
+                        // CR 107.4f + CR 118.3 + CR 119.8: honor the player's
+                        // Phyrexian life budget for costs containing {C/P}.
+                        let max_life =
+                            crate::game::life_costs::max_phyrexian_life_payments(state, player);
+                        crate::game::mana_payment::can_pay_for_spell(
+                            pool, &cost, None, any_color, max_life,
+                        )
                     });
                 if !can_afford {
                     continue;

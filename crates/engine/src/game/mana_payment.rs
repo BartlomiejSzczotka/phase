@@ -151,8 +151,12 @@ pub fn produce_mana(
 ///
 /// CR 202.1a: Paying a mana cost requires matching the type of any colored or colorless
 /// mana symbols as well as paying the generic mana indicated in the cost.
+///
+/// This convenience wrapper assumes zero Phyrexian-life payments are available. Cost
+/// validation paths that know the caster's life total and CantLoseLife status must call
+/// [`can_pay_for_spell`] with a computed `max_life_payments` to honor CR 107.4f.
 pub fn can_pay(pool: &ManaPool, cost: &ManaCost) -> bool {
-    can_pay_for_spell(pool, cost, None, false)
+    can_pay_for_spell(pool, cost, None, false, 0)
 }
 
 /// Classification of a mana cost for auto-pay eligibility.
@@ -213,17 +217,26 @@ pub fn classify_payment(cost: &ManaCost) -> PaymentClassification {
 ///
 /// CR 609.4b: When `any_color` is true, colored mana requirements can be paid with
 /// mana of any color (e.g., Chromatic Orrery, Joiner Adept).
+///
+/// CR 107.4f + CR 118.3 + CR 119.8: `max_life_payments` caps the number of
+/// Phyrexian shards that can be satisfied by paying 2 life. Callers compute this
+/// from the prospective caster's life total and CantLoseLife status (see
+/// [`crate::game::life_costs::can_pay_life_cost`]); pool-only contexts pass 0.
+/// When a Phyrexian shard's mana option is unavailable, one payment is consumed
+/// from the budget; if the budget is exhausted, the cost can't be paid.
 pub fn can_pay_for_spell(
     pool: &ManaPool,
     cost: &ManaCost,
     spell: Option<&SpellMeta>,
     any_color: bool,
+    max_life_payments: u32,
 ) -> bool {
     match cost {
         ManaCost::NoCost | ManaCost::SelfManaCost => true,
         ManaCost::Cost { shards, generic } => {
             // Clone pool to simulate payment
             let mut sim = pool.clone();
+            let mut life_budget = max_life_payments;
             // Pay colored shards first
             for shard in shards {
                 match shard_to_mana_type(*shard) {
@@ -249,8 +262,23 @@ pub fn can_pay_for_spell(
                             return false;
                         }
                     }
-                    // CR 107.4f: Phyrexian mana — can always be paid (2 life as fallback).
-                    ShardRequirement::Phyrexian(_) => {}
+                    // CR 107.4f: Phyrexian mana — pay one mana of indicated color or 2 life.
+                    // Prefer mana when available (matches `pay_cost_with_demand`);
+                    // otherwise consume a life payment from the budget.
+                    ShardRequirement::Phyrexian(color) => {
+                        let mana_ok = if any_color {
+                            spend_any_eligible(&mut sim, spell).is_some()
+                        } else {
+                            spend_eligible(&mut sim, color, spell).is_some()
+                        };
+                        if !mana_ok {
+                            // CR 118.3 + CR 119.8: Life fallback requires budget.
+                            if life_budget == 0 {
+                                return false;
+                            }
+                            life_budget -= 1;
+                        }
+                    }
                     // CR 107.4e: Monocolored hybrid {2/C} — pay 1 colored or 2 generic.
                     ShardRequirement::TwoGenericHybrid(color) => {
                         // CR 609.4b: When any_color, any mana satisfies the colored half.
@@ -287,8 +315,22 @@ pub fn can_pay_for_spell(
                             return false;
                         }
                     }
-                    // CR 107.4f: Hybrid Phyrexian — can always be paid (2 life fallback).
-                    ShardRequirement::HybridPhyrexian(_, _) => {}
+                    // CR 107.4f: Hybrid Phyrexian — pay either component color or 2 life.
+                    ShardRequirement::HybridPhyrexian(a, b) => {
+                        let mana_ok = if any_color {
+                            spend_any_eligible(&mut sim, spell).is_some()
+                        } else {
+                            spend_eligible(&mut sim, a, spell).is_some()
+                                || spend_eligible(&mut sim, b, spell).is_some()
+                        };
+                        if !mana_ok {
+                            // CR 118.3 + CR 119.8: Life fallback requires budget.
+                            if life_budget == 0 {
+                                return false;
+                            }
+                            life_budget -= 1;
+                        }
+                    }
                 }
             }
             // Pay generic
@@ -966,14 +1008,58 @@ mod tests {
         assert!(can_pay(&pool_u, &cost));
     }
 
+    /// CR 107.4f + CR 118.3 + CR 119.8: Phyrexian payability depends on the
+    /// caster's life budget. With zero life budget and no mana of the color,
+    /// the cost can't be paid; with budget for even one 2-life payment, it can.
     #[test]
-    fn can_pay_phyrexian_always_payable() {
-        let pool = ManaPool::default(); // Empty pool
+    fn can_pay_phyrexian_requires_mana_or_life_budget() {
+        let empty_pool = ManaPool::default();
+        let white_pool = pool_with(&[(ManaType::White, 1)]);
         let cost = ManaCost::Cost {
             shards: vec![ManaCostShard::PhyrexianWhite],
             generic: 0,
         };
-        assert!(can_pay(&pool, &cost));
+
+        // No mana, no life budget → unpayable.
+        assert!(!can_pay_for_spell(&empty_pool, &cost, None, false, 0));
+
+        // No mana, but life budget ≥ 1 → payable with 2 life.
+        assert!(can_pay_for_spell(&empty_pool, &cost, None, false, 1));
+
+        // Mana of the color is present → payable regardless of life budget.
+        assert!(can_pay_for_spell(&white_pool, &cost, None, false, 0));
+    }
+
+    /// CR 107.4f + CR 118.3: Multi-Phyrexian cost requires enough life-or-mana
+    /// combined coverage. Two Phyrexian shards with no mana need budget ≥ 2.
+    #[test]
+    fn can_pay_multi_phyrexian_tracks_life_budget() {
+        let pool = ManaPool::default();
+        let cost = ManaCost::Cost {
+            shards: vec![ManaCostShard::PhyrexianBlack, ManaCostShard::PhyrexianBlack],
+            generic: 0,
+        };
+
+        assert!(!can_pay_for_spell(&pool, &cost, None, false, 0));
+        assert!(!can_pay_for_spell(&pool, &cost, None, false, 1));
+        assert!(can_pay_for_spell(&pool, &cost, None, false, 2));
+    }
+
+    /// CR 107.4f: Hybrid Phyrexian — with neither mana color available and no
+    /// life budget, the cost is unpayable.
+    #[test]
+    fn can_pay_hybrid_phyrexian_requires_mana_or_life() {
+        let empty_pool = ManaPool::default();
+        let blue_pool = pool_with(&[(ManaType::Blue, 1)]);
+        // {W/U/P} — white, blue, or 2 life.
+        let cost = ManaCost::Cost {
+            shards: vec![ManaCostShard::PhyrexianWhiteBlue],
+            generic: 0,
+        };
+
+        assert!(!can_pay_for_spell(&empty_pool, &cost, None, false, 0));
+        assert!(can_pay_for_spell(&empty_pool, &cost, None, false, 1));
+        assert!(can_pay_for_spell(&blue_pool, &cost, None, false, 0));
     }
 
     // --- pay_cost tests ---
@@ -1148,7 +1234,7 @@ mod tests {
             keyword_kinds: vec![],
             cast_from_zone: None,
         };
-        assert!(can_pay_for_spell(&pool, &cost, Some(&elf), false));
+        assert!(can_pay_for_spell(&pool, &cost, Some(&elf), false, 0));
 
         // Goblin creature: only unrestricted green usable → insufficient
         let goblin = SpellMeta {
@@ -1157,7 +1243,7 @@ mod tests {
             keyword_kinds: vec![],
             cast_from_zone: None,
         };
-        assert!(!can_pay_for_spell(&pool, &cost, Some(&goblin), false));
+        assert!(!can_pay_for_spell(&pool, &cost, Some(&goblin), false, 0));
     }
 
     #[test]
@@ -1189,7 +1275,8 @@ mod tests {
             &pool,
             &cost,
             Some(&flashback_spell),
-            false
+            false,
+            0,
         ));
 
         let normal_spell = SpellMeta {
@@ -1198,7 +1285,13 @@ mod tests {
             keyword_kinds: vec![],
             cast_from_zone: Some(crate::types::zones::Zone::Hand),
         };
-        assert!(!can_pay_for_spell(&pool, &cost, Some(&normal_spell), false));
+        assert!(!can_pay_for_spell(
+            &pool,
+            &cost,
+            Some(&normal_spell),
+            false,
+            0
+        ));
     }
 
     #[test]
@@ -1232,6 +1325,7 @@ mod tests {
             &cost,
             Some(&graveyard_flashback_spell),
             false,
+            0,
         ));
 
         let hand_flashback_spell = SpellMeta {
@@ -1245,6 +1339,7 @@ mod tests {
             &cost,
             Some(&hand_flashback_spell),
             false,
+            0,
         ));
     }
 
@@ -1267,7 +1362,7 @@ mod tests {
         // Without any_color, can't pay white with green
         assert!(!can_pay(&pool, &cost));
         // With any_color, can pay white with green
-        assert!(can_pay_for_spell(&pool, &cost, None, true));
+        assert!(can_pay_for_spell(&pool, &cost, None, true, 0));
     }
 
     #[test]

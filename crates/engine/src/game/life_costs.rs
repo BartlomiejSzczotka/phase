@@ -53,6 +53,29 @@ impl PayLifeCostResult {
     }
 }
 
+/// CR 107.4f + CR 118.3 + CR 119.8: How many Phyrexian 2-life payments can this
+/// player afford, given their current life total and CantLoseLife status?
+///
+/// Threaded into [`crate::game::mana_payment::can_pay_for_spell`] so Phyrexian
+/// shards without an available mana option are only treated as payable when the
+/// player has the life budget to cover them.
+///
+/// Returns 0 under CantLoseLife (CR 119.8) or when the player isn't found.
+/// Otherwise floor-divides current life by 2 (CR 118.3: must have the resource
+/// to pay fully).
+pub fn max_phyrexian_life_payments(state: &GameState, player: PlayerId) -> u32 {
+    // CR 119.8: A cost that involves paying life can't be paid while locked.
+    if player_has_cant_lose_life(state, player) {
+        return 0;
+    }
+    state
+        .players
+        .iter()
+        .find(|p| p.id == player)
+        .map(|p| u32::try_from((p.life / 2).max(0)).unwrap_or(0))
+        .unwrap_or(0)
+}
+
 /// CR 118.3 + CR 119.4b + CR 119.8: Pure predicate — can this player pay `amount` life?
 ///
 /// Used by pre-validation paths (`can_activate_ability_now`, Defiler offer filtering,
