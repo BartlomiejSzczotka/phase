@@ -122,8 +122,8 @@ impl<'a> FilterContext<'a> {
         }
     }
 
-    /// CR 107.3a + CR 700.5: Full ability context with an explicit controller
-    /// override. Use when the filter controller differs from `ability.controller`
+    /// CR 109.4: Full ability context with an explicit controller override.
+    /// Use when the filter controller differs from `ability.controller`
     /// (e.g., "creature that player controls" mass-move dispatched to a target
     /// player) AND the filter still needs the resolving ability for target-
     /// inheriting predicates like `FilterProp::SameNameAsParentTarget`.
@@ -804,7 +804,7 @@ struct SourceContext<'a> {
     ability: Option<&'a ResolvedAbility>,
 }
 
-/// CR 201.2 + CR 700.5 + CR 400.7: Resolve the printed name of the first
+/// CR 201.2 + CR 400.7: Resolve the printed name of the first
 /// `TargetRef::Object` in the resolving ability's targets, falling back to the
 /// LKI cache when the targeted object has already left its zone (e.g. exiled
 /// by the immediately preceding sub-effect).
@@ -921,7 +921,7 @@ fn matches_filter_prop(
                 false
             }
         }
-        // CR 201.2 + CR 700.5: Match objects whose name equals the resolving ability's
+        // CR 201.2: Match objects whose name equals the resolving ability's
         // first object target (the parent target captured by the chained sub-ability).
         // Falls back to the LKI cache when the targeted object has already left its zone
         // (e.g., the seed was just exiled by the preceding effect).
@@ -1138,8 +1138,8 @@ fn zone_change_record_matches_property(
             .objects
             .get(&source.id)
             .is_some_and(|s| s.name.eq_ignore_ascii_case(&record.name)),
-        // CR 201.2 + CR 700.5: Same-name match against the resolving ability's
-        // first object target (parent target). Mirrors the live-object evaluator.
+        // CR 201.2: Same-name match against the resolving ability's first object
+        // target (parent target). Mirrors the live-object evaluator.
         FilterProp::SameNameAsParentTarget => parent_target_name(state, source.ability)
             .is_some_and(|name| record.name.eq_ignore_ascii_case(&name)),
 

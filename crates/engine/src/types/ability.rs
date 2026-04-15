@@ -1114,7 +1114,7 @@ pub enum FilterProp {
     /// Matches objects with the same name as a previously-referenced card.
     /// Used for "search your library for a card with that name" patterns.
     SameName,
-    /// CR 201.2 + CR 700.5: Matches objects whose name equals the name of the
+    /// CR 201.2: Matches objects whose name equals the name of the
     /// resolving ability's first object target. Used by chained sub-abilities
     /// where a prior step targeted/exiled a card and the next step references
     /// "cards with that name" — e.g., Deadly Cover-Up's "search ... for any
@@ -3353,7 +3353,7 @@ impl TargetFilter {
         }
     }
 
-    /// CR 604.3: Returns the union of explicit zone constraints in this filter.
+    /// CR 400.3 + CR 701.23: Returns the union of explicit zone constraints in this filter.
     /// Preserves the multi-zone semantics of `FilterProp::InAnyZone` (e.g.
     /// "search ... graveyard, hand, and library") that `extract_in_zone` collapses
     /// to a single zone. Falls back to the single `InZone` when only that variant

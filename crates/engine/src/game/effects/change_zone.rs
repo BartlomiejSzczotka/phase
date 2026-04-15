@@ -468,9 +468,9 @@ pub fn resolve_all(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    // CR 604.3: When the target filter encodes multiple zones via `InAnyZone`,
-    // scan their union; otherwise fall back to the explicit `origin` (or
-    // `Battlefield`). Single-zone filters (`InZone` alone) preserve legacy
+    // CR 400.3 + CR 701.23: When the target filter encodes multiple zones via
+    // `InAnyZone`, scan their union; otherwise fall back to the explicit `origin`
+    // (or `Battlefield`). Single-zone filters (`InZone` alone) preserve legacy
     // behavior — only the multi-zone shape opts into the union scan.
     let (origin_zones, dest_zone, target_filter) = match &ability.effect {
         Effect::ChangeZoneAll {
@@ -1892,5 +1892,202 @@ mod tests {
 
         // Total moved across all zones is 4 (two from hand + one each from GY/Lib).
         assert_eq!(state.last_effect_count, Some(4));
+    }
+
+    /// CR 701.59c + CR 601.2f: End-to-end cascade for Deadly Cover-Up with
+    /// evidence paid. Chains DestroyAll → (conditional on AdditionalCostPaid)
+    /// exile seed from opponent's graveyard → multi-zone same-name exile →
+    /// Draw N where N = `exiled_from_hand_this_resolution`. Verifies:
+    ///   (a) When evidence is NOT paid, the cascade is skipped — only DestroyAll
+    ///       runs, hand-exile counter stays 0, controller draws 0 cards.
+    ///   (b) When evidence IS paid, the full cascade runs: seed exiled, matching
+    ///       cards exiled across all three zones, hand-exile counter populated,
+    ///       Draw consumes that counter value.
+    /// This is the plan's acceptance bar for the Draw-counter integration.
+    #[test]
+    fn deadly_cover_up_full_cascade_with_and_without_evidence() {
+        use crate::game::effects::resolve_ability_chain;
+        use crate::types::ability::{
+            AbilityCondition, FilterProp, QuantityExpr, QuantityRef, SpellContext, TypedFilter,
+        };
+        use crate::types::card_type::CoreType;
+
+        for evidence_paid in [false, true] {
+            let mut state = GameState::new_two_player(42);
+
+            // Battlefield creature (destroyed by DestroyAll either way).
+            let bf_creature = create_object(
+                &mut state,
+                CardId(10),
+                PlayerId(1),
+                "Llanowar Elves".to_string(),
+                Zone::Battlefield,
+            );
+            state
+                .objects
+                .get_mut(&bf_creature)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Creature);
+
+            // Seed creature already in opponent's graveyard.
+            let seed = create_object(
+                &mut state,
+                CardId(20),
+                PlayerId(1),
+                "Grizzly Bears".to_string(),
+                Zone::Graveyard,
+            );
+
+            // Matching cards: two in hand, one in library, one in graveyard.
+            let _hand1 = create_object(
+                &mut state,
+                CardId(21),
+                PlayerId(1),
+                "Grizzly Bears".to_string(),
+                Zone::Hand,
+            );
+            let _hand2 = create_object(
+                &mut state,
+                CardId(22),
+                PlayerId(1),
+                "Grizzly Bears".to_string(),
+                Zone::Hand,
+            );
+            let _lib = create_object(
+                &mut state,
+                CardId(23),
+                PlayerId(1),
+                "Grizzly Bears".to_string(),
+                Zone::Library,
+            );
+            let _gy2 = create_object(
+                &mut state,
+                CardId(24),
+                PlayerId(1),
+                "Grizzly Bears".to_string(),
+                Zone::Graveyard,
+            );
+
+            // Give P0 a library to draw from.
+            for i in 0..5 {
+                create_object(
+                    &mut state,
+                    CardId(100 + i),
+                    PlayerId(0),
+                    "Library Card".to_string(),
+                    Zone::Library,
+                );
+            }
+
+            // Build the cascade (deepest first):
+            //   Draw { count: ExiledFromHandThisResolution }
+            let draw = ResolvedAbility::new(
+                Effect::Draw {
+                    count: QuantityExpr::Ref {
+                        qty: QuantityRef::ExiledFromHandThisResolution,
+                    },
+                },
+                vec![],
+                ObjectId(100),
+                PlayerId(0),
+            );
+            //   Multi-zone same-name exile → Draw
+            let multi_zone = ResolvedAbility::new(
+                Effect::ChangeZoneAll {
+                    origin: None,
+                    destination: Zone::Exile,
+                    target: TargetFilter::Typed(TypedFilter::default().properties(vec![
+                        FilterProp::InAnyZone {
+                            zones: vec![Zone::Graveyard, Zone::Hand, Zone::Library],
+                        },
+                        FilterProp::SameNameAsParentTarget,
+                    ])),
+                },
+                vec![TargetRef::Object(seed)],
+                ObjectId(100),
+                PlayerId(0),
+            )
+            .sub_ability(draw);
+            //   Exile seed from opponent's graveyard → multi_zone
+            let exile_seed = ResolvedAbility::new(
+                Effect::ChangeZone {
+                    origin: Some(Zone::Graveyard),
+                    destination: Zone::Exile,
+                    target: TargetFilter::Any,
+                    owner_library: false,
+                    enter_transformed: false,
+                    under_your_control: false,
+                    enter_tapped: false,
+                    enters_attacking: false,
+                    up_to: false,
+                },
+                vec![TargetRef::Object(seed)],
+                ObjectId(100),
+                PlayerId(0),
+            )
+            .sub_ability(multi_zone)
+            .condition(AbilityCondition::AdditionalCostPaid);
+            //   Top: DestroyAll → exile_seed
+            let top = ResolvedAbility::new(
+                Effect::DestroyAll {
+                    target: TargetFilter::Typed(TypedFilter::creature()),
+                    cant_regenerate: false,
+                },
+                vec![],
+                ObjectId(100),
+                PlayerId(0),
+            )
+            .sub_ability(exile_seed)
+            .context(SpellContext {
+                additional_cost_paid: evidence_paid,
+                ..SpellContext::default()
+            });
+
+            let mut events = Vec::new();
+            resolve_ability_chain(&mut state, &top, &mut events, 0).expect("cascade must resolve");
+
+            // DestroyAll always fires.
+            assert_eq!(
+                state.objects[&bf_creature].zone,
+                Zone::Graveyard,
+                "battlefield creature must be destroyed regardless of evidence",
+            );
+
+            if evidence_paid {
+                // Seed exiled from graveyard.
+                assert_eq!(state.objects[&seed].zone, Zone::Exile);
+                // All four matching bears exiled.
+                for id in [_hand1, _hand2, _lib, _gy2] {
+                    assert_eq!(
+                        state.objects[&id].zone,
+                        Zone::Exile,
+                        "matching bear {id:?} must be exiled by the cascade",
+                    );
+                }
+                // Hand-exile counter equals 2.
+                assert_eq!(state.exiled_from_hand_this_resolution, 2);
+                // P0 drew exactly 2 cards (Draw consumed the counter).
+                assert_eq!(
+                    state.players[0].hand.len(),
+                    2,
+                    "Draw must pull count from ExiledFromHandThisResolution",
+                );
+            } else {
+                // Cascade skipped: seed still in graveyard, matching bears untouched,
+                // counter stayed at 0, no cards drawn.
+                assert_eq!(state.objects[&seed].zone, Zone::Graveyard);
+                for id in [_hand1, _hand2, _lib, _gy2] {
+                    assert_ne!(
+                        state.objects[&id].zone,
+                        Zone::Exile,
+                        "matching bear {id:?} must NOT be exiled without evidence",
+                    );
+                }
+                assert_eq!(state.exiled_from_hand_this_resolution, 0);
+                assert_eq!(state.players[0].hand.len(), 0);
+            }
+        }
     }
 }
