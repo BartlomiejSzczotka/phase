@@ -82,7 +82,34 @@ fn register_transient_effect(
                 static_def.condition.clone(),
             );
         }
-        Some(TargetFilter::Player | TargetFilter::Controller | TargetFilter::None) | None => {}
+        // CR 113.10 + CR 702.16j: Player-scoped affected filter — register the
+        // transient effect bound to the ability's controller (a player) via
+        // SpecificPlayer. Queried by player_has_protection_from_everything
+        // and friends in static_abilities.rs.
+        Some(TargetFilter::Controller) => {
+            state.add_transient_continuous_effect(
+                ability.source_id,
+                ability.controller,
+                duration.clone(),
+                TargetFilter::SpecificPlayer {
+                    id: ability.controller,
+                },
+                static_def.modifications.clone(),
+                static_def.condition.clone(),
+            );
+        }
+        // Pass-through: the caller already pinned a specific player.
+        Some(TargetFilter::SpecificPlayer { id }) => {
+            state.add_transient_continuous_effect(
+                ability.source_id,
+                ability.controller,
+                duration.clone(),
+                TargetFilter::SpecificPlayer { id: *id },
+                static_def.modifications.clone(),
+                static_def.condition.clone(),
+            );
+        }
+        Some(TargetFilter::Player | TargetFilter::None) | None => {}
         Some(filter) => {
             let filter = crate::game::effects::resolved_object_filter(ability, filter);
             // Broadcast filter: find matching objects at resolution time and bind each.

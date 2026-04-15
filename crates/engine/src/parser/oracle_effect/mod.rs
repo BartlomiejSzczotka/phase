@@ -3385,12 +3385,69 @@ fn lower_subject_predicate_ast(
             // CR 608.2c: Inject the subject's target into targeted effects that were
             // parsed via the imperative path (connive, phase out, force block, suspect).
             inject_subject_target(&mut clause.effect, &subject);
+            // CR 113.10 + CR 702.16j: When the subject is a player-scope filter
+            // ("you" → Controller) and the predicate produced a keyword grant
+            // whose keywords are all player-applicable (currently only
+            // Protection), retarget the static's `affected` from SelfRef (the
+            // spell object) to the subject filter so the keyword is granted to
+            // the player. This is the Teferi's-Protection-clause-2 hook.
+            retarget_player_scoped_keyword_grant(&mut clause.effect, &subject.affected);
             if clause.multi_target.is_none() {
                 clause.multi_target = subject.multi_target;
             }
             clause
         }
     }
+}
+
+/// CR 113.10 + CR 702.16j: If `effect` is a `GenericEffect` whose static
+/// modifications are all player-applicable AddKeyword grants and whose
+/// `affected` is the default `SelfRef`, rewrite `affected` to `subject_filter`.
+///
+/// Only player-applicable keywords are rerouted; the list is intentionally
+/// narrow because the overwhelming majority of "gain [keyword]" patterns target
+/// a creature subject (and therefore belong on the object, not the controller).
+/// Today only `Keyword::Protection(_)` qualifies — extend as other keywords
+/// become legal on players.
+fn retarget_player_scoped_keyword_grant(effect: &mut Effect, subject_filter: &TargetFilter) {
+    let Effect::GenericEffect {
+        static_abilities, ..
+    } = effect
+    else {
+        return;
+    };
+    if !matches!(
+        subject_filter,
+        TargetFilter::Controller | TargetFilter::Player
+    ) {
+        return;
+    }
+    for sd in static_abilities.iter_mut() {
+        if sd.affected != Some(TargetFilter::SelfRef) {
+            continue;
+        }
+        if sd.modifications.is_empty() {
+            continue;
+        }
+        let all_player_applicable = sd.modifications.iter().all(|m| match m {
+            ContinuousModification::AddKeyword { keyword }
+            | ContinuousModification::RemoveKeyword { keyword } => {
+                is_player_applicable_keyword(keyword)
+            }
+            _ => false,
+        });
+        if all_player_applicable {
+            sd.affected = Some(subject_filter.clone());
+        }
+    }
+}
+
+/// CR 113.10 + CR 702.16j: Keywords that can be granted to a player.
+/// Today only Protection (per CR 702.16b/j). Extend as new player-granted
+/// keyword qualities are implemented — always via typed enum variants, never
+/// via string comparison.
+fn is_player_applicable_keyword(keyword: &crate::types::keywords::Keyword) -> bool {
+    matches!(keyword, crate::types::keywords::Keyword::Protection(_))
 }
 
 fn target_filter_can_target_player(filter: &TargetFilter) -> bool {
@@ -10708,6 +10765,18 @@ mod tests {
             "expected protection-from-everything keyword in {:?}",
             protection_statics
         );
+        // CR 113.10: Player-scope grant — the static must be affected by the
+        // controller (the protected player), not SelfRef (the spell object).
+        assert!(
+            protection_statics
+                .iter()
+                .any(|s| s.affected == Some(TargetFilter::Controller)),
+            "protection-from-everything must target Controller (player), got {:?}",
+            protection_statics
+                .iter()
+                .map(|s| &s.affected)
+                .collect::<Vec<_>>()
+        );
 
         // Third clause: phase out all permanents you control.
         let third = second
@@ -10718,6 +10787,68 @@ mod tests {
             matches!(*third.effect, Effect::PhaseOut { .. }),
             "expected PhaseOut clause, got {:?}",
             third.effect
+        );
+    }
+
+    /// CR 113.10 + CR 702.16j: "you gain protection from everything" — the
+    /// player-scoped keyword grant must emit `affected: Controller` so the
+    /// static binds to the spell's controller at resolution time (not to the
+    /// spell object itself, which is destined for the graveyard).
+    #[test]
+    fn parse_you_gain_protection_from_everything_targets_controller() {
+        use crate::types::ability::ContinuousModification;
+        use crate::types::keywords::{Keyword, ProtectionTarget};
+
+        let def = parse_effect_chain("you gain protection from everything", AbilityKind::Spell);
+        let Effect::GenericEffect {
+            static_abilities, ..
+        } = &*def.effect
+        else {
+            panic!(
+                "expected GenericEffect for 'you gain protection from everything', got {:?}",
+                def.effect
+            );
+        };
+        assert_eq!(static_abilities.len(), 1, "expected one StaticDefinition");
+        let sd = &static_abilities[0];
+        assert_eq!(
+            sd.affected,
+            Some(TargetFilter::Controller),
+            "affected filter must be Controller (player-scoped), got {:?}",
+            sd.affected
+        );
+        assert!(
+            sd.modifications.iter().any(|m| matches!(
+                m,
+                ContinuousModification::AddKeyword {
+                    keyword: Keyword::Protection(ProtectionTarget::Everything)
+                }
+            )),
+            "expected AddKeyword(Protection(Everything)) in {:?}",
+            sd.modifications
+        );
+    }
+
+    /// CR 702: "gain flying until end of turn" without "you" subject must keep
+    /// `affected: SelfRef` — the grant is creature-scoped, not player-scoped.
+    /// Guards against the player-routing logic leaking into creature pump
+    /// sub-abilities.
+    #[test]
+    fn parse_gain_flying_creature_scope_preserved() {
+        let def = parse_effect_chain("gain flying until end of turn", AbilityKind::Spell);
+        let Effect::GenericEffect {
+            static_abilities, ..
+        } = &*def.effect
+        else {
+            panic!(
+                "expected GenericEffect for 'gain flying until end of turn', got {:?}",
+                def.effect
+            );
+        };
+        assert_eq!(
+            static_abilities[0].affected,
+            Some(TargetFilter::SelfRef),
+            "affected filter must remain SelfRef for creature-scoped keyword grants"
         );
     }
 
