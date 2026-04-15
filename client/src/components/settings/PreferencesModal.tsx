@@ -13,6 +13,7 @@ import type {
   LogDefaultState,
 } from "../../stores/preferencesStore.ts";
 import { BATTLEFIELDS } from "../board/battlefields.ts";
+import { PLAIN_BACKGROUNDS } from "../board/plainBackgrounds.ts";
 import { ModalPanelShell } from "../ui/ModalPanelShell";
 
 interface PreferencesModalProps {
@@ -34,11 +35,30 @@ const SETTINGS_TABS = [
 
 type SettingsTabId = (typeof SETTINGS_TABS)[number]["id"];
 
-const BOARD_BACKGROUNDS: { value: string; label: string }[] = [
-  { value: "auto-wubrg", label: "Auto (match deck)" },
-  { value: "random", label: "Random" },
-  ...BATTLEFIELDS.map((bf) => ({ value: bf.id, label: `${bf.label} (${bf.color})` })),
-  { value: "none", label: "None" },
+const BOARD_BACKGROUND_GROUPS: { label: string; options: { value: string; label: string }[] }[] = [
+  {
+    label: "Automatic",
+    options: [
+      { value: "auto-wubrg", label: "Auto (match deck)" },
+      { value: "random", label: "Random" },
+    ],
+  },
+  {
+    label: "Battlefields",
+    options: BATTLEFIELDS.map((bf) => ({ value: bf.id, label: `${bf.label} (${bf.color})` })),
+  },
+  {
+    label: "Plain",
+    options: PLAIN_BACKGROUNDS.map((bg) => ({ value: bg.id, label: bg.label })),
+  },
+  {
+    label: "Custom",
+    options: [{ value: "custom", label: "Custom URL" }],
+  },
+  {
+    label: "Off",
+    options: [{ value: "none", label: "None" }],
+  },
 ];
 
 export function PreferencesModal({ onClose }: PreferencesModalProps) {
@@ -51,6 +71,8 @@ export function PreferencesModal({ onClose }: PreferencesModalProps) {
   const setCardSize = usePreferencesStore((s) => s.setCardSize);
   const setLogDefaultState = usePreferencesStore((s) => s.setLogDefaultState);
   const setBoardBackground = usePreferencesStore((s) => s.setBoardBackground);
+  const customBackgroundUrl = usePreferencesStore((s) => s.customBackgroundUrl);
+  const setCustomBackgroundUrl = usePreferencesStore((s) => s.setCustomBackgroundUrl);
   const setVfxQuality = usePreferencesStore((s) => s.setVfxQuality);
   const setCombatPacing = usePreferencesStore((s) => s.setCombatPacing);
   const masterVolume = usePreferencesStore((s) => s.masterVolume);
@@ -172,12 +194,25 @@ export function PreferencesModal({ onClose }: PreferencesModalProps) {
                       onChange={(e) => setBoardBackground(e.target.value)}
                       className="w-full rounded-[14px] border border-white/10 bg-black/18 px-3 py-2 text-sm text-slate-100 focus:border-sky-400/40 focus:outline-none"
                     >
-                      {BOARD_BACKGROUNDS.map((bg) => (
-                        <option key={bg.value} value={bg.value}>
-                          {bg.label}
-                        </option>
+                      {BOARD_BACKGROUND_GROUPS.map((group) => (
+                        <optgroup key={group.label} label={group.label}>
+                          {group.options.map((bg) => (
+                            <option key={bg.value} value={bg.value}>
+                              {bg.label}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
+                    {boardBackground === "custom" && (
+                      <input
+                        type="url"
+                        value={customBackgroundUrl}
+                        onChange={(e) => setCustomBackgroundUrl(e.target.value)}
+                        placeholder="https://example.com/image.jpg"
+                        className="mt-2 w-full rounded-[14px] border border-white/10 bg-black/18 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-sky-400/40 focus:outline-none"
+                      />
+                    )}
                   </SettingGroup>
                 </SettingsSection>
               )}

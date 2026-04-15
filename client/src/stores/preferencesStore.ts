@@ -13,8 +13,10 @@ export type BattlefieldCardDisplay = "art_crop" | "full_card";
 export type TapRotation = "mtga" | "classic";
 /** "auto-wubrg" picks a random battlefield matching the dominant mana color.
  *  "random" picks a random battlefield each game regardless of color.
- *  "none" disables the background image. Any other string is a battlefield ID. */
-export type BoardBackground = "auto-wubrg" | "random" | "none" | (string & {});
+ *  "none" disables the background image.
+ *  "custom" uses the URL stored in `customBackgroundUrl`.
+ *  Any other string is a battlefield or plain-color ID. */
+export type BoardBackground = "auto-wubrg" | "random" | "none" | "custom" | (string & {});
 
 interface PreferencesState {
   cardSize: CardSizePreference;
@@ -22,6 +24,7 @@ interface PreferencesState {
   followActiveOpponent: boolean;
   logDefaultState: LogDefaultState;
   boardBackground: BoardBackground;
+  customBackgroundUrl: string;
   vfxQuality: VfxQuality;
   animationSpeed: AnimationSpeed;
   combatPacing: CombatPacing;
@@ -49,6 +52,7 @@ interface PreferencesActions {
   setFollowActiveOpponent: (enabled: boolean) => void;
   setLogDefaultState: (state: LogDefaultState) => void;
   setBoardBackground: (bg: BoardBackground) => void;
+  setCustomBackgroundUrl: (url: string) => void;
   setVfxQuality: (quality: VfxQuality) => void;
   setAnimationSpeed: (speed: AnimationSpeed) => void;
   setCombatPacing: (pacing: CombatPacing) => void;
@@ -79,6 +83,7 @@ export const usePreferencesStore = create<PreferencesState & PreferencesActions>
       followActiveOpponent: false,
       logDefaultState: "closed",
       boardBackground: "auto-wubrg",
+      customBackgroundUrl: "",
       vfxQuality: "full",
       animationSpeed: "normal",
       combatPacing: "normal",
@@ -104,6 +109,7 @@ export const usePreferencesStore = create<PreferencesState & PreferencesActions>
       setFollowActiveOpponent: (enabled) => set({ followActiveOpponent: enabled }),
       setLogDefaultState: (state) => set({ logDefaultState: state }),
       setBoardBackground: (bg) => set({ boardBackground: bg }),
+      setCustomBackgroundUrl: (url) => set({ customBackgroundUrl: url.trim() }),
       setVfxQuality: (quality) => set({ vfxQuality: quality }),
       setAnimationSpeed: (speed) => set({ animationSpeed: speed }),
       setCombatPacing: (pacing) => set({ combatPacing: pacing }),
