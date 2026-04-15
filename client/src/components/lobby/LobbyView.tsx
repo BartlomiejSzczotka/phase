@@ -38,7 +38,6 @@ const FORMAT_FILTERS: { value: GameFormat | null; label: string }[] = [
   { value: "Brawl", label: "BRL" },
   { value: "HistoricBrawl", label: "HBR" },
   { value: "FreeForAll", label: "FFA" },
-  { value: "TwoHeadedGiant", label: "2HG" },
 ];
 
 export function LobbyView({

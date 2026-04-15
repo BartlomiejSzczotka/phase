@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 
 import type { PlayerId } from "../../adapter/types.ts";
-import { useGameStore } from "../../stores/gameStore.ts";
+import { isMultiplayerMode, useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
 import { useCanActForWaitingState, usePerspectivePlayerId, usePlayerId } from "../../hooks/usePlayerId.ts";
 import { sortCreaturesForBlockers } from "../../viewmodel/blockerSorting.ts";
@@ -16,7 +16,11 @@ export function GameBoard() {
   const gameState = useGameStore((s) => s.gameState);
   const waitingFor = useGameStore((s) => s.waitingFor);
   const legalActions = useGameStore((s) => s.legalActions);
-  const canUndo = useGameStore((s) => s.stateHistory.length > 0);
+  // Undo is a single-player affordance only — multiplayer games have
+  // authoritative shared state and can't safely rewind one client.
+  const canUndo = useGameStore(
+    (s) => s.stateHistory.length > 0 && !isMultiplayerMode(s.gameMode),
+  );
   const undo = useGameStore((s) => s.undo);
   const blockerAssignments = useUiStore((s) => s.blockerAssignments);
   const localPlayerId = usePlayerId();

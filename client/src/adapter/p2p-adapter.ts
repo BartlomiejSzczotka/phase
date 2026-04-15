@@ -186,6 +186,10 @@ export class P2PHostAdapter implements EngineAdapter {
 
   async initialize(): Promise<void> {
     await this.wasm.initialize();
+    // Flip the engine's multiplayer flag ON so any subsequent
+    // `restoreState` call on this WASM instance fails in the engine itself
+    // — defense in depth alongside this adapter's own `restoreState` throw.
+    await this.wasm.setMultiplayerMode(true);
     // Subscribe to incoming guest connections via the Peer directly. We don't
     // route through `connection.ts` `onGuestConnected` here because the
     // adapter owns the Peer reference and per-conn wiring needs the assigned

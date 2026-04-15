@@ -205,6 +205,40 @@ describe("gameStore", () => {
     expect(useGameStore.getState().stateHistory).toHaveLength(5);
   });
 
+  it("dispatch does not push to stateHistory in multiplayer", async () => {
+    // Authoritative state lives on the wire in multiplayer, so undo is
+    // suppressed — rewinding a single client's view would desync.
+    const state1 = createMockState({ turn_number: 1 });
+    const state2 = createMockState({ turn_number: 2 });
+    const adapter = createMockAdapter(state1);
+
+    await act(() => useGameStore.getState().initGame("test-id", adapter));
+    act(() => useGameStore.getState().setGameMode("online"));
+    (adapter.getState as ReturnType<typeof vi.fn>).mockResolvedValue(state2);
+
+    await act(() => useGameStore.getState().dispatch({ type: "PassPriority" }));
+
+    expect(useGameStore.getState().stateHistory).toHaveLength(0);
+  });
+
+  it("undo is a no-op in multiplayer even if stateHistory is non-empty", async () => {
+    // Defense-in-depth: setGameMode after history was populated would be
+    // unusual, but the guard must still hold.
+    const state1 = createMockState({ turn_number: 1 });
+    const adapter = createMockAdapter(state1);
+
+    await act(() => useGameStore.getState().initGame("test-id", adapter));
+    act(() => {
+      useGameStore.setState({ stateHistory: [state1], gameMode: "p2p-host" });
+    });
+
+    await act(() => useGameStore.getState().undo());
+
+    // History untouched; restoreState never invoked.
+    expect(useGameStore.getState().stateHistory).toHaveLength(1);
+    expect(adapter.restoreState).not.toHaveBeenCalled();
+  });
+
   it("reset clears all state", async () => {
     const state = createMockState();
     const adapter = createMockAdapter(state);

@@ -29,11 +29,13 @@ const mocks = vi.hoisted(() => {
       players: [],
     })),
     initializeGame: vi.fn(async () => ({ events: [] })),
+    setMultiplayerMode: vi.fn(async (_enabled: boolean) => undefined),
   };
 });
 const mockSubmitAction = mocks.submitAction;
 const mockGetFilteredState = mocks.getFilteredState;
 const mockInitializeGame = mocks.initializeGame;
+const mockSetMultiplayerMode = mocks.setMultiplayerMode;
 
 vi.mock("../wasm-adapter", () => ({
   WasmAdapter: vi.fn().mockImplementation(() => ({
@@ -43,6 +45,7 @@ vi.mock("../wasm-adapter", () => ({
     getState: mocks.getState,
     getLegalActions: mocks.getLegalActions,
     getFilteredState: mocks.getFilteredState,
+    setMultiplayerMode: mocks.setMultiplayerMode,
     dispose: vi.fn(),
   })),
 }));
@@ -57,6 +60,7 @@ beforeEach(() => {
   mockSubmitAction.mockClear();
   mockGetFilteredState.mockClear();
   mockInitializeGame.mockClear();
+  mockSetMultiplayerMode.mockClear();
 });
 
 afterEach(() => {
@@ -159,6 +163,19 @@ describe("P2PHostAdapter — 3-4p multiplayer", () => {
     expect(() => new P2PHostAdapter(hostDeck, peer as unknown as Peer, 5)).toThrow(
       "P2P supports 2-4 players",
     );
+  });
+
+  it("enables multiplayer-mode enforcement on the engine at init time", async () => {
+    // P2PHostAdapter owns an authoritative WASM engine locally; flipping
+    // the engine's multiplayer flag during initialize() ensures any stray
+    // restore_game_state call is refused in the Rust layer.
+    const { adapter } = makeHost(2);
+    expect(mockSetMultiplayerMode).not.toHaveBeenCalled();
+
+    await adapter.initialize();
+
+    expect(mockSetMultiplayerMode).toHaveBeenCalledTimes(1);
+    expect(mockSetMultiplayerMode).toHaveBeenCalledWith(true);
   });
 
   it("issues unique tokens per guest and includes them in per-seat game_setup", async () => {

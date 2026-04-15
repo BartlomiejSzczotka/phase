@@ -16,6 +16,9 @@ import { MenuShell } from "../components/menu/MenuShell";
 import { MyDecks } from "../components/menu/MyDecks";
 import { ACTIVE_DECK_KEY, loadActiveDeck, touchDeckPlayed } from "../constants/storage";
 import { parseRoomCode } from "../network/connection";
+import { evaluateDeckCompatibility } from "../services/deckCompatibility";
+import type { LiveCheck } from "./multiplayerPageState";
+import { classifyCompatResult } from "./multiplayerPageState";
 import { clearWsSession } from "../services/multiplayerSession";
 import { useMultiplayerStore } from "../stores/multiplayerStore";
 import { useGameStore, saveActiveGame } from "../stores/gameStore";
@@ -75,10 +78,59 @@ export function MultiplayerPage() {
   const [deckSelectReturn, setDeckSelectReturn] =
     useState<MultiplayerView>("lobby");
   const serverAddress = useMultiplayerStore((s) => s.serverAddress);
+  // HostSetup mirrors its in-flight format into the store on every change,
+  // so reading it here lets both the deck-picker filter and the live
+  // compatibility check react to the user's format choice without any
+  // cross-component plumbing.
+  const storeFormatConfig = useMultiplayerStore((s) => s.formatConfig);
+  // Live deck-vs-format compatibility state, rendered as a chip under the
+  // Active Deck banner on host-setup. `idle` suppresses the chip entirely
+  // (no deck, no format, or not on host-setup). Evaluation runs through
+  // the engine — the frontend never decides legality itself.
+  const [liveCheck, setLiveCheck] = useState<LiveCheck>({ status: "idle" });
 
   useEffect(() => {
     setActiveDeckName(localStorage.getItem(ACTIVE_DECK_KEY));
   }, []);
+
+  // Live legality check: whenever the user is on host-setup with an active
+  // deck and a chosen format, re-run the engine's compatibility check after
+  // a short debounce. The debounce absorbs rapid format clicks so we don't
+  // fire a WASM call per keypress-equivalent.
+  useEffect(() => {
+    if (view !== "host-setup" || !activeDeckName) {
+      setLiveCheck({ status: "idle" });
+      return;
+    }
+    const format = storeFormatConfig?.format;
+    if (!format) {
+      setLiveCheck({ status: "idle" });
+      return;
+    }
+    const deck = loadActiveDeck();
+    if (!deck) {
+      setLiveCheck({ status: "idle" });
+      return;
+    }
+
+    setLiveCheck({ status: "checking", format });
+    let cancelled = false;
+    const handle = window.setTimeout(() => {
+      evaluateDeckCompatibility(deck, { selectedFormat: format })
+        .then((result) => {
+          if (cancelled) return;
+          setLiveCheck(classifyCompatResult(format, result));
+        })
+        .catch(() => {
+          if (!cancelled) setLiveCheck({ status: "idle" });
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(handle);
+    };
+  }, [view, activeDeckName, storeFormatConfig?.format]);
 
   // Reset view to lobby if hosting ends while we're on the waiting screen
   // (e.g. WebSocket error/disconnect)
@@ -102,9 +154,10 @@ export function MultiplayerPage() {
     if (view !== "deck-select") return;
 
     if (pendingAction) {
-      if (executeAction(pendingAction)) {
-        setPendingAction(null);
-      }
+      const action = pendingAction;
+      void executeAction(action).then((ok) => {
+        if (ok) setPendingAction(null);
+      });
       return;
     }
     setView(deckSelectReturn);
@@ -129,13 +182,55 @@ export function MultiplayerPage() {
     return { main_deck: mainDeck, sideboard };
   }, []);
 
-  // Execute a pending action (host or join) with the currently active deck
+  // Execute a pending action (host or join) with the currently active deck.
+  //
+  // Before routing, we validate the active deck against the chosen format
+  // via the engine's `evaluateDeckCompatibility` (the only authority on
+  // legality). If the deck fails, we surface the first engine-provided
+  // reason as a toast and push the user to deck-select so they can pick a
+  // compatible deck — rather than letting them host/join and fail server-
+  // side after the room is already open.
   const executeAction = useCallback(
-    (action: PendingAction) => {
+    async (action: PendingAction): Promise<boolean> => {
       const deckName = localStorage.getItem(ACTIVE_DECK_KEY);
       if (!deckName) {
         showToast("Select a deck before continuing.");
         return false;
+      }
+
+      const parsedDeck = loadActiveDeck();
+      if (!parsedDeck) {
+        showToast("Could not load deck. Try re-importing it.");
+        return false;
+      }
+
+      const validationFormat: GameFormat | undefined =
+        action.type === "host"
+          ? action.settings.formatConfig.format
+          : action.format;
+
+      if (validationFormat) {
+        try {
+          const compat = await evaluateDeckCompatibility(parsedDeck, {
+            selectedFormat: validationFormat,
+          });
+          if (compat.selected_format_compatible === false) {
+            const reason =
+              compat.selected_format_reasons[0]
+              ?? `Deck is not legal in ${validationFormat}.`;
+            showToast(reason);
+            setPendingAction(action);
+            setView("deck-select");
+            return false;
+          }
+        } catch (err) {
+          showToast(
+            err instanceof Error
+              ? `Deck check failed: ${err.message}`
+              : "Deck check failed.",
+          );
+          return false;
+        }
       }
 
       touchDeckPlayed(deckName);
@@ -201,7 +296,7 @@ export function MultiplayerPage() {
     (settings: HostSettings) => {
       const action: PendingAction = { type: "host", settings, connectionMode };
       if (activeDeckName) {
-        executeAction(action);
+        void executeAction(action);
       } else {
         setPendingAction(action);
         setView("deck-select");
@@ -226,7 +321,7 @@ export function MultiplayerPage() {
         context,
       };
       if (activeDeckName) {
-        executeAction(action);
+        void executeAction(action);
       } else {
         setPendingAction(action);
         setView("deck-select");
@@ -265,11 +360,8 @@ export function MultiplayerPage() {
   //
   // The happy paths (host-submit-without-deck, join-from-lobby-row) carry
   // the format on `pendingAction`. When the user clicks "Change Deck" out
-  // of host-setup, `pendingAction` is null — but HostSetup mirrors its
-  // in-flight format into the store on every change, so falling back to
-  // `storeFormatConfig` gives the deck picker the right filter without
-  // any cross-component plumbing.
-  const storeFormatConfig = useMultiplayerStore((s) => s.formatConfig);
+  // of host-setup, `pendingAction` is null — we fall back to the same
+  // `storeFormatConfig` the live-check effect uses above.
   const selectedFormat: GameFormat | undefined =
     pendingAction?.type === "host"
       ? pendingAction.settings.formatConfig.format
@@ -340,6 +432,10 @@ export function MultiplayerPage() {
           </div>
         )}
 
+        {view === "host-setup" && activeDeckName && liveCheck.status !== "idle" && (
+          <DeckLegalityChip check={liveCheck} />
+        )}
+
         {/* No deck warning — shown on lobby/host-setup when no deck is selected */}
         {(view === "lobby" || view === "host-setup") && !activeDeckName && (
           <div className="mx-auto mb-4 flex w-full max-w-xl items-center justify-between gap-3 rounded-[16px] border border-amber-500/20 bg-amber-500/8 px-4 py-2.5">
@@ -381,6 +477,14 @@ export function MultiplayerPage() {
             onHost={handleHostSetupComplete}
             onBack={() => setView("lobby")}
             connectionMode={connectionMode}
+            hostDisabled={liveCheck.status === "illegal" || liveCheck.status === "checking"}
+            hostDisabledReason={
+              liveCheck.status === "illegal"
+                ? `Deck is not legal in ${liveCheck.format}.`
+                : liveCheck.status === "checking"
+                  ? "Checking deck legality…"
+                  : undefined
+            }
           />
         )}
 
@@ -450,6 +554,57 @@ export function MultiplayerPage() {
             setLobbyRetryKey((k) => k + 1);
           }}
         />
+      )}
+    </div>
+  );
+}
+
+function DeckLegalityChip({ check }: { check: LiveCheck }) {
+  if (check.status === "idle") return null;
+
+  const base =
+    "mx-auto mb-4 flex w-full max-w-xl items-start gap-3 rounded-[16px] border px-4 py-2.5";
+
+  if (check.status === "checking") {
+    return (
+      <div className={`${base} border-white/8 bg-black/16`}>
+        <span className="text-xs text-slate-400">
+          Checking deck against {check.format}…
+        </span>
+      </div>
+    );
+  }
+
+  if (check.status === "legal") {
+    return (
+      <div
+        className={`${base} border-emerald-400/20 bg-emerald-500/[0.07]`}
+        role="status"
+      >
+        <span className="text-xs font-medium text-emerald-200">
+          ✓ Legal in {check.format}
+        </span>
+      </div>
+    );
+  }
+
+  // illegal — surface up to the first two reasons from the engine so the
+  // user knows why before they try to host.
+  const reasons = check.reasons.slice(0, 2);
+  return (
+    <div
+      className={`${base} flex-col border-rose-400/20 bg-rose-500/[0.07]`}
+      role="alert"
+    >
+      <div className="text-xs font-medium text-rose-200">
+        Not legal in {check.format}
+      </div>
+      {reasons.length > 0 && (
+        <ul className="mt-1 list-inside list-disc text-[11px] leading-5 text-rose-200/80">
+          {reasons.map((reason, i) => (
+            <li key={i}>{reason}</li>
+          ))}
+        </ul>
       )}
     </div>
   );

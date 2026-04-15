@@ -212,6 +212,21 @@ export class WasmAdapter implements EngineAdapter {
   }
 
   /**
+   * Toggle the engine's multiplayer enforcement flag. When enabled, the
+   * Rust side refuses `restore_game_state` with a descriptive error —
+   * defense against any caller trying to rewind a multiplayer game.
+   * Called by multiplayer adapters (P2P host/guest) after WASM init.
+   */
+  async setMultiplayerMode(enabled: boolean): Promise<void> {
+    this.assertInitialized();
+    if (this.engine) {
+      await this.engine.setMultiplayerMode(enabled);
+    } else {
+      this.fallback!.setMultiplayerMode(enabled);
+    }
+  }
+
+  /**
    * Clear the WASM game state without terminating the worker.
    *
    * Preserves the WASM instance (with V8 TurboFan optimizations), card database,
@@ -305,6 +320,7 @@ interface MainThreadFallback {
   getLegalActions(): Promise<LegalActionsResult>;
   getAiAction(difficulty: string, playerId: number): Promise<GameAction | null>;
   restoreState(stateJson: string): void;
+  setMultiplayerMode(enabled: boolean): void;
   ping(): string;
   initializeGame(
     deckData: unknown | null,
@@ -368,6 +384,10 @@ async function createMainThreadFallback(): Promise<MainThreadFallback> {
 
     restoreState: (stateJson: string) => {
       enqueue(() => wasm.restore_game_state(stateJson));
+    },
+
+    setMultiplayerMode: (enabled: boolean) => {
+      enqueue(() => wasm.set_multiplayer_mode(enabled));
     },
 
     ping: () => wasm.ping(),

@@ -37,7 +37,6 @@ const FORMAT_GROUPS: FormatGroup[] = [
     tone: "emerald",
     formats: [
       { format: "FreeForAll", label: "Free-for-All", description: "3–6 player battle royale" },
-      { format: "TwoHeadedGiant", label: "Two-Headed Giant", description: "2v2 team-based" },
     ],
   },
 ];

@@ -1,6 +1,6 @@
 import { useEffect } from "react";
 
-import { useGameStore } from "../stores/gameStore";
+import { isMultiplayerMode, useGameStore } from "../stores/gameStore";
 import { useUiStore } from "../stores/uiStore";
 import { dispatchAction } from "../game/dispatch";
 import { useAltToggle } from "./useAltToggle";
@@ -60,7 +60,7 @@ export function useKeyboardShortcuts(): void {
         return;
       }
 
-      const { gameState, waitingFor, dispatch, undo, stateHistory } =
+      const { gameState, waitingFor, dispatch, undo, stateHistory, gameMode } =
         useGameStore.getState();
       const uiState = useUiStore.getState();
 
@@ -93,8 +93,11 @@ export function useKeyboardShortcuts(): void {
 
         case "z":
         case "Z":
-          // Only plain Z (no Ctrl/Cmd modifier to avoid conflict with browser undo)
-          if (!e.ctrlKey && !e.metaKey) {
+          // Only plain Z (no Ctrl/Cmd modifier to avoid conflict with browser undo).
+          // Suppressed in multiplayer — the store's undo() already returns
+          // early in that mode, but gating the shortcut here also avoids
+          // swallowing the keystroke.
+          if (!e.ctrlKey && !e.metaKey && !isMultiplayerMode(gameMode)) {
             e.preventDefault();
             if (stateHistory.length > 0) {
               undo();

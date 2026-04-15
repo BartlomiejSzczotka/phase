@@ -54,6 +54,27 @@ thread_local! {
     /// Cell::take() + Cell::set() has no borrow guard, making it panic-resilient.
     static GAME_STATE: Cell<Option<GameState>> = const { Cell::new(None) };
     static CARD_DB: RefCell<Option<CardDatabase>> = const { RefCell::new(None) };
+    /// When set, the engine is running inside a multiplayer session (online
+    /// WebSocket, P2P host, or P2P guest). Undo-style state rollback is
+    /// refused in this mode because rewinding a single client's view would
+    /// desync from the authoritative game on the wire. See `restore_game_state`.
+    static MULTIPLAYER_MODE: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Toggle the multiplayer enforcement flag. Called by multiplayer adapters
+/// (P2P host/guest, WS) after the engine is initialized so subsequent
+/// `restore_game_state` calls fail fast with a clear error instead of
+/// silently rewriting the local view.
+#[wasm_bindgen]
+pub fn set_multiplayer_mode(enabled: bool) {
+    MULTIPLAYER_MODE.with(|cell| cell.set(enabled));
+}
+
+/// Read the multiplayer enforcement flag. Exposed primarily for tests and
+/// adapters that need to defend their own paths (e.g., skip history pushes).
+#[wasm_bindgen]
+pub fn is_multiplayer_mode() -> bool {
+    MULTIPLAYER_MODE.with(|cell| cell.get())
 }
 
 /// Take the game state out of the Cell, pass it to a closure that may mutate it,
@@ -274,13 +295,23 @@ pub fn initialize_game(
     to_js(&result)
 }
 
-/// Submit a game action and return the ActionResult (events + waiting_for).
+/// Submit a game action on behalf of `actor` and return the ActionResult
+/// (events + waiting_for).
+///
+/// **Security contract:** `actor` must be the transport-authenticated
+/// `PlayerId` of the caller — either the local human's seat (in local/AI
+/// games) or the connection-authenticated seat (in P2P/WebSocket games).
+/// It must *never* come from UI or wire payload data. The engine rejects any
+/// action whose `actor` does not match `authorized_submitter(state)`, so
+/// passing a spoofed value here will fail cleanly rather than silently
+/// applying the action as another player.
 #[wasm_bindgen]
-pub fn submit_action(action: JsValue) -> JsValue {
+pub fn submit_action(actor: u8, action: JsValue) -> JsValue {
     let action: GameAction =
         serde_wasm_bindgen::from_value(action).expect("Failed to deserialize GameAction");
+    let actor = PlayerId(actor);
 
-    match with_state_mut(|state| match apply(state, action) {
+    match with_state_mut(|state| match apply(state, actor, action) {
         Ok(result) => to_js(&result),
         Err(e) => {
             let error_msg = format!("Engine error: {}", e);
@@ -343,8 +374,17 @@ pub fn export_game_state_json() -> Result<String, JsValue> {
 /// Restore the game state from a JSON string.
 /// Uses serde_json which handles string-keyed maps (from localStorage round-trip)
 /// correctly deserializing into HashMap<ObjectId, V>.
+///
+/// Refuses when `MULTIPLAYER_MODE` is set — rewriting a single client's
+/// state in a multiplayer session would diverge from the authoritative
+/// game on the wire. Undo is a single-player affordance only.
 #[wasm_bindgen]
 pub fn restore_game_state(json_str: &str) -> Result<(), JsValue> {
+    if MULTIPLAYER_MODE.with(|cell| cell.get()) {
+        return Err(JsValue::from_str(
+            "restore_game_state refused: undo is disabled in multiplayer sessions",
+        ));
+    }
     let mut state: GameState = serde_json::from_str(json_str)
         .map_err(|e| JsValue::from_str(&format!("Failed to deserialize GameState: {}", e)))?;
     state.rng = ChaCha20Rng::seed_from_u64(state.rng_seed);
@@ -590,6 +630,31 @@ mod tests {
                 .copied(),
             Some(1)
         );
+    }
+
+    #[test]
+    fn multiplayer_mode_refuses_restore_game_state() {
+        // Single-player baseline: restore succeeds.
+        let state = GameState::new_two_player(7);
+        let json = serde_json::to_string(&state).unwrap();
+        set_multiplayer_mode(false);
+        assert!(restore_game_state(&json).is_ok());
+
+        // Toggle multiplayer on; restore must now refuse with a descriptive
+        // error and not mutate the stored game state.
+        set_multiplayer_mode(true);
+        let err = restore_game_state(&json).expect_err("should refuse in multiplayer");
+        let msg = err.as_string().unwrap_or_default();
+        assert!(
+            msg.contains("multiplayer"),
+            "error should mention multiplayer; got: {msg}"
+        );
+
+        // Flag is observable via the getter and clears cleanly.
+        assert!(is_multiplayer_mode());
+        set_multiplayer_mode(false);
+        assert!(!is_multiplayer_mode());
+        assert!(restore_game_state(&json).is_ok());
     }
 
     #[test]

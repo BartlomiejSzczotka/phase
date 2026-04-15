@@ -183,6 +183,10 @@ export class EngineWorkerClient {
     await this.request<null>({ type: "resetGame" });
   }
 
+  async setMultiplayerMode(enabled: boolean): Promise<void> {
+    await this.request<null>({ type: "setMultiplayerMode", enabled });
+  }
+
   async ping(): Promise<string> {
     return this.request<string>({ type: "ping" });
   }

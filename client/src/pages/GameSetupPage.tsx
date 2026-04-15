@@ -40,7 +40,6 @@ const FORMATS: FormatInfo[] = [
   { format: "Brawl", label: "Brawl", group: "commander" },
   { format: "HistoricBrawl", label: "Historic Brawl", group: "commander" },
   { format: "FreeForAll", label: "Free-for-All", group: "multiplayer" },
-  { format: "TwoHeadedGiant", label: "Two-Headed Giant", group: "multiplayer" },
 ];
 
 const GROUP_PILL_ACTIVE: Record<FormatGroup, string> = {

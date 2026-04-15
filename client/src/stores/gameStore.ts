@@ -39,6 +39,13 @@ export {
 
 export type GameMode = "ai" | "online" | "local" | "p2p-host" | "p2p-join";
 
+/** True for modes where the engine state is shared across the wire —
+ * undo/rewind would desync from the authoritative game, so the client
+ * must not build a stateHistory or expose an Undo affordance. */
+export function isMultiplayerMode(mode: GameMode | null): boolean {
+  return mode === "online" || mode === "p2p-host" || mode === "p2p-join";
+}
+
 interface GameStoreState {
   gameId: string | null;
   gameMode: GameMode | null;
@@ -157,13 +164,17 @@ export const useGameStore = create<GameStore>()(
     },
 
     dispatch: async (action) => {
-      const { adapter, gameState, gameId } = get();
+      const { adapter, gameState, gameId, gameMode } = get();
       if (!adapter || !gameState) {
         throw new Error("Game not initialized");
       }
 
-      // Save current state for undo (only for unrevealed-information actions)
-      const shouldSaveHistory = UNDOABLE_ACTIONS.has(action.type);
+      // Save current state for undo (only for unrevealed-information actions,
+      // and only in single-player — multiplayer sessions can't undo because
+      // rewinding this client's view would desync from the authoritative
+      // game state on the wire).
+      const shouldSaveHistory =
+        UNDOABLE_ACTIONS.has(action.type) && !isMultiplayerMode(gameMode);
 
       const result = await adapter.submitAction(action);
       const newState = await adapter.getState();
@@ -199,7 +210,8 @@ export const useGameStore = create<GameStore>()(
     },
 
     undo: async () => {
-      const { stateHistory, adapter } = get();
+      const { stateHistory, adapter, gameMode } = get();
+      if (isMultiplayerMode(gameMode)) return;
       if (stateHistory.length === 0 || !adapter) return;
 
       const previous = stateHistory[stateHistory.length - 1];

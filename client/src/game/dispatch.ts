@@ -7,7 +7,7 @@ import { audioManager } from "../audio/AudioManager";
 import { MAX_UNDO_HISTORY, UNDOABLE_ACTIONS } from "../constants/game";
 import { debugLog } from "./debugLog";
 import { useAnimationStore } from "../stores/animationStore";
-import { useGameStore, legalResultState, saveGame, saveCheckpoints } from "../stores/gameStore";
+import { isMultiplayerMode, useGameStore, legalResultState, saveGame, saveCheckpoints } from "../stores/gameStore";
 import { useMultiplayerStore } from "../stores/multiplayerStore";
 import { usePreferencesStore } from "../stores/preferencesStore";
 import { useUiStore } from "../stores/uiStore";
@@ -76,8 +76,12 @@ async function processAction(action: GameAction): Promise<void> {
   const snapshot = useAnimationStore.getState().captureSnapshot();
   currentSnapshot = snapshot;
 
-  // 2. Save undo history if applicable
-  const shouldSaveHistory = UNDOABLE_ACTIONS.has(action.type);
+  // 2. Save undo history if applicable. Gated off in multiplayer because
+  // rewinding a single client's view desyncs from the authoritative game
+  // state on the wire.
+  const { gameMode } = useGameStore.getState();
+  const shouldSaveHistory =
+    UNDOABLE_ACTIONS.has(action.type) && !isMultiplayerMode(gameMode);
 
   // 3. Call WASM — get events without updating state yet
   const result = await adapter.submitAction(action);

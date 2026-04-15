@@ -13,6 +13,12 @@ interface HostSetupProps {
   onHost: (settings: HostSettings) => void;
   onBack: () => void;
   connectionMode: "server" | "p2p";
+  /** When true, the host-submit button is disabled (e.g. live deck check
+   * says the active deck is illegal for the chosen format, or a check is
+   * still in flight). The parent surfaces the *reason* via the legality
+   * chip above the form, so this only needs to gate the submit itself. */
+  hostDisabled?: boolean;
+  hostDisabledReason?: string;
 }
 
 const TIMER_OPTIONS: { value: number | null; label: string }[] = [
@@ -22,16 +28,19 @@ const TIMER_OPTIONS: { value: number | null; label: string }[] = [
   { value: 120, label: "120s" },
 ];
 
-const FORMAT_OPTIONS: { format: GameFormat; label: string }[] = [
-  { format: "Standard", label: "Standard" },
-  { format: "Pioneer", label: "Pioneer" },
-  { format: "Historic", label: "Historic" },
-  { format: "Pauper", label: "Pauper" },
-  { format: "Commander", label: "Commander" },
-  { format: "Brawl", label: "Brawl" },
-  { format: "HistoricBrawl", label: "Historic Brawl" },
-  { format: "FreeForAll", label: "Free-for-All" },
-  { format: "TwoHeadedGiant", label: "Two-Headed Giant" },
+// Descriptions are mirrored from `FormatPicker.tsx` so the two pickers
+// explain each format the same way. Shown as a `title` tooltip on each
+// button. Two-Headed Giant is intentionally omitted — the engine doesn't
+// support team-based play yet, so advertising it here would ship a dead end.
+const FORMAT_OPTIONS: { format: GameFormat; label: string; description: string }[] = [
+  { format: "Standard", label: "Standard", description: "Rotating card pool, 60-card minimum, 4-of limit." },
+  { format: "Pioneer", label: "Pioneer", description: "Non-rotating format with sets from 2012 onward." },
+  { format: "Historic", label: "Historic", description: "Arena's eternal format — every Arena-legal card." },
+  { format: "Pauper", label: "Pauper", description: "Commons only — every card must have been printed at common." },
+  { format: "Commander", label: "Commander", description: "100-card singleton with a legendary commander, 2–4 players." },
+  { format: "Brawl", label: "Brawl", description: "60-card Standard singleton with a legendary commander." },
+  { format: "HistoricBrawl", label: "Historic Brawl", description: "60-card eternal singleton with a legendary commander." },
+  { format: "FreeForAll", label: "Free-for-All", description: "3–6 player battle royale — last player standing wins." },
 ];
 
 const DIFFICULTY_OPTIONS = ["VeryEasy", "Easy", "Medium", "Hard", "VeryHard"];
@@ -42,7 +51,13 @@ const DIFFICULTY_OPTIONS = ["VeryEasy", "Easy", "Medium", "Hard", "VeryHard"];
  * can't advertise an unreachable configuration. */
 const P2P_MAX_PEERS = 4;
 
-export function HostSetup({ onHost, onBack, connectionMode }: HostSetupProps) {
+export function HostSetup({
+  onHost,
+  onBack,
+  connectionMode,
+  hostDisabled = false,
+  hostDisabledReason,
+}: HostSetupProps) {
   // Player name is edited in `PlayerIdentityBanner` above this form (see
   // MultiplayerPage). We read it here only to submit it and to seed the
   // room-name placeholder — this form itself intentionally has no
@@ -153,7 +168,7 @@ export function HostSetup({ onHost, onBack, connectionMode }: HostSetupProps) {
   return (
     <form
       onSubmit={(e) => { e.preventDefault(); handleHost(); }}
-      className="relative z-10 flex w-full max-w-xl flex-col items-center gap-6 px-4"
+      className="relative z-10 flex w-full max-w-xl flex-col items-center gap-6"
     >
       <MenuPanel className="flex w-full flex-col gap-6">
         <div className="space-y-2">
@@ -203,6 +218,8 @@ export function HostSetup({ onHost, onBack, connectionMode }: HostSetupProps) {
                   type="button"
                   key={opt.format}
                   onClick={() => handleFormatSelect(opt.format)}
+                  title={opt.description}
+                  aria-label={`${opt.label} — ${opt.description}`}
                   className={`rounded-[16px] border px-3 py-2.5 text-sm font-medium transition-colors ${
                     isSelected
                       ? "border-white/18 bg-white/10 text-white"
@@ -439,7 +456,7 @@ export function HostSetup({ onHost, onBack, connectionMode }: HostSetupProps) {
         </div>
       </div>
 
-        <div className="flex gap-3">
+        <div className="flex justify-end gap-3">
           <button
             type="button"
             onClick={onBack}
@@ -449,7 +466,10 @@ export function HostSetup({ onHost, onBack, connectionMode }: HostSetupProps) {
           </button>
           <button
             type="submit"
-            className={menuButtonClass({ tone: accentTone, size: "md" })}
+            disabled={hostDisabled}
+            title={hostDisabled ? hostDisabledReason : undefined}
+            aria-disabled={hostDisabled || undefined}
+            className={`${menuButtonClass({ tone: accentTone, size: "md" })} disabled:cursor-not-allowed disabled:opacity-50`}
           >
             {isP2P ? "Host P2P Game" : "Host Game"}
           </button>

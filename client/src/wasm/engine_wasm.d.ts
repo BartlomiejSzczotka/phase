@@ -96,6 +96,12 @@ export function init_panic_hook(): void;
 export function initialize_game(deck_data: any, seed: number | null | undefined, format_config_js: any, match_config_js: any, player_count?: number | null, first_player?: number | null): any;
 
 /**
+ * Read the multiplayer enforcement flag. Exposed primarily for tests and
+ * adapters that need to defend their own paths (e.g., skip history pushes).
+ */
+export function is_multiplayer_mode(): boolean;
+
+/**
  * Load the card database from a JSON string (card-data.json contents).
  * Must be called before initialize_game to enable name-based deck resolution.
  */
@@ -110,6 +116,10 @@ export function ping(): string;
  * Restore the game state from a JSON string.
  * Uses serde_json which handles string-keyed maps (from localStorage round-trip)
  * correctly deserializing into HashMap<ObjectId, V>.
+ *
+ * Refuses when `MULTIPLAYER_MODE` is set — rewriting a single client's
+ * state in a multiplayer session would diverge from the authoritative
+ * game on the wire. Undo is a single-player affordance only.
  */
 export function restore_game_state(json_str: string): void;
 
@@ -122,6 +132,14 @@ export function restore_game_state(json_str: string): void;
  * `rng_seed` provides deterministic randomness.
  */
 export function select_action_from_scores(scores_json: string, difficulty: string, rng_seed: bigint): any;
+
+/**
+ * Toggle the multiplayer enforcement flag. Called by multiplayer adapters
+ * (P2P host/guest, WS) after the engine is initialized so subsequent
+ * `restore_game_state` calls fail fast with a clear error instead of
+ * silently rewriting the local view.
+ */
+export function set_multiplayer_mode(enabled: boolean): void;
 
 /**
  * Submit a game action and return the ActionResult (events + waiting_for).
@@ -140,10 +158,12 @@ export interface InitOutput {
     readonly get_card_parse_details: (a: number, b: number) => any;
     readonly get_filtered_game_state: (a: number) => any;
     readonly initialize_game: (a: any, b: number, c: number, d: any, e: any, f: number, g: number) => any;
+    readonly is_multiplayer_mode: () => number;
     readonly load_card_database: (a: number, b: number) => [number, number, number];
     readonly ping: () => [number, number];
     readonly restore_game_state: (a: number, b: number) => [number, number];
     readonly select_action_from_scores: (a: number, b: number, c: number, d: number, e: bigint) => [number, number, number];
+    readonly set_multiplayer_mode: (a: number) => void;
     readonly submit_action: (a: any) => any;
     readonly get_game_state: () => any;
     readonly get_legal_actions_js: () => any;

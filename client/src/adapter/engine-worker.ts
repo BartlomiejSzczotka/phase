@@ -19,6 +19,7 @@ import init, {
   load_card_database,
   export_game_state_json,
   clear_game_state,
+  set_multiplayer_mode,
 } from "@wasm/engine";
 
 import type { GameAction } from "./types";
@@ -61,6 +62,7 @@ type EngineRequest =
   | { type: "exportState"; id: number }
   | { type: "loadCardDbFromUrl"; id: number }
   | { type: "resetGame"; id: number }
+  | { type: "setMultiplayerMode"; id: number; enabled: boolean }
   | { type: "ping"; id: number };
 
 type EngineResponse =
@@ -226,6 +228,12 @@ self.onmessage = async (e: MessageEvent<EngineRequest>) => {
 
       case "resetGame": {
         clear_game_state();
+        result(msg.id, null);
+        break;
+      }
+
+      case "setMultiplayerMode": {
+        set_multiplayer_mode(msg.enabled);
         result(msg.id, null);
         break;
       }
