@@ -11,7 +11,9 @@ use engine::database::card_db::CardDatabase;
 use engine::game::combat::AttackTarget;
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
-use engine::types::ability::{AbilityCost, AbilityKind, Effect, ManaProduction, TargetRef};
+use engine::types::ability::{
+    AbilityCost, AbilityKind, Effect, ManaContribution, ManaProduction, TargetRef,
+};
 use engine::types::actions::GameAction;
 use engine::types::card::CardLayout;
 use engine::types::game_state::WaitingFor;
@@ -52,7 +54,9 @@ fn test_forest_has_synthesized_mana_ability() {
         matches!(
             &*a.effect,
             Effect::Mana {
-                produced: ManaProduction::Fixed { colors }, ..
+                produced: ManaProduction::Fixed { colors,
+                    contribution: ManaContribution::Base,
+                }, ..
             } if *colors == vec![ManaColor::Green]
         ) && a.cost == Some(AbilityCost::Tap)
     });

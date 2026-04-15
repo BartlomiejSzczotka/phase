@@ -519,6 +519,7 @@ mod tests {
     use super::{
         candidate_actions, cheap_reject_candidate, legal_actions, validated_candidate_actions,
     };
+    use crate::types::ability::ManaContribution;
     use crate::types::actions::GameAction;
     use crate::types::game_state::{GameState, WaitingFor};
     use crate::types::player::PlayerId;
@@ -620,6 +621,7 @@ mod tests {
                     Effect::Mana {
                         produced: ManaProduction::Fixed {
                             colors: vec![ManaColor::Green],
+                            contribution: ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],

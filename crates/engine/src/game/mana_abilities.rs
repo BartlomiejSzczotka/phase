@@ -569,6 +569,7 @@ mod tests {
     fn mana_api_type_detected_as_mana_ability() {
         let def = make_mana_ability(ManaProduction::Fixed {
             colors: vec![ManaColor::Green],
+            contribution: ManaContribution::Base,
         });
         assert!(is_mana_ability(&def));
     }
@@ -592,6 +593,7 @@ mod tests {
         // CR 605.1a: If a mana-producing ability has targets, it must use the stack.
         let mut def = make_mana_ability(ManaProduction::Fixed {
             colors: vec![ManaColor::Green],
+            contribution: ManaContribution::Base,
         });
         def.multi_target = Some(MultiTargetSpec {
             min: 1,
@@ -625,6 +627,7 @@ mod tests {
 
         let def = make_mana_ability(ManaProduction::Fixed {
             colors: vec![ManaColor::Green],
+            contribution: ManaContribution::Base,
         });
         let mut events = Vec::new();
         resolve_mana_ability(&mut state, obj_id, PlayerId(0), &def, &mut events, None).unwrap();
@@ -653,6 +656,7 @@ mod tests {
 
         let def = make_mana_ability(ManaProduction::Fixed {
             colors: vec![ManaColor::Green],
+            contribution: ManaContribution::Base,
         });
         let mut events = Vec::new();
         let result = resolve_mana_ability(&mut state, obj_id, PlayerId(0), &def, &mut events, None);
@@ -705,6 +709,7 @@ mod tests {
 
         let def = make_mana_ability(ManaProduction::Fixed {
             colors: vec![ManaColor::White, ManaColor::Blue],
+            contribution: ManaContribution::Base,
         });
         let mut events = Vec::new();
         resolve_mana_ability(&mut state, obj_id, PlayerId(0), &def, &mut events, None).unwrap();
@@ -731,6 +736,7 @@ mod tests {
             Effect::Mana {
                 produced: ManaProduction::Fixed {
                     colors: vec![ManaColor::Red],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![],
                 grants: vec![],

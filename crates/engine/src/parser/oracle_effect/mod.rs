@@ -7341,18 +7341,24 @@ mod tests {
         assert!(matches!(
             e,
             Effect::Mana {
-                produced: ManaProduction::Fixed { ref colors }, ..
+                produced: ManaProduction::Fixed { ref colors,
+                    contribution: ManaContribution::Base,
+                }, ..
             } if colors == &vec![ManaColor::White]
         ));
     }
 
     #[test]
     fn effect_add_additional_mana() {
+        // CR 605.1a: "an additional" marks the mana contribution as Additional
+        // (Wild Growth / Verdant Haven class), not Base.
         let e = parse_effect("Add an additional {G}");
         assert!(matches!(
             e,
             Effect::Mana {
-                produced: ManaProduction::Fixed { ref colors }, ..
+                produced: ManaProduction::Fixed { ref colors,
+                    contribution: ManaContribution::Additional,
+                }, ..
             } if colors == &vec![ManaColor::Green]
         ));
     }

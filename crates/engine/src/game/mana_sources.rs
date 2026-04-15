@@ -252,7 +252,7 @@ fn mana_options_from_production(
     produced: &ManaProduction,
 ) -> Vec<ManaType> {
     match produced {
-        ManaProduction::Fixed { colors } => {
+        ManaProduction::Fixed { colors, .. } => {
             let mut options = Vec::new();
             for color in colors {
                 let mana_type = mana_color_to_type(color);
@@ -404,6 +404,7 @@ mod tests {
             Effect::Mana {
                 produced: ManaProduction::Fixed {
                     colors: vec![color],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![],
                 grants: vec![],

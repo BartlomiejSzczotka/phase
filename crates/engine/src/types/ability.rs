@@ -526,6 +526,13 @@ pub enum ManaProduction {
     Fixed {
         #[serde(default)]
         colors: Vec<ManaColor>,
+        /// CR 605.1a: Whether this is base or additional (e.g. Wild Growth,
+        /// Verdant Haven) mana.
+        #[serde(
+            default = "default_mana_contribution",
+            skip_serializing_if = "is_default_mana_contribution"
+        )]
+        contribution: ManaContribution,
     },
     /// Produce N colorless mana (e.g. `{C}`, `{C}{C}`).
     Colorless {
@@ -582,7 +589,10 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                 // Legacy format: plain Vec<ManaColor> like ["White", "Green"]
                 let colors: Vec<ManaColor> =
                     serde_json::from_value(value).map_err(serde::de::Error::custom)?;
-                Ok(ManaProduction::Fixed { colors })
+                Ok(ManaProduction::Fixed {
+                    colors,
+                    contribution: ManaContribution::default(),
+                })
             }
             serde_json::Value::Object(_) => {
                 // New tagged format: {"type": "Fixed", "colors": [...]}
@@ -592,6 +602,8 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                     Fixed {
                         #[serde(default)]
                         colors: Vec<ManaColor>,
+                        #[serde(default = "default_mana_contribution")]
+                        contribution: ManaContribution,
                     },
                     Colorless {
                         #[serde(default = "default_quantity_one")]
@@ -625,7 +637,13 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                 let helper: ManaProductionHelper =
                     serde_json::from_value(value).map_err(serde::de::Error::custom)?;
                 Ok(match helper {
-                    ManaProductionHelper::Fixed { colors } => ManaProduction::Fixed { colors },
+                    ManaProductionHelper::Fixed {
+                        colors,
+                        contribution,
+                    } => ManaProduction::Fixed {
+                        colors,
+                        contribution,
+                    },
                     ManaProductionHelper::Colorless { count } => {
                         ManaProduction::Colorless { count }
                     }
@@ -3212,7 +3230,10 @@ fn default_pt_value_zero() -> PtValue {
 }
 
 fn default_mana_production() -> ManaProduction {
-    ManaProduction::Fixed { colors: Vec::new() }
+    ManaProduction::Fixed {
+        colors: Vec::new(),
+        contribution: ManaContribution::Base,
+    }
 }
 
 fn default_all_mana_colors() -> Vec<ManaColor> {
@@ -5848,6 +5869,7 @@ mod tests {
         let effect = Effect::Mana {
             produced: ManaProduction::Fixed {
                 colors: vec![ManaColor::Green, ManaColor::Green],
+                contribution: ManaContribution::Base,
             },
             restrictions: vec![],
             grants: vec![],
@@ -5868,6 +5890,7 @@ mod tests {
             Effect::Mana {
                 produced: ManaProduction::Fixed {
                     colors: vec![ManaColor::White, ManaColor::Green],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![],
                 grants: vec![],

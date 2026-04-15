@@ -3118,8 +3118,8 @@ mod tests {
     use crate::parser::oracle_static::parse_static_line;
     use crate::types::ability::{
         BasicLandType, ChosenAttribute, ChosenSubtypeKind, ContinuousModification, ControllerRef,
-        GameRestriction, QuantityExpr, RestrictionExpiry, RestrictionPlayerScope, StaticDefinition,
-        TargetFilter, TypeFilter, TypedFilter,
+        GameRestriction, ManaContribution, QuantityExpr, RestrictionExpiry, RestrictionPlayerScope,
+        StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
     };
     use crate::types::actions::GameAction;
     use crate::types::card_type::CoreType;
@@ -3267,6 +3267,7 @@ mod tests {
                 Effect::Mana {
                     produced: crate::types::ability::ManaProduction::Fixed {
                         colors: vec![ManaColor::Blue],
+                        contribution: ManaContribution::Base,
                     },
                     restrictions: vec![],
                     grants: vec![],
@@ -3281,6 +3282,7 @@ mod tests {
                 Effect::Mana {
                     produced: crate::types::ability::ManaProduction::Fixed {
                         colors: vec![ManaColor::Black],
+                        contribution: ManaContribution::Base,
                     },
                     restrictions: vec![],
                     grants: vec![],
@@ -6510,6 +6512,7 @@ mod tests {
                 Effect::Mana {
                     produced: ManaProduction::Fixed {
                         colors: vec![ManaColor::Green],
+                        contribution: ManaContribution::Base,
                     },
                     restrictions: vec![],
                     grants: vec![],
@@ -6677,6 +6680,7 @@ mod tests {
                     Effect::Mana {
                         produced: ManaProduction::Fixed {
                             colors: vec![ManaColor::Green],
+                            contribution: ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],
@@ -8068,6 +8072,7 @@ mod tests {
             Effect::Mana {
                 produced: ManaProduction::Fixed {
                     colors: vec![crate::types::mana::ManaColor::Green],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![],
                 grants: vec![],

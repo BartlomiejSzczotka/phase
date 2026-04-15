@@ -6,9 +6,9 @@ use crate::parser::oracle::parse_oracle_text;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost, CardPlayMode,
     ChoiceType, ContinuousModification, ControllerRef, CounterTriggerFilter, Duration, Effect,
-    FilterProp, ManaProduction, NinjutsuVariant, PtValue, QuantityExpr, ReplacementDefinition,
-    RuntimeHandler, StaticDefinition, TargetFilter, TriggerCondition, TriggerDefinition,
-    TypeFilter, TypedFilter,
+    FilterProp, ManaContribution, ManaProduction, NinjutsuVariant, PtValue, QuantityExpr,
+    ReplacementDefinition, RuntimeHandler, StaticDefinition, TargetFilter, TriggerCondition,
+    TriggerDefinition, TypeFilter, TypedFilter,
 };
 use crate::types::card::{CardFace, CardLayout};
 use crate::types::card_type::{CardType, CoreType, Supertype};
@@ -125,6 +125,7 @@ pub fn synthesize_basic_land_mana(face: &mut CardFace) {
                     Effect::Mana {
                         produced: ManaProduction::Fixed {
                             colors: vec![color],
+                            contribution: ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],

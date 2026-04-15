@@ -357,6 +357,7 @@ impl GameScenario {
             Effect::Mana {
                 produced: crate::types::ability::ManaProduction::Fixed {
                     colors: vec![color],
+                    contribution: crate::types::ability::ManaContribution::Base,
                 },
                 restrictions: vec![],
                 grants: vec![],

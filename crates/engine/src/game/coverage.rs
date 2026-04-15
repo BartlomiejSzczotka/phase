@@ -607,7 +607,7 @@ fn fmt_mana_color_full(c: &ManaColor) -> &'static str {
 
 fn fmt_mana_production(mp: &ManaProduction) -> String {
     match mp {
-        ManaProduction::Fixed { colors } => {
+        ManaProduction::Fixed { colors, .. } => {
             if colors.is_empty() {
                 "none".into()
             } else {

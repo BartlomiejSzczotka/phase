@@ -2025,7 +2025,7 @@ mod tests {
     use crate::types::ability::{
         AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction, BasicLandType,
         ChoiceType, ChosenAttribute, ChosenSubtypeKind, ContinuousModification, Effect,
-        ManaProduction, QuantityExpr, StaticDefinition, TargetFilter, TargetRef,
+        ManaContribution, ManaProduction, QuantityExpr, StaticDefinition, TargetFilter, TargetRef,
     };
     use crate::types::identifiers::CardId;
     use crate::types::mana::{ManaColor, ManaCostShard};
@@ -2162,6 +2162,7 @@ mod tests {
                     Effect::Mana {
                         produced: ManaProduction::Fixed {
                             colors: vec![ManaColor::Blue],
+                            contribution: ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],
@@ -2176,6 +2177,7 @@ mod tests {
                     Effect::Mana {
                         produced: ManaProduction::Fixed {
                             colors: vec![ManaColor::Black],
+                            contribution: ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],

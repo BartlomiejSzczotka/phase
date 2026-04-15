@@ -2568,8 +2568,8 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        AbilityCost, AbilityDefinition, AbilityKind, Effect, QuantityExpr, ResolvedAbility,
-        TargetFilter, TypedFilter,
+        AbilityCost, AbilityDefinition, AbilityKind, Effect, ManaContribution, QuantityExpr,
+        ResolvedAbility, TargetFilter, TypedFilter,
     };
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::{CardId, ObjectId};
@@ -3331,6 +3331,7 @@ mod tests {
                     crate::types::ability::Effect::Mana {
                         produced: crate::types::ability::ManaProduction::Fixed {
                             colors: vec![crate::types::mana::ManaColor::Blue],
+                            contribution: ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],
@@ -3345,6 +3346,7 @@ mod tests {
                     crate::types::ability::Effect::Mana {
                         produced: crate::types::ability::ManaProduction::Fixed {
                             colors: vec![crate::types::mana::ManaColor::Black],
+                            contribution: ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],
@@ -3387,6 +3389,7 @@ mod tests {
                     crate::types::ability::Effect::Mana {
                         produced: crate::types::ability::ManaProduction::Fixed {
                             colors: vec![crate::types::mana::ManaColor::Blue],
+                            contribution: ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],
@@ -3401,6 +3404,7 @@ mod tests {
                     crate::types::ability::Effect::Mana {
                         produced: crate::types::ability::ManaProduction::Fixed {
                             colors: vec![crate::types::mana::ManaColor::Black],
+                            contribution: ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],
@@ -3464,6 +3468,7 @@ mod tests {
                     crate::types::ability::Effect::Mana {
                         produced: crate::types::ability::ManaProduction::Fixed {
                             colors: vec![crate::types::mana::ManaColor::Black],
+                            contribution: ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],
@@ -3503,6 +3508,130 @@ mod tests {
                 .mana_pool
                 .count_color(crate::types::mana::ManaType::Black),
             0
+        );
+    }
+
+    // CR 605.1b + CR 722.1: End-to-end integration test. Driving a real
+    // `ActivateAbility` action on the Forest must (a) update the mana pool with
+    // the Forest's base {G}, (b) fire Utopia Sprawl's TapsForMana trigger
+    // inline (stack-skipped per CR 605.1b), (c) add the chosen color to the
+    // pool, and (d) leave the stack empty so the controller can immediately
+    // spend the mana.
+    #[test]
+    fn utopia_sprawl_on_forest_taps_for_both_base_and_additional_mana_inline() {
+        use crate::types::ability::{
+            ChosenAttribute, Effect as Eff, ManaContribution, ManaProduction, QuantityExpr,
+            TriggerDefinition,
+        };
+        use crate::types::triggers::TriggerMode;
+
+        let mut state = setup_game_at_main_phase();
+
+        // Forest with the standard {T}: Add {G} synthesized mana ability.
+        let forest = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&forest).unwrap();
+            obj.card_types.core_types.push(CoreType::Land);
+            obj.card_types.subtypes.push("Forest".to_string());
+            obj.has_mana_ability = true;
+            obj.abilities.push(
+                AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Eff::Mana {
+                        produced: ManaProduction::Fixed {
+                            colors: vec![crate::types::mana::ManaColor::Green],
+                            contribution: ManaContribution::Base,
+                        },
+                        restrictions: vec![],
+                        grants: vec![],
+                        expiry: None,
+                    },
+                )
+                .cost(AbilityCost::Tap),
+            );
+        }
+
+        // Utopia Sprawl attached to the Forest with chosen color Red.
+        let aura = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Utopia Sprawl".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&aura).unwrap();
+            obj.card_types.core_types.push(CoreType::Enchantment);
+            obj.card_types.subtypes.push("Aura".to_string());
+            obj.attached_to = Some(forest);
+            obj.entered_battlefield_turn = Some(1);
+            obj.chosen_attributes
+                .push(ChosenAttribute::Color(crate::types::mana::ManaColor::Red));
+            obj.trigger_definitions.push(
+                TriggerDefinition::new(TriggerMode::TapsForMana)
+                    .execute(AbilityDefinition::new(
+                        AbilityKind::Database,
+                        Eff::Mana {
+                            produced: ManaProduction::ChosenColor {
+                                count: QuantityExpr::Fixed { value: 1 },
+                                contribution: ManaContribution::Additional,
+                            },
+                            restrictions: vec![],
+                            grants: vec![],
+                            expiry: None,
+                        },
+                    ))
+                    .valid_card(TargetFilter::AttachedTo),
+            );
+        }
+
+        // Activate the Forest's {T}: Add {G} via the full apply() pipeline.
+        let result = apply(
+            &mut state,
+            GameAction::ActivateAbility {
+                source_id: forest,
+                ability_index: 0,
+            },
+        )
+        .expect("Forest mana ability should activate");
+
+        // (a) Forest is tapped, base {G} in the pool.
+        assert!(state.objects[&forest].tapped);
+        assert_eq!(
+            state.players[0]
+                .mana_pool
+                .count_color(crate::types::mana::ManaType::Green),
+            1,
+            "Forest's base {{G}} must be in the pool",
+        );
+
+        // (c) Utopia Sprawl's chosen-color {R} is ALSO in the pool, added
+        // inline by the triggered mana ability (CR 605.1b).
+        assert_eq!(
+            state.players[0]
+                .mana_pool
+                .count_color(crate::types::mana::ManaType::Red),
+            1,
+            "Utopia Sprawl's additional {{R}} must be in the pool",
+        );
+
+        // (d) Stack is empty — the triggered mana ability did NOT use the
+        // stack. Controller retains priority and can immediately spend the
+        // mana on a {R} cost.
+        assert_eq!(
+            state.stack.len(),
+            0,
+            "Triggered mana ability must not be placed on the stack (CR 605.1b)",
+        );
+        assert!(
+            matches!(result.waiting_for, WaitingFor::Priority { .. }),
+            "Controller must retain priority after the activation resolves",
         );
     }
 
@@ -4289,6 +4418,7 @@ mod tests {
                     Effect::Mana {
                         produced: crate::types::ability::ManaProduction::Fixed {
                             colors: vec![crate::types::mana::ManaColor::Green],
+                            contribution: ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],
@@ -4380,6 +4510,7 @@ mod tests {
                     Effect::Mana {
                         produced: crate::types::ability::ManaProduction::Fixed {
                             colors: vec![crate::types::mana::ManaColor::Green],
+                            contribution: ManaContribution::Base,
                         },
                         restrictions: vec![],
                         grants: vec![],

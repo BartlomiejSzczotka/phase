@@ -172,7 +172,7 @@ fn resolve_mana_types_impl(
 ) -> Vec<ManaType> {
     match produced {
         // CR 106.1a: Colored mana is produced in the five standard colors.
-        ManaProduction::Fixed { colors } => colors.iter().map(mana_color_to_type).collect(),
+        ManaProduction::Fixed { colors, .. } => colors.iter().map(mana_color_to_type).collect(),
         // CR 106.1b: Colorless mana is a type of mana distinct from colored mana.
         ManaProduction::Colorless { count } => {
             vec![ManaType::Colorless; resolve_count(count, state, ability, controller, source_id)]
@@ -260,6 +260,7 @@ mod tests {
             &mut state,
             &make_mana_ability(ManaProduction::Fixed {
                 colors: vec![ManaColor::Red],
+                contribution: ManaContribution::Base,
             }),
             &mut events,
         )
@@ -278,6 +279,7 @@ mod tests {
             &mut state,
             &make_mana_ability(ManaProduction::Fixed {
                 colors: vec![ManaColor::Green, ManaColor::Green, ManaColor::Green],
+                contribution: ManaContribution::Base,
             }),
             &mut events,
         )
@@ -293,7 +295,10 @@ mod tests {
 
         resolve(
             &mut state,
-            &make_mana_ability(ManaProduction::Fixed { colors: vec![] }),
+            &make_mana_ability(ManaProduction::Fixed {
+                colors: vec![],
+                contribution: ManaContribution::Base,
+            }),
             &mut events,
         )
         .unwrap();
@@ -310,6 +315,7 @@ mod tests {
             &mut state,
             &make_mana_ability(ManaProduction::Fixed {
                 colors: vec![ManaColor::White, ManaColor::Blue],
+                contribution: ManaContribution::Base,
             }),
             &mut events,
         )
@@ -329,6 +335,7 @@ mod tests {
             &mut state,
             &make_mana_ability(ManaProduction::Fixed {
                 colors: vec![ManaColor::Red, ManaColor::Red],
+                contribution: ManaContribution::Base,
             }),
             &mut events,
         )
@@ -350,6 +357,7 @@ mod tests {
             &mut state,
             &make_mana_ability(ManaProduction::Fixed {
                 colors: vec![ManaColor::Green],
+                contribution: ManaContribution::Base,
             }),
             &mut events,
         )
@@ -371,7 +379,10 @@ mod tests {
 
         resolve(
             &mut state,
-            &make_mana_ability(ManaProduction::Fixed { colors: vec![] }),
+            &make_mana_ability(ManaProduction::Fixed {
+                colors: vec![],
+                contribution: ManaContribution::Base,
+            }),
             &mut events,
         )
         .unwrap();
@@ -388,6 +399,7 @@ mod tests {
             &mut state,
             &make_mana_ability(ManaProduction::Fixed {
                 colors: vec![ManaColor::Red],
+                contribution: ManaContribution::Base,
             }),
             &mut events,
         )
@@ -539,6 +551,7 @@ mod tests {
                 Effect::Mana {
                     produced: ManaProduction::Fixed {
                         colors: vec![ManaColor::Red],
+                        contribution: ManaContribution::Base,
                     },
                     restrictions: vec![],
                     grants: vec![],
@@ -719,6 +732,7 @@ mod tests {
             Effect::Mana {
                 produced: ManaProduction::Fixed {
                     colors: vec![ManaColor::Red],
+                    contribution: ManaContribution::Base,
                 },
                 restrictions: vec![ManaSpendRestriction::ChosenCreatureType],
                 grants: vec![],

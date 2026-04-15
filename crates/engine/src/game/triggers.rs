@@ -405,6 +405,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                         let fb_effect = Effect::Mana {
                             produced: crate::types::ability::ManaProduction::Fixed {
                                 colors: vec![crate::types::mana::ManaColor::Red; n as usize],
+                                contribution: crate::types::ability::ManaContribution::Base,
                             },
                             restrictions: vec![],
                             grants: vec![],

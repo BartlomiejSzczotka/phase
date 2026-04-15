@@ -238,7 +238,10 @@ pub(super) fn parse_mana_production_clause(
     if let Some((colors, remainder)) = parse_mana_production(text) {
         let remainder = remainder.trim().trim_end_matches(['.', '"']).trim();
         if remainder.is_empty() {
-            return Some(ManaProduction::Fixed { colors });
+            return Some(ManaProduction::Fixed {
+                colors,
+                contribution,
+            });
         }
         // CR 106.1: "{color} for each [filter]" -> dynamic mana count
         let remainder_lower = remainder.to_lowercase();
