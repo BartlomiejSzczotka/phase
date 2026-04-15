@@ -66,6 +66,14 @@ export function MultiplayerPage() {
   // not in the store, because it's scoped to the Multiplayer flow.
   const [serverOfflinePrompt, setServerOfflinePrompt] = useState(false);
   const [lobbyRetryKey, setLobbyRetryKey] = useState(0);
+  // Where to return when the user enters deck-select *without* a pending
+  // host/join action (i.e. clicked the "Change" affordance on the active-
+  // deck banner). Before this, back/confirm both assumed pendingAction
+  // was set, so leaving deck-select dumped the user into the lobby even
+  // when they came from host-setup — and from lobby, another back escaped
+  // multiplayer entirely.
+  const [deckSelectReturn, setDeckSelectReturn] =
+    useState<MultiplayerView>("lobby");
   const serverAddress = useMultiplayerStore((s) => s.serverAddress);
 
   useEffect(() => {
@@ -80,9 +88,26 @@ export function MultiplayerPage() {
     }
   }, [hostingStatus, view]);
 
+  // In deck-select, tapping a deck tile IS the confirmation — there's no
+  // other use for the screen since we don't show deck contents. We persist
+  // the choice, then either execute the pending host/join action or return
+  // to wherever the user triggered the "Change" affordance from.
   const handleSelectDeck = (name: string) => {
     setActiveDeckName(name);
     localStorage.setItem(ACTIVE_DECK_KEY, name);
+
+    // Only auto-advance out of deck-select. When this handler fires from
+    // other views (e.g. adopting an imported deck), we don't want to
+    // navigate; we're just recording the active-deck choice.
+    if (view !== "deck-select") return;
+
+    if (pendingAction) {
+      if (executeAction(pendingAction)) {
+        setPendingAction(null);
+      }
+      return;
+    }
+    setView(deckSelectReturn);
   };
 
   // Expand a ParsedDeck into flat name arrays for the server
@@ -171,14 +196,6 @@ export function MultiplayerPage() {
     [expandDeck, startHosting, navigate, showToast],
   );
 
-  // Execute pending action after deck is selected (fallback path)
-  const handleDeckConfirm = useCallback(() => {
-    if (!pendingAction) return;
-    if (executeAction(pendingAction)) {
-      setPendingAction(null);
-    }
-  }, [pendingAction, executeAction]);
-
   // Host setup complete → execute immediately if deck exists, otherwise prompt
   const handleHostSetupComplete = useCallback(
     (settings: HostSettings) => {
@@ -225,7 +242,16 @@ export function MultiplayerPage() {
       return;
     }
     if (view === "deck-select") {
-      setView(pendingAction?.type === "host" ? "host-setup" : "lobby");
+      // With a pending action the user clearly came from a host/join
+      // attempt; without one they came from the "Change Deck" affordance,
+      // and `deckSelectReturn` remembers which view rendered that button.
+      setView(
+        pendingAction?.type === "host"
+          ? "host-setup"
+          : pendingAction?.type === "join"
+            ? "lobby"
+            : deckSelectReturn,
+      );
       return;
     }
     if (view === "host-setup") {
@@ -295,6 +321,7 @@ export function MultiplayerPage() {
             </div>
             <button
               onClick={() => {
+                setDeckSelectReturn(view as MultiplayerView);
                 setPendingAction(null);
                 setView("deck-select");
               }}
@@ -312,7 +339,10 @@ export function MultiplayerPage() {
               No deck selected — you'll need to pick one before hosting or joining.
             </span>
             <button
-              onClick={() => setView("deck-select")}
+              onClick={() => {
+                setDeckSelectReturn(view as MultiplayerView);
+                setView("deck-select");
+              }}
               className="shrink-0 rounded-lg border border-amber-400/20 bg-amber-400/10 px-3 py-1 text-xs font-medium text-amber-200 transition-colors hover:bg-amber-400/18"
             >
               Pick Deck
@@ -371,13 +401,15 @@ export function MultiplayerPage() {
                 </div>
               </div>
             )}
+            {/* No `onConfirmSelection` / `confirmLabel` — clicking a deck
+                tile IS the confirmation. `handleSelectDeck` saves the
+                choice and either executes the pending action or returns
+                to the caller view in one step. */}
             <MyDecks
               mode="select"
               selectedFormat={selectedFormat}
               onSelectDeck={handleSelectDeck}
               activeDeckName={activeDeckName}
-              onConfirmSelection={handleDeckConfirm}
-              confirmLabel={pendingAction?.type === "host" ? "Host Game" : "Join Game"}
             />
           </>
         )}
