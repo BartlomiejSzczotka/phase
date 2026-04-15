@@ -300,7 +300,7 @@ export function GameProvider({
               signal.throwIfAborted();
             }
 
-            const host = await hostRoom();
+            const host = await hostRoom(signal);
             // Before the adapter takes ownership of the Peer, `host.destroy`
             // is the only way to tear it down; once the adapter owns it,
             // `adapter.dispose()` is the sole teardown path.
@@ -360,7 +360,7 @@ export function GameProvider({
           } else {
             // p2p-join
             const code = joinCode!;
-            const { conn, peer } = await joinRoom(code);
+            const { conn, peer } = await joinRoom(code, signal);
             hostPeerHandle = peer;
             signal.throwIfAborted();
 
