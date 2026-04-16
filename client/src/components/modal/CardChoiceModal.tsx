@@ -8,6 +8,7 @@ import { useGameDispatch } from "../../hooks/useGameDispatch.ts";
 import type { GameObject, ManaCost, ManaType, ObjectId, TargetFilter, WaitingFor } from "../../adapter/types.ts";
 import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { ChoiceOverlay, ConfirmButton, ScrollableCardStrip } from "./ChoiceOverlay.tsx";
+import { ManaSymbol } from "../mana/ManaSymbol.tsx";
 import { NamedChoiceModal } from "./NamedChoiceModal.tsx";
 import { DungeonChoiceModal, RoomChoiceModal } from "./DungeonChoiceModal.tsx";
 import { DamageAssignmentModal } from "../combat/DamageAssignmentModal.tsx";
@@ -1504,13 +1505,13 @@ const MANA_COLOR_SELECTED: Record<ManaType, string> = {
   Colorless: "border-gray-300 bg-gray-500/50 text-white",
 };
 
-const MANA_COLOR_SYMBOLS: Record<ManaType, string> = {
-  White: "{W}",
-  Blue: "{U}",
-  Black: "{B}",
-  Red: "{R}",
-  Green: "{G}",
-  Colorless: "{C}",
+const MANA_COLOR_SHARDS: Record<ManaType, string> = {
+  White: "W",
+  Blue: "U",
+  Black: "B",
+  Red: "R",
+  Green: "G",
+  Colorless: "C",
 };
 
 function ManaColorChoiceModal({ data }: { data: ChooseManaColor["data"] }) {
@@ -1531,13 +1532,13 @@ function ManaColorChoiceModal({ data }: { data: ChooseManaColor["data"] }) {
       maxWidthClassName="max-w-md"
       footer={<ConfirmButton onClick={handleConfirm} disabled={selected === null} />}
     >
-      <div className="mx-auto mb-6 flex w-fit items-center justify-center gap-4 sm:mb-10">
+      <div className="mx-auto flex w-fit items-center justify-center gap-3 px-4 py-4 sm:gap-5 sm:px-6 sm:py-6">
         {data.color_options.map((color, index) => {
           const isSelected = selected === color;
           return (
             <motion.button
               key={color}
-              className={`flex h-16 w-16 items-center justify-center rounded-full border-2 text-lg font-bold transition sm:h-20 sm:w-20 sm:text-xl ${
+              className={`flex h-14 w-14 items-center justify-center rounded-full border-2 transition sm:h-[4.5rem] sm:w-[4.5rem] ${
                 isSelected ? MANA_COLOR_SELECTED[color] : MANA_COLOR_STYLES[color]
               }`}
               initial={{ opacity: 0, y: 20, scale: 0.9 }}
@@ -1546,7 +1547,7 @@ function ManaColorChoiceModal({ data }: { data: ChooseManaColor["data"] }) {
               whileHover={{ scale: 1.1 }}
               onClick={() => setSelected(isSelected ? null : color)}
             >
-              {MANA_COLOR_SYMBOLS[color]}
+              <ManaSymbol shard={MANA_COLOR_SHARDS[color]} size="lg" />
             </motion.button>
           );
         })}

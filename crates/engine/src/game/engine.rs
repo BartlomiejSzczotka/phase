@@ -2003,6 +2003,36 @@ fn handle_play_land(
                     }
                 }
             }
+
+            // CR 614.12a: Drain post-replacement side effects (e.g., "As this land
+            // enters, choose a color") that were stashed by the pipeline when the
+            // execute ability is non-modifier work (Choose, etc.). Without this,
+            // the choice prompt would fire at a random later resolution point with
+            // the wrong controller context.
+            if let Some(effect_def) = state.post_replacement_effect.take() {
+                if let Some(next_waiting_for) =
+                    engine_replacement::apply_post_replacement_effect(
+                        state,
+                        &effect_def,
+                        Some(object_id),
+                        None,
+                        events,
+                    )
+                {
+                    state.lands_played_this_turn += 1;
+                    record_graveyard_play_permission(state, gy_permission_source);
+                    if let Some(p) = state.players.iter_mut().find(|p| p.id == player) {
+                        p.lands_played_this_turn += 1;
+                    }
+                    state.priority_passes.clear();
+                    state.priority_pass_count = 0;
+                    events.push(GameEvent::LandPlayed {
+                        object_id,
+                        player_id: player,
+                    });
+                    return Ok(next_waiting_for);
+                }
+            }
         }
         super::replacement::ReplacementResult::Prevented => {
             // Land play was prevented — don't increment counters
