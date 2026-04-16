@@ -24,10 +24,19 @@ jobs:
         with:
           tool: wasm-bindgen-cli@0.2.114
 
+      - name: Cache binaryen
+        id: binaryen-cache
+        uses: actions/cache@v4
+        with:
+          path: binaryen-version_123
+          key: binaryen-123-x86_64-linux
+
       - name: Install binaryen
-        run: |
-          curl -L https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz | tar xz
-          echo "$PWD/binaryen-version_123/bin" >> $GITHUB_PATH
+        if: steps.binaryen-cache.outputs.cache-hit != 'true'
+        run: curl -L https://github.com/WebAssembly/binaryen/releases/download/version_123/binaryen-version_123-x86_64-linux.tar.gz | tar xz
+
+      - name: Add binaryen to PATH
+        run: echo "$PWD/binaryen-version_123/bin" >> $GITHUB_PATH
 
       - uses: pnpm/action-setup@v4
         with:
@@ -39,10 +48,26 @@ jobs:
           cache: pnpm
           cache-dependency-path: client/pnpm-lock.yaml
 
-      - name: Generate card data and coverage report
+      - name: Set cache keys
+        id: cache-keys
+        run: echo "week=$(date +%Y-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache MTGJSON data
+        id: mtgjson-cache
+        uses: actions/cache@v4
+        with:
+          path: data/mtgjson
+          key: mtgjson-${{ steps.cache-keys.outputs.week }}
+          restore-keys: mtgjson-
+
+      - name: Download MTGJSON data
+        if: steps.mtgjson-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p data/mtgjson
-          curl -L -o data/mtgjson/AtomicCards.json "https://mtgjson.com/api/v5/AtomicCards.json"
+          curl -fSL -o data/mtgjson/AtomicCards.json "https://mtgjson.com/api/v5/AtomicCards.json"
+
+      - name: Generate card data and coverage report
+        run: |
           cargo run --release --bin oracle-gen --features cli -- data/ --stats > client/public/card-data.json
           cp client/public/card-data.json data/card-data.json
           cargo run --release --bin coverage-report -- data/ --all > client/public/coverage-data.json
@@ -65,34 +90,18 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm build
 
-      - name: Upload card data to R2
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: r2 object put phase-rs-data/card-data.json --file client/public/card-data.json --content-type application/json
-      - name: Upload coverage data to R2
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: r2 object put phase-rs-data/coverage-data.json --file client/public/coverage-data.json --content-type application/json
-      - name: Generate and upload coverage summary to R2
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          preCommands: |
-            jq '{total_cards, supported_cards, coverage_pct, coverage_by_format}' client/public/coverage-data.json > client/public/coverage-summary.json
-          command: r2 object put phase-rs-data/coverage-summary.json --file client/public/coverage-summary.json --content-type application/json
-      - name: Upload Scryfall data to R2
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: r2 object put phase-rs-data/scryfall-data.json --file client/public/scryfall-data.json --content-type application/json
+      - name: Upload data to R2
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          jq '{total_cards, supported_cards, coverage_pct, coverage_by_format}' client/public/coverage-data.json > client/public/coverage-summary.json
+          npx wrangler r2 object put phase-rs-data/card-data.json --file client/public/card-data.json --content-type application/json
+          npx wrangler r2 object put phase-rs-data/coverage-data.json --file client/public/coverage-data.json --content-type application/json
+          npx wrangler r2 object put phase-rs-data/coverage-summary.json --file client/public/coverage-summary.json --content-type application/json
+          npx wrangler r2 object put phase-rs-data/scryfall-data.json --file client/public/scryfall-data.json --content-type application/json
       - name: Remove large data files from dist (served from R2)
-        run: rm -f client/dist/card-data.json client/dist/coverage-data.json client/dist/coverage-summary.json client/dist/scryfall-data.json
+        run: rm -f client/dist/card-data.json client/dist/card-data.json.br client/dist/coverage-data.json client/dist/coverage-data.json.br client/dist/coverage-summary.json client/dist/coverage-summary.json.br client/dist/scryfall-data.json client/dist/scryfall-data.json.br
 
       - name: Upload frontend artifact
         uses: actions/upload-artifact@v4

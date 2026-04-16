@@ -42,12 +42,25 @@ jobs:
         run: cargo fmt --all -- --check
 
       - name: Clippy
-        run: cargo clippy --workspace --exclude phase-tauri --all-targets -- -D warnings
+        run: cargo clippy --workspace --exclude phase-tauri --all-targets --features engine/proptest -- -D warnings
 
       - name: Run tests
         run: cargo nextest run --workspace --exclude phase-tauri --features engine/proptest
 
+      - name: Set cache keys
+        id: cache-keys
+        run: echo "week=$(date +%Y-W%V)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache MTGJSON data
+        id: mtgjson-cache
+        uses: actions/cache@v4
+        with:
+          path: data/mtgjson
+          key: mtgjson-${{ steps.cache-keys.outputs.week }}
+          restore-keys: mtgjson-
+
       - name: Download MTGJSON data
+        if: steps.mtgjson-cache.outputs.cache-hit != 'true'
         run: |
           mkdir -p data/mtgjson
           curl -fSL -o data/mtgjson/AtomicCards.json "https://mtgjson.com/api/v5/AtomicCards.json"
@@ -61,27 +74,15 @@ jobs:
           cargo run --bin coverage-report -- data/ --all > data/coverage-data.json
           jq '{total_cards, supported_cards, coverage_pct, coverage_by_format}' data/coverage-data.json > data/coverage-summary.json
 
-      - name: Upload card data to R2 (preview)
+      - name: Upload data to R2 (preview)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: r2 object put phase-rs-data/preview/card-data.json --file data/card-data.json --content-type application/json
-      - name: Upload coverage data to R2 (preview)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: r2 object put phase-rs-data/preview/coverage-data.json --file data/coverage-data.json --content-type application/json
-      - name: Upload coverage summary to R2 (preview)
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: r2 object put phase-rs-data/preview/coverage-summary.json --file data/coverage-summary.json --content-type application/json
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npx wrangler r2 object put phase-rs-data/preview/card-data.json --file data/card-data.json --content-type application/json
+          npx wrangler r2 object put phase-rs-data/preview/coverage-data.json --file data/coverage-data.json --content-type application/json
+          npx wrangler r2 object put phase-rs-data/preview/coverage-summary.json --file data/coverage-summary.json --content-type application/json
 
       - name: WASM compile check
         run: cargo check --package engine-wasm --target wasm32-unknown-unknown
