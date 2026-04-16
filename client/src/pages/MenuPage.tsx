@@ -93,8 +93,13 @@ export function MenuPage() {
     if (!activeGame) return;
     useGameStore.setState({ gameId: activeGame.id });
     if (activeGame.mode === "online") {
-      // Reconnect via session token
+      // Server-mode reconnect via stored WS session token.
       navigate(`/game/${activeGame.id}?mode=host`);
+    } else if (activeGame.mode === "p2p-host") {
+      // P2P host resume: GameProvider detects saved state +
+      // saved P2P host session and dials back on the same room
+      // code via `hostRoom({ preferredRoomCode })`.
+      navigate(`/game/${activeGame.id}?mode=p2p-host`);
     } else {
       navigate(`/game/${activeGame.id}?mode=${activeGame.mode}&difficulty=${activeGame.difficulty}`);
     }

@@ -86,6 +86,14 @@ interface GameStoreActions {
     firstPlayer?: number,
   ) => Promise<void>;
   resumeGame: (gameId: string, adapter: EngineAdapter, savedState: GameState) => Promise<void>;
+  /**
+   * Resume a P2P host game. Distinct from `resumeGame` because the
+   * adapter already loaded engine state internally via
+   * `wasm.resumeMultiplayerHostState` in `initialize()` — calling
+   * `adapter.restoreState(savedState)` here would hit the adapter's
+   * "Undo not supported in P2P games" guard.
+   */
+  resumeP2PHost: (gameId: string, adapter: EngineAdapter) => Promise<void>;
   dispatch: (action: GameAction) => Promise<GameEvent[]>;
   undo: () => Promise<void>;
   reset: () => void;
@@ -164,6 +172,30 @@ export const useGameStore = create<GameStore>()(
         nextLogSeq: 0,
         stateHistory: [],
         turnCheckpoints: savedCheckpoints,
+      });
+    },
+
+    resumeP2PHost: async (gameId, adapter) => {
+      // `adapter.initialize()` on a resumed P2PHostAdapter already
+      // called `wasm.resumeMultiplayerHostState(savedState)` — the
+      // engine is populated and in multiplayer mode. All we need here
+      // is to pull the state out and seed the store. No stateHistory
+      // (multiplayer = no undo); no checkpoints (P2P never saved them).
+      await adapter.initialize();
+      const state = await adapter.getState();
+      const legalResult = await adapter.getLegalActions();
+      set({
+        gameId,
+        adapter,
+        gameState: state,
+        waitingFor: state.waiting_for,
+        ...legalResultState(legalResult),
+        events: [],
+        eventHistory: [],
+        logHistory: [],
+        nextLogSeq: 0,
+        stateHistory: [],
+        turnCheckpoints: [],
       });
     },
 

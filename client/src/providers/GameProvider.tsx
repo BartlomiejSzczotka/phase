@@ -23,7 +23,15 @@ import { consumeRecentAutoUpdateMarker } from "../pwa/updateMarker";
 import { ensureCardDatabase } from "../services/cardData";
 import { clearWsSession, loadWsSession, saveWsSession } from "../services/multiplayerSession";
 import { detectServerUrl } from "../services/serverDetection";
-import { useGameStore, loadGame, clearGame, clearActiveGame } from "../stores/gameStore";
+import {
+  clearGame,
+  clearActiveGame,
+  clearP2PHostSession,
+  loadGame,
+  loadP2PHostSession,
+  saveActiveGame,
+  useGameStore,
+} from "../stores/gameStore";
 import { useMultiplayerStore } from "../stores/multiplayerStore";
 
 function parsedDeckToDeckData(deck: ParsedDeck): DeckData {
@@ -228,7 +236,7 @@ export function GameProvider({
     // the previous cleanup would null out the state we just wrote.
     cancelPendingStoreReset();
 
-    const { initGame, resumeGame, reset, setGameMode } = useGameStore.getState();
+    const { initGame, resumeGame, resumeP2PHost, reset, setGameMode } = useGameStore.getState();
     setGameMode(mode);
 
     const isOnline = mode === "online";
@@ -294,13 +302,43 @@ export function GameProvider({
 
         try {
           if (mode === "p2p-host") {
-            if (useBroker) {
+            // Resume detection: if both the engine state and the P2P
+            // host session were persisted for this gameId, the host
+            // crashed/reloaded mid-game and should dial back in on the
+            // same room code so returning guests (whose IDB tokens are
+            // keyed on `phase-<roomCode>`) still match. Partial state
+            // (only one record present) is treated as inconsistent:
+            // clear both and fall through to a fresh game.
+            const [savedState, savedSession] = await Promise.all([
+              loadGame(gameId),
+              loadP2PHostSession(gameId),
+            ]);
+            signal.throwIfAborted();
+
+            const isResume =
+              savedState !== null && savedSession !== null && savedSession.gameStarted;
+            if ((savedState !== null) !== (savedSession !== null)) {
+              // Inconsistent: one record present, the other missing.
+              // Drop both so the menu's Resume button doesn't re-offer.
+              await clearGame(gameId);
+              await clearP2PHostSession(gameId);
+            }
+
+            // Only open a fresh broker client when starting a fresh
+            // game. On resume we skip broker re-register — the original
+            // lobby entry has expired via TTL (5 min), and new-guest
+            // discovery during resume is deferred for MVP. Existing
+            // guests reconnect via direct peer-id dial using their
+            // cached room code + token.
+            if (useBroker && !isResume) {
               const serverAddress = useMultiplayerStore.getState().serverAddress;
               broker = await openBrokerClient(serverAddress, { signal });
               signal.throwIfAborted();
             }
 
-            const host = await hostRoom(signal);
+            const host = await hostRoom(signal, {
+              preferredRoomCode: isResume ? savedSession.roomCode : undefined,
+            });
             // Before the adapter takes ownership of the Peer, `host.destroy`
             // is the only way to tear it down; once the adapter owns it,
             // `adapter.dispose()` is the sole teardown path.
@@ -355,6 +393,13 @@ export function GameProvider({
               undefined,
               broker ?? undefined,
               serverGameCode ?? undefined,
+              {
+                gameId,
+                roomCode: host.roomCode,
+                resumeData: isResume && savedState && savedSession
+                  ? { state: savedState, session: savedSession }
+                  : undefined,
+              },
             );
             p2pAdapter = adapter;
             // Ownership of the Peer transfers to the adapter here; don't
@@ -363,7 +408,19 @@ export function GameProvider({
 
             wireP2PEvents(adapter);
 
-            await initGame(gameId, adapter, undefined, formatConfig, effectivePlayerCount, matchConfig);
+            if (isResume) {
+              // Resume path: adapter.initialize() loads the saved state
+              // via wasm.resumeMultiplayerHostState; resumeP2PHost
+              // pulls state + legal actions into the store. Skip
+              // initializeGame entirely — the engine is already live.
+              await resumeP2PHost(gameId, adapter);
+            } else {
+              await initGame(gameId, adapter, undefined, formatConfig, effectivePlayerCount, matchConfig);
+              // Mark as the active resumeable game only after setup
+              // succeeds — storing the meta earlier would surface a
+              // stale Resume button if construction fails mid-flight.
+              saveActiveGame({ id: gameId, mode: "p2p-host", difficulty: "" });
+            }
             signal.throwIfAborted();
           } else {
             // p2p-join
