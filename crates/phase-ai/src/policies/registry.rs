@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use super::aggro_pressure::AggroPressurePolicy;
 use super::anthem_priority::AnthemPriorityPolicy;
 use super::anti_self_harm::AntiSelfHarmPolicy;
+use super::blight_value::BlightValuePolicy;
 use super::board_development::BoardDevelopmentPolicy;
 use super::board_wipe_telegraph::BoardWipeTelegraphPolicy;
 use super::card_advantage::CardAdvantagePolicy;
@@ -56,6 +57,7 @@ pub enum PolicyId {
     SynergyCasting,
     LethalityAwareness,
     SacrificeValue,
+    BlightValue,
     EvasionRemovalPriority,
     RecursionAwareness,
     BoardWipeTelegraph,
@@ -185,6 +187,7 @@ impl Default for PolicyRegistry {
             Box::new(super::synergy_casting::SynergyCastingPolicy),
             Box::new(LethalityAwarenessPolicy),
             Box::new(SacrificeValuePolicy),
+            Box::new(BlightValuePolicy),
             Box::new(EvasionRemovalPriorityPolicy),
             Box::new(RecursionAwarenessPolicy),
             Box::new(BoardWipeTelegraphPolicy),
