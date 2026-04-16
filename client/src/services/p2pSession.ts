@@ -15,7 +15,14 @@
 import { createStore, del, get, set } from "idb-keyval";
 
 const STORAGE_PREFIX = "phase-p2p-session:";
-const SESSION_TTL_MS = 60 * 60 * 1000;
+/**
+ * How long a persisted guest token is valid. Sized for host-resume
+ * realism: a host who crashed, reopened the tab, and dialed back in on
+ * the same room code within 4 hours can still rejoin guests. Beyond
+ * that window, the token is considered stale and the guest rejoins
+ * fresh (new seat if lobby, rejected if mid-game).
+ */
+const SESSION_TTL_MS = 4 * 60 * 60 * 1000;
 
 export interface P2PSessionData {
   hostPeerId: string;

@@ -78,8 +78,19 @@ type GameRunState = "running" | "paused-disconnect" | "paused-manual";
 /** Default grace window for guest auto-reconnect, in milliseconds. */
 const DEFAULT_GRACE_PERIOD_MS = 30_000;
 
-/** Guest auto-reconnect backoff schedule (ms). Stops after the last entry. */
-const RECONNECT_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000];
+/**
+ * Guest auto-reconnect backoff schedule. Escalates briskly for early
+ * attempts (WiFi blip case), then levels at 60s for the long tail.
+ * After the explicit schedule, retries continue at `RECONNECT_STEADY_STATE_MS`
+ * indefinitely until the adapter is `terminated` (explicit user leave).
+ *
+ * This tolerates host-resume scenarios where the host is down for
+ * several minutes (browser crash + reopen + reconnect all happen
+ * asynchronously). Giving up after 80s — the prior schedule — would
+ * orphan guests whose host is in the middle of a legitimate resume.
+ */
+const RECONNECT_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 15_000, 30_000, 60_000];
+const RECONNECT_STEADY_STATE_MS = 60_000;
 
 function traceAdapter(side: "Host" | "Guest", event: string, data?: Record<string, unknown>): void {
   console.debug(`[P2P ${side} Adapter]`, performance.now().toFixed(1), event, data ?? {});
@@ -1177,18 +1188,15 @@ export class P2PGuestAdapter implements EngineAdapter {
 
   private async attemptReconnect(attemptIndex: number): Promise<void> {
     if (this.terminated) return;
-    if (attemptIndex >= RECONNECT_BACKOFF_MS.length) {
-      this.emit({
-        type: "reconnectFailed",
-        reason: "Exceeded reconnect attempts",
-      });
-      this.emit({
-        type: "opponentDisconnected",
-        reason: "Lost connection to host",
-      });
-      return;
-    }
-    const delay = RECONNECT_BACKOFF_MS[attemptIndex];
+    // After the escalating schedule, retry at a steady 60s cadence until
+    // the user explicitly leaves. This is the "host-is-taking-a-while-
+    // to-come-back" case (browser crash + reopen + tab-warmup can easily
+    // take 2-3 minutes). `reconnectFailed` is NOT emitted here — the UI
+    // keeps the reconnecting indicator up and the user decides when to
+    // give up.
+    const delay = attemptIndex < RECONNECT_BACKOFF_MS.length
+      ? RECONNECT_BACKOFF_MS[attemptIndex]
+      : RECONNECT_STEADY_STATE_MS;
     this.emit({ type: "reconnecting", attempt: attemptIndex + 1 });
     await new Promise((r) => setTimeout(r, delay));
 
