@@ -471,6 +471,7 @@ export function GameProvider({
 
             await initGame(gameId, adapter, undefined, undefined, undefined, matchConfig);
             signal.throwIfAborted();
+            saveActiveGame({ id: gameId, mode: "p2p-join", difficulty: "", p2pRoomCode: code });
           }
 
           controller = createGameLoopController({ mode: "online" });

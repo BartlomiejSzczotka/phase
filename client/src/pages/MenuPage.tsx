@@ -12,6 +12,7 @@ import {
 } from "../constants/storage";
 import { isTauri } from "../services/sidecar";
 import { loadWsSession } from "../services/multiplayerSession";
+import { loadP2PSession } from "../services/p2pSession";
 import {
   clearActiveGame,
   loadActiveGame,
@@ -60,8 +61,15 @@ export function MenuPage() {
         } else {
           clearActiveGame();
         }
+      } else if (saved.mode === "p2p-join" && saved.p2pRoomCode) {
+        loadP2PSession(`phase-${saved.p2pRoomCode}`).then((session) => {
+          if (session) {
+            setActiveGame(saved);
+          } else {
+            clearActiveGame();
+          }
+        });
       } else {
-        // Game state is in IndexedDB — async check
         loadGame(saved.id).then((state) => {
           if (state) {
             setActiveGame(saved);
@@ -93,13 +101,11 @@ export function MenuPage() {
     if (!activeGame) return;
     useGameStore.setState({ gameId: activeGame.id });
     if (activeGame.mode === "online") {
-      // Server-mode reconnect via stored WS session token.
       navigate(`/game/${activeGame.id}?mode=host`);
     } else if (activeGame.mode === "p2p-host") {
-      // P2P host resume: GameProvider detects saved state +
-      // saved P2P host session and dials back on the same room
-      // code via `hostRoom({ preferredRoomCode })`.
       navigate(`/game/${activeGame.id}?mode=p2p-host`);
+    } else if (activeGame.mode === "p2p-join" && activeGame.p2pRoomCode) {
+      navigate(`/game/${activeGame.id}?mode=p2p-join&code=${activeGame.p2pRoomCode}`);
     } else {
       navigate(`/game/${activeGame.id}?mode=${activeGame.mode}&difficulty=${activeGame.difficulty}`);
     }

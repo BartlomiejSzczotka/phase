@@ -6,15 +6,10 @@ import { ACTIVE_GAME_KEY, GAME_CHECKPOINTS_PREFIX, GAME_KEY_PREFIX } from "../co
 
 export interface ActiveGameMeta {
   id: string;
-  /**
-   * `"online"` = server-mode WebSocket game. `"p2p-host"` = P2P host
-   * game with local authoritative state; eligible for host-resume on
-   * reload. P2P guests don't have an active meta — reconnection is
-   * driven by the host's room code + the guest's persisted session
-   * token.
-   */
-  mode: "ai" | "local" | "online" | "p2p-host";
+  mode: "ai" | "local" | "online" | "p2p-host" | "p2p-join";
   difficulty: string;
+  /** Bare 5-char room code for P2P guest resume. */
+  p2pRoomCode?: string;
 }
 
 /**
