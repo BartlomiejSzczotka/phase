@@ -19,8 +19,9 @@ client/src/wasm/*.js
 client/src/wasm/*.wasm
 client/src/wasm/*.wasm.d.ts
 
-# Claude worktrees
+# Claude worktrees and local state
 .claude/worktrees/
+.claude/scheduled_tasks.lock
 
 # Build output
 client/dist/
@@ -70,3 +71,7 @@ Thumbs.db
 17lands/
 replay_dtypes.py
 .codex/
+
+# Scratch planning files
+parser-batch-plan.md
+parser-fallback-plan.md
