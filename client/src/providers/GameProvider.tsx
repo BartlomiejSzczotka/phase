@@ -492,17 +492,19 @@ export function GameProvider({
           hostPeerHandle?.destroy();
           if (signal.aborted) return;
           const message = err instanceof Error ? err.message : String(err);
-          // Classify the PeerJS failure mode so the UI can render an
-          // actionable message. `unavailable-id` on resume means the
-          // signaling server still holds the prior Peer's registration —
-          // the user needs to wait, not retry immediately. Any other
-          // error falls through as a generic `error` event.
           const peerErrorType = (err as { peerErrorType?: string }).peerErrorType;
           if (peerErrorType === "unavailable-id") {
             onP2PEventRef.current?.({
               type: "hostingFailed",
               reason: "room_still_claimed",
               message,
+            });
+          } else if (message.includes("Deck rejected:") || message.includes("Deck not legal")) {
+            const sepIdx = message.indexOf("||format:");
+            onP2PEventRef.current?.({
+              type: "deckRejected",
+              reason: sepIdx >= 0 ? message.slice(0, sepIdx) : message,
+              format: sepIdx >= 0 ? message.slice(sepIdx + 9) : undefined,
             });
           } else {
             onP2PEventRef.current?.({ type: "error", message });
@@ -628,9 +630,15 @@ export function GameProvider({
             useMultiplayerStore.getState().setConnectionStatus("connected");
             onReadyRef.current?.();
             audioManager.setContext("battlefield");
-          }).catch(() => {
+          }).catch((err) => {
+            if (cancelled) return;
+            const msg = err instanceof Error ? err.message : String(err);
             useMultiplayerStore.getState().setConnectionStatus("disconnected");
-            useMultiplayerStore.getState().showToast("Connection failed. Retry or change server in Settings.");
+            if (msg.includes("Deck not legal")) {
+              onWsEventRef.current?.({ type: "deckRejected", reason: msg });
+            } else {
+              useMultiplayerStore.getState().showToast("Connection failed. Retry or change server in Settings.");
+            }
           });
         }
       };

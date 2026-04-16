@@ -59,6 +59,7 @@ export type WsAdapterEvent =
   | { type: "spectatorJoined"; name: string }
   | { type: "gameOver"; winner: PlayerId | null; reason: string }
   | { type: "error"; message: string }
+  | { type: "deckRejected"; reason: string }
   | { type: "reconnecting"; attempt: number; maxAttempts: number }
   | { type: "reconnected" }
   | { type: "reconnectFailed" }
@@ -624,6 +625,13 @@ export class WebSocketAdapter implements EngineAdapter {
       case "Error": {
         const data = msg.data as { message: string };
         this.emit({ type: "error", message: data.message });
+        if (data.message.includes("Deck not legal") && this.initReject) {
+          this.initReject(
+            new AdapterError("DECK_REJECTED", data.message, false),
+          );
+          this.initResolve = null;
+          this.initReject = null;
+        }
         break;
       }
     }

@@ -318,8 +318,17 @@ export function GamePage() {
       case "error":
         useMultiplayerStore.getState().showToast(event.message);
         break;
+      case "deckRejected":
+        navigate("/multiplayer", {
+          state: {
+            deckRejected: true,
+            reason: event.reason,
+            joinCode,
+          },
+        });
+        break;
     }
-  }, [gameId, navigate]);
+  }, [gameId, navigate, joinCode]);
 
   const handleP2PEvent = useCallback((event: P2PAdapterEvent) => {
     switch (event.type) {
@@ -425,6 +434,22 @@ export function GamePage() {
       case "playerSlotsUpdated":
         useMultiplayerStore.setState({ playerSlots: event.slots });
         break;
+      case "gameOver":
+        if (gameId) clearGame(gameId);
+        useGameStore.setState({
+          waitingFor: { type: "GameOver", data: { winner: event.winner } },
+        });
+        break;
+      case "deckRejected":
+        navigate("/multiplayer", {
+          state: {
+            deckRejected: true,
+            reason: event.reason,
+            format: event.format,
+            joinCode,
+          },
+        });
+        break;
       case "error":
         useMultiplayerStore.getState().showToast(event.message);
         setReconnectState({ status: "failed" });
@@ -448,7 +473,7 @@ export function GamePage() {
         break;
       }
     }
-  }, [navigate, formatConfig, matchConfig, playerCount]);
+  }, [navigate, formatConfig, matchConfig, playerCount, gameId, joinCode]);
 
   const handleReady = useCallback(() => {
     setWaitingForOpponent(false);

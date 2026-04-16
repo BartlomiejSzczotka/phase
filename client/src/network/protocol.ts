@@ -38,7 +38,7 @@ export type P2PMessage =
     }
   | { type: "reconnect_rejected"; reason: string }
   // Kick / forced removal (host → target).
-  | { type: "kick"; reason: string }
+  | { type: "kick"; reason: string; format?: string }
   // Host explicitly quit the game (host → all guests). Terminal: guests set
   // their `terminated` flag and skip the reconnect backoff that normally
   // fires on an unexpected connection drop. Distinct from the PeerSession

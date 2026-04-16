@@ -41,7 +41,7 @@ const PRECON_PREFIX = "[Pre-built] ";
 const FORMAT_TAGS = new Set(["standard", "modern", "pioneer", "commander", "legacy", "vintage", "pauper", "historic", "brawl", "metagame"]);
 
 type DeckFilter = "all" | "standard" | "pioneer" | "modern" | "legacy" | "vintage" | "pauper" | "commander" | "historic" | "brawl" | "bo3";
-type DeckSort = "alpha" | "recent";
+type DeckSort = "alpha" | "recent" | "format";
 
 /** Ordered list of format filters shown in the filter bar. */
 const FORMAT_FILTERS: Array<{ key: DeckFilter; label: string; aetherhubUrl?: string }> = [
@@ -306,7 +306,9 @@ export function MyDecks({
     return map[selectedFormat] ?? null;
   }, [selectedFormat]);
   const [activeFilter, setActiveFilter] = useState<DeckFilter>(contextualFilter ?? "all");
-  const [activeSort, setActiveSort] = useState<DeckSort>(mode === "select" ? "recent" : "alpha");
+  const [activeSort, setActiveSort] = useState<DeckSort>(
+    mode === "select" ? (selectedFormat ? "format" : "recent") : "alpha",
+  );
   const [sortAsc, setSortAsc] = useState(mode !== "select");
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -427,6 +429,16 @@ export function MyDecks({
     const dir = sortAsc ? 1 : -1;
     const sortNames = (names: string[]): string[] => {
       if (activeSort === "alpha") return [...names].sort((a, b) => a.localeCompare(b) * dir);
+      if (activeSort === "format") {
+        return [...names].sort((a, b) => {
+          const compatA = compatibilities[a]?.selected_format_compatible;
+          const compatB = compatibilities[b]?.selected_format_compatible;
+          const scoreA = compatA === true ? 0 : compatA === false ? 2 : 1;
+          const scoreB = compatB === true ? 0 : compatB === false ? 2 : 1;
+          if (scoreA !== scoreB) return (scoreA - scoreB) * dir;
+          return a.localeCompare(b);
+        });
+      }
       return [...names].sort((a, b) => {
         const metaA = getDeckMeta(a);
         const metaB = getDeckMeta(b);
@@ -446,7 +458,7 @@ export function MyDecks({
       }
     }
     return { userDecks: sortNames(user), bundledDecks: sortNames(bundled) };
-  }, [searchFiltered, activeSort, sortAsc]);
+  }, [searchFiltered, activeSort, sortAsc, compatibilities]);
 
   const noDeckSelected = mode === "select"
     ? !activeDeckName || !searchFiltered.includes(activeDeckName)
@@ -627,6 +639,7 @@ export function MyDecks({
           >
             <option value="alpha">Name</option>
             <option value="recent">Date Added</option>
+            {selectedFormat && <option value="format">Format</option>}
           </select>
           <button
             onClick={() => setSortAsc((prev) => !prev)}

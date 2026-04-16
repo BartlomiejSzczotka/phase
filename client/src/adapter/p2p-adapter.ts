@@ -77,6 +77,7 @@ export type P2PAdapterEvent =
   | { type: "lobbyProgress"; joined: number; total: number }
   | { type: "playerSlotsUpdated"; slots: PlayerSlot[] }
   | { type: "roomFull" }
+  | { type: "deckRejected"; reason: string; format?: string }
   | { type: "reconnecting"; attempt: number }
   | { type: "reconnectFailed"; reason: string };
 
@@ -783,7 +784,7 @@ export class P2PHostAdapter implements EngineAdapter {
             ?? `Deck is not legal in ${this.formatConfig!.format}.`;
           const session = this.guestSessions.get(pid);
           if (session) {
-            session.send({ type: "kick", reason: `Deck rejected: ${reason}` });
+            session.send({ type: "kick", reason: `Deck rejected: ${reason}`, format: this.formatConfig!.format });
             session.close("Deck validation failed");
           }
           this.guestSessions.delete(pid);
@@ -1435,6 +1436,7 @@ export class P2PGuestAdapter implements EngineAdapter {
   // must resolve there too or it will hang indefinitely.
   private gameSetupPromise: Promise<SubmitResult>;
   private gameSetupResolve!: (result: SubmitResult) => void;
+  private gameSetupReject!: (error: Error) => void;
   private gameSetupSettled = false;
 
   constructor(
@@ -1448,8 +1450,9 @@ export class P2PGuestAdapter implements EngineAdapter {
     if (existingPlayerToken) {
       this.playerToken = existingPlayerToken;
     }
-    this.gameSetupPromise = new Promise<SubmitResult>((resolve) => {
+    this.gameSetupPromise = new Promise<SubmitResult>((resolve, reject) => {
       this.gameSetupResolve = resolve;
+      this.gameSetupReject = reject;
     });
   }
 
@@ -1620,22 +1623,26 @@ export class P2PGuestAdapter implements EngineAdapter {
       }
       case "reconnect_rejected": {
         this.terminated = true;
+        this.rejectGameSetup(msg.reason);
         this.emit({ type: "reconnectFailed", reason: msg.reason });
         this.emit({ type: "gameOver", winner: null, reason: msg.reason });
         break;
       }
       case "kick": {
         this.terminated = true;
-        this.emit({ type: "gameOver", winner: null, reason: msg.reason });
+        const kickFormat = (msg as { format?: string }).format;
+        const isDeckRejection = msg.reason.startsWith("Deck rejected:");
+        this.rejectGameSetup(
+          kickFormat ? `${msg.reason}||format:${kickFormat}` : msg.reason,
+        );
+        if (!isDeckRejection) {
+          this.emit({ type: "gameOver", winner: null, reason: msg.reason });
+        }
         break;
       }
       case "host_left": {
-        // Host explicitly quit — same terminal handling as `kick`: flip
-        // `terminated` so the post-disconnect `handleHostDisconnect` path
-        // skips `attemptReconnect`. Without this flag, the guest would
-        // spin the reconnect backoff indefinitely against a Peer the
-        // host already destroyed.
         this.terminated = true;
+        this.rejectGameSetup(msg.reason);
         this.emit({ type: "gameOver", winner: null, reason: msg.reason });
         break;
       }
@@ -1737,6 +1744,12 @@ export class P2PGuestAdapter implements EngineAdapter {
     if (this.gameSetupSettled) return;
     this.gameSetupSettled = true;
     this.gameSetupResolve(result);
+  }
+
+  private rejectGameSetup(reason: string): void {
+    if (this.gameSetupSettled) return;
+    this.gameSetupSettled = true;
+    this.gameSetupReject(new AdapterError("P2P_REJECTED", reason, false));
   }
 
   private handleHostDisconnect(): void {

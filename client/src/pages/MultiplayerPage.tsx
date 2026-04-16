@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 
 import type { GameFormat } from "../adapter/types";
 import { useAudioContext } from "../audio/useAudioContext";
@@ -47,6 +47,7 @@ type PendingAction =
 export function MultiplayerPage() {
   useAudioContext("lobby");
   const navigate = useNavigate();
+  const location = useLocation();
 
   const startHosting = useMultiplayerStore((s) => s.startHosting);
   const startP2PHostingSession = useMultiplayerStore((s) => s.startP2PHostingSession);
@@ -108,6 +109,24 @@ export function MultiplayerPage() {
   useEffect(() => {
     setActiveDeckName(localStorage.getItem(ACTIVE_DECK_KEY));
   }, []);
+
+  useEffect(() => {
+    const state = location.state as {
+      deckRejected?: boolean;
+      reason?: string;
+      format?: string;
+      joinCode?: string;
+    } | null;
+    if (!state?.deckRejected) return;
+    showToast(state.reason ?? "Deck was rejected by the host.");
+    setPendingAction({
+      type: "join",
+      code: state.joinCode ?? "",
+      format: (state.format as GameFormat) ?? undefined,
+    });
+    setView("deck-select");
+    navigate(location.pathname, { replace: true, state: null });
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Sync connectionMode when the user changes their server address via
   // ServerPicker. Empty address → P2P (no server to talk to). Restored
@@ -217,26 +236,20 @@ export function MultiplayerPage() {
    * is referenced as an identifier (stable across renders via React).
    */
   const joinP2PRoom = useCallback(
-    async (code: string, initialPassword?: string) => {
+    async (code: string, initialPassword?: string): Promise<boolean> => {
       let password = initialPassword;
       while (true) {
         const result = await resolveGuestFromStore(code, password);
         if (result.ok) {
           const gameId = crypto.randomUUID();
           useGameStore.setState({ gameId });
-          // Broker stores whatever peer id the host registered with
-          // (`PEER_ID_PREFIX + roomCode`). `joinRoom(code)` re-prepends
-          // the prefix itself, so strip to the bare 5-char code here.
-          // `stripPeerIdPrefix` is a no-op on already-bare values, which
-          // keeps us compatible with any legacy broker entry that
-          // happened to be registered without a prefix.
           const roomCode = stripPeerIdPrefix(result.peerInfo.host_peer_id);
           navigate(`/game/${gameId}?mode=p2p-join&code=${roomCode}`);
-          return;
+          return true;
         }
         if (result.reason === "password_required") {
           const entered = window.prompt("This room requires a password:");
-          if (!entered) return;
+          if (!entered) return false;
           password = entered;
           continue;
         }
@@ -249,7 +262,7 @@ export function MultiplayerPage() {
               onClick: () => window.location.reload(),
             },
           });
-          return;
+          return false;
         }
         if (
           result.reason === "not_found" ||
@@ -259,10 +272,10 @@ export function MultiplayerPage() {
             title: "Can't join this room",
             message: result.message,
           });
-          return;
+          return false;
         }
         showToast(result.message);
-        return;
+        return false;
       }
     },
     [navigate, resolveGuestFromStore, showToast],
@@ -369,11 +382,11 @@ export function MultiplayerPage() {
           navigate("/");
         }
       } else {
-        // Join flow. Typed codes use `parseRoomCode` for direct dial
-        // (peer-code path); lobby-row clicks with `context.is_p2p` are
-        // already intercepted upstream in `handleJoinGame` and never
-        // reach here.
-        const { code, password } = action;
+        const { code, password, context } = action;
+
+        if (context?.is_p2p === true) {
+          return joinP2PRoom(code, password);
+        }
 
         const p2pCode = parseRoomCode(code);
         if (p2pCode && code.trim().length === 5) {
@@ -396,7 +409,7 @@ export function MultiplayerPage() {
 
       return true;
     },
-    [expandDeck, startHosting, startP2PHostingSession, navigate, showToast],
+    [expandDeck, startHosting, startP2PHostingSession, navigate, showToast, joinP2PRoom],
   );
 
   // Host setup complete → execute immediately if deck exists, otherwise prompt
@@ -421,17 +434,6 @@ export function MultiplayerPage() {
       format?: GameFormat,
       context?: LobbyGame,
     ) => {
-      // Explicit `=== true` so legacy lobby rows (older server builds
-      // without `is_p2p`) fall through to the server-run flow rather
-      // than being treated as P2P. Typed-code joins intentionally do
-      // NOT route through the broker — the code a user types is the
-      // 5-char peer `roomCode` (shared out of band), not the broker's
-      // 6-char `gameCode`. Lobby-row clicks carry `context.is_p2p`
-      // and use `joinP2PRoom` for the broker lookup.
-      if (context?.is_p2p === true) {
-        void joinP2PRoom(code, password);
-        return;
-      }
       const action: PendingAction = {
         type: "join",
         code,
@@ -439,15 +441,10 @@ export function MultiplayerPage() {
         format,
         context,
       };
-      // Always route through deck-select on join so the user picks against
-      // the host's format-filtered list. Even with an active deck, that
-      // deck may be illegal in the host's format — better to surface the
-      // mismatch immediately in the filtered picker than to fail server-
-      // side after we've already navigated into the game.
       setPendingAction(action);
       setView("deck-select");
     },
-    [joinP2PRoom],
+    [],
   );
 
   const handleBack = () => {
