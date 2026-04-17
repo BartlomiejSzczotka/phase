@@ -23,16 +23,31 @@ fn parse_digit_number(input: &str) -> OracleResult<'_, u32> {
     map_res(digit1, |s: &str| s.parse::<u32>()).parse(input)
 }
 
-/// Parse an English number word (one through twenty, plus "a"/"an").
+/// Parse an English number word (one through one hundred, plus "a"/"an").
 ///
 /// "a"/"an" require a word boundary after the match (whitespace, punctuation, or
 /// end-of-input) to prevent false matches on words like "another" or "anyone".
+///
+/// Supports multiples of ten from thirty through ninety, plus "one hundred",
+/// for cards like Lux Artillery ("thirty or more counters") and Hundred-Handed
+/// One. Compound forms like "twenty-one" are not currently printed in Oracle
+/// text — add them here if that changes.
 fn parse_english_number(input: &str) -> OracleResult<'_, u32> {
     // Longest-match-first ordering within shared prefixes (e.g. "fourteen" before "four").
-    // Split into two alt groups to stay within nom's 21-element tuple limit.
+    // Split into multiple alt groups to stay within nom's 21-element tuple limit.
     alt((
-        value(20u32, tag("twenty")),
-        value(19, tag("nineteen")),
+        value(100u32, tag("one hundred")),
+        value(90, tag("ninety")),
+        value(80, tag("eighty")),
+        value(70, tag("seventy")),
+        value(60, tag("sixty")),
+        value(50, tag("fifty")),
+        value(40, tag("forty")),
+        value(30, tag("thirty")),
+        value(20, tag("twenty")),
+    ))
+    .or(alt((
+        value(19u32, tag("nineteen")),
         value(18, tag("eighteen")),
         value(17, tag("seventeen")),
         value(16, tag("sixteen")),
@@ -42,7 +57,7 @@ fn parse_english_number(input: &str) -> OracleResult<'_, u32> {
         value(12, tag("twelve")),
         value(11, tag("eleven")),
         value(10, tag("ten")),
-    ))
+    )))
     .or(alt((
         value(9u32, tag("nine")),
         value(8, tag("eight")),
@@ -680,6 +695,35 @@ pub fn split_once_on<'a>(
 mod tests {
     use super::*;
     use nom::bytes::complete::tag;
+
+    /// Extended number words (30, 40, ..., 100) for cards like Lux Artillery
+    /// ("thirty or more counters") and Hundred-Handed One.
+    #[test]
+    fn test_parse_number_high_words() {
+        assert_eq!(parse_number("thirty").unwrap().1, 30);
+        assert_eq!(parse_number("forty").unwrap().1, 40);
+        assert_eq!(parse_number("fifty").unwrap().1, 50);
+        assert_eq!(parse_number("sixty").unwrap().1, 60);
+        assert_eq!(parse_number("seventy").unwrap().1, 70);
+        assert_eq!(parse_number("eighty").unwrap().1, 80);
+        assert_eq!(parse_number("ninety").unwrap().1, 90);
+        assert_eq!(parse_number("one hundred").unwrap().1, 100);
+    }
+
+    /// "one hundred" must be tried BEFORE "one" so "one hundred cards"
+    /// parses as 100, not 1 followed by " hundred cards".
+    #[test]
+    fn test_parse_number_one_hundred_before_one() {
+        let (rest, n) = parse_number("one hundred cards").unwrap();
+        assert_eq!(n, 100);
+        assert_eq!(rest, " cards");
+    }
+
+    #[test]
+    fn test_parse_number_single_word_still_works() {
+        assert_eq!(parse_number("one").unwrap().1, 1);
+        assert_eq!(parse_number("twenty").unwrap().1, 20);
+    }
 
     #[test]
     fn test_scan_split_at_phrase_at_start() {

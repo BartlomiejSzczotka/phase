@@ -111,7 +111,12 @@ pub(crate) fn resolve_quantity_scoped(
     }
 }
 
-/// CR 107.2: Divide by 2, rounding in the specified direction.
+/// CR 107.1a: "If a spell or ability could generate a fractional number, the
+/// spell or ability will tell you whether to round up or down." Integer-divides
+/// by 2 in the direction specified by the parsed `RoundingMode`. Negative
+/// inputs are resolver-safe: `(−1 + 1) / 2 = 0` rounds up, `−1 / 2 = 0` rounds
+/// down (Rust truncates toward zero), matching CR 107.1b which permits
+/// negative intermediate values but forbids negative damage/life results.
 fn half_rounded(value: i32, rounding: RoundingMode) -> i32 {
     match rounding {
         RoundingMode::Up => (value + 1) / 2,
@@ -257,7 +262,10 @@ fn resolve_ref(
             counter_type,
             filter,
         } => {
-            let ct = parse_counter_type(counter_type);
+            // CR 122.1: When `counter_type` is `None`, sum across every counter type
+            // (e.g., "counters among artifacts and creatures you control"). When
+            // `Some`, count only that specific counter type.
+            let ct = counter_type.as_deref().map(parse_counter_type);
             let zone = filter
                 .extract_in_zone()
                 .unwrap_or(crate::types::zones::Zone::Battlefield);
@@ -265,10 +273,10 @@ fn resolve_ref(
                 .iter()
                 .filter_map(|&id| {
                     if matches_target_filter(state, id, filter, &filter_ctx) {
-                        state
-                            .objects
-                            .get(&id)
-                            .map(|obj| obj.counters.get(&ct).copied().unwrap_or(0) as i32)
+                        state.objects.get(&id).map(|obj| match &ct {
+                            Some(ct) => obj.counters.get(ct).copied().unwrap_or(0) as i32,
+                            None => obj.counters.values().copied().sum::<u32>() as i32,
+                        })
                     } else {
                         None
                     }
@@ -989,7 +997,7 @@ mod tests {
 
         let expr = QuantityExpr::Ref {
             qty: QuantityRef::CountersOnObjects {
-                counter_type: "P1P1".to_string(),
+                counter_type: Some("P1P1".to_string()),
                 filter: TargetFilter::Typed(TypedFilter::land().controller(ControllerRef::You)),
             },
         };

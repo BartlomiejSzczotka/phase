@@ -13,18 +13,205 @@ use nom::Parser;
 use super::error::OracleResult;
 use super::primitives::parse_number;
 use super::target::parse_type_filter_word;
+use crate::parser::oracle_target::parse_type_phrase;
 use crate::types::ability::{
-    ControllerRef, CountScope, QuantityExpr, QuantityRef, TargetFilter, TypeFilter, TypedFilter,
-    ZoneRef,
+    ControllerRef, CountScope, QuantityExpr, QuantityRef, RoundingMode, TargetFilter, TypeFilter,
+    TypedFilter, ZoneRef,
 };
 
-/// Parse a quantity expression: either a fixed number or a dynamic reference.
+/// Parse a quantity expression: either a fractional expression, a dynamic reference,
+/// or a fixed number. Fractional forms ("half X, rounded up/down") compose over the
+/// same `parse_quantity_ref` / `parse_number` primitives used for plain quantities.
 pub fn parse_quantity(input: &str) -> OracleResult<'_, QuantityExpr> {
     alt((
+        parse_half_rounded,
         map(parse_quantity_ref, |qty| QuantityExpr::Ref { qty }),
         map(parse_number, |n| QuantityExpr::Fixed { value: n as i32 }),
     ))
     .parse(input)
+}
+
+/// CR 107.1a: Parse "half <inner>, rounded up/down" fractional expressions.
+///
+/// The inner expression is any quantity this module can recognize — either a
+/// standard [`parse_quantity_ref`] (e.g. `"its power"`, `"your life total"`) or
+/// a possessive reference resolved against the current target (e.g.
+/// `"their library"` → `TargetZoneCardCount { zone: Library }`). The parser
+/// accepts an optional `, rounded up` / `, rounded down` / `, round up` /
+/// `, round down` suffix. If absent, the expression defaults to
+/// [`RoundingMode::Down`] as a safe fallback — CR 107.1a requires Oracle text
+/// to specify rounding explicitly, so an unspecified suffix indicates either
+/// non-standard text or an upstream strip (duration, trailing punctuation).
+///
+/// Composes over existing refs only — does NOT introduce new QuantityRef
+/// variants. New fractional patterns are unlocked by extending
+/// [`parse_half_rounded_inner`], not by adding bespoke refs.
+pub fn parse_half_rounded(input: &str) -> OracleResult<'_, QuantityExpr> {
+    let (rest, _) = tag("half ").parse(input)?;
+    // "half X" and "half of X" are equivalent Oracle surface forms — the
+    // "of" variant appears in phrases like "exile the top half of their
+    // library, rounded down". Consume the optional connector before the inner.
+    let (rest, _) = opt(tag("of ")).parse(rest)?;
+    let (rest, inner) = parse_half_rounded_inner(rest)?;
+    let (rest, rounding) = parse_rounding_suffix(rest)?;
+    Ok((
+        rest,
+        QuantityExpr::HalfRounded {
+            inner: Box::new(inner),
+            rounding,
+        },
+    ))
+}
+
+/// Inner expression of "half ...": a full quantity ref, a possessive ref
+/// resolving against the current target ("their library"/"their life"), the
+/// spell-cost variable X ("half X damage"), or a literal number ("half 10
+/// damage" is vanishingly rare but parses cleanly).
+///
+/// Delegates to existing combinators — does NOT introduce new refs.
+fn parse_half_rounded_inner(input: &str) -> OracleResult<'_, QuantityExpr> {
+    alt((
+        map(parse_possessive_quantity_ref, |qty| QuantityExpr::Ref {
+            qty,
+        }),
+        map(parse_quantity_ref, |qty| QuantityExpr::Ref { qty }),
+        parse_quantity_expr_number,
+    ))
+    .parse(input)
+}
+
+/// Parse possessive-pronoun quantity phrases: "their library", "their hand",
+/// "their life total", "their life", "his or her life", "its power",
+/// "its toughness", "your hand", "your graveyard", "your library".
+///
+/// These are context-dependent — "their" refers to a player target in scope,
+/// "its" refers to the effect's source/subject, "your" refers to the effect's
+/// controller. The mapped `QuantityRef` variant carries that distinction:
+///
+/// | Possessive | Quantity | Maps to |
+/// |------------|----------|---------|
+/// | "their"    | library/hand/graveyard | `TargetZoneCardCount { zone }` |
+/// | "their"    | life total / life      | `TargetLifeTotal` |
+/// | "his or her" | life total / life    | `TargetLifeTotal` |
+/// | "your"     | library/hand/graveyard | `ZoneCardCount` (Controller scope) |
+/// | "your"     | life total / life      | `LifeTotal` |
+/// | "its"      | power                  | `SelfPower` |
+/// | "its"      | toughness              | `SelfToughness` |
+///
+/// CR 107.1a: These are the base references that half-rounded expressions
+/// compose over. A new possessive quantity extends this combinator — do NOT
+/// inline string matching for possessive patterns in effect parsers.
+pub fn parse_possessive_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
+    alt((
+        parse_their_quantity_ref,
+        parse_his_or_her_quantity_ref,
+        parse_your_possessive_quantity_ref,
+    ))
+    .parse(input)
+}
+
+/// "their <zone>" / "their life [total]" — resolves against the effect's
+/// player target (CR 115.7: targeting phrases reference the matched target).
+fn parse_their_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
+    preceded(tag("their "), parse_their_tail).parse(input)
+}
+
+fn parse_their_tail(input: &str) -> OracleResult<'_, QuantityRef> {
+    alt((
+        value(
+            QuantityRef::TargetZoneCardCount {
+                zone: ZoneRef::Library,
+            },
+            tag("library"),
+        ),
+        value(
+            QuantityRef::TargetZoneCardCount {
+                zone: ZoneRef::Hand,
+            },
+            tag("hand"),
+        ),
+        value(
+            QuantityRef::TargetZoneCardCount {
+                zone: ZoneRef::Graveyard,
+            },
+            tag("graveyard"),
+        ),
+        // Life total before bare "life" (longer tag first).
+        value(QuantityRef::TargetLifeTotal, tag("life total")),
+        value(QuantityRef::TargetLifeTotal, tag("life")),
+    ))
+    .parse(input)
+}
+
+/// Legacy "his or her <life>" possessive — present in older Oracle text that
+/// has not been re-worded to "their". Resolves identically to `parse_their_*`.
+fn parse_his_or_her_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
+    preceded(
+        tag("his or her "),
+        alt((
+            value(QuantityRef::TargetLifeTotal, tag("life total")),
+            value(QuantityRef::TargetLifeTotal, tag("life")),
+        )),
+    )
+    .parse(input)
+}
+
+/// "your <zone>" / "your life [total]" — resolves against the controller of
+/// the effect (CR 109.5). Note: `parse_quantity_ref` already handles
+/// "your life total" and "cards in your <zone>", but not the shorthand
+/// "your library" / "your hand" / "your life" forms that appear inside
+/// fractional expressions ("half your hand, rounded up").
+fn parse_your_possessive_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
+    preceded(tag("your "), parse_your_tail).parse(input)
+}
+
+fn parse_your_tail(input: &str) -> OracleResult<'_, QuantityRef> {
+    alt((
+        value(
+            QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Library,
+                card_types: Vec::new(),
+                scope: CountScope::Controller,
+            },
+            tag("library"),
+        ),
+        value(
+            QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Hand,
+                card_types: Vec::new(),
+                scope: CountScope::Controller,
+            },
+            tag("hand"),
+        ),
+        value(
+            QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Graveyard,
+                card_types: Vec::new(),
+                scope: CountScope::Controller,
+            },
+            tag("graveyard"),
+        ),
+        value(QuantityRef::LifeTotal, tag("life total")),
+        value(QuantityRef::LifeTotal, tag("life")),
+    ))
+    .parse(input)
+}
+
+/// Parse an optional ", rounded up/down" / ", round up/down" suffix.
+///
+/// CR 107.1a: Oracle text must specify rounding direction for fractional
+/// expressions. When absent (malformed text or upstream trimming), defaults
+/// to `Down` — the more common direction in actual Magic cards and a safe
+/// fallback for misparses.
+fn parse_rounding_suffix(input: &str) -> OracleResult<'_, RoundingMode> {
+    let (rest, rounding) = opt(alt((
+        value(RoundingMode::Up, tag(", rounded up")),
+        value(RoundingMode::Down, tag(", rounded down")),
+        value(RoundingMode::Up, tag(", round up")),
+        value(RoundingMode::Down, tag(", round down")),
+    )))
+    .parse(input)?;
+    Ok((rest, rounding.unwrap_or(RoundingMode::Down)))
 }
 
 /// Parse a literal number OR the variable `X` in filter-threshold contexts.
@@ -75,8 +262,43 @@ pub fn parse_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
         parse_target_life_ref,
         parse_basic_land_type_count,
         parse_devotion_ref,
+        parse_counters_among_ref,
     )))
     .parse(input)
+}
+
+/// CR 122.1: Parse "counters among [filter]" — sum across every counter type.
+///
+/// Used for phrases like "thirty or more counters among artifacts and creatures
+/// you control" (Lux Artillery's intervening-if). The counter type is `None`
+/// because the Oracle text does not restrict to any particular counter kind;
+/// the resolver sums counters of every type on every matching object.
+///
+/// Composes with `parse_there_are_conditions` to form the full
+/// "there are N or more counters among [filter]" condition.
+fn parse_counters_among_ref(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest, _) = tag("counters among ").parse(input)?;
+    let type_text = rest.trim_end_matches('.').trim_end_matches(',');
+    let (filter, remainder) = parse_type_phrase(type_text);
+    if matches!(filter, TargetFilter::Any) {
+        return Err(nom::Err::Error(nom_language::error::VerboseError {
+            errors: vec![(
+                input,
+                nom_language::error::VerboseErrorKind::Nom(nom::error::ErrorKind::Tag),
+            )],
+        }));
+    }
+    // Map remainder back to original input slice — parse_type_phrase may have
+    // consumed from a trimmed copy, so use pointer arithmetic for the correct
+    // byte offset.
+    let consumed = remainder.as_ptr() as usize - input.as_ptr() as usize;
+    Ok((
+        &input[consumed..],
+        QuantityRef::CountersOnObjects {
+            counter_type: None,
+            filter,
+        },
+    ))
 }
 
 /// Parse "the number of [type] you control" → ObjectCount.
@@ -764,6 +986,174 @@ mod tests {
         let (rest, q) =
             parse_quantity_ref("the number of basic land types among lands you control").unwrap();
         assert_eq!(q, QuantityRef::BasicLandTypeCount);
+        assert_eq!(rest, "");
+    }
+
+    // --- Half-rounded fractional expressions (CR 107.1a) ---
+
+    #[test]
+    fn test_parse_half_their_library_rounded_down() {
+        let (rest, q) = parse_quantity("half their library, rounded down").unwrap();
+        assert_eq!(
+            q,
+            QuantityExpr::HalfRounded {
+                inner: Box::new(QuantityExpr::Ref {
+                    qty: QuantityRef::TargetZoneCardCount {
+                        zone: ZoneRef::Library,
+                    },
+                }),
+                rounding: RoundingMode::Down,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn test_parse_half_their_life_rounded_up() {
+        let (rest, q) = parse_quantity("half their life, rounded up").unwrap();
+        assert_eq!(
+            q,
+            QuantityExpr::HalfRounded {
+                inner: Box::new(QuantityExpr::Ref {
+                    qty: QuantityRef::TargetLifeTotal,
+                }),
+                rounding: RoundingMode::Up,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn test_parse_half_their_life_total_rounded_up() {
+        let (rest, q) = parse_quantity("half their life total, rounded up").unwrap();
+        assert_eq!(
+            q,
+            QuantityExpr::HalfRounded {
+                inner: Box::new(QuantityExpr::Ref {
+                    qty: QuantityRef::TargetLifeTotal,
+                }),
+                rounding: RoundingMode::Up,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    /// CR 400.7: "its power" resolves to the source object's power via
+    /// `SelfPower`. "half its power" composes over the existing ref.
+    #[test]
+    fn test_parse_half_its_power_rounded_up() {
+        let (rest, q) = parse_quantity("half its power, rounded up").unwrap();
+        assert_eq!(
+            q,
+            QuantityExpr::HalfRounded {
+                inner: Box::new(QuantityExpr::Ref {
+                    qty: QuantityRef::SelfPower,
+                }),
+                rounding: RoundingMode::Up,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn test_parse_half_your_life_rounded_up() {
+        let (rest, q) = parse_quantity("half your life, rounded up").unwrap();
+        assert_eq!(
+            q,
+            QuantityExpr::HalfRounded {
+                inner: Box::new(QuantityExpr::Ref {
+                    qty: QuantityRef::LifeTotal,
+                }),
+                rounding: RoundingMode::Up,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    /// Legacy Oracle text for life-loss cards used "his or her life" before
+    /// the 2014 "their" reword. Resolves to the same `TargetLifeTotal` ref.
+    #[test]
+    fn test_parse_half_his_or_her_life_rounded_up() {
+        let (rest, q) = parse_quantity("half his or her life, rounded up").unwrap();
+        assert_eq!(
+            q,
+            QuantityExpr::HalfRounded {
+                inner: Box::new(QuantityExpr::Ref {
+                    qty: QuantityRef::TargetLifeTotal,
+                }),
+                rounding: RoundingMode::Up,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    /// CR 107.1a: Oracle text must specify rounding. When absent (duration
+    /// stripped upstream, or malformed text), we fall back to `Down`.
+    #[test]
+    fn test_parse_half_default_rounding_is_down() {
+        let (rest, q) = parse_quantity("half their library").unwrap();
+        assert_eq!(
+            q,
+            QuantityExpr::HalfRounded {
+                inner: Box::new(QuantityExpr::Ref {
+                    qty: QuantityRef::TargetZoneCardCount {
+                        zone: ZoneRef::Library,
+                    },
+                }),
+                rounding: RoundingMode::Down,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn test_parse_half_round_up_variant() {
+        // "round up" variant (no "-ed") — less common but present in some text.
+        let (rest, q) = parse_quantity("half their life, round up").unwrap();
+        assert_eq!(
+            q,
+            QuantityExpr::HalfRounded {
+                inner: Box::new(QuantityExpr::Ref {
+                    qty: QuantityRef::TargetLifeTotal,
+                }),
+                rounding: RoundingMode::Up,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn test_parse_half_preserves_trailing_text() {
+        // After the rounding suffix, remaining text should be passed through
+        // unchanged so callers can consume it (e.g., the period at end-of-line).
+        let (rest, q) = parse_quantity("half their library, rounded down.").unwrap();
+        assert!(matches!(q, QuantityExpr::HalfRounded { .. }));
+        assert_eq!(rest, ".");
+    }
+
+    #[test]
+    fn test_parse_possessive_ref_their_hand() {
+        let (rest, q) = parse_possessive_quantity_ref("their hand").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::TargetZoneCardCount {
+                zone: ZoneRef::Hand,
+            }
+        );
+        assert_eq!(rest, "");
+    }
+
+    #[test]
+    fn test_parse_possessive_ref_your_hand() {
+        let (rest, q) = parse_possessive_quantity_ref("your hand").unwrap();
+        assert_eq!(
+            q,
+            QuantityRef::ZoneCardCount {
+                zone: ZoneRef::Hand,
+                card_types: Vec::new(),
+                scope: CountScope::Controller,
+            }
+        );
         assert_eq!(rest, "");
     }
 }

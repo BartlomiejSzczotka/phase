@@ -408,8 +408,13 @@ pub fn is_known_effect(effect: &Effect) -> bool {
 }
 
 /// CR 603.7: Check if the next sub_ability needs tracked set recording.
-/// Consumers: delayed triggers with uses_tracked_set, token counts from TrackedSetSize,
-/// and ChooseFromZone (which selects from the tracked set of exiled/moved cards).
+///
+/// A sub consumes the tracked set when any of its quantity or filter positions
+/// reference the most recent set — via `QuantityRef::TrackedSetSize` (e.g.,
+/// "for each creature destroyed this way") or `TargetFilter::TrackedSet { .. }`
+/// (e.g., "those cards"). Two flag-driven cases are also consumers:
+/// `CreateDelayedTrigger { uses_tracked_set: true }` binds the set to the
+/// delayed trigger's later resolution, and `ChooseFromZone` selects out of it.
 fn next_sub_needs_tracked_set(ability: &ResolvedAbility) -> bool {
     ability.sub_ability.as_ref().is_some_and(|sub| {
         matches!(
@@ -417,18 +422,77 @@ fn next_sub_needs_tracked_set(ability: &ResolvedAbility) -> bool {
             Effect::CreateDelayedTrigger {
                 uses_tracked_set: true,
                 ..
-            } | Effect::Token {
-                count: QuantityExpr::Ref {
-                    qty: QuantityRef::TrackedSetSize,
-                },
-                ..
             } | Effect::ChooseFromZone { .. }
-                | Effect::GrantCastingPermission {
-                    target: TargetFilter::TrackedSet { .. },
-                    ..
-                }
-        )
+        ) || effect_references_tracked_set(&sub.effect)
     })
+}
+
+/// Returns true if the effect references the most recent tracked set through
+/// any quantity (`QuantityRef::TrackedSetSize`) or filter (`TargetFilter::TrackedSet`)
+/// position. Walks all quantity and filter fields — works for any effect in the
+/// class (GainLife, DealDamage, Token, Mill, Draw, PutCounter, GrantCastingPermission, …)
+/// without enumerating variants.
+fn effect_references_tracked_set(effect: &Effect) -> bool {
+    // Quantity positions — walk every QuantityExpr field on the effect.
+    let quantity_hits_tracked = |qty: &QuantityExpr| quantity_expr_references_tracked_set(qty);
+    let has_quantity_hit = match effect {
+        Effect::DealDamage { amount, .. } => quantity_hits_tracked(amount),
+        Effect::DamageAll { amount, .. } => quantity_hits_tracked(amount),
+        Effect::DamageEachPlayer { amount, .. } => quantity_hits_tracked(amount),
+        Effect::Draw { count, .. } => quantity_hits_tracked(count),
+        Effect::Mill { count, .. } => quantity_hits_tracked(count),
+        Effect::Scry { count, .. } => quantity_hits_tracked(count),
+        Effect::Dig { count, .. } => quantity_hits_tracked(count),
+        Effect::Surveil { count, .. } => quantity_hits_tracked(count),
+        Effect::GainLife { amount, .. } => quantity_hits_tracked(amount),
+        Effect::LoseLife { amount, .. } => quantity_hits_tracked(amount),
+        Effect::IncreaseSpeed { amount, .. } => quantity_hits_tracked(amount),
+        Effect::PutCounter { count, .. } => quantity_hits_tracked(count),
+        Effect::PutCounterAll { count, .. } => quantity_hits_tracked(count),
+        Effect::Token { count, .. } => quantity_hits_tracked(count),
+        _ => false,
+    };
+    if has_quantity_hit {
+        return true;
+    }
+
+    // Filter positions — the effect's primary target filter may be TrackedSet.
+    if let Some(filter) = effect.target_filter() {
+        if filter_references_tracked_set(filter) {
+            return true;
+        }
+    }
+    // `GrantCastingPermission` has a `target` field that is not exposed by
+    // `Effect::target_filter()` (it selects objects to grant permission to,
+    // not spell/ability targets). Inspect directly so "the rest" / "those
+    // cards" sub-abilities chained off exile-all effects still record the set.
+    if let Effect::GrantCastingPermission { target, .. } = effect {
+        if filter_references_tracked_set(target) {
+            return true;
+        }
+    }
+    false
+}
+
+fn quantity_expr_references_tracked_set(qty: &QuantityExpr) -> bool {
+    match qty {
+        QuantityExpr::Fixed { .. } => false,
+        QuantityExpr::Ref { qty } => matches!(qty, QuantityRef::TrackedSetSize),
+        QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::Multiply { inner, .. }
+        | QuantityExpr::HalfRounded { inner, .. } => quantity_expr_references_tracked_set(inner),
+    }
+}
+
+fn filter_references_tracked_set(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::TrackedSet { .. } => true,
+        TargetFilter::Not { filter } => filter_references_tracked_set(filter),
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => {
+            filters.iter().any(filter_references_tracked_set)
+        }
+        _ => false,
+    }
 }
 
 fn effect_uses_implicit_tracked_set_targets(effect: &Effect) -> bool {
@@ -918,33 +982,49 @@ pub fn resolve_ability_chain(
         })
         .collect();
 
-    // CR 603.7: Record moved objects as a tracked set for delayed trigger pronouns.
-    // Scans ZoneChanged events emitted by the just-resolved effect and stores the
-    // affected object IDs so the downstream CreateDelayedTrigger can bind them.
-    // Filters by the effect's destination zone to exclude commander redirections
-    // (CR 903.9a: commanders redirected to command zone should not be tracked).
+    // CR 603.7: Record the objects affected by this effect as a tracked set so
+    // downstream sub-abilities can resolve "this way" references (pronouns,
+    // `TrackedSetSize`, `TrackedSet` filters). The signal event depends on the
+    // effect class:
+    //   - ChangeZone / ChangeZoneAll / ExileTop → `ZoneChanged` filtered by
+    //     destination zone (CR 903.9a: excludes commanders redirected to the
+    //     command zone).
+    //   - Destroy / DestroyAll → `CreatureDestroyed` (CR 701.8a). Emitted only
+    //     when destruction actually completes — regeneration shields (CR 701.8c)
+    //     and indestructible (CR 702.12b) creatures never produce the event,
+    //     so the set correctly contains only creatures *destroyed this way*.
     if next_sub_needs_tracked_set(ability) {
-        let dest_zone = match &ability.effect {
-            Effect::ChangeZone { destination, .. } | Effect::ChangeZoneAll { destination, .. } => {
-                Some(*destination)
+        let affected_ids: Vec<ObjectId> = match &ability.effect {
+            Effect::Destroy { .. } | Effect::DestroyAll { .. } => events[events_before..]
+                .iter()
+                .filter_map(|e| match e {
+                    GameEvent::CreatureDestroyed { object_id } => Some(*object_id),
+                    _ => None,
+                })
+                .collect(),
+            _ => {
+                let dest_zone = match &ability.effect {
+                    Effect::ChangeZone { destination, .. }
+                    | Effect::ChangeZoneAll { destination, .. } => Some(*destination),
+                    Effect::ExileTop { .. } => Some(crate::types::zones::Zone::Exile),
+                    _ => None,
+                };
+                events[events_before..]
+                    .iter()
+                    .filter_map(|e| match e {
+                        GameEvent::ZoneChanged { object_id, to, .. }
+                            if dest_zone.is_none_or(|d| *to == d) =>
+                        {
+                            Some(*object_id)
+                        }
+                        _ => None,
+                    })
+                    .collect()
             }
-            Effect::ExileTop { .. } => Some(crate::types::zones::Zone::Exile),
-            _ => None,
         };
-        let moved_ids: Vec<ObjectId> = events[events_before..]
-            .iter()
-            .filter_map(|e| match e {
-                GameEvent::ZoneChanged { object_id, to, .. }
-                    if dest_zone.is_none_or(|d| *to == d) =>
-                {
-                    Some(*object_id)
-                }
-                _ => None,
-            })
-            .collect();
         let set_id = TrackedSetId(state.next_tracked_set_id);
         state.next_tracked_set_id += 1;
-        state.tracked_object_sets.insert(set_id, moved_ids);
+        state.tracked_object_sets.insert(set_id, affected_ids);
     }
 
     // ExileFromTopUntil handles its own sub_ability chain internally (injecting the

@@ -103,7 +103,7 @@ pub(crate) fn parse_quantity_ref(text: &str) -> Option<QuantityRef> {
             let (filter, remainder) = parse_type_phrase(after_filter);
             if remainder.trim().is_empty() && !matches!(filter, TargetFilter::Any) {
                 return Some(QuantityRef::CountersOnObjects {
-                    counter_type,
+                    counter_type: Some(counter_type),
                     filter,
                 });
             }
@@ -621,7 +621,7 @@ mod tests {
                 counter_type,
                 filter,
             } => {
-                assert_eq!(counter_type, "P1P1");
+                assert_eq!(counter_type, Some("P1P1".to_string()));
                 assert!(
                     !matches!(filter, TargetFilter::Any),
                     "expected a concrete land filter, got {filter:?}"
@@ -730,7 +730,7 @@ mod tests {
                         filter,
                     },
             } => {
-                assert_eq!(counter_type, "P1P1");
+                assert_eq!(counter_type, Some("P1P1".to_string()));
                 assert!(
                     !matches!(filter, TargetFilter::Any),
                     "expected a concrete land filter, got {filter:?}"

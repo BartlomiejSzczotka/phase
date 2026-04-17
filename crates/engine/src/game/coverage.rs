@@ -481,9 +481,10 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         QuantityRef::CountersOnObjects {
             counter_type,
             filter,
-        } => {
-            format!("{counter_type} counters on {}", fmt_target(filter))
-        }
+        } => match counter_type {
+            Some(ct) => format!("{ct} counters on {}", fmt_target(filter)),
+            None => format!("counters on {}", fmt_target(filter)),
+        },
         QuantityRef::Variable { name } => name.clone(),
         QuantityRef::SelfPower => "self power".into(),
         QuantityRef::SelfToughness => "self toughness".into(),

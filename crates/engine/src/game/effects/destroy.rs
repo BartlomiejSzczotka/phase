@@ -542,4 +542,209 @@ mod tests {
             "cant_regenerate should bypass regen shield in DestroyAll"
         );
     }
+
+    // ---------------------------------------------------------------------
+    // "Destroyed this way" tracked-set regression tests (Fumigate class).
+    // CR 603.7 + CR 701.8a: DestroyAll must record the actually-destroyed
+    // objects into a tracked set so downstream sub-abilities referencing
+    // `QuantityRef::TrackedSetSize` resolve against the correct count.
+    // ---------------------------------------------------------------------
+
+    use crate::game::effects::resolve_ability_chain;
+    use crate::types::ability::{
+        GainLifePlayer, QuantityExpr, QuantityRef, TypeFilter, TypedFilter,
+    };
+
+    /// Builds the Fumigate-shape chain: `DestroyAll(creatures)` followed by
+    /// `GainLife(amount = TrackedSetSize, player = Controller)`.
+    fn fumigate_chain(source_id: ObjectId, controller: PlayerId) -> ResolvedAbility {
+        let gain_life = ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Ref {
+                    qty: QuantityRef::TrackedSetSize,
+                },
+                player: GainLifePlayer::Controller,
+            },
+            vec![],
+            source_id,
+            controller,
+        );
+        ResolvedAbility::new(
+            Effect::DestroyAll {
+                target: TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![TypeFilter::Creature],
+                    controller: None,
+                    properties: vec![],
+                }),
+                cant_regenerate: false,
+            },
+            vec![],
+            source_id,
+            controller,
+        )
+        .sub_ability(gain_life)
+    }
+
+    fn spawn_creature(
+        state: &mut GameState,
+        card_id: CardId,
+        owner: PlayerId,
+        name: &str,
+    ) -> ObjectId {
+        let id = create_object(state, card_id, owner, name.to_string(), Zone::Battlefield);
+        state
+            .objects
+            .get_mut(&id)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        id
+    }
+
+    #[test]
+    fn fumigate_gains_zero_life_when_no_creatures_on_battlefield() {
+        let mut state = GameState::new_two_player(42);
+        let starting_life = state.players[0].life;
+
+        let ability = fumigate_chain(ObjectId(100), PlayerId(0));
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        assert_eq!(state.players[0].life, starting_life);
+        // A tracked set must still be recorded (even if empty) so stale prior
+        // sets are not reused by TrackedSetSize.
+        assert_eq!(state.tracked_object_sets.len(), 1);
+        assert!(state
+            .tracked_object_sets
+            .values()
+            .next()
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn fumigate_gains_one_life_for_one_destroyed_creature() {
+        let mut state = GameState::new_two_player(42);
+        let _bear = spawn_creature(&mut state, CardId(1), PlayerId(0), "Bear");
+        let starting_life = state.players[0].life;
+
+        let ability = fumigate_chain(ObjectId(100), PlayerId(0));
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        assert_eq!(state.players[0].life, starting_life + 1);
+    }
+
+    #[test]
+    fn fumigate_gains_n_life_for_n_destroyed_creatures() {
+        let mut state = GameState::new_two_player(42);
+        for i in 0u64..5 {
+            spawn_creature(
+                &mut state,
+                CardId(i + 1),
+                PlayerId((i % 2) as u8),
+                "Creature",
+            );
+        }
+        let starting_life = state.players[0].life;
+
+        let ability = fumigate_chain(ObjectId(100), PlayerId(0));
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        assert_eq!(state.players[0].life, starting_life + 5);
+    }
+
+    #[test]
+    fn fumigate_excludes_regenerated_creature_from_life_gained() {
+        use crate::types::ability::ReplacementDefinition;
+        use crate::types::replacements::ReplacementEvent;
+
+        let mut state = GameState::new_two_player(42);
+        let shielded = spawn_creature(&mut state, CardId(1), PlayerId(0), "Shielded");
+        // CR 701.8c: regeneration shield replaces the destruction.
+        let shield = ReplacementDefinition::new(ReplacementEvent::Destroy)
+            .valid_card(TargetFilter::SelfRef)
+            .description("Regenerate".to_string())
+            .regeneration_shield();
+        state
+            .objects
+            .get_mut(&shielded)
+            .unwrap()
+            .replacement_definitions
+            .push(shield);
+
+        // Two unshielded creatures + one shielded = 2 should actually die.
+        spawn_creature(&mut state, CardId(2), PlayerId(0), "UnshieldedA");
+        spawn_creature(&mut state, CardId(3), PlayerId(1), "UnshieldedB");
+        let starting_life = state.players[0].life;
+
+        let ability = fumigate_chain(ObjectId(100), PlayerId(0));
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        // Life gained must equal *actually destroyed* count (2), not filter-matched (3).
+        assert_eq!(state.players[0].life, starting_life + 2);
+        // Regenerated creature survives.
+        assert!(state.battlefield.contains(&shielded));
+    }
+
+    #[test]
+    fn fumigate_excludes_indestructible_creature_from_life_gained() {
+        let mut state = GameState::new_two_player(42);
+        let god = spawn_creature(&mut state, CardId(1), PlayerId(0), "God");
+        state
+            .objects
+            .get_mut(&god)
+            .unwrap()
+            .keywords
+            .push(crate::types::keywords::Keyword::Indestructible);
+        spawn_creature(&mut state, CardId(2), PlayerId(1), "Bear");
+        let starting_life = state.players[0].life;
+
+        let ability = fumigate_chain(ObjectId(100), PlayerId(0));
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        // Only the non-indestructible creature was destroyed.
+        assert_eq!(state.players[0].life, starting_life + 1);
+        assert!(state.battlefield.contains(&god));
+    }
+
+    #[test]
+    fn destroy_single_target_records_tracked_set_for_downstream_gain_life() {
+        // Single-target `Destroy` variant (not DestroyAll) — the class fix must
+        // cover both resolve() and resolve_all() paths.
+        let mut state = GameState::new_two_player(42);
+        let bear = spawn_creature(&mut state, CardId(1), PlayerId(1), "Bear");
+        let starting_life = state.players[0].life;
+
+        let gain_life = ResolvedAbility::new(
+            Effect::GainLife {
+                amount: QuantityExpr::Ref {
+                    qty: QuantityRef::TrackedSetSize,
+                },
+                player: GainLifePlayer::Controller,
+            },
+            vec![],
+            ObjectId(200),
+            PlayerId(0),
+        );
+        let ability = ResolvedAbility::new(
+            Effect::Destroy {
+                target: TargetFilter::Any,
+                cant_regenerate: false,
+            },
+            vec![TargetRef::Object(bear)],
+            ObjectId(200),
+            PlayerId(0),
+        )
+        .sub_ability(gain_life);
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        assert_eq!(state.players[0].life, starting_life + 1);
+    }
 }

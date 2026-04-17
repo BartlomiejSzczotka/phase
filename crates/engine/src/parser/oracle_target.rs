@@ -932,6 +932,68 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
             (card_type, subtype)
         };
 
+    // CR 205.2a: Multi-type adjective conjunction — "artifact creature", "legendary
+    // creature", "noncreature artifact", "enchantment creature", etc. The first core
+    // type was consumed above; collect trailing concrete core type words as
+    // additional conjunctive type filters (evaluated via AND in `filter.rs`).
+    //
+    // Example: "whenever you cast an artifact creature spell" → primary = Artifact,
+    // conjunctive = [Creature]. A non-creature artifact spell would NOT satisfy
+    // this filter, whereas the single-type parse would have incorrectly accepted it.
+    //
+    // Guard: only consume adjacent core-type words (no separator between them).
+    // Word-boundary on the next character prevents "creature" from eating into
+    // suffixes like "creatures". Stop before `Card` / `Subtype` — those are
+    // informational suffixes ("creature card") or belong to the subtype slot.
+    let mut extra_core_type_filters: Vec<TypeFilter> = Vec::new();
+    if matches!(
+        card_type,
+        Some(
+            TypeFilter::Creature
+                | TypeFilter::Artifact
+                | TypeFilter::Enchantment
+                | TypeFilter::Instant
+                | TypeFilter::Sorcery
+                | TypeFilter::Planeswalker
+                | TypeFilter::Land
+                | TypeFilter::Battle
+                | TypeFilter::Permanent
+        )
+    ) {
+        loop {
+            let rest_after = lower[pos..].trim_start();
+            let ws = lower[pos..].len() - rest_after.len();
+            // `ws == 0` means no whitespace separator — not an adjacent adjective.
+            if ws == 0 {
+                break;
+            }
+            let Ok((ct_rest, tf)) = nom_target::parse_type_filter_word(rest_after) else {
+                break;
+            };
+            let is_concrete_core_type = matches!(
+                tf,
+                TypeFilter::Creature
+                    | TypeFilter::Artifact
+                    | TypeFilter::Enchantment
+                    | TypeFilter::Instant
+                    | TypeFilter::Sorcery
+                    | TypeFilter::Planeswalker
+                    | TypeFilter::Land
+                    | TypeFilter::Battle
+            );
+            if !is_concrete_core_type {
+                break;
+            }
+            // Must not duplicate the primary or an already-accumulated filter.
+            if card_type.as_ref() == Some(&tf) || extra_core_type_filters.contains(&tf) {
+                break;
+            }
+            let ct_len = rest_after.len() - ct_rest.len();
+            pos += ws + ct_len;
+            extra_core_type_filters.push(tf);
+        }
+    }
+
     // Skip redundant trailing "spell"/"spells"/"card"/"cards" after a specific type like
     // "sorcery spell", "creature card". When the core type is already Instant/Sorcery/etc.,
     // the word is informational — consuming it allows suffix parsers (e.g., "that targets only")
@@ -1111,6 +1173,7 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
     let filter = TargetFilter::Typed(TypedFilter {
         type_filters: [
             card_type.map(|ct| vec![ct]).unwrap_or_default(),
+            extra_core_type_filters,
             subtype
                 .map(|s| vec![TypeFilter::Subtype(s)])
                 .unwrap_or_default(),
@@ -4905,6 +4968,109 @@ mod tests {
         } else {
             panic!("Expected Or filter, got {filter:?}");
         }
+    }
+
+    /// CR 205.2a: "artifact creature" is the conjunction of two core card types,
+    /// not a sole Artifact filter. Regression for Lux Artillery: "whenever you
+    /// cast an artifact creature spell" previously dropped the Creature type.
+    #[test]
+    fn parse_type_phrase_artifact_creature_conjunction() {
+        let (filter, rest) = parse_type_phrase("artifact creature");
+        assert!(rest.trim().is_empty(), "remainder: '{rest}'");
+        let TargetFilter::Typed(tf) = &filter else {
+            panic!("Expected Typed filter, got {filter:?}");
+        };
+        assert!(
+            tf.type_filters.contains(&TypeFilter::Artifact),
+            "expected Artifact in {:?}",
+            tf.type_filters
+        );
+        assert!(
+            tf.type_filters.contains(&TypeFilter::Creature),
+            "expected Creature in {:?}",
+            tf.type_filters
+        );
+    }
+
+    /// CR 205.2a + CR 601.2: "artifact creature spell" — the trailing "spell"
+    /// suffix is informational and should be stripped after the conjunction.
+    #[test]
+    fn parse_type_phrase_artifact_creature_spell() {
+        let (filter, rest) = parse_type_phrase("artifact creature spell");
+        assert!(rest.trim().is_empty(), "remainder: '{rest}'");
+        let TargetFilter::Typed(tf) = &filter else {
+            panic!("Expected Typed filter, got {filter:?}");
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Artifact));
+        assert!(tf.type_filters.contains(&TypeFilter::Creature));
+    }
+
+    /// CR 205.2a + CR 205.4b: "noncreature artifact" — negation followed by a
+    /// concrete core type. The Non(Creature) negation should land in
+    /// type_filters alongside Artifact.
+    #[test]
+    fn parse_type_phrase_noncreature_artifact() {
+        let (filter, rest) = parse_type_phrase("noncreature artifact");
+        assert!(rest.trim().is_empty(), "remainder: '{rest}'");
+        let TargetFilter::Typed(tf) = &filter else {
+            panic!("Expected Typed filter, got {filter:?}");
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Artifact));
+        assert!(
+            tf.type_filters
+                .contains(&TypeFilter::Non(Box::new(TypeFilter::Creature))),
+            "expected Non(Creature) in {:?}",
+            tf.type_filters
+        );
+    }
+
+    /// CR 205.4a: "legendary creature" — legendary is a supertype, not a core
+    /// type. Must remain a single-type filter with a HasSupertype property.
+    #[test]
+    fn parse_type_phrase_legendary_creature_keeps_supertype_prop() {
+        let (filter, rest) = parse_type_phrase("legendary creature");
+        assert!(rest.trim().is_empty(), "remainder: '{rest}'");
+        let TargetFilter::Typed(tf) = &filter else {
+            panic!("Expected Typed filter, got {filter:?}");
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Creature));
+        assert!(
+            tf.properties.iter().any(|prop| matches!(
+                prop,
+                FilterProp::HasSupertype {
+                    value: Supertype::Legendary
+                }
+            )),
+            "expected HasSupertype(Legendary) in {:?}",
+            tf.properties
+        );
+    }
+
+    /// CR 205.2a: "artifact or creature" is an OR-union of the two core types,
+    /// NOT a conjunction. The separator " or " breaks out of the conjunction
+    /// loop and builds a TargetFilter::Or with two branches.
+    #[test]
+    fn parse_type_phrase_artifact_or_creature_stays_union() {
+        let (filter, rest) = parse_type_phrase("artifact or creature");
+        assert!(rest.trim().is_empty(), "remainder: '{rest}'");
+        let TargetFilter::Or { filters } = &filter else {
+            panic!("Expected Or filter, got {filter:?}");
+        };
+        assert_eq!(filters.len(), 2);
+    }
+
+    /// CR 205.2a + CR 110.1: "artifact creature you control" — conjunction
+    /// followed by a controller suffix.
+    #[test]
+    fn parse_type_phrase_artifact_creature_you_control() {
+        let (filter, rest) = parse_type_phrase("artifact creature you control");
+        assert!(rest.trim().is_empty(), "remainder: '{rest}'");
+        let TargetFilter::Typed(tf) = &filter else {
+            panic!("Expected Typed filter, got {filter:?}");
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Artifact));
+        assert!(tf.type_filters.contains(&TypeFilter::Creature));
+        assert_eq!(tf.controller, Some(ControllerRef::You));
     }
 
     #[test]

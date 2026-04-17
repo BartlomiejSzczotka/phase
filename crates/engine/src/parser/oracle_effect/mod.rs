@@ -34,8 +34,7 @@ use crate::types::ability::{
     ChooseFromZoneConstraint, ConjureCard, ContinuousModification, ControllerRef, DamageSource,
     DelayedTriggerCondition, Duration, Effect, FilterProp, GameRestriction, MultiTargetSpec,
     PlayerFilter, PtValue, QuantityExpr, QuantityRef, RestrictionExpiry, RestrictionPlayerScope,
-    RoundingMode, StaticCondition, StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
-    UnlessCost, ZoneRef,
+    StaticCondition, StaticDefinition, TargetFilter, TypeFilter, TypedFilter, UnlessCost,
 };
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::game_state::{DistributionUnit, NextSpellModifier, RetargetScope};
@@ -3351,21 +3350,12 @@ fn lower_subject_predicate_ast(
                 && scan_contains_phrase(&pred_lower, "library")
             {
                 let count = if let Some(after_top) = strip_after(&pred_lower, "top ") {
-                    // CR 107.2: "half of their library, rounded up/down"
-                    if let Ok((_, _)) = tag::<_, _, VerboseError<&str>>("half ").parse(after_top) {
-                        let rounding = if scan_contains_phrase(&pred_lower, "rounded up") {
-                            RoundingMode::Up
-                        } else {
-                            RoundingMode::Down
-                        };
-                        QuantityExpr::HalfRounded {
-                            inner: Box::new(QuantityExpr::Ref {
-                                qty: QuantityRef::TargetZoneCardCount {
-                                    zone: ZoneRef::Library,
-                                },
-                            }),
-                            rounding,
-                        }
+                    // CR 107.1a: "half of their library, rounded up/down" composes
+                    // over `TargetZoneCardCount` via the shared quantity combinator.
+                    if let Ok((_, expr)) =
+                        super::oracle_nom::quantity::parse_half_rounded(after_top)
+                    {
+                        expr
                     } else {
                         let n = nom_primitives::parse_number
                             .parse(after_top)
@@ -10173,7 +10163,7 @@ mod tests {
                     matches!(
                         count,
                         QuantityExpr::HalfRounded {
-                            rounding: RoundingMode::Up,
+                            rounding: crate::types::ability::RoundingMode::Up,
                             ..
                         }
                     ),
@@ -10181,6 +10171,70 @@ mod tests {
                 );
             }
             other => panic!("Expected ExileTop, got {other:?}"),
+        }
+    }
+
+    /// CR 107.1a class-level regression — "Target opponent loses half their
+    /// life, rounded up." The `try_parse_half_life_amount` path must now
+    /// produce a typed HalfRounded `amount` on `LoseLife`, not `Fixed { 1 }`.
+    #[test]
+    fn blood_tribute_lose_half_their_life_rounded_up() {
+        use crate::types::ability::RoundingMode;
+        let def = parse_effect_chain(
+            "Target opponent loses half their life, rounded up.",
+            AbilityKind::Spell,
+        );
+        match &*def.effect {
+            Effect::LoseLife { amount, .. } => {
+                assert_eq!(
+                    *amount,
+                    QuantityExpr::HalfRounded {
+                        inner: Box::new(QuantityExpr::Ref {
+                            qty: QuantityRef::TargetLifeTotal,
+                        }),
+                        rounding: RoundingMode::Up,
+                    },
+                    "Expected HalfRounded(TargetLifeTotal, Up), got {amount:?}",
+                );
+            }
+            other => panic!("Expected LoseLife, got {other:?}"),
+        }
+    }
+
+    /// CR 107.1a: Cut Your Losses — "Target player mills half their library,
+    /// rounded down." Regression test for the Mill effect picking up the
+    /// fractional quantity primitive (previously defaulted to `Fixed { 1 }`).
+    #[test]
+    fn cut_your_losses_mill_half_their_library_rounded_down() {
+        use crate::types::ability::{RoundingMode, ZoneRef};
+        let def = parse_effect_chain(
+            "Target player mills half their library, rounded down.",
+            AbilityKind::Spell,
+        );
+        match &*def.effect {
+            Effect::Mill {
+                count,
+                target,
+                destination,
+            } => {
+                assert!(
+                    matches!(target, TargetFilter::Player),
+                    "Expected Player target, got {target:?}",
+                );
+                assert_eq!(*destination, crate::types::zones::Zone::Graveyard);
+                assert_eq!(
+                    *count,
+                    QuantityExpr::HalfRounded {
+                        inner: Box::new(QuantityExpr::Ref {
+                            qty: QuantityRef::TargetZoneCardCount {
+                                zone: ZoneRef::Library,
+                            },
+                        }),
+                        rounding: RoundingMode::Down,
+                    },
+                );
+            }
+            other => panic!("Expected Mill, got {other:?}"),
         }
     }
 

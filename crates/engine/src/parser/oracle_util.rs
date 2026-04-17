@@ -1,7 +1,7 @@
 use nom::Parser;
 
 use super::oracle_nom::primitives as nom_primitives;
-use crate::types::ability::{Comparator, QuantityExpr, QuantityRef, RoundingMode, TargetFilter};
+use crate::types::ability::{Comparator, QuantityExpr, QuantityRef, TargetFilter};
 use crate::types::card_type::CoreType;
 use crate::types::mana::{ManaColor, ManaCost};
 
@@ -265,37 +265,38 @@ pub fn parse_number(text: &str) -> Option<(u32, &str)> {
     None
 }
 
-/// Parse a count expression that may be a variable ("X") or a fixed number.
+/// Parse a count expression that may be a fractional form ("half X, rounded …"),
+/// a variable ("X"), or a fixed number.
 ///
-/// Checks for "X"/"x" first → `QuantityExpr::Ref(Variable("X"))`, then falls back to
-/// `parse_number` → `QuantityExpr::Fixed`. Returns `None` if neither matches.
-/// Use this instead of `parse_number` at call sites that represent effect quantities
-/// (draw count, life amount, damage, mill count, scry count, etc.).
+/// Dispatch order:
+/// 1. **Fractional** — delegates to [`super::oracle_nom::quantity::parse_half_rounded`]
+///    which composes over existing `QuantityRef` variants (CR 107.1a). The inner
+///    expression is any ref the nom quantity parser can recognize, including
+///    possessive forms ("their library", "its power", "his or her life").
+/// 2. **Variable X** (CR 107.3a) — when the source has an `{X}` cost, all X in
+///    text takes that announced value.
+/// 3. **Literal** — a number word or digit.
+///
+/// Use this instead of `parse_number` at call sites that represent effect
+/// quantities (draw count, life amount, damage, mill count, scry count, etc.).
 pub fn parse_count_expr(text: &str) -> Option<(QuantityExpr, &str)> {
     let text = text.trim_start();
     let lower = text.to_lowercase();
-    // CR 107.1a: "half X" expressions — parse the inner quantity, wrap in HalfRounded.
-    // Default rounding is Down per CR 107.1a unless "rounded up" is specified.
-    if lower.strip_prefix("half ").is_some() {
-        let original_after = &text[5..];
-        let (inner, rest) = parse_count_expr(original_after)?;
-        // Check if remainder contains a rounding override
-        let rest_lower = rest.to_lowercase();
-        let (rounding, final_rest) =
-            if let Some(after_round) = rest_lower.strip_prefix(", rounded up") {
-                (RoundingMode::Up, &rest[rest.len() - after_round.len()..])
-            } else if let Some(after_round) = rest_lower.strip_prefix(", round up") {
-                (RoundingMode::Up, &rest[rest.len() - after_round.len()..])
-            } else {
-                (RoundingMode::Down, rest)
-            };
-        return Some((
-            QuantityExpr::HalfRounded {
-                inner: Box::new(inner),
-                rounding,
-            },
-            final_rest,
-        ));
+    // CR 107.1a: "half X, rounded up/down" — delegate to the nom combinator so
+    // mill/draw/damage/life-loss/etc. all pick up fractional support uniformly.
+    // The combinator works on lowercase; `nom_on_lower` maps the consumed length
+    // back to the original-case text so callers receive the correctly-cased
+    // remainder. No explicit starts_with check — the combinator's `tag("half ")`
+    // is the dispatch, and `nom_on_lower` returns None cleanly on mismatch.
+    if let Some((expr, rest)) = super::oracle_nom::bridge::nom_on_lower(
+        text,
+        &lower,
+        super::oracle_nom::quantity::parse_half_rounded,
+    ) {
+        // Trim leading whitespace on the remainder to match the rest of
+        // `parse_count_expr`'s output shape — all the other branches return
+        // `rest.trim_start()`.
+        return Some((expr, rest.trim_start()));
     }
     // CR 107.3a: "X" in Oracle text represents a variable determined at cast time.
     // Accept X followed by whitespace, comma, period, or end-of-string — all valid

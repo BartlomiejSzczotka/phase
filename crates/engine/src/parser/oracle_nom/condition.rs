@@ -1535,6 +1535,36 @@ mod tests {
         }
     }
 
+    /// CR 122.1 + CR 603.4: "there are N or more counters among [filter]" —
+    /// intervening-if variant used by Lux Artillery. `counter_type: None` means
+    /// "sum across every counter type on the matching permanents."
+    #[test]
+    fn test_there_are_counters_among_filter() {
+        let (rest, c) = parse_inner_condition(
+            "there are thirty or more counters among artifacts and creatures you control, rest",
+        )
+        .unwrap();
+        assert!(rest.starts_with(','), "remainder: {rest:?}");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::CountersOnObjects {
+                                counter_type,
+                                filter,
+                            },
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 30 },
+            } => {
+                assert!(counter_type.is_none(), "got {counter_type:?}");
+                assert!(matches!(filter, TargetFilter::Or { .. }), "got {filter:?}");
+            }
+            other => panic!("expected CountersOnObjects GE 30, got {other:?}"),
+        }
+    }
+
     #[test]
     fn test_there_are_card_types_among_cards_exiled_with_source() {
         let (rest, c) =

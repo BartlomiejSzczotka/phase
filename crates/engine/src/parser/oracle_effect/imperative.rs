@@ -19,8 +19,8 @@ use crate::parser::oracle_warnings::push_warning;
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, CategoryChooserScope, Chooser, ContinuousModification,
     ControllerRef, Duration, Effect, GainLifePlayer, LibraryPosition, MultiTargetSpec, PaymentCost,
-    PreventionAmount, PreventionScope, PtValue, QuantityExpr, QuantityRef, RoundingMode,
-    StaticDefinition, TargetFilter, TypedFilter,
+    PreventionAmount, PreventionScope, PtValue, QuantityExpr, QuantityRef, StaticDefinition,
+    TargetFilter, TypedFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::player::PlayerCounterKind;
@@ -225,52 +225,27 @@ pub(super) fn parse_numeric_imperative_ast(
     None
 }
 
-/// CR 107.2: Parse "half [possessive] life, rounded up/down" → `HalfRounded` expression.
-/// General building block for halving life total expressions.
+/// CR 107.1a: Parse "lose(s) half [possessive] life, rounded up/down" →
+/// `HalfRounded` expression by delegating to the shared quantity combinator.
+///
+/// Strips the `lose(s) ` verb prefix, then runs
+/// [`super::super::oracle_nom::quantity::parse_half_rounded`] over the
+/// remainder so every possessive quantity the combinator recognizes
+/// (`"half their life"`, `"half your life total"`, `"half his or her life"`,
+/// …) unlocks a typed amount. Previously this helper hand-rolled a small
+/// `their life` / `your life` dispatch that (a) dropped "their life total"
+/// and (b) silently mis-bound the nom remainder. Both bugs disappear by
+/// routing through the shared combinator.
 fn try_parse_half_life_amount(lower: &str) -> Option<QuantityExpr> {
-    // Match "lose half their life, rounded up" / "lose half your life, rounded up"
-    let (_, after_lose) = alt((tag::<_, _, VerboseError<&str>>("lose "), tag("loses ")))
+    // Strip "lose " / "loses " and any intervening whitespace.
+    let (after_verb, _) = alt((tag::<_, _, VerboseError<&str>>("lose "), tag("loses ")))
         .parse(lower)
         .ok()?;
-    let (_, after_half) = tag::<_, _, VerboseError<&str>>("half ")
-        .parse(after_lose.trim())
-        .ok()?;
-
-    // Determine whose life total
-    let qty = if alt((
-        tag::<_, _, VerboseError<&str>>("their life"),
-        tag("that player's life"),
-    ))
-    .parse(after_half)
-    .is_ok()
-    {
-        QuantityRef::TargetLifeTotal
-    } else if alt((
-        tag::<_, _, VerboseError<&str>>("your life"),
-        tag("his or her life"),
-    ))
-    .parse(after_half)
-    .is_ok()
-    {
-        QuantityRef::LifeTotal
-    } else {
-        return None;
-    };
-
-    // Parse rounding direction
-    let rounding = if nom_primitives::scan_contains(lower, "rounded up") {
-        RoundingMode::Up
-    } else if nom_primitives::scan_contains(lower, "rounded down") {
-        RoundingMode::Down
-    } else {
-        // Default to up per most MTG cards using "half life"
-        RoundingMode::Up
-    };
-
-    Some(QuantityExpr::HalfRounded {
-        inner: Box::new(QuantityExpr::Ref { qty }),
-        rounding,
-    })
+    let after_verb = after_verb.trim_start();
+    // Delegate to the shared "half ..." combinator. This picks up the
+    // possessive inner ref AND the rounding suffix in one call.
+    let (_, expr) = super::super::oracle_nom::quantity::parse_half_rounded(after_verb).ok()?;
+    Some(expr)
 }
 
 pub(super) fn lower_numeric_imperative_ast(ast: NumericImperativeAst) -> Effect {
@@ -3695,6 +3670,31 @@ mod tests {
                 );
             }
             other => panic!("Expected Effect::Animate, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parse_lose_half_their_life_rounded_up_trace() {
+        // Class-level trace: make sure "lose half their life, rounded up"
+        // produces a typed HalfRounded amount at the imperative level.
+        let text = "lose half their life, rounded up";
+        let lower = text.to_lowercase();
+        let result = parse_numeric_imperative_ast(text, &lower);
+        assert!(result.is_some(), "Should parse; got {result:?}");
+        match result.unwrap() {
+            NumericImperativeAst::LoseLife { amount } => {
+                assert!(
+                    matches!(
+                        amount,
+                        QuantityExpr::HalfRounded {
+                            rounding: crate::types::ability::RoundingMode::Up,
+                            ..
+                        }
+                    ),
+                    "Expected HalfRounded(Up), got {amount:?}"
+                );
+            }
+            other => panic!("Expected LoseLife, got {other:?}"),
         }
     }
 

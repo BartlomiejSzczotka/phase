@@ -4702,6 +4702,138 @@ mod tests {
         assert_eq!(def.valid_target, Some(TargetFilter::Controller));
     }
 
+    /// CR 205.2a + CR 601.2: "whenever you cast an artifact creature spell" must
+    /// AND both core types into `valid_card`, so a non-creature artifact spell
+    /// does NOT fire the trigger. Regression for Lux Artillery, whose spell-cast
+    /// trigger incorrectly accepted any artifact spell.
+    #[test]
+    fn trigger_you_cast_artifact_creature_spell() {
+        let def = parse_trigger_line(
+            "Whenever you cast an artifact creature spell, it gains sunburst.",
+            "Lux Artillery",
+        );
+        assert_eq!(def.mode, TriggerMode::SpellCast);
+        let Some(TargetFilter::Typed(tf)) = &def.valid_card else {
+            panic!("expected Typed valid_card, got {:?}", def.valid_card);
+        };
+        assert!(
+            tf.type_filters.contains(&TypeFilter::Artifact),
+            "expected Artifact in {:?}",
+            tf.type_filters
+        );
+        assert!(
+            tf.type_filters.contains(&TypeFilter::Creature),
+            "expected Creature in {:?}",
+            tf.type_filters
+        );
+    }
+
+    /// CR 205.2a + CR 205.4a + CR 601.2: "whenever you cast a legendary creature
+    /// spell" — supertype lives in properties, not type_filters.
+    #[test]
+    fn trigger_you_cast_legendary_creature_spell() {
+        let def = parse_trigger_line(
+            "Whenever you cast a legendary creature spell, draw a card.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::SpellCast);
+        let Some(TargetFilter::Typed(tf)) = &def.valid_card else {
+            panic!("expected Typed valid_card, got {:?}", def.valid_card);
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Creature));
+        assert!(
+            tf.properties.iter().any(|prop| matches!(
+                prop,
+                FilterProp::HasSupertype {
+                    value: crate::types::card_type::Supertype::Legendary
+                }
+            )),
+            "expected HasSupertype(Legendary) in {:?}",
+            tf.properties
+        );
+    }
+
+    /// CR 205.2a + CR 205.4b + CR 601.2: "whenever you cast a noncreature
+    /// artifact spell" — Non(Creature) + Artifact conjunction.
+    #[test]
+    fn trigger_you_cast_noncreature_artifact_spell() {
+        let def = parse_trigger_line(
+            "Whenever you cast a noncreature artifact spell, draw a card.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::SpellCast);
+        let Some(TargetFilter::Typed(tf)) = &def.valid_card else {
+            panic!("expected Typed valid_card, got {:?}", def.valid_card);
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Artifact));
+        assert!(
+            tf.type_filters
+                .contains(&TypeFilter::Non(Box::new(TypeFilter::Creature))),
+            "expected Non(Creature) in {:?}",
+            tf.type_filters
+        );
+    }
+
+    /// CR 603.4 + CR 122.1: "at the beginning of your end step, if there are
+    /// thirty or more counters among artifacts and creatures you control, ..."
+    /// — intervening-if with counter-count condition that sums across every
+    /// counter type on the matching permanents. Regression for Lux Artillery's
+    /// second trigger, which previously produced `condition: null` and fired
+    /// every end step unconditionally.
+    #[test]
+    fn trigger_intervening_if_counters_among_filter() {
+        let def = parse_trigger_line(
+            "At the beginning of your end step, if there are thirty or more counters among artifacts and creatures you control, this artifact deals 10 damage to each opponent.",
+            "Lux Artillery",
+        );
+        assert_eq!(def.mode, TriggerMode::Phase);
+        assert_eq!(def.phase, Some(Phase::End));
+        let Some(TriggerCondition::QuantityComparison {
+            lhs,
+            comparator,
+            rhs,
+        }) = &def.condition
+        else {
+            panic!(
+                "expected QuantityComparison intervening-if, got {:?}",
+                def.condition
+            );
+        };
+        assert_eq!(*comparator, Comparator::GE);
+        assert_eq!(*rhs, QuantityExpr::Fixed { value: 30 });
+        let QuantityExpr::Ref {
+            qty:
+                QuantityRef::CountersOnObjects {
+                    counter_type,
+                    filter,
+                },
+        } = lhs
+        else {
+            panic!("expected CountersOnObjects lhs, got {lhs:?}");
+        };
+        assert!(
+            counter_type.is_none(),
+            "expected any-counter-type (None), got {counter_type:?}"
+        );
+        // Filter should be an Or of (artifact you control) ∪ (creature you control).
+        let TargetFilter::Or { filters } = filter else {
+            panic!("expected Or filter for 'artifacts and creatures you control', got {filter:?}");
+        };
+        assert_eq!(filters.len(), 2);
+        assert!(filters.iter().any(|f| matches!(
+            f,
+            TargetFilter::Typed(tf)
+                if tf.type_filters.contains(&TypeFilter::Artifact)
+                    && tf.controller == Some(ControllerRef::You)
+        )));
+        assert!(filters.iter().any(|f| matches!(
+            f,
+            TargetFilter::Typed(tf)
+                if tf.type_filters.contains(&TypeFilter::Creature)
+                    && tf.controller == Some(ControllerRef::You)
+        )));
+    }
+
     // --- ControlCount condition tests ---
 
     #[test]

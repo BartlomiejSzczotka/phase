@@ -1350,10 +1350,13 @@ pub enum QuantityRef {
     /// Used for "for each [counter type] counter on that creature" anaphoric patterns.
     /// Semantically distinct from CountersOnSelf: counts counters on a *targeted* object.
     CountersOnTarget { counter_type: String },
-    /// Total counters of a given type across all objects matching a filter.
-    /// Used for phrases like "the number of +1/+1 counters on lands you control."
+    /// CR 122.1: Total counters across all objects matching a filter.
+    /// Used for phrases like "the number of +1/+1 counters on lands you control"
+    /// (`counter_type: Some("P1P1")`) and "counters among artifacts and creatures
+    /// you control" (`counter_type: None`, sums across every counter type).
     CountersOnObjects {
-        counter_type: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        counter_type: Option<String>,
         filter: TargetFilter,
     },
     /// A variable reference (e.g. "X") resolved from spell payment or "that much" from prior effect.
@@ -1484,7 +1487,9 @@ pub enum QuantityRef {
     CostXPaid,
 }
 
-/// CR 107.2: Rounding direction for "half X" expressions in Magic.
+/// CR 107.1a: Rounding direction for fractional Oracle-text expressions.
+/// Every "half X" phrase in Oracle text specifies whether to round up or
+/// down; this enum records that choice verbatim so resolution is deterministic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum RoundingMode {
     Up,
@@ -1537,7 +1542,8 @@ pub enum QuantityExpr {
     Ref { qty: QuantityRef },
     /// A literal integer constant.
     Fixed { value: i32 },
-    /// CR 107.2: "Half X, rounded up/down" — divides the inner expression by 2.
+    /// CR 107.1a: "Half X, rounded up/down" — divides the inner expression by
+    /// 2 in the rounding direction specified by the Oracle text.
     HalfRounded {
         inner: Box<QuantityExpr>,
         rounding: RoundingMode,
