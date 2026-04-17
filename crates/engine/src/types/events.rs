@@ -248,6 +248,15 @@ pub enum GameEvent {
         creature_id: ObjectId,
         counters_added: u32,
     },
+    /// CR 702.171a: A Mount's saddle ability resolved.
+    /// Fires the `TriggerMode::Saddled` / `TriggerMode::BecomesSaddled` events
+    /// for triggers that care about the act of being saddled. Carries the
+    /// tapped creatures so trigger conditions referencing "creatures that
+    /// saddled it" can resolve against last-known information.
+    Saddled {
+        mount_id: ObjectId,
+        creatures: Vec<ObjectId>,
+    },
     ReplacementApplied {
         source_id: ObjectId,
         event_type: String,

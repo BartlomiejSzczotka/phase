@@ -8,8 +8,8 @@ use serde::{Deserialize, Serialize};
 use super::ability::{
     AbilityCost, AbilityDefinition, AdditionalCost, ChoiceType, ChoiceValue,
     ChooseFromZoneConstraint, ContinuousModification, DelayedTriggerCondition, Duration,
-    EffectKind, GameRestriction, ModalChoice, ResolvedAbility, StaticCondition, TargetFilter,
-    TargetRef, TriggerCondition, UnlessCost,
+    EffectKind, GameRestriction, KeywordAction, ModalChoice, ResolvedAbility, StaticCondition,
+    TargetFilter, TargetRef, TriggerCondition, UnlessCost,
 };
 use super::card::CardFace;
 use super::card_type::{CoreType, Supertype};
@@ -731,6 +731,16 @@ pub enum WaitingFor {
         /// Other untapped creatures the player controls (excluding the Spacecraft itself).
         eligible_creatures: Vec<ObjectId>,
     },
+    /// CR 702.171a: Player must tap creatures with total power >= saddle_power
+    /// to saddle this Mount (sorcery speed).
+    SaddleMount {
+        player: PlayerId,
+        mount_id: ObjectId,
+        /// The saddle N value from the keyword.
+        saddle_power: u32,
+        /// Untapped creatures the player controls (excluding the Mount itself).
+        eligible_creatures: Vec<ObjectId>,
+    },
     ScryChoice {
         player: PlayerId,
         cards: Vec<ObjectId>,
@@ -1369,6 +1379,7 @@ impl WaitingFor {
             | WaitingFor::EquipTarget { player, .. }
             | WaitingFor::CrewVehicle { player, .. }
             | WaitingFor::StationTarget { player, .. }
+            | WaitingFor::SaddleMount { player, .. }
             | WaitingFor::ScryChoice { player, .. }
             | WaitingFor::DigChoice { player, .. }
             | WaitingFor::SurveilChoice { player, .. }
@@ -1527,22 +1538,28 @@ pub struct StackEntry {
 
 impl StackEntry {
     /// Access the resolved ability for this stack entry (immutable).
-    /// Returns `None` for permanent spells with no spell-level effect.
+    /// Returns `None` for permanent spells with no spell-level effect, and for
+    /// `KeywordAction` entries which carry a typed payload instead of a
+    /// `ResolvedAbility`.
     pub fn ability(&self) -> Option<&ResolvedAbility> {
         match &self.kind {
             StackEntryKind::Spell { ability, .. } => ability.as_ref(),
             StackEntryKind::ActivatedAbility { ability, .. } => Some(ability),
             StackEntryKind::TriggeredAbility { ability, .. } => Some(ability),
+            StackEntryKind::KeywordAction { .. } => None,
         }
     }
 
     /// Access the resolved ability for this stack entry (mutable).
-    /// Returns `None` for permanent spells with no spell-level effect.
+    /// Returns `None` for permanent spells with no spell-level effect, and for
+    /// `KeywordAction` entries which carry a typed payload instead of a
+    /// `ResolvedAbility`.
     pub fn ability_mut(&mut self) -> Option<&mut ResolvedAbility> {
         match &mut self.kind {
             StackEntryKind::Spell { ability, .. } => ability.as_mut(),
             StackEntryKind::ActivatedAbility { ability, .. } => Some(ability),
             StackEntryKind::TriggeredAbility { ability, .. } => Some(ability),
+            StackEntryKind::KeywordAction { .. } => None,
         }
     }
 }
@@ -1613,6 +1630,13 @@ pub enum StackEntryKind {
         /// Used by the frontend to distinguish triggers from the same source.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         description: Option<String>,
+    },
+    /// CR 113.3b: Activated keyword abilities (Equip / Crew / Saddle / Station)
+    /// enter the stack after cost-payment + target selection and resolve with
+    /// last-known information per CR 113.7a.
+    KeywordAction {
+        source_id: ObjectId,
+        action: KeywordAction,
     },
 }
 

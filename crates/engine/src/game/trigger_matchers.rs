@@ -102,6 +102,7 @@ pub fn trigger_matcher(mode: TriggerMode) -> Option<TriggerMatcher> {
         TriggerMode::AttacksOrBlocks => match_attacks_or_blocks,
         TriggerMode::Crewed | TriggerMode::BecomesCrewed => match_vehicle_crewed,
         TriggerMode::Stationed => match_stationed,
+        TriggerMode::Saddled | TriggerMode::BecomesSaddled => match_saddled,
         TriggerMode::NinjutsuActivated => match_ninjutsu_activated,
         TriggerMode::Firebend => match_firebend,
         TriggerMode::Airbend => match_airbend,
@@ -126,7 +127,6 @@ pub fn trigger_matcher(mode: TriggerMode) -> Option<TriggerMatcher> {
         | TriggerMode::LosesGame
         | TriggerMode::Championed
         | TriggerMode::Exerted
-        | TriggerMode::Saddled
         | TriggerMode::Evolved
         | TriggerMode::Enlisted
         | TriggerMode::Adapt
@@ -159,8 +159,7 @@ pub fn trigger_matcher(mode: TriggerMode) -> Option<TriggerMatcher> {
         | TriggerMode::Trains
         | TriggerMode::UnlockDoor
         | TriggerMode::VisitAttraction
-        | TriggerMode::BecomesPlotted
-        | TriggerMode::BecomesSaddled => match_unimplemented,
+        | TriggerMode::BecomesPlotted => match_unimplemented,
         // CR 603.8: State triggers are not event-based — they are checked separately
         // in the priority pipeline, not through the event-matching trigger system.
         TriggerMode::StateCondition => return None,
@@ -350,7 +349,7 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
         TriggerMode::Championed,
         TriggerMode::Exerted,
         // TriggerMode::Crewed — moved to real matcher below
-        TriggerMode::Saddled,
+        // TriggerMode::Saddled — moved to real matcher below
         TriggerMode::Evolved,
         TriggerMode::Enlisted,
         TriggerMode::Adapt,
@@ -388,7 +387,7 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
         TriggerMode::VisitAttraction,
         // TriggerMode::BecomesCrewed — moved to real matcher below
         TriggerMode::BecomesPlotted,
-        TriggerMode::BecomesSaddled,
+        // TriggerMode::BecomesSaddled — moved to real matcher below
     ];
 
     for mode in unimplemented_modes {
@@ -402,6 +401,11 @@ pub fn build_trigger_registry() -> HashMap<TriggerMode, TriggerMatcher> {
     // CR 702.184a: Station trigger matcher — "Whenever ~ is stationed" fires
     // when the station ability resolves for this specific Spacecraft.
     r.insert(TriggerMode::Stationed, match_stationed);
+
+    // CR 702.171a + CR 702.171b: Saddle trigger matchers — "Whenever ~ is
+    // saddled" fires when the saddle ability resolves for this specific Mount.
+    r.insert(TriggerMode::Saddled, match_saddled);
+    r.insert(TriggerMode::BecomesSaddled, match_saddled);
 
     // CR 702.49a: Ninjutsu activation trigger
     r.insert(TriggerMode::NinjutsuActivated, match_ninjutsu_activated);
@@ -1921,6 +1925,19 @@ pub(super) fn match_stationed(
     _state: &GameState,
 ) -> bool {
     matches!(event, GameEvent::Stationed { spacecraft_id, .. } if *spacecraft_id == source_id)
+}
+
+/// CR 702.171a + CR 702.171b: Matches when a Mount's saddle ability resolves.
+/// Both `Saddled` and `BecomesSaddled` are semantically identical — different
+/// Oracle phrasings for the same trigger condition, consistent with how
+/// `Crewed` / `BecomesCrewed` share `match_vehicle_crewed`.
+pub(super) fn match_saddled(
+    event: &GameEvent,
+    _trigger: &TriggerDefinition,
+    source_id: ObjectId,
+    _state: &GameState,
+) -> bool {
+    matches!(event, GameEvent::Saddled { mount_id, .. } if *mount_id == source_id)
 }
 
 // ---------------------------------------------------------------------------

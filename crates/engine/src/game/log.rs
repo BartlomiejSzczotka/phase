@@ -146,7 +146,8 @@ fn categorize(event: &GameEvent) -> LogCategory {
         | GameEvent::DayNightChanged { .. }
         | GameEvent::PowerToughnessChanged { .. }
         | GameEvent::VehicleCrewed { .. }
-        | GameEvent::Stationed { .. } => LogCategory::State,
+        | GameEvent::Stationed { .. }
+        | GameEvent::Saddled { .. } => LogCategory::State,
 
         GameEvent::SpeedChanged { .. } => LogCategory::Special,
 
@@ -786,6 +787,19 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
             num(*counters_added as i32),
             text(" charge)"),
         ],
+        GameEvent::Saddled {
+            mount_id,
+            creatures,
+        } => {
+            let mut segs = vec![card_seg(state, *mount_id), text(" saddled by ")];
+            for (i, cid) in creatures.iter().enumerate() {
+                if i > 0 {
+                    segs.push(text(", "));
+                }
+                segs.push(card_seg(state, *cid));
+            }
+            segs
+        }
         GameEvent::RoomEntered { .. } => vec![text("Room entered")],
         GameEvent::DungeonCompleted { .. } => vec![text("Dungeon completed")],
         GameEvent::InitiativeTaken { .. } => vec![text("Initiative taken")],

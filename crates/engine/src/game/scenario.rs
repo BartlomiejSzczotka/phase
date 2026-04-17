@@ -1085,6 +1085,7 @@ impl GameRunner {
             WaitingFor::LearnChoice { .. } => "LearnChoice",
             WaitingFor::CrewVehicle { .. } => "CrewVehicle",
             WaitingFor::StationTarget { .. } => "StationTarget",
+            WaitingFor::SaddleMount { .. } => "SaddleMount",
             WaitingFor::ChooseDungeon { .. } => "ChooseDungeon",
             WaitingFor::ChooseDungeonRoom { .. } => "ChooseDungeonRoom",
             WaitingFor::PopulateChoice { .. } => "PopulateChoice",

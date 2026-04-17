@@ -1,4 +1,9 @@
-use crate::types::ability::{CastingPermission, ResolvedAbility};
+use crate::types::ability::{
+    CastingPermission, ContinuousModification, Duration, EffectKind, KeywordAction,
+    ResolvedAbility, TargetFilter,
+};
+use crate::types::card_type::CoreType;
+use crate::types::counter::CounterType;
 use crate::types::events::GameEvent;
 use crate::types::game_state::{CastingVariant, GameState, StackEntry, StackEntryKind};
 use crate::types::identifiers::ObjectId;
@@ -24,6 +29,19 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
         Some(e) => e,
         None => return,
     };
+
+    // CR 113.3b: Activated keyword abilities (Equip / Crew / Saddle / Station)
+    // resolve via their typed payload — they have no ResolvedAbility/targets
+    // to validate and no zone-change routing (the source stays where it is).
+    // Returning early keeps the keyword-action branch out of the targeting /
+    // fizzle / permanent-spell pipeline below.
+    if let StackEntryKind::KeywordAction { source_id, action } = entry.kind {
+        resolve_keyword_action(state, source_id, action, events);
+        events.push(GameEvent::StackResolved {
+            object_id: entry.id,
+        });
+        return;
+    }
 
     // CR 603.4: Intervening-if condition rechecked at resolution time.
     if let StackEntryKind::TriggeredAbility {
@@ -57,7 +75,8 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
         state.current_trigger_event = Some(te.clone());
     }
 
-    // Extract the resolved ability from the stack entry
+    // Extract the resolved ability from the stack entry. `KeywordAction` is
+    // handled by the early return above and never reaches this match.
     let (ability, is_spell, casting_variant, actual_mana_spent) = match &entry.kind {
         StackEntryKind::Spell {
             ability,
@@ -73,6 +92,9 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
             false,
             CastingVariant::Normal,
             0,
+        ),
+        StackEntryKind::KeywordAction { .. } => unreachable!(
+            "KeywordAction stack entries are resolved via the early-return branch above"
         ),
     };
 
@@ -370,6 +392,132 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
     events.push(GameEvent::StackResolved {
         object_id: entry.id,
     });
+}
+
+/// CR 113.3b + CR 113.7a: Resolve an activated keyword ability from the stack.
+///
+/// The cost has already been paid at announcement. Resolution applies the
+/// keyword's effect against last-known information — if a participating
+/// object has left its expected zone between announcement and resolution,
+/// the effect is either skipped or applied using the snapshot carried on
+/// the `KeywordAction` payload (e.g. `Station::snapshot_power`).
+fn resolve_keyword_action(
+    state: &mut GameState,
+    source_id: ObjectId,
+    action: KeywordAction,
+    events: &mut Vec<GameEvent>,
+) {
+    match action {
+        // CR 702.6a: Attach source Equipment to target creature. If either
+        // object has left the battlefield by resolution, the effect does nothing
+        // (CR 608.2b — illegal-target check on resolution).
+        KeywordAction::Equip {
+            equipment_id,
+            target_creature_id,
+        } => {
+            let still_valid = state
+                .objects
+                .get(&equipment_id)
+                .is_some_and(|e| e.zone == Zone::Battlefield)
+                && state.objects.get(&target_creature_id).is_some_and(|t| {
+                    t.zone == Zone::Battlefield
+                        && t.card_types.core_types.contains(&CoreType::Creature)
+                });
+            if still_valid {
+                effects::attach::attach_to(state, equipment_id, target_creature_id);
+            }
+            events.push(GameEvent::EffectResolved {
+                kind: EffectKind::Equip,
+                source_id: equipment_id,
+            });
+        }
+        // CR 702.122a: This permanent becomes an artifact creature UEOT.
+        KeywordAction::Crew {
+            vehicle_id,
+            paid_creature_ids,
+        } => {
+            if let Some(v) = state.objects.get(&vehicle_id) {
+                if v.zone == Zone::Battlefield {
+                    let controller = v.controller;
+                    state.add_transient_continuous_effect(
+                        vehicle_id,
+                        controller,
+                        Duration::UntilEndOfTurn,
+                        TargetFilter::SpecificObject { id: vehicle_id },
+                        vec![ContinuousModification::AddType {
+                            core_type: CoreType::Creature,
+                        }],
+                        None,
+                    );
+                }
+            }
+            events.push(GameEvent::VehicleCrewed {
+                vehicle_id,
+                creatures: paid_creature_ids,
+            });
+            events.push(GameEvent::EffectResolved {
+                kind: EffectKind::Crew,
+                source_id: vehicle_id,
+            });
+        }
+        // CR 702.171a: This permanent becomes saddled UEOT.
+        // CR 702.171b: The saddled designation is stored on the GameObject and
+        // cleared at end of turn or when it leaves the battlefield.
+        KeywordAction::Saddle {
+            mount_id,
+            paid_creature_ids,
+        } => {
+            if let Some(mount) = state.objects.get_mut(&mount_id) {
+                if mount.zone == Zone::Battlefield {
+                    mount.is_saddled = true;
+                }
+            }
+            events.push(GameEvent::Saddled {
+                mount_id,
+                creatures: paid_creature_ids,
+            });
+            events.push(GameEvent::EffectResolved {
+                kind: EffectKind::Saddle,
+                source_id: mount_id,
+            });
+        }
+        // CR 702.184a: Put charge counters equal to the tapped creature's power.
+        // The power reading was snapshot at announcement (CR 113.7a) so this is
+        // safe even if the paid creature has since left the battlefield.
+        KeywordAction::Station {
+            spacecraft_id,
+            paid_creature_id,
+            snapshot_power,
+        } => {
+            let counters_added = snapshot_power.max(0) as u32;
+            let still_on_battlefield = state
+                .objects
+                .get(&spacecraft_id)
+                .is_some_and(|sc| sc.zone == Zone::Battlefield);
+            if still_on_battlefield && counters_added > 0 {
+                effects::counters::add_counter_with_replacement(
+                    state,
+                    spacecraft_id,
+                    CounterType::Generic("charge".to_string()),
+                    counters_added,
+                    events,
+                );
+            }
+            events.push(GameEvent::Stationed {
+                spacecraft_id,
+                creature_id: paid_creature_id,
+                counters_added,
+            });
+            events.push(GameEvent::EffectResolved {
+                kind: EffectKind::Station,
+                source_id: spacecraft_id,
+            });
+        }
+    }
+    // `source_id` is the stack-entry source anchor; most payloads carry their
+    // own object ids, so it's kept for symmetry with the other stack-resolve
+    // paths but not directly consumed here.
+    let _ = source_id;
 }
 
 fn execute_effect(

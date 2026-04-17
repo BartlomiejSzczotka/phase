@@ -333,6 +333,13 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
             spacecraft_id,
             eligible_creatures,
         } => station_target_candidates(*player, *spacecraft_id, eligible_creatures),
+        // CR 702.171a: Generate valid creature subsets whose total power >= saddle_power.
+        WaitingFor::SaddleMount {
+            player,
+            mount_id,
+            saddle_power,
+            eligible_creatures,
+        } => saddle_mount_candidates(state, *player, *mount_id, *saddle_power, eligible_creatures),
         WaitingFor::TapCreaturesForManaAbility {
             player,
             count,
@@ -1508,6 +1515,44 @@ fn priority_actions(state: &GameState, player: PlayerId) -> Vec<CandidateAction>
         }
     }
 
+    // CR 702.171a: Saddle actions for Mounts (keyword action, not
+    // ActivateAbility). Sorcery-speed only — the duplicate check here keeps the
+    // AI search tree free of illegal candidates (mirrors the Station guard).
+    if crate::game::restrictions::is_sorcery_speed_window(state, player) {
+        for &obj_id in &state.battlefield {
+            if let Some(obj) = state.objects.get(&obj_id) {
+                if obj.controller != player {
+                    continue;
+                }
+                if !obj
+                    .keywords
+                    .iter()
+                    .any(|k| matches!(k, crate::types::keywords::Keyword::Saddle(_)))
+                {
+                    continue;
+                }
+                let has_eligible = state.battlefield.iter().any(|&cid| {
+                    cid != obj_id
+                        && state.objects.get(&cid).is_some_and(|c| {
+                            c.controller == player
+                                && !c.tapped
+                                && c.card_types.core_types.contains(&CoreType::Creature)
+                        })
+                });
+                if has_eligible {
+                    actions.push(candidate(
+                        GameAction::SaddleMount {
+                            mount_id: obj_id,
+                            creature_ids: vec![],
+                        },
+                        TacticalClass::Utility,
+                        Some(player),
+                    ));
+                }
+            }
+        }
+    }
+
     // CR 702.184a: Station actions for Spacecraft (keyword action, not
     // ActivateAbility). Sorcery-speed only — guarded by the priority arm of
     // `handle_station_activation`; duplicating the check here keeps the AI
@@ -2051,6 +2096,60 @@ fn crew_vehicle_candidates(
                 actions.push(candidate(
                     GameAction::CrewVehicle {
                         vehicle_id,
+                        creature_ids: combo,
+                    },
+                    TacticalClass::Utility,
+                    Some(player),
+                ));
+                if actions.len() >= 50 {
+                    break 'outer;
+                }
+            }
+        }
+    }
+    actions
+}
+
+/// CR 702.171a: Enumerate subsets of eligible creatures whose total power
+/// meets the saddle threshold. Mirrors `crew_vehicle_candidates` — the only
+/// differences are the wrapper action variant and the ID naming.
+fn saddle_mount_candidates(
+    state: &GameState,
+    player: PlayerId,
+    mount_id: crate::types::identifiers::ObjectId,
+    saddle_power: u32,
+    eligible_creatures: &[crate::types::identifiers::ObjectId],
+) -> Vec<CandidateAction> {
+    let mut actions = Vec::new();
+    let creatures_with_power: Vec<(crate::types::identifiers::ObjectId, i32)> = eligible_creatures
+        .iter()
+        .filter_map(|&id| {
+            state
+                .objects
+                .get(&id)
+                .map(|o| (id, o.power.unwrap_or(0).max(0)))
+        })
+        .collect();
+
+    let ids: Vec<crate::types::identifiers::ObjectId> =
+        creatures_with_power.iter().map(|&(id, _)| id).collect();
+    let threshold = saddle_power as i32;
+
+    'outer: for size in 1..=creatures_with_power.len() {
+        for combo in combinations(&ids, size) {
+            let total: i32 = combo
+                .iter()
+                .filter_map(|id| {
+                    creatures_with_power
+                        .iter()
+                        .find(|(cid, _)| cid == id)
+                        .map(|(_, p)| *p)
+                })
+                .sum();
+            if total >= threshold {
+                actions.push(candidate(
+                    GameAction::SaddleMount {
+                        mount_id,
                         creature_ids: combo,
                     },
                     TacticalClass::Utility,

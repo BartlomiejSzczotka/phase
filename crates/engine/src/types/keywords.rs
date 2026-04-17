@@ -517,7 +517,7 @@ pub enum Keyword {
     /// CR 702.164: Toxic N — when this creature deals combat damage to a player,
     /// that player gets N poison counters.
     Toxic(u32),
-    /// CR 702.173: Saddle N — tap creatures with total power N+ to saddle this Mount.
+    /// CR 702.171a: Saddle N — tap creatures with total power N+ to saddle this Mount.
     Saddle(u32),
     /// CR 702.46: Soulshift N — when this creature dies, return target Spirit card
     /// with mana value N or less from your graveyard to your hand.
@@ -1000,7 +1000,7 @@ impl FromStr for Keyword {
                 "devour" => return Ok(Keyword::Devour(p.parse().unwrap_or(1))),
                 // CR 702.164
                 "toxic" => return Ok(Keyword::Toxic(p.parse().unwrap_or(1))),
-                // CR 702.173
+                // CR 702.171a
                 "saddle" => return Ok(Keyword::Saddle(p.parse().unwrap_or(1))),
                 // CR 702.46
                 "soulshift" => return Ok(Keyword::Soulshift(p.parse().unwrap_or(1))),
@@ -1487,7 +1487,7 @@ fn keyword_from_tagged(variant: &str, data: &serde_json::Value) -> Result<Keywor
         "Amplify" => Ok(Keyword::Amplify(uint(data))),
         "Graft" => Ok(Keyword::Graft(uint(data))),
         "Devour" => Ok(Keyword::Devour(uint(data))),
-        // CR 702.164 / CR 702.173 / CR 702.46 / CR 702.165
+        // CR 702.164 / CR 702.171a / CR 702.46 / CR 702.165
         "Toxic" => Ok(Keyword::Toxic(uint(data))),
         "Saddle" => Ok(Keyword::Saddle(uint(data))),
         "Soulshift" => Ok(Keyword::Soulshift(uint(data))),
@@ -1821,7 +1821,7 @@ mod tests {
         assert_eq!(Keyword::from_str("Toxic:2").unwrap(), Keyword::Toxic(2));
         assert_eq!(Keyword::from_str("Toxic:1").unwrap(), Keyword::Toxic(1));
 
-        // CR 702.173: Saddle
+        // CR 702.171a: Saddle
         assert_eq!(Keyword::from_str("Saddle:3").unwrap(), Keyword::Saddle(3));
 
         // CR 702.46: Soulshift

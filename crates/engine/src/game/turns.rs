@@ -556,6 +556,15 @@ pub fn execute_cleanup(state: &mut GameState, events: &mut Vec<GameEvent>) -> Op
         }
     }
 
+    // CR 702.171b: "Once a permanent has become saddled, it stays saddled until
+    // the end of the turn or it leaves the battlefield." Clear the designation
+    // at cleanup (CR 514).
+    for obj in state.objects.values_mut() {
+        if obj.is_saddled {
+            obj.is_saddled = false;
+        }
+    }
+
     None
 }
 

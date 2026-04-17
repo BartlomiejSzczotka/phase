@@ -343,7 +343,12 @@ fn add_stack_abilities(state: &GameState, source_id: ObjectId, targets: &mut Vec
             continue; // Don't target yourself
         }
         match &entry.kind {
-            StackEntryKind::ActivatedAbility { .. } | StackEntryKind::TriggeredAbility { .. } => {
+            // CR 113.3b: Activated keyword abilities (Crew / Station / Equip / Saddle)
+            // are activated abilities and are targetable by counterspell-class effects
+            // that filter "activated or triggered ability on the stack".
+            StackEntryKind::ActivatedAbility { .. }
+            | StackEntryKind::TriggeredAbility { .. }
+            | StackEntryKind::KeywordAction { .. } => {
                 targets.push(TargetRef::Object(entry.id));
             }
             StackEntryKind::Spell { .. } => {}

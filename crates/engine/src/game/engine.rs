@@ -1,11 +1,14 @@
 use rand::Rng;
 use thiserror::Error;
 
-use crate::types::ability::{EffectKind, TargetFilter, TargetRef};
+#[cfg(test)]
+use crate::types::ability::EffectKind;
+use crate::types::ability::{KeywordAction, TargetRef};
 use crate::types::actions::GameAction;
 use crate::types::events::{BendingType, GameEvent};
 use crate::types::game_state::{
-    ActionResult, AutoPassMode, AutoPassRequest, ConvokeMode, GameState, WaitingFor,
+    ActionResult, AutoPassMode, AutoPassRequest, ConvokeMode, GameState, StackEntry,
+    StackEntryKind, WaitingFor,
 };
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::match_config::MatchType;
@@ -1328,12 +1331,16 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 ));
             }
             let p = *player;
-            effects::attach::attach_to(state, eq_id, target_id);
-            events.push(GameEvent::EffectResolved {
-                kind: EffectKind::Equip,
-                source_id: eq_id,
-            });
-            WaitingFor::Priority { player: p }
+            push_keyword_action(
+                state,
+                p,
+                eq_id,
+                KeywordAction::Equip {
+                    equipment_id: eq_id,
+                    target_creature_id: target_id,
+                },
+                &mut events,
+            )
         }
         (WaitingFor::Priority { player }, GameAction::Equip { equipment_id, .. }) => {
             let p = *player;
@@ -1356,7 +1363,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 vehicle_id: _vid,
                 creature_ids,
             },
-        ) => handle_crew_resolution(
+        ) => handle_crew_announcement(
             state,
             *player,
             *vehicle_id,
@@ -1387,12 +1394,38 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 spacecraft_id: _sid,
                 creature_id: Some(cid),
             },
-        ) => handle_station_resolution(
+        ) => handle_station_announcement(
             state,
             *player,
             *spacecraft_id,
             eligible_creatures,
             cid,
+            &mut events,
+        )?,
+        // CR 702.171a: Saddle activation from Priority — enters target-selection state.
+        (WaitingFor::Priority { player }, GameAction::SaddleMount { mount_id, .. }) => {
+            let p = *player;
+            handle_saddle_activation(state, p, mount_id, &mut events)?
+        }
+        // CR 702.171a: Saddle creature selection — announces, pays cost, pushes stack entry.
+        (
+            WaitingFor::SaddleMount {
+                player,
+                mount_id,
+                saddle_power,
+                eligible_creatures,
+            },
+            GameAction::SaddleMount {
+                mount_id: _mid,
+                creature_ids,
+            },
+        ) => handle_saddle_announcement(
+            state,
+            *player,
+            *mount_id,
+            *saddle_power,
+            eligible_creatures,
+            &creature_ids,
             &mut events,
         )?,
         (WaitingFor::Priority { player }, GameAction::Transform { object_id }) => {
@@ -2369,17 +2402,20 @@ fn handle_equip_activation(
         ));
     }
 
-    // If only one target, auto-equip
+    // If only one target, auto-equip: CR 113.3b still requires the stack entry
+    // + priority window; we skip only the target-selection UI.
     if valid_targets.len() == 1 {
         let target_id = valid_targets[0];
-        effects::attach::attach_to(state, equipment_id, target_id);
-        events.push(GameEvent::EffectResolved {
-            kind: EffectKind::Equip,
-            source_id: equipment_id,
-        });
-        state.priority_passes.clear();
-        state.priority_pass_count = 0;
-        return Ok(WaitingFor::Priority { player });
+        return Ok(push_keyword_action(
+            state,
+            player,
+            equipment_id,
+            KeywordAction::Equip {
+                equipment_id,
+                target_creature_id: target_id,
+            },
+            events,
+        ));
     }
 
     state.priority_passes.clear();
@@ -2481,8 +2517,39 @@ fn handle_crew_activation(
     })
 }
 
-/// CR 702.122a: Resolve crew by tapping selected creatures and animating the Vehicle.
-fn handle_crew_resolution(
+/// CR 113.3b: Push an activated keyword ability onto the stack and reset
+/// priority. Called by the *_announcement handlers after costs have been paid
+/// and targets selected. The payload is resolved via `stack::resolve_top`
+/// once all players pass priority.
+fn push_keyword_action(
+    state: &mut GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    action: KeywordAction,
+    events: &mut Vec<GameEvent>,
+) -> WaitingFor {
+    let entry_id = ObjectId(state.next_object_id);
+    state.next_object_id += 1;
+    super::stack::push_to_stack(
+        state,
+        StackEntry {
+            id: entry_id,
+            source_id,
+            controller: player,
+            kind: StackEntryKind::KeywordAction { source_id, action },
+        },
+        events,
+    );
+    state.priority_passes.clear();
+    state.priority_pass_count = 0;
+    WaitingFor::Priority { player }
+}
+
+/// CR 702.122a + CR 113.3b: Announce a Vehicle's crew ability. Pays the cost
+/// (tap selected creatures) and pushes a `KeywordAction::Crew` stack entry.
+/// The Vehicle animation happens at stack resolution, not here — opening a
+/// priority window for counterspell-class effects (CR 113.3b).
+fn handle_crew_announcement(
     state: &mut GameState,
     player: PlayerId,
     vehicle_id: ObjectId,
@@ -2539,7 +2606,7 @@ fn handle_crew_resolution(
         ));
     }
 
-    // Tap each creature — CR 702.122b: creature "crews" the Vehicle
+    // CR 701.26a + CR 702.122b: Tap each creature as cost payment — creature "crews" the Vehicle.
     for &cid in creature_ids {
         if let Some(obj) = state.objects.get_mut(&cid) {
             obj.tapped = true;
@@ -2550,37 +2617,16 @@ fn handle_crew_resolution(
         });
     }
 
-    // CR 702.122a: "This permanent becomes an artifact creature until end of turn."
-    // Validate Vehicle still exists before applying animation (animate.rs:92-93 pattern)
-    if !state.objects.contains_key(&vehicle_id) {
-        return Err(EngineError::InvalidAction(
-            "Vehicle no longer exists after tapping creatures".to_string(),
-        ));
-    }
-    state.add_transient_continuous_effect(
-        vehicle_id,
+    Ok(push_keyword_action(
+        state,
         player,
-        crate::types::ability::Duration::UntilEndOfTurn,
-        TargetFilter::SpecificObject { id: vehicle_id },
-        vec![crate::types::ability::ContinuousModification::AddType {
-            core_type: crate::types::card_type::CoreType::Creature,
-        }],
-        None,
-    );
-
-    // CR 702.122d: Emit crewed event for trigger matching
-    events.push(GameEvent::VehicleCrewed {
         vehicle_id,
-        creatures: creature_ids.to_vec(),
-    });
-    events.push(GameEvent::EffectResolved {
-        kind: EffectKind::Crew,
-        source_id: vehicle_id,
-    });
-
-    state.priority_passes.clear();
-    state.priority_pass_count = 0;
-    Ok(WaitingFor::Priority { player })
+        KeywordAction::Crew {
+            vehicle_id,
+            paid_creature_ids: creature_ids.to_vec(),
+        },
+        events,
+    ))
 }
 
 // ---------------------------------------------------------------------------
@@ -2667,9 +2713,11 @@ fn handle_station_activation(
     })
 }
 
-/// CR 702.184a: Resolve Station by tapping the chosen creature and adding
-/// charge counters equal to the tapped creature's power.
-fn handle_station_resolution(
+/// CR 702.184a + CR 113.3b: Announce Station. Pays the cost (tap the chosen
+/// creature), snapshots its power per CR 113.7a, and pushes a
+/// `KeywordAction::Station` stack entry. Charge counters are applied at
+/// stack resolution, after a priority window (CR 113.3b).
+fn handle_station_announcement(
     state: &mut GameState,
     player: PlayerId,
     spacecraft_id: ObjectId,
@@ -2712,14 +2760,14 @@ fn handle_station_resolution(
         ));
     }
 
-    // CR 702.184a: Snapshot the creature's power BEFORE tapping — the counter
-    // count is determined at cost-payment time and is not affected by
-    // subsequent power changes. CR 702.184c lets static abilities modify the
-    // characteristic read; this implementation reads `power`, which is the
-    // default per the rule.
-    let paid_power = creature.power.unwrap_or(0).max(0) as u32;
+    // CR 702.184a + CR 113.7a: Snapshot the creature's power BEFORE tapping —
+    // the counter count is determined at cost-payment time and survives the
+    // creature leaving the battlefield before resolution. CR 702.184c lets
+    // static abilities modify the characteristic read; this implementation
+    // reads `power`, which is the default per the rule.
+    let snapshot_power = creature.power.unwrap_or(0).max(0);
 
-    // Tap the creature (CR 701.21a).
+    // CR 701.26a: Tap the creature as cost payment.
     if let Some(obj) = state.objects.get_mut(&creature_id) {
         obj.tapped = true;
     }
@@ -2728,32 +2776,188 @@ fn handle_station_resolution(
         caused_by: None,
     });
 
-    // CR 702.184a: Put charge counters equal to the tapped creature's power
-    // on the Spacecraft. Zero power → zero counters (still a legal resolution
-    // per CR 122.1: "any number" includes 0).
-    if paid_power > 0 {
-        super::effects::counters::add_counter_with_replacement(
-            state,
+    Ok(push_keyword_action(
+        state,
+        player,
+        spacecraft_id,
+        KeywordAction::Station {
             spacecraft_id,
-            crate::types::counter::CounterType::Generic("charge".to_string()),
-            paid_power,
-            events,
-        );
+            paid_creature_id: creature_id,
+            snapshot_power,
+        },
+        events,
+    ))
+}
+
+// ---------------------------------------------------------------------------
+// CR 702.171a: Saddle — keyword action with per-card dispatch (mirrors Crew)
+// ---------------------------------------------------------------------------
+
+/// CR 702.171a: Activate a Mount's saddle ability from Priority.
+/// Enforces the sorcery-speed gate: main phase, empty stack, active player.
+fn handle_saddle_activation(
+    state: &mut GameState,
+    player: PlayerId,
+    mount_id: ObjectId,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    let obj = state
+        .objects
+        .get(&mount_id)
+        .ok_or_else(|| EngineError::InvalidAction("Mount not found".to_string()))?;
+
+    if obj.zone != Zone::Battlefield {
+        return Err(EngineError::InvalidAction(
+            "Mount is not on the battlefield".to_string(),
+        ));
+    }
+    if obj.controller != player {
+        return Err(EngineError::InvalidAction(
+            "You don't control this Mount".to_string(),
+        ));
     }
 
-    events.push(GameEvent::Stationed {
-        spacecraft_id,
-        creature_id,
-        counters_added: paid_power,
-    });
-    events.push(GameEvent::EffectResolved {
-        kind: EffectKind::Station,
-        source_id: spacecraft_id,
-    });
+    // Extract saddle power from keywords — fails if this permanent has no Saddle keyword.
+    let saddle_power = obj
+        .keywords
+        .iter()
+        .find_map(|kw| {
+            if let crate::types::keywords::Keyword::Saddle(n) = kw {
+                Some(*n)
+            } else {
+                None
+            }
+        })
+        .ok_or_else(|| EngineError::InvalidAction("Object has no Saddle keyword".to_string()))?;
 
+    // CR 702.171a: "Activate only as a sorcery."
+    if !super::restrictions::is_sorcery_speed_window(state, player) {
+        return Err(EngineError::ActionNotAllowed(
+            "Saddle may only be activated as a sorcery".to_string(),
+        ));
+    }
+
+    // CR 702.171a: "Tap any number of other untapped creatures you control."
+    let eligible_creatures: Vec<ObjectId> = state
+        .battlefield
+        .iter()
+        .copied()
+        .filter(|&id| {
+            id != mount_id
+                && state
+                    .objects
+                    .get(&id)
+                    .map(|o| {
+                        o.controller == player
+                            && !o.tapped
+                            && o.card_types
+                                .core_types
+                                .contains(&crate::types::card_type::CoreType::Creature)
+                    })
+                    .unwrap_or(false)
+        })
+        .collect();
+
+    let total_power: i32 = eligible_creatures
+        .iter()
+        .filter_map(|id| state.objects.get(id))
+        .map(|o| o.power.unwrap_or(0).max(0))
+        .sum();
+
+    if total_power < saddle_power as i32 {
+        return Err(EngineError::ActionNotAllowed(
+            "Not enough total power among eligible creatures to saddle".to_string(),
+        ));
+    }
+
+    let _ = events;
     state.priority_passes.clear();
     state.priority_pass_count = 0;
-    Ok(WaitingFor::Priority { player })
+    Ok(WaitingFor::SaddleMount {
+        player,
+        mount_id,
+        saddle_power,
+        eligible_creatures,
+    })
+}
+
+/// CR 702.171a + CR 113.3b: Announce Saddle. Pays the cost (tap selected
+/// creatures) and pushes a `KeywordAction::Saddle` stack entry. The "becomes
+/// saddled UEOT" designation is applied at stack resolution.
+fn handle_saddle_announcement(
+    state: &mut GameState,
+    player: PlayerId,
+    mount_id: ObjectId,
+    saddle_power: u32,
+    eligible_creatures: &[ObjectId],
+    creature_ids: &[ObjectId],
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    if creature_ids.is_empty() {
+        return Err(EngineError::InvalidAction(
+            "Must select at least one creature to saddle".to_string(),
+        ));
+    }
+
+    let mount = state
+        .objects
+        .get(&mount_id)
+        .ok_or_else(|| EngineError::InvalidAction("Mount no longer exists".to_string()))?;
+    if mount.zone != Zone::Battlefield || mount.controller != player {
+        return Err(EngineError::InvalidAction(
+            "Mount is no longer valid for saddling".to_string(),
+        ));
+    }
+
+    for &cid in creature_ids {
+        if !eligible_creatures.contains(&cid) {
+            return Err(EngineError::InvalidAction(
+                "Creature not in eligible list".to_string(),
+            ));
+        }
+    }
+
+    let mut total_power: i32 = 0;
+    for &cid in creature_ids {
+        let obj = state
+            .objects
+            .get(&cid)
+            .ok_or_else(|| EngineError::InvalidAction("Creature no longer exists".to_string()))?;
+        if obj.zone != Zone::Battlefield || obj.tapped {
+            return Err(EngineError::InvalidAction(
+                "Creature is no longer eligible for saddling".to_string(),
+            ));
+        }
+        total_power += obj.power.unwrap_or(0).max(0);
+    }
+
+    if total_power < saddle_power as i32 {
+        return Err(EngineError::InvalidAction(
+            "Selected creatures' total power is less than saddle requirement".to_string(),
+        ));
+    }
+
+    // CR 701.26a + CR 702.171c: Tap each creature as cost payment — creature "saddles" the Mount.
+    for &cid in creature_ids {
+        if let Some(obj) = state.objects.get_mut(&cid) {
+            obj.tapped = true;
+        }
+        events.push(GameEvent::PermanentTapped {
+            object_id: cid,
+            caused_by: None,
+        });
+    }
+
+    Ok(push_keyword_action(
+        state,
+        player,
+        mount_id,
+        KeywordAction::Saddle {
+            mount_id,
+            paid_creature_ids: creature_ids.to_vec(),
+        },
+        events,
+    ))
 }
 
 pub fn new_game(seed: u64) -> GameState {
@@ -5183,7 +5387,6 @@ mod tests {
             let creature_a = create_creature_on_bf(&mut state, PlayerId(0), "Bear A");
             let _creature_b = create_creature_on_bf(&mut state, PlayerId(0), "Bear B");
 
-            // Activate equip
             let result = apply_as_current(
                 &mut state,
                 GameAction::Equip {
@@ -5194,8 +5397,8 @@ mod tests {
             .unwrap();
             assert!(matches!(result.waiting_for, WaitingFor::EquipTarget { .. }));
 
-            // Select target
-            let result = apply_as_current(
+            // Target selection announces the ability on the stack (CR 113.3b).
+            apply_as_current(
                 &mut state,
                 GameAction::Equip {
                     equipment_id,
@@ -5203,8 +5406,20 @@ mod tests {
                 },
             )
             .unwrap();
+            assert_eq!(state.stack.len(), 1, "Equip announces on the stack");
+            assert!(
+                state
+                    .objects
+                    .get(&equipment_id)
+                    .unwrap()
+                    .attached_to
+                    .is_none(),
+                "attach must wait for stack resolution"
+            );
 
-            assert!(matches!(result.waiting_for, WaitingFor::Priority { .. }));
+            // Pass priority twice → stack resolves → attachment applied.
+            apply(&mut state, PlayerId(0), GameAction::PassPriority).unwrap();
+            apply(&mut state, PlayerId(1), GameAction::PassPriority).unwrap();
             assert_eq!(
                 state.objects.get(&equipment_id).unwrap().attached_to,
                 Some(creature_a)
@@ -5224,7 +5439,7 @@ mod tests {
             let creature_a = create_creature_on_bf(&mut state, PlayerId(0), "Bear A");
             let creature_b = create_creature_on_bf(&mut state, PlayerId(0), "Bear B");
 
-            // First equip to creature A
+            // First equip to creature A — requires stack resolution.
             apply_as_current(
                 &mut state,
                 GameAction::Equip {
@@ -5241,12 +5456,14 @@ mod tests {
                 },
             )
             .unwrap();
+            apply(&mut state, PlayerId(0), GameAction::PassPriority).unwrap();
+            apply(&mut state, PlayerId(1), GameAction::PassPriority).unwrap();
             assert_eq!(
                 state.objects.get(&equipment_id).unwrap().attached_to,
                 Some(creature_a)
             );
 
-            // Re-equip to creature B
+            // Re-equip to creature B.
             apply_as_current(
                 &mut state,
                 GameAction::Equip {
@@ -5263,6 +5480,8 @@ mod tests {
                 },
             )
             .unwrap();
+            apply(&mut state, PlayerId(0), GameAction::PassPriority).unwrap();
+            apply(&mut state, PlayerId(1), GameAction::PassPriority).unwrap();
 
             assert_eq!(
                 state.objects.get(&equipment_id).unwrap().attached_to,
@@ -5340,6 +5559,7 @@ mod tests {
             let equipment_id = create_equipment(&mut state, PlayerId(0));
             let creature = create_creature_on_bf(&mut state, PlayerId(0), "Bear");
 
+            // Auto-target still pushes the ability on the stack (CR 113.3b).
             let result = apply_as_current(
                 &mut state,
                 GameAction::Equip {
@@ -5348,8 +5568,20 @@ mod tests {
                 },
             )
             .unwrap();
-
             assert!(matches!(result.waiting_for, WaitingFor::Priority { .. }));
+            assert_eq!(state.stack.len(), 1);
+            assert!(
+                state
+                    .objects
+                    .get(&equipment_id)
+                    .unwrap()
+                    .attached_to
+                    .is_none(),
+                "attach waits for resolution"
+            );
+
+            apply(&mut state, PlayerId(0), GameAction::PassPriority).unwrap();
+            apply(&mut state, PlayerId(1), GameAction::PassPriority).unwrap();
             assert_eq!(
                 state.objects.get(&equipment_id).unwrap().attached_to,
                 Some(creature)
@@ -8816,7 +9048,6 @@ mod crew_tests {
     fn test_crew_resolution_single_creature_meets_threshold() {
         let (mut state, vehicle_id, creature_a, _creature_b) = setup_crew_scenario();
 
-        // Activate crew
         apply_as_current(
             &mut state,
             GameAction::CrewVehicle {
@@ -8826,8 +9057,8 @@ mod crew_tests {
         )
         .unwrap();
 
-        // Resolve with creature_a (power 3 >= crew 3)
-        let result = apply_as_current(
+        // Announcement: cost paid, keyword-action stack entry pushed.
+        let announce = apply_as_current(
             &mut state,
             GameAction::CrewVehicle {
                 vehicle_id,
@@ -8835,23 +9066,25 @@ mod crew_tests {
             },
         )
         .unwrap();
-
-        assert!(matches!(
-            result.waiting_for,
-            WaitingFor::Priority {
-                player: PlayerId(0)
-            }
-        ));
-
-        // Creature should be tapped
         assert!(state.objects.get(&creature_a).unwrap().tapped);
+        assert_eq!(state.stack.len(), 1, "Crew announcement pushes stack entry");
+        assert!(
+            !announce
+                .events
+                .iter()
+                .any(|e| matches!(e, GameEvent::VehicleCrewed { .. })),
+            "VehicleCrewed event must not fire until stack resolution"
+        );
 
-        // Vehicle should still exist on battlefield
-        let vehicle = state.objects.get(&vehicle_id).unwrap();
-        assert_eq!(vehicle.zone, Zone::Battlefield);
-
-        // Events should include VehicleCrewed
-        assert!(result.events.iter().any(|e| matches!(
+        // Pass priority; stack resolves → Vehicle becomes a creature, event fires.
+        apply(&mut state, PlayerId(0), GameAction::PassPriority).unwrap();
+        let resolve = apply(&mut state, PlayerId(1), GameAction::PassPriority).unwrap();
+        assert!(state.stack.is_empty(), "stack empty after resolution");
+        assert_eq!(
+            state.objects.get(&vehicle_id).unwrap().zone,
+            Zone::Battlefield
+        );
+        assert!(resolve.events.iter().any(|e| matches!(
             e,
             GameEvent::VehicleCrewed {
                 vehicle_id: vid,
@@ -9135,7 +9368,8 @@ mod station_tests {
         )
         .unwrap();
 
-        let result = apply_as_current(
+        // Announcement: cost paid (tap), stack entry pushed — but no counters yet.
+        let announce = apply_as_current(
             &mut state,
             GameAction::ActivateStation {
                 spacecraft_id,
@@ -9143,10 +9377,39 @@ mod station_tests {
             },
         )
         .unwrap();
+        assert!(
+            state.objects.get(&p5).unwrap().tapped,
+            "creature must be tapped at announcement"
+        );
+        assert_eq!(
+            state.stack.len(),
+            1,
+            "Station announcement must push a stack entry (CR 113.3b)"
+        );
+        let charge_after_announce = state
+            .objects
+            .get(&spacecraft_id)
+            .unwrap()
+            .counters
+            .get(&CounterType::Generic("charge".to_string()))
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(
+            charge_after_announce, 0,
+            "charge counters must not be applied before stack resolution"
+        );
+        assert!(
+            !announce
+                .events
+                .iter()
+                .any(|e| matches!(e, GameEvent::Stationed { .. })),
+            "Stationed event must not fire at announcement"
+        );
 
-        // Creature is tapped
-        assert!(state.objects.get(&p5).unwrap().tapped);
-        // Spacecraft has 5 charge counters (paid power)
+        // Both players pass priority → stack resolves → counters added.
+        apply(&mut state, PlayerId(0), GameAction::PassPriority).unwrap();
+        let resolve = apply(&mut state, PlayerId(1), GameAction::PassPriority).unwrap();
+
         let charge = state
             .objects
             .get(&spacecraft_id)
@@ -9155,19 +9418,15 @@ mod station_tests {
             .get(&CounterType::Generic("charge".to_string()))
             .copied()
             .unwrap_or(0);
-        assert_eq!(charge, 5);
-        // Stationed event emitted
-        let stationed = result
-            .events
-            .iter()
-            .any(|e| matches!(e, GameEvent::Stationed { spacecraft_id: sid, creature_id: cid, counters_added: 5 } if *sid == spacecraft_id && *cid == p5));
-        assert!(stationed, "Stationed event must fire with correct payload");
-        assert!(matches!(
-            result.waiting_for,
-            WaitingFor::Priority {
-                player: PlayerId(0)
-            }
-        ));
+        assert_eq!(charge, 5, "charge counters applied at stack resolution");
+        assert!(
+            resolve
+                .events
+                .iter()
+                .any(|e| matches!(e, GameEvent::Stationed { spacecraft_id: sid, creature_id: cid, counters_added: 5 } if *sid == spacecraft_id && *cid == p5)),
+            "Stationed event fires at resolution"
+        );
+        assert!(state.stack.is_empty(), "stack empty after resolution");
     }
 
     #[test]
@@ -9227,6 +9486,54 @@ mod station_tests {
         )
         .unwrap_err();
         assert!(matches!(err, EngineError::InvalidAction(_)));
+    }
+
+    #[test]
+    fn station_resolution_uses_snapshot_power_when_tapped_creature_leaves_battlefield() {
+        // CR 113.7a: Station's counter count is snapshot at announcement. If the
+        // tapped creature leaves the battlefield between announcement and
+        // resolution (e.g. bounced by an instant-speed response), the snapshot
+        // value is still applied.
+        let (mut state, spacecraft_id, p5, _) = setup_station_scenario();
+
+        apply_as_current(
+            &mut state,
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: None,
+            },
+        )
+        .unwrap();
+        apply_as_current(
+            &mut state,
+            GameAction::ActivateStation {
+                spacecraft_id,
+                creature_id: Some(p5),
+            },
+        )
+        .unwrap();
+
+        // Remove the tapped creature from the battlefield before resolution.
+        let p5_obj = state.objects.get_mut(&p5).unwrap();
+        p5_obj.zone = Zone::Graveyard;
+        state.battlefield.retain(|id| *id != p5);
+
+        apply(&mut state, PlayerId(0), GameAction::PassPriority).unwrap();
+        apply(&mut state, PlayerId(1), GameAction::PassPriority).unwrap();
+
+        // Counters still applied at snapshot value despite creature leaving.
+        let charge = state
+            .objects
+            .get(&spacecraft_id)
+            .unwrap()
+            .counters
+            .get(&CounterType::Generic("charge".to_string()))
+            .copied()
+            .unwrap_or(0);
+        assert_eq!(
+            charge, 5,
+            "CR 113.7a: snapshot_power applied even when tapped creature left battlefield"
+        );
     }
 
     #[test]

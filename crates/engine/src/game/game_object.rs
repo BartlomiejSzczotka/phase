@@ -287,6 +287,12 @@ pub struct GameObject {
     #[serde(default)]
     pub monstrous: bool,
 
+    /// CR 702.171b: Saddled designation. A permanent stays saddled until the end
+    /// of the turn or it leaves the battlefield. Not a copiable value — purely
+    /// a marker for saddle-triggered abilities and "saddled Mount" filters.
+    #[serde(default)]
+    pub is_saddled: bool,
+
     /// CR 613 + CR 510.1: This creature assigns combat damage equal to its toughness
     /// rather than its power. Set by continuous effects during layer evaluation.
     #[serde(default)]
@@ -481,6 +487,7 @@ impl GameObject {
             detained_by: std::collections::HashSet::new(),
             is_suspected: false,
             monstrous: false,
+            is_saddled: false,
             assigns_damage_from_toughness: false,
             assigns_damage_as_though_unblocked: false,
             assigns_no_combat_damage: false,
@@ -505,6 +512,7 @@ impl GameObject {
         self.is_suspected = false;
         self.is_renowned = false;
         self.monstrous = false;
+        self.is_saddled = false;
         self.chosen_attributes.clear();
         self.ninjutsu_variant_paid = None;
         self.goaded_by.clear();
@@ -532,6 +540,8 @@ impl GameObject {
         // CR 701.60a / CR 702.112b: Suspect and renowned are battlefield designations.
         self.is_suspected = false;
         self.is_renowned = false;
+        // CR 702.171b: Saddled clears when the Mount leaves the battlefield.
+        self.is_saddled = false;
         // CR 107.3m: The paid-X value is tied to the spell-resolution that brought
         // this permanent to the battlefield. When the permanent leaves, the value
         // is no longer meaningful; a re-cast will re-populate it via `finalize_cast`.

@@ -782,7 +782,7 @@ mod tests {
 
     #[test]
     fn parse_keyword_from_oracle_saddle() {
-        // CR 702.173: Saddle N
+        // CR 702.171a: Saddle N
         let kw = parse_keyword_from_oracle("saddle 3").unwrap();
         assert_eq!(kw, Keyword::Saddle(3));
     }

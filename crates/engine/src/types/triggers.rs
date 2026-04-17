@@ -179,7 +179,7 @@ pub enum TriggerMode {
     Exerted,
     /// CR 702.122: Triggers when a Vehicle becomes crewed.
     Crewed,
-    /// CR 702.174: Triggers when a creature becomes saddled.
+    /// CR 702.171b: Triggers when a creature becomes saddled.
     Saddled,
     /// CR 702.29: Triggers when a card is cycled.
     Cycled,

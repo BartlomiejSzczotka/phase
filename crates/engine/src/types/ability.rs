@@ -3903,6 +3903,8 @@ pub enum EffectKind {
     Crew,
     /// CR 702.184a: Engine-level station action (not via an Effect handler).
     Station,
+    /// CR 702.171a: Engine-level saddle action (not via an Effect handler).
+    Saddle,
     /// Trigger-condition placeholders — emitters not yet implemented.
     Reveal,
     Transform,
@@ -5480,6 +5482,48 @@ pub enum ContinuousModification {
 pub enum TargetRef {
     Object(ObjectId),
     Player(PlayerId),
+}
+
+// ---------------------------------------------------------------------------
+// Keyword-action payloads
+// ---------------------------------------------------------------------------
+
+/// Typed payload for activated keyword abilities resolved from the stack.
+///
+/// CR 113.3b requires activated abilities to go on the stack. CR 113.7a
+/// requires last-known-information carry-through when the source leaves
+/// its zone. Cost-payment snapshots (e.g. `Station::snapshot_power`) are
+/// captured at announcement time so resolution is safe even if the paid
+/// creature leaves the battlefield.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum KeywordAction {
+    /// CR 702.6a: attach source equipment to target creature.
+    Equip {
+        equipment_id: ObjectId,
+        target_creature_id: ObjectId,
+    },
+    /// CR 702.122a: the Vehicle becomes an artifact creature until end of turn.
+    /// Paid-creature ids are captured for logging and trigger context only.
+    Crew {
+        vehicle_id: ObjectId,
+        paid_creature_ids: Vec<ObjectId>,
+    },
+    /// CR 702.171a: this permanent becomes saddled until end of turn.
+    /// Paid-creature ids are captured for logging and trigger context only.
+    Saddle {
+        mount_id: ObjectId,
+        paid_creature_ids: Vec<ObjectId>,
+    },
+    /// CR 702.184a: put charge counters on the Spacecraft equal to the tapped
+    /// creature's power. The power value is snapshot at cost-payment time so
+    /// resolution is stable under CR 113.7a even if the paid creature leaves
+    /// the battlefield between announcement and resolution.
+    Station {
+        spacecraft_id: ObjectId,
+        paid_creature_id: ObjectId,
+        snapshot_power: i32,
+    },
 }
 
 // ---------------------------------------------------------------------------

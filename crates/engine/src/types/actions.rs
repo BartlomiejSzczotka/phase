@@ -74,6 +74,14 @@ pub enum GameAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         creature_id: Option<ObjectId>,
     },
+    /// CR 702.171a: Saddle a Mount by tapping creatures with total power >= N.
+    /// During Priority: creature_ids is empty (triggers state transition to
+    /// `WaitingFor::SaddleMount`). During SaddleMount: creature_ids contains
+    /// the selected creatures.
+    SaddleMount {
+        mount_id: ObjectId,
+        creature_ids: Vec<ObjectId>,
+    },
     Transform {
         object_id: ObjectId,
     },
