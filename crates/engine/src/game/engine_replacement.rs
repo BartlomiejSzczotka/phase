@@ -48,22 +48,22 @@ pub(super) fn handle_replacement_choice(
                             if let Some(new_controller) = controller_override {
                                 obj.controller = new_controller;
                             }
-                            // CR 614.1c: Apply counters from replacement pipeline.
-                            apply_etb_counters(obj, &enter_with_counters, events);
-                            // CR 614.1c: Apply pending ETB counters from delayed triggers
-                            // (e.g., "that creature enters with an additional +1/+1 counter").
-                            let pending: Vec<_> = state
+                        }
+                        // CR 614.1c: Apply counters from replacement pipeline.
+                        apply_etb_counters(state, object_id, &enter_with_counters, events);
+                        // CR 614.1c: Apply pending ETB counters from delayed triggers
+                        // (e.g., "that creature enters with an additional +1/+1 counter").
+                        let pending: Vec<_> = state
+                            .pending_etb_counters
+                            .iter()
+                            .filter(|(oid, _, _)| *oid == object_id)
+                            .map(|(_, ct, n)| (ct.clone(), *n))
+                            .collect();
+                        if !pending.is_empty() {
+                            apply_etb_counters(state, object_id, &pending, events);
+                            state
                                 .pending_etb_counters
-                                .iter()
-                                .filter(|(oid, _, _)| *oid == object_id)
-                                .map(|(_, ct, n)| (ct.clone(), *n))
-                                .collect();
-                            if !pending.is_empty() {
-                                apply_etb_counters(obj, &pending, events);
-                                state
-                                    .pending_etb_counters
-                                    .retain(|(oid, _, _)| *oid != object_id);
-                            }
+                                .retain(|(oid, _, _)| *oid != object_id);
                         }
                     }
                     // CR 712.14a: Apply transformation if entering the battlefield transformed.
@@ -486,19 +486,23 @@ fn apply_pending_spell_resolution(
     }
 }
 
+/// CR 614.1c: Apply counters accumulated on a `ProposedEvent::ZoneChange` to
+/// the object now entering the battlefield. Dispatches each entry through
+/// `add_counter_with_replacement` so Doubling-Season-class AddCounter
+/// replacements (CR 614.1a) are honored and derived fields
+/// (`obj.loyalty` / `obj.defense`) stay in sync via the single-authority
+/// resolver.
 pub(super) fn apply_etb_counters(
-    obj: &mut super::game_object::GameObject,
+    state: &mut GameState,
+    object_id: ObjectId,
     counters: &[(String, u32)],
     events: &mut Vec<GameEvent>,
 ) {
     for (counter_type_str, count) in counters {
         let ct = crate::types::counter::parse_counter_type(counter_type_str);
-        *obj.counters.entry(ct.clone()).or_insert(0) += count;
-        events.push(GameEvent::CounterAdded {
-            object_id: obj.id,
-            counter_type: ct,
-            count: *count,
-        });
+        super::effects::counters::add_counter_with_replacement(
+            state, object_id, ct, *count, events,
+        );
     }
 }
 

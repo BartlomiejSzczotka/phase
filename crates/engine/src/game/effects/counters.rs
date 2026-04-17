@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use crate::game::game_object::GameObject;
 use crate::game::replacement::{self, ReplacementResult};
 use crate::types::ability::{
     Effect, EffectError, EffectKind, ResolvedAbility, TargetFilter, TargetRef,
@@ -7,16 +8,72 @@ use crate::types::ability::{
 use crate::types::counter::{parse_counter_type, CounterType};
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
+use crate::types::identifiers::ObjectId;
 use crate::types::proposed_event::ProposedEvent;
+
+/// CR 306.5b + CR 310.4c: After mutating the counter map, re-derive the
+/// `obj.loyalty` / `obj.defense` field so the counter count and the cached
+/// characteristic stay in lockstep. This is the single site outside
+/// `evaluate_layers` that writes those fields.
+///
+/// Other counter types (P1P1, M1M1, Stun, Lore, Generic) don't project into
+/// a dedicated field — their effects flow through layer 7c (P/T) or are
+/// evaluated directly from the counter map at read time.
+fn sync_derived_from_counters(obj: &mut GameObject, counter_type: &CounterType) {
+    match counter_type {
+        // CR 306.5b: A planeswalker's loyalty equals the number of loyalty counters on it.
+        CounterType::Loyalty => {
+            obj.loyalty = Some(
+                obj.counters
+                    .get(&CounterType::Loyalty)
+                    .copied()
+                    .unwrap_or(0),
+            );
+        }
+        // CR 310.4c: A battle's defense equals the number of defense counters on it.
+        CounterType::Defense => {
+            obj.defense = Some(
+                obj.counters
+                    .get(&CounterType::Defense)
+                    .copied()
+                    .unwrap_or(0),
+            );
+        }
+        CounterType::Plus1Plus1
+        | CounterType::Minus1Minus1
+        | CounterType::Stun
+        | CounterType::Lore
+        | CounterType::Generic(_) => {}
+    }
+}
+
+/// CR 613.1d: Mark layers dirty if this counter type projects into a derived
+/// characteristic computed by the layer system. P1P1/M1M1 feed layer 7c;
+/// Loyalty/Defense are cached fields mirrored from the counter map. Setting
+/// `layers_dirty` for all four is defensive — the layer reset/re-derive path
+/// is idempotent when counters already match.
+fn counter_type_affects_layers(counter_type: &CounterType) -> bool {
+    matches!(
+        counter_type,
+        CounterType::Plus1Plus1
+            | CounterType::Minus1Minus1
+            | CounterType::Loyalty
+            | CounterType::Defense
+    )
+}
 
 /// CR 614.1: Add a counter to an object through the replacement pipeline.
 ///
-/// Handles Vorinclex-class doubling, prevention, and replacement effects.
-/// Used by both effect resolution (resolve_add) and turn-based actions
-/// (Saga lore counters at precombat main phase).
+/// Single authority for counter additions. Handles Vorinclex/Doubling-Season
+/// class doubling (CR 614.1a), prevention, and replacement effects. Used by:
+/// - effect resolution (resolve_add)
+/// - turn-based actions (Saga lore counters at precombat main phase)
+/// - CR 614.1c ETB counters (routed through `apply_etb_counters`)
+/// - loyalty-ability cost payment (CR 606.4) for positive loyalty amounts
+/// - damage redirection to battles (CR 120.3h) — reversed via the remove path
 pub fn add_counter_with_replacement(
     state: &mut GameState,
-    object_id: crate::types::identifiers::ObjectId,
+    object_id: ObjectId,
     counter_type: CounterType,
     count: u32,
     events: &mut Vec<GameEvent>,
@@ -41,10 +98,11 @@ pub fn add_counter_with_replacement(
                     let entry = obj.counters.entry(counter_type.clone()).or_insert(0);
                     *entry += count;
 
-                    if matches!(
-                        counter_type,
-                        CounterType::Plus1Plus1 | CounterType::Minus1Minus1
-                    ) {
+                    // CR 306.5b / CR 310.4c: Keep obj.loyalty / obj.defense in
+                    // sync with the counter map — the field IS the counter count.
+                    sync_derived_from_counters(obj, &counter_type);
+
+                    if counter_type_affects_layers(&counter_type) {
                         state.layers_dirty = true;
                     }
 
@@ -58,6 +116,72 @@ pub fn add_counter_with_replacement(
                         counter_type,
                         count,
                     });
+                }
+            }
+        }
+        ReplacementResult::Prevented => {}
+        ReplacementResult::NeedsChoice(player) => {
+            state.waiting_for =
+                crate::game::replacement::replacement_choice_waiting_for(player, state);
+        }
+    }
+}
+
+/// CR 614.1: Remove counters from an object through the replacement pipeline.
+///
+/// Single authority for counter removal, mirroring `add_counter_with_replacement`.
+/// Used by:
+/// - effect resolution (resolve_remove)
+/// - combat / effect damage to planeswalkers (CR 120.3c, CR 306.8) and battles (CR 120.3h, CR 310.6)
+/// - loyalty-ability cost payment (CR 606.4) for negative loyalty amounts
+///
+/// The count is clamped to the number of counters actually present, so callers
+/// can pass the raw damage/cost amount without pre-clamping.
+pub fn remove_counter_with_replacement(
+    state: &mut GameState,
+    object_id: ObjectId,
+    counter_type: CounterType,
+    count: u32,
+    events: &mut Vec<GameEvent>,
+) {
+    let proposed = ProposedEvent::RemoveCounter {
+        object_id,
+        counter_type,
+        count,
+        applied: HashSet::new(),
+    };
+
+    match replacement::replace_event(state, proposed, events) {
+        ReplacementResult::Execute(event) => {
+            if let ProposedEvent::RemoveCounter {
+                object_id,
+                counter_type,
+                count,
+                ..
+            } = event
+            {
+                if let Some(obj) = state.objects.get_mut(&object_id) {
+                    let entry = obj.counters.entry(counter_type.clone()).or_insert(0);
+                    let removed = (*entry).min(count);
+                    *entry = entry.saturating_sub(count);
+
+                    // CR 306.5b / CR 310.4c: Keep obj.loyalty / obj.defense in
+                    // sync with the counter map — the field IS the counter count.
+                    sync_derived_from_counters(obj, &counter_type);
+
+                    if counter_type_affects_layers(&counter_type) {
+                        state.layers_dirty = true;
+                    }
+
+                    // CR 122.1: Only emit when counters were actually removed,
+                    // matching the semantics of the legacy in-line path.
+                    if removed > 0 {
+                        events.push(GameEvent::CounterRemoved {
+                            object_id,
+                            counter_type,
+                            count: removed,
+                        });
+                    }
                 }
             }
         }
@@ -397,49 +521,17 @@ pub fn resolve_remove(
         };
 
         for (ct, counter_num) in removals {
-            let proposed = ProposedEvent::RemoveCounter {
-                object_id: obj_id,
-                counter_type: ct,
-                count: counter_num,
-                applied: HashSet::new(),
-            };
-
-            match replacement::replace_event(state, proposed, events) {
-                ReplacementResult::Execute(event) => {
-                    if let ProposedEvent::RemoveCounter {
-                        object_id,
-                        counter_type,
-                        count,
-                        ..
-                    } = event
-                    {
-                        let obj = state
-                            .objects
-                            .get_mut(&object_id)
-                            .ok_or(EffectError::ObjectNotFound(object_id))?;
-                        let entry = obj.counters.entry(counter_type.clone()).or_insert(0);
-                        *entry = entry.saturating_sub(count);
-
-                        if matches!(
-                            counter_type,
-                            CounterType::Plus1Plus1 | CounterType::Minus1Minus1
-                        ) {
-                            state.layers_dirty = true;
-                        }
-
-                        events.push(GameEvent::CounterRemoved {
-                            object_id,
-                            counter_type,
-                            count,
-                        });
-                    }
-                }
-                ReplacementResult::Prevented => {}
-                ReplacementResult::NeedsChoice(player) => {
-                    state.waiting_for =
-                        crate::game::replacement::replacement_choice_waiting_for(player, state);
-                    return Ok(());
-                }
+            // CR 614.1: Delegate to the single-authority remove pipeline so
+            // prevention/modification replacements apply and derived fields
+            // (obj.loyalty / obj.defense) stay in lockstep with the counter map.
+            remove_counter_with_replacement(state, obj_id, ct, counter_num, events);
+            // If a replacement requires player choice, suspend and bail — the
+            // continuation re-enters the remove pipeline after the choice resolves.
+            if matches!(
+                state.waiting_for,
+                crate::types::game_state::WaitingFor::ReplacementChoice { .. }
+            ) {
+                return Ok(());
             }
         }
     }
@@ -817,6 +909,273 @@ mod tests {
                 .unwrap_or(0),
             3,
             "destination should receive counters from LKI cache"
+        );
+    }
+
+    /// CR 306.5b: Adding a Loyalty counter through the resolver must keep
+    /// `obj.loyalty` in lockstep with `counters[Loyalty]`. This is the
+    /// invariant that prevents the Tezzeret-class display bug where the
+    /// loyalty trigger fires but the visible loyalty doesn't update.
+    #[test]
+    fn add_loyalty_counter_syncs_loyalty_field() {
+        let mut state = GameState::new_two_player(42);
+        let pw_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Tezzeret".to_string(),
+            Zone::Battlefield,
+        );
+        // Seed pre-existing 4 loyalty counters (planeswalker on battlefield).
+        let obj = state.objects.get_mut(&pw_id).unwrap();
+        obj.loyalty = Some(4);
+        obj.counters.insert(CounterType::Loyalty, 4);
+
+        let mut events = Vec::new();
+        add_counter_with_replacement(&mut state, pw_id, CounterType::Loyalty, 1, &mut events);
+
+        let obj = &state.objects[&pw_id];
+        assert_eq!(
+            obj.counters.get(&CounterType::Loyalty).copied(),
+            Some(5),
+            "counter map must reflect the increment"
+        );
+        assert_eq!(
+            obj.loyalty,
+            Some(5),
+            "obj.loyalty must mirror counters[Loyalty] (CR 306.5b)"
+        );
+    }
+
+    /// CR 306.5b: Removing a Loyalty counter through the resolver must keep
+    /// `obj.loyalty` in lockstep, including the saturating clamp at zero.
+    #[test]
+    fn remove_loyalty_counter_syncs_loyalty_field_with_clamp() {
+        let mut state = GameState::new_two_player(42);
+        let pw_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Test PW".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&pw_id).unwrap();
+        obj.loyalty = Some(3);
+        obj.counters.insert(CounterType::Loyalty, 3);
+
+        let mut events = Vec::new();
+        // Damage exceeds loyalty — must clamp to 0, not underflow.
+        remove_counter_with_replacement(&mut state, pw_id, CounterType::Loyalty, 5, &mut events);
+
+        let obj = &state.objects[&pw_id];
+        assert_eq!(obj.counters.get(&CounterType::Loyalty).copied(), Some(0));
+        assert_eq!(obj.loyalty, Some(0));
+    }
+
+    /// CR 310.4c: Defense counters drive `obj.defense` for battles. The same
+    /// resolver-sync invariant applies to battles.
+    #[test]
+    fn add_remove_defense_counter_syncs_defense_field() {
+        let mut state = GameState::new_two_player(42);
+        let battle_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Test Siege".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&battle_id).unwrap();
+        obj.defense = Some(4);
+        obj.counters.insert(CounterType::Defense, 4);
+
+        let mut events = Vec::new();
+        add_counter_with_replacement(&mut state, battle_id, CounterType::Defense, 2, &mut events);
+        assert_eq!(state.objects[&battle_id].defense, Some(6));
+        assert_eq!(
+            state.objects[&battle_id]
+                .counters
+                .get(&CounterType::Defense)
+                .copied(),
+            Some(6)
+        );
+
+        remove_counter_with_replacement(
+            &mut state,
+            battle_id,
+            CounterType::Defense,
+            3,
+            &mut events,
+        );
+        assert_eq!(state.objects[&battle_id].defense, Some(3));
+        assert_eq!(
+            state.objects[&battle_id]
+                .counters
+                .get(&CounterType::Defense)
+                .copied(),
+            Some(3)
+        );
+    }
+
+    /// CR 613.1 + CR 306.5b: After the resolver syncs `obj.loyalty`, a forced
+    /// `evaluate_layers` call must leave the value unchanged — the layer
+    /// reset/re-derive path is idempotent when counters and field already match.
+    #[test]
+    fn loyalty_field_survives_layer_re_evaluation() {
+        use crate::game::layers::evaluate_layers;
+        use crate::types::card_type::CoreType;
+
+        let mut state = GameState::new_two_player(42);
+        let pw_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Test PW".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&pw_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Planeswalker);
+        // Base printed loyalty 4; counter map starts in sync.
+        obj.base_loyalty = Some(4);
+        obj.loyalty = Some(4);
+        obj.counters.insert(CounterType::Loyalty, 4);
+
+        let mut events = Vec::new();
+        add_counter_with_replacement(&mut state, pw_id, CounterType::Loyalty, 1, &mut events);
+        assert_eq!(state.objects[&pw_id].loyalty, Some(5));
+
+        // Force layer re-evaluation: should re-derive obj.loyalty from the
+        // counter map and land on the same value.
+        evaluate_layers(&mut state);
+        assert_eq!(
+            state.objects[&pw_id].loyalty,
+            Some(5),
+            "obj.loyalty must remain 5 after layer reset+re-derive"
+        );
+        assert_eq!(
+            state.objects[&pw_id]
+                .counters
+                .get(&CounterType::Loyalty)
+                .copied(),
+            Some(5),
+            "counters[Loyalty] must remain 5 after layer evaluation"
+        );
+    }
+
+    /// Tezzeret, Cruel Captain regression: after a planeswalker enters with
+    /// printed loyalty 4 and a "put a loyalty counter on this" trigger fires
+    /// twice (e.g., because two artifacts entered), `obj.loyalty` must show
+    /// 4 → 5 → 6 in lockstep with the counter map. Pre-fix, the field stayed
+    /// stale at 4 (or jumped to 1 after the next layer re-evaluation).
+    #[test]
+    fn tezzeret_class_loyalty_trigger_synced_each_increment() {
+        let mut state = GameState::new_two_player(42);
+        let pw_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Tezzeret, Cruel Captain".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&pw_id).unwrap();
+        obj.base_loyalty = Some(4);
+        obj.loyalty = Some(4);
+        obj.counters.insert(CounterType::Loyalty, 4);
+
+        let mut events = Vec::new();
+        // Trigger 1 fires.
+        add_counter_with_replacement(&mut state, pw_id, CounterType::Loyalty, 1, &mut events);
+        assert_eq!(state.objects[&pw_id].loyalty, Some(5));
+        assert_eq!(
+            state.objects[&pw_id]
+                .counters
+                .get(&CounterType::Loyalty)
+                .copied(),
+            Some(5)
+        );
+
+        // Trigger 2 fires.
+        add_counter_with_replacement(&mut state, pw_id, CounterType::Loyalty, 1, &mut events);
+        assert_eq!(
+            state.objects[&pw_id].loyalty,
+            Some(6),
+            "second trigger must take loyalty 5 → 6, not regress to 1"
+        );
+        assert_eq!(
+            state.objects[&pw_id]
+                .counters
+                .get(&CounterType::Loyalty)
+                .copied(),
+            Some(6)
+        );
+    }
+
+    /// CR 614.1a + CR 614.1c: A Doubling-Season-class AddCounter replacement
+    /// must apply when a planeswalker enters with intrinsic loyalty counters,
+    /// because the intrinsic CR 306.5b replacement is now routed through
+    /// `add_counter_with_replacement` (which dispatches each counter through
+    /// the AddCounter replacement pipeline).
+    ///
+    /// Uses a hand-crafted replacement that doubles AddCounter quantities to
+    /// avoid depending on Doubling Season specifically being implemented.
+    #[test]
+    fn intrinsic_etb_loyalty_counters_apply_doubling_replacement() {
+        use crate::game::engine_replacement::apply_etb_counters;
+        use crate::types::ability::{QuantityModification, ReplacementDefinition, TargetFilter};
+        use crate::types::card_type::CoreType;
+        use crate::types::replacements::ReplacementEvent;
+
+        let mut state = GameState::new_two_player(42);
+
+        // Doubling-Season fixture: a permanent on the battlefield carrying an
+        // AddCounter replacement that doubles the count.
+        let doubler_id = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Counter Doubler".to_string(),
+            Zone::Battlefield,
+        );
+        let mut doubler_repl = ReplacementDefinition::new(ReplacementEvent::AddCounter);
+        doubler_repl.valid_card = Some(TargetFilter::Any);
+        doubler_repl.quantity_modification = Some(QuantityModification::Double);
+        state
+            .objects
+            .get_mut(&doubler_id)
+            .unwrap()
+            .replacement_definitions
+            .push(doubler_repl);
+
+        // Planeswalker entering the battlefield with printed loyalty 3.
+        // We simulate the post-ZoneChange entry path: the object is on the
+        // battlefield with empty counter map and obj.loyalty seeded from the
+        // printed value, then `apply_etb_counters` dispatches the intrinsic
+        // CR 306.5b counter through the AddCounter replacement pipeline.
+        let pw_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Test PW".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&pw_id).unwrap();
+        obj.card_types.core_types.push(CoreType::Planeswalker);
+        obj.loyalty = Some(3);
+        obj.base_loyalty = Some(3);
+
+        let intrinsic = vec![(CounterType::Loyalty.as_str().to_string(), 3u32)];
+        let mut events = Vec::new();
+        apply_etb_counters(&mut state, pw_id, &intrinsic, &mut events);
+
+        let obj = &state.objects[&pw_id];
+        assert_eq!(
+            obj.counters.get(&CounterType::Loyalty).copied(),
+            Some(6),
+            "Doubling-class replacement must double the intrinsic 3 → 6"
+        );
+        assert_eq!(
+            obj.loyalty,
+            Some(6),
+            "obj.loyalty must mirror the doubled counter count"
         );
     }
 }

@@ -1,10 +1,9 @@
 use crate::database::CardDatabase;
 use crate::types::ability::{CopiableValues, PtValue};
 use crate::types::card::{CardFace, CardLayout, LayoutKind, PrintedCardRef};
+use crate::types::counter::CounterType;
 use crate::types::game_state::GameState;
 use crate::types::mana::{ManaColor, ManaCost, ManaCostShard};
-
-use crate::types::counter::CounterType;
 
 use super::game_object::{BackFaceData, GameObject};
 use super::public_state::{
@@ -42,18 +41,15 @@ pub fn apply_card_face_to_object(obj: &mut GameObject, card_face: &CardFace) {
     obj.name = card_face.name.clone();
     obj.power = power;
     obj.toughness = toughness;
+    // CR 306.5b: `obj.loyalty` here is the face's printed loyalty, stored as
+    // base data. The live loyalty-counter map is seeded only when the object
+    // enters the battlefield, through the CR 614.1c intrinsic replacement
+    // channel (`enter_with_counters` on the ZoneChange ProposedEvent).
     obj.loyalty = loyalty;
+    // CR 310.4a: `obj.defense` is the face's printed defense, stored as base
+    // data. Defense counters are seeded through the CR 614.1c intrinsic
+    // replacement when the battle enters the battlefield.
     obj.defense = defense;
-    // CR 306.5b: Sync loyalty counters so HasCounters condition works for animation statics.
-    if let Some(loy) = loyalty {
-        obj.counters.insert(CounterType::Loyalty, loy);
-    }
-    // CR 310.4b + CR 614.1c: Battles have the intrinsic replacement "This permanent
-    // enters with a number of defense counters equal to its printed defense number."
-    // Seed the defense counter so CR 310.4c's "defense = counter count" invariant holds.
-    if let Some(def) = defense {
-        obj.counters.insert(CounterType::Defense, def);
-    }
     obj.card_types = card_face.card_type.clone();
     obj.mana_cost = card_face.mana_cost.clone();
     obj.keywords = keywords.clone();
@@ -172,6 +168,32 @@ pub fn apply_back_face_to_object(obj: &mut GameObject, back_face: BackFaceData) 
     obj.strive_cost = back_face.strive_cost;
     obj.casting_restrictions = back_face.casting_restrictions;
     obj.casting_options = back_face.casting_options;
+}
+
+/// CR 306.5b + CR 310.4b + CR 614.1c: Seed the intrinsic "enters with N
+/// counters" replacement for planeswalkers (loyalty counters equal to printed
+/// loyalty) and battles (defense counters equal to printed defense).
+///
+/// Returned as `(counter_type_string, count)` entries suitable for pushing
+/// onto `ProposedEvent::ZoneChange::enter_with_counters`. The replacement
+/// pipeline then dispatches each entry through `add_counter_with_replacement`
+/// so Doubling Season / Hardened Scales / Vorinclex apply per CR 614.1a.
+///
+/// Returns an empty vec for non-planeswalker, non-battle permanents or when
+/// the face carries no printed loyalty/defense number.
+pub fn intrinsic_etb_counters(obj: &GameObject) -> Vec<(String, u32)> {
+    let mut counters = Vec::new();
+    if let Some(loy) = obj.loyalty {
+        if loy > 0 {
+            counters.push((CounterType::Loyalty.as_str().to_string(), loy));
+        }
+    }
+    if let Some(def) = obj.defense {
+        if def > 0 {
+            counters.push((CounterType::Defense.as_str().to_string(), def));
+        }
+    }
+    counters
 }
 
 pub fn intrinsic_copiable_values(obj: &GameObject) -> CopiableValues {

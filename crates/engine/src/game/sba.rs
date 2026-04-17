@@ -1302,7 +1302,10 @@ mod tests {
         let id = create_object(state, card_id, owner, name.to_string(), Zone::Battlefield);
         let obj = state.objects.get_mut(&id).unwrap();
         obj.card_types.core_types.push(CoreType::Planeswalker);
+        // CR 306.5b: loyalty field and counter map mirror each other.
         obj.loyalty = Some(loyalty);
+        obj.counters
+            .insert(crate::types::counter::CounterType::Loyalty, loyalty);
         obj.entered_battlefield_turn = Some(state.turn_number);
         id
     }

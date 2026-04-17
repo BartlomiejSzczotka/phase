@@ -216,43 +216,61 @@ pub(crate) fn apply_damage_after_replacement(
                     }
                 }
                 state.layers_dirty = true;
-            } else if let Some(target_obj) = state.objects.get_mut(obj_id) {
-                if target_obj
-                    .card_types
-                    .core_types
-                    .contains(&CoreType::Planeswalker)
-                {
-                    // CR 120.3c / CR 306.8: Damage to a planeswalker removes loyalty counters.
-                    let current = target_obj.loyalty.unwrap_or(0);
-                    let new_loyalty = current.saturating_sub(actual_amount);
-                    target_obj.loyalty = Some(new_loyalty);
-                    target_obj
-                        .counters
-                        .insert(CounterType::Loyalty, new_loyalty);
-                } else if target_obj.card_types.core_types.contains(&CoreType::Battle) {
-                    // CR 120.3h + CR 310.6: Damage to a battle removes that many
-                    // defense counters from that battle.
-                    let current = target_obj.defense.unwrap_or(0);
-                    let removed = current.min(actual_amount);
-                    let new_defense = current - removed;
-                    target_obj.defense = Some(new_defense);
-                    target_obj
-                        .counters
-                        .insert(CounterType::Defense, new_defense);
-                    if removed > 0 {
-                        events.push(GameEvent::CounterRemoved {
-                            object_id: *obj_id,
-                            counter_type: CounterType::Defense,
-                            count: removed,
-                        });
+            } else {
+                // Classify the target before mutating so the post-classification
+                // helper can take a fresh `&mut GameState` borrow.
+                enum DamageKind {
+                    Planeswalker,
+                    Battle,
+                    Creature,
+                }
+                let kind = state.objects.get(obj_id).map(|obj| {
+                    if obj.card_types.core_types.contains(&CoreType::Planeswalker) {
+                        DamageKind::Planeswalker
+                    } else if obj.card_types.core_types.contains(&CoreType::Battle) {
+                        DamageKind::Battle
+                    } else {
+                        DamageKind::Creature
                     }
-                } else {
-                    // CR 120.3e: Damage to a creature marks damage.
-                    target_obj.damage_marked += actual_amount;
-                    // CR 702.2b: Track deathtouch for SBA lethal-damage check.
-                    if ctx.has_deathtouch {
-                        target_obj.dealt_deathtouch_damage = true;
+                });
+                match kind {
+                    Some(DamageKind::Planeswalker) => {
+                        // CR 120.3c + CR 306.8: Damage to a planeswalker removes that
+                        // many loyalty counters. Routed through the single-authority
+                        // resolver so replacement effects apply and obj.loyalty
+                        // stays in sync with counters[Loyalty] (CR 306.5b).
+                        super::counters::remove_counter_with_replacement(
+                            state,
+                            *obj_id,
+                            CounterType::Loyalty,
+                            actual_amount,
+                            events,
+                        );
                     }
+                    Some(DamageKind::Battle) => {
+                        // CR 120.3h + CR 310.6: Damage to a battle removes that many
+                        // defense counters. Routed through the single-authority
+                        // resolver so obj.defense stays in sync with counters[Defense]
+                        // (CR 310.4c).
+                        super::counters::remove_counter_with_replacement(
+                            state,
+                            *obj_id,
+                            CounterType::Defense,
+                            actual_amount,
+                            events,
+                        );
+                    }
+                    Some(DamageKind::Creature) => {
+                        if let Some(target_obj) = state.objects.get_mut(obj_id) {
+                            // CR 120.3e: Damage to a creature marks damage.
+                            target_obj.damage_marked += actual_amount;
+                            // CR 702.2b: Track deathtouch for SBA lethal-damage check.
+                            if ctx.has_deathtouch {
+                                target_obj.dealt_deathtouch_damage = true;
+                            }
+                        }
+                    }
+                    None => {}
                 }
             }
         }
@@ -874,7 +892,9 @@ mod tests {
         {
             let obj = state.objects.get_mut(&pw_id).unwrap();
             obj.card_types.core_types.push(CoreType::Planeswalker);
+            // CR 306.5b: loyalty field and counter map mirror each other.
             obj.loyalty = Some(5);
+            obj.counters.insert(CounterType::Loyalty, 5);
         }
         let ability = make_ability(3, vec![TargetRef::Object(pw_id)]);
         let mut events = Vec::new();
@@ -899,7 +919,9 @@ mod tests {
         {
             let obj = state.objects.get_mut(&pw_id).unwrap();
             obj.card_types.core_types.push(CoreType::Planeswalker);
+            // CR 306.5b: loyalty field and counter map mirror each other.
             obj.loyalty = Some(2);
+            obj.counters.insert(CounterType::Loyalty, 2);
         }
         let ability = make_ability(5, vec![TargetRef::Object(pw_id)]);
         let mut events = Vec::new();
@@ -1095,7 +1117,9 @@ mod tests {
         {
             let obj = state.objects.get_mut(&pw_id).unwrap();
             obj.card_types.core_types.push(CoreType::Planeswalker);
+            // CR 306.5b: loyalty field and counter map mirror each other.
             obj.loyalty = Some(4);
+            obj.counters.insert(CounterType::Loyalty, 4);
         }
 
         let ability = ResolvedAbility::new(

@@ -84,6 +84,25 @@ pub(crate) fn execute_zone_move(
         }
     }
 
+    // CR 306.5b + CR 310.4b + CR 614.1c: Seed the intrinsic "enters with N
+    // counters" replacement when a planeswalker or battle enters the
+    // battlefield from any source (effect-driven entry — bounce-return,
+    // reanimate, blink, etc.). Spell-cast entry is handled in stack.rs.
+    if dest_zone == Zone::Battlefield {
+        if let Some(obj) = state.objects.get(&obj_id) {
+            let intrinsic = crate::game::printed_cards::intrinsic_etb_counters(obj);
+            if !intrinsic.is_empty() {
+                if let ProposedEvent::ZoneChange {
+                    enter_with_counters,
+                    ..
+                } = &mut proposed
+                {
+                    enter_with_counters.extend(intrinsic);
+                }
+            }
+        }
+    }
+
     match replacement::replace_event(state, proposed, events) {
         ReplacementResult::Execute(event) => {
             if let ProposedEvent::ZoneChange {
@@ -125,15 +144,15 @@ pub(crate) fn execute_zone_move(
                         }
                     }
                 }
-                // CR 614.1c: Apply counters from replacement pipeline (e.g., saga lore counters).
+                // CR 614.1c: Apply counters from replacement pipeline (e.g., saga lore counters,
+                // planeswalker intrinsic loyalty, battle intrinsic defense).
                 if to == Zone::Battlefield {
-                    if let Some(obj) = state.objects.get_mut(&object_id) {
-                        crate::game::engine_replacement::apply_etb_counters(
-                            obj,
-                            &enter_with_counters,
-                            events,
-                        );
-                    }
+                    crate::game::engine_replacement::apply_etb_counters(
+                        state,
+                        object_id,
+                        &enter_with_counters,
+                        events,
+                    );
                     // CR 614.1c: Apply pending ETB counters from delayed triggers
                     // (e.g., "that creature enters with an additional +1/+1 counter").
                     let pending: Vec<_> = state
@@ -143,11 +162,9 @@ pub(crate) fn execute_zone_move(
                         .map(|(_, ct, n)| (ct.clone(), *n))
                         .collect();
                     if !pending.is_empty() {
-                        if let Some(obj) = state.objects.get_mut(&object_id) {
-                            crate::game::engine_replacement::apply_etb_counters(
-                                obj, &pending, events,
-                            );
-                        }
+                        crate::game::engine_replacement::apply_etb_counters(
+                            state, object_id, &pending, events,
+                        );
                         state
                             .pending_etb_counters
                             .retain(|(oid, _, _)| *oid != object_id);

@@ -521,7 +521,10 @@ mod tests {
         obj.card_types
             .core_types
             .push(crate::types::card_type::CoreType::Planeswalker);
+        // CR 306.5b: loyalty field and counter map mirror each other.
         obj.loyalty = Some(loyalty);
+        obj.counters
+            .insert(crate::types::counter::CounterType::Loyalty, loyalty);
         id
     }
 
