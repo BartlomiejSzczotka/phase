@@ -532,7 +532,7 @@ export type WaitingFor =
   | { type: "SacrificeForCost"; data: { player: PlayerId; count: number; permanents: ObjectId[]; pending_cast: PendingCast } }
   | { type: "BlightChoice"; data: { player: PlayerId; count: number; creatures: ObjectId[]; pending_cast: PendingCast } }
   | { type: "TapCreaturesForManaAbility"; data: { player: PlayerId; count: number; creatures: ObjectId[]; pending_mana_ability: unknown } }
-  | { type: "ChooseManaColor"; data: { player: PlayerId; color_options: ManaType[]; pending_mana_ability: unknown } }
+  | { type: "ChooseManaColor"; data: { player: PlayerId; choice: ManaChoicePrompt; pending_mana_ability: unknown } }
   | { type: "TapCreaturesForSpellCost"; data: { player: PlayerId; count: number; creatures: ObjectId[]; pending_cast: PendingCast } }
   | { type: "ExileFromGraveyardForCost"; data: { player: PlayerId; count: number; cards: ObjectId[]; pending_cast: PendingCast } }
   | { type: "CollectEvidenceChoice"; data: { player: PlayerId; minimum_mana_value: number; cards: ObjectId[]; resume: unknown } }
@@ -693,7 +693,17 @@ export type GameAction =
   | { type: "SelectCategoryPermanents"; data: { choices: (ObjectId | null)[] } }
   | { type: "ChooseX"; data: { value: number } }
   | { type: "SubmitPhyrexianChoices"; data: { choices: ShardChoice[] } }
-  | { type: "ChooseManaColor"; data: { color: ManaType } };
+  | { type: "ChooseManaColor"; data: { choice: ManaChoice } };
+
+// CR 605.3b + CR 106.1a: Shape of the prompt surfaced by WaitingFor::ChooseManaColor.
+export type ManaChoicePrompt =
+  | { type: "SingleColor"; data: { options: ManaType[] } }
+  | { type: "Combination"; data: { options: ManaType[][] } };
+
+// CR 605.3b: Player's answer to a ManaChoicePrompt. Shape mirrors the prompt.
+export type ManaChoice =
+  | { type: "SingleColor"; data: ManaType }
+  | { type: "Combination"; data: ManaType[] };
 
 // CR 107.4f + CR 601.2f: Per-shard Phyrexian payment choice.
 export type ShardChoice =

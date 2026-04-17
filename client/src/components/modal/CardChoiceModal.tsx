@@ -1600,12 +1600,27 @@ const MANA_COLOR_SHARDS: Record<ManaType, string> = {
 };
 
 function ManaColorChoiceModal({ data }: { data: ChooseManaColor["data"] }) {
+  // CR 605.3b: Prompt shape is a typed union. `SingleColor` is the legacy
+  // one-of-N colors shape (Treasures, City of Brass, Pit of Offerings).
+  // `Combination` is the filter-land prompt (pick one complete multi-mana
+  // sequence). Both share this single modal — the engine dispatches a
+  // `ManaChoice` whose shape mirrors the prompt.
+  if (data.choice.type === "Combination") {
+    return <ManaCombinationChoiceModal options={data.choice.data.options} />;
+  }
+  return <ManaSingleColorChoiceModal options={data.choice.data.options} />;
+}
+
+function ManaSingleColorChoiceModal({ options }: { options: ManaType[] }) {
   const dispatch = useGameDispatch();
   const [selected, setSelected] = useState<ManaType | null>(null);
 
   const handleConfirm = useCallback(() => {
     if (selected) {
-      dispatch({ type: "ChooseManaColor", data: { color: selected } });
+      dispatch({
+        type: "ChooseManaColor",
+        data: { choice: { type: "SingleColor", data: selected } },
+      });
     }
   }, [dispatch, selected]);
 
@@ -1618,7 +1633,7 @@ function ManaColorChoiceModal({ data }: { data: ChooseManaColor["data"] }) {
       footer={<ConfirmButton onClick={handleConfirm} disabled={selected === null} />}
     >
       <div className="mx-auto flex w-fit items-center justify-center gap-3 px-4 py-4 sm:gap-5 sm:px-6 sm:py-6">
-        {data.color_options.map((color, index) => {
+        {options.map((color, index) => {
           const isSelected = selected === color;
           return (
             <motion.button
@@ -1633,6 +1648,74 @@ function ManaColorChoiceModal({ data }: { data: ChooseManaColor["data"] }) {
               onClick={() => setSelected(isSelected ? null : color)}
             >
               <ManaSymbol shard={MANA_COLOR_SHARDS[color]} size="lg" />
+            </motion.button>
+          );
+        })}
+      </div>
+    </ChoiceOverlay>
+  );
+}
+
+// CR 605.3b + CR 106.1a: Filter-land combination picker (Shadowmoor/Eventide).
+// Renders one button per combination option, each showing the full mana
+// sequence with the source pips side-by-side.
+function ManaCombinationChoiceModal({ options }: { options: ManaType[][] }) {
+  const dispatch = useGameDispatch();
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+
+  const handleConfirm = useCallback(() => {
+    if (selectedIndex !== null) {
+      dispatch({
+        type: "ChooseManaColor",
+        data: {
+          choice: { type: "Combination", data: options[selectedIndex] },
+        },
+      });
+    }
+  }, [dispatch, options, selectedIndex]);
+
+  return (
+    <ChoiceOverlay
+      title="Choose Mana Combination"
+      subtitle="Select which combination of mana to produce"
+      widthClassName="w-fit max-w-full"
+      maxWidthClassName="max-w-lg"
+      footer={
+        <ConfirmButton onClick={handleConfirm} disabled={selectedIndex === null} />
+      }
+    >
+      <div className="mx-auto flex w-fit flex-col items-center justify-center gap-3 px-4 py-4 sm:gap-4 sm:px-6 sm:py-6">
+        {options.map((combo, index) => {
+          const isSelected = selectedIndex === index;
+          // Visual tier: when the combination is two of the same color, use
+          // that color's styling; otherwise fall back to a neutral panel.
+          const uniqueColors = Array.from(new Set(combo));
+          const tint: ManaType | null =
+            uniqueColors.length === 1 ? uniqueColors[0] : null;
+          const tintClass = tint
+            ? isSelected
+              ? MANA_COLOR_SELECTED[tint]
+              : MANA_COLOR_STYLES[tint]
+            : isSelected
+              ? "border-gray-300 bg-gray-600/50 text-white"
+              : "border-gray-500 bg-gray-700/40 text-gray-200 hover:bg-gray-700/60";
+          return (
+            <motion.button
+              key={index}
+              className={`flex items-center justify-center gap-2 rounded-xl border-2 px-5 py-3 transition ${tintClass}`}
+              initial={{ opacity: 0, y: 20, scale: 0.9 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              transition={{ delay: 0.05 + index * 0.05, duration: 0.25 }}
+              whileHover={{ scale: 1.03 }}
+              onClick={() => setSelectedIndex(isSelected ? null : index)}
+            >
+              {combo.map((color, pipIndex) => (
+                <ManaSymbol
+                  key={pipIndex}
+                  shard={MANA_COLOR_SHARDS[color]}
+                  size="md"
+                />
+              ))}
             </motion.button>
           );
         })}

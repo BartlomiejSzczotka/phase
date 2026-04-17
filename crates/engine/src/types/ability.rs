@@ -585,6 +585,16 @@ pub enum ManaProduction {
         #[serde(default)]
         source: LinkedExileScope,
     },
+    /// CR 605.3b + CR 106.1a: Produce one of several fixed multi-mana
+    /// combinations chosen by the controller. Each option is a complete
+    /// pre-specified sequence of mana types (e.g. Shadowmoor/Eventide filter
+    /// lands: `Add {W}{W}, {W}{U}, or {U}{U}` yields options
+    /// `[[W,W], [W,U], [U,U]]`). Unlike `AnyOneColor` (pick one color, repeat
+    /// N times) the choice axis here is which complete combination to produce.
+    ChoiceAmongCombinations {
+        #[serde(default)]
+        options: Vec<Vec<ManaColor>>,
+    },
 }
 
 /// CR 607.2a + CR 406.6 + CR 610.3: Which exile-link relation a mana ability reads
@@ -658,6 +668,10 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                         #[serde(default)]
                         source: LinkedExileScope,
                     },
+                    ChoiceAmongCombinations {
+                        #[serde(default)]
+                        options: Vec<Vec<ManaColor>>,
+                    },
                 }
                 let helper: ManaProductionHelper =
                     serde_json::from_value(value).map_err(serde::de::Error::custom)?;
@@ -700,6 +714,9 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                     }
                     ManaProductionHelper::ChoiceAmongExiledColors { source } => {
                         ManaProduction::ChoiceAmongExiledColors { source }
+                    }
+                    ManaProductionHelper::ChoiceAmongCombinations { options } => {
+                        ManaProduction::ChoiceAmongCombinations { options }
                     }
                 })
             }

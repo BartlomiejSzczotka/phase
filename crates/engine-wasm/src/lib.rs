@@ -180,8 +180,7 @@ pub fn is_card_commander_eligible(name: &str) -> bool {
         let Some(db) = db.as_ref() else {
             return false;
         };
-        db.get_face_by_name(name)
-            .is_some_and(is_commander_eligible)
+        db.get_face_by_name(name).is_some_and(is_commander_eligible)
     })
 }
 

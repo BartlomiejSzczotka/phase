@@ -333,20 +333,35 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
             creatures,
             ..
         } => select_cards_variants(*player, creatures, Some(*count)),
-        WaitingFor::ChooseManaColor {
-            player,
-            color_options,
-            ..
-        } => color_options
-            .iter()
-            .map(|&color| {
-                candidate(
-                    GameAction::ChooseManaColor { color },
-                    TacticalClass::Mana,
-                    Some(*player),
-                )
-            })
-            .collect(),
+        WaitingFor::ChooseManaColor { player, choice, .. } => {
+            use crate::types::game_state::{ManaChoice, ManaChoicePrompt};
+            match choice {
+                ManaChoicePrompt::SingleColor { options } => options
+                    .iter()
+                    .map(|&color| {
+                        candidate(
+                            GameAction::ChooseManaColor {
+                                choice: ManaChoice::SingleColor(color),
+                            },
+                            TacticalClass::Mana,
+                            Some(*player),
+                        )
+                    })
+                    .collect(),
+                ManaChoicePrompt::Combination { options } => options
+                    .iter()
+                    .map(|combo| {
+                        candidate(
+                            GameAction::ChooseManaColor {
+                                choice: ManaChoice::Combination(combo.clone()),
+                            },
+                            TacticalClass::Mana,
+                            Some(*player),
+                        )
+                    })
+                    .collect(),
+            }
+        }
         WaitingFor::ScryChoice { player, cards } => select_cards_variants(*player, cards, None),
         WaitingFor::DigChoice {
             player,

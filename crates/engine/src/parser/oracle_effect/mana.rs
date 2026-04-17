@@ -1,6 +1,9 @@
 use nom::branch::alt;
 use nom::bytes::complete::tag;
+use nom::character::complete::char;
 use nom::combinator::value;
+use nom::multi::many1;
+use nom::sequence::delimited;
 use nom::Parser;
 
 use crate::parser::oracle_nom::error::OracleResult;
@@ -51,6 +54,19 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
     if let Some(produced) = parse_mana_production_clause(clause, contribution) {
         return Some(Effect::Mana {
             produced,
+            restrictions: vec![],
+            grants: vec![],
+            expiry: None,
+        });
+    }
+
+    // CR 605.3b + CR 106.1a: Filter-land pattern — `{X}{X}, {X}{Y}, or {Y}{Y}`
+    // (Shadowmoor/Eventide filter lands). Two or more comma-separated
+    // combinations of pure-color mana symbols joined with `or`. Must be tried
+    // before the count-prefix fallback since the clause has no leading count.
+    if let Some(options) = parse_mana_combinations_clause(clause) {
+        return Some(Effect::Mana {
+            produced: ManaProduction::ChoiceAmongCombinations { options },
             restrictions: vec![],
             grants: vec![],
             expiry: None,
@@ -748,6 +764,89 @@ fn extract_spell_grants(text: &str) -> (&str, Vec<ManaSpellGrant>) {
     (text, vec![])
 }
 
+/// CR 605.3b + CR 106.1a: Parse a filter-land-style combinations clause.
+///
+/// Recognises a list of two or more pure-color mana-symbol combinations
+/// joined by `, ` / `, or ` / ` or ` (case-insensitive). Each combination
+/// must be a run of at least one pure-color mana symbol (`{W}`, `{U}`, etc. —
+/// no hybrid, phyrexian, colorless, generic, `{X}`, or snow symbols).
+///
+/// Returns `Some(Vec<Vec<ManaColor>>)` with at least two combinations on a
+/// successful parse; `None` when the clause doesn't match (e.g., single
+/// sequence, presence of non-pure-color symbols, trailing text).
+///
+/// Delegates symbol extraction to `parse_pure_color_symbol` (nom combinator,
+/// word-boundary safe via `char('{')` / `char('}')` delimiters) rather than
+/// the legacy `parse_mana_color_symbol` to keep parsing consistent with
+/// `oracle_nom` primitives.
+fn parse_mana_combinations_clause(clause: &str) -> Option<Vec<Vec<ManaColor>>> {
+    let trimmed = clause.trim().trim_end_matches(['.', '"']).trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let lower = trimmed.to_lowercase();
+
+    let (options, rest) = nom_on_lower(trimmed, &lower, parse_combinations_list)?;
+    // The clause must be fully consumed (no trailing text).
+    if !rest.trim().is_empty() {
+        return None;
+    }
+    if options.len() < 2 {
+        return None;
+    }
+    Some(options)
+}
+
+/// Parse a sequence of pure-color combinations separated by
+/// `, or ` / `, ` / ` or ` (in longest-match-first order). Runs on the
+/// lowercase copy produced by `nom_on_lower`, so all `tag`s are lowercase.
+fn parse_combinations_list(
+    i: &str,
+) -> crate::parser::oracle_nom::error::OracleResult<'_, Vec<Vec<ManaColor>>> {
+    let (mut rest, first) = parse_single_combination(i)?;
+    let mut out = vec![first];
+    while let Ok((after_sep, _)) = parse_combination_separator(rest) {
+        match parse_single_combination(after_sep) {
+            Ok((after_combo, combo)) => {
+                out.push(combo);
+                rest = after_combo;
+            }
+            Err(_) => break,
+        }
+    }
+    Ok((rest, out))
+}
+
+fn parse_combination_separator(i: &str) -> crate::parser::oracle_nom::error::OracleResult<'_, ()> {
+    value((), alt((tag(", or "), tag(", "), tag(" or ")))).parse(i)
+}
+
+fn parse_single_combination(
+    i: &str,
+) -> crate::parser::oracle_nom::error::OracleResult<'_, Vec<ManaColor>> {
+    many1(parse_pure_color_symbol).parse(i)
+}
+
+/// Parse a single pure-color mana symbol (`{w}`/`{u}`/`{b}`/`{r}`/`{g}`) from
+/// lowercase text. Rejects hybrid, phyrexian, colorless, generic, `{X}`, and
+/// snow — those have no place in a filter-land combination.
+fn parse_pure_color_symbol(
+    i: &str,
+) -> crate::parser::oracle_nom::error::OracleResult<'_, ManaColor> {
+    delimited(
+        char('{'),
+        alt((
+            value(ManaColor::White, tag("w")),
+            value(ManaColor::Blue, tag("u")),
+            value(ManaColor::Black, tag("b")),
+            value(ManaColor::Red, tag("r")),
+            value(ManaColor::Green, tag("g")),
+        )),
+        char('}'),
+    )
+    .parse(i)
+}
+
 /// CR 106.1 / CR 106.3: Parse "an amount of {color} equal to [quantity]"
 /// e.g. "an amount of {G} equal to ~'s power" -> AnyOneColor { count: SelfPower, [Green] }
 fn try_parse_amount_equal_to(clause: &str, contribution: ManaContribution) -> Option<Effect> {
@@ -783,4 +882,122 @@ fn try_parse_amount_equal_to(clause: &str, contribution: ManaContribution) -> Op
         grants: vec![],
         expiry: None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn extract_combinations(oracle: &str) -> Option<Vec<Vec<ManaColor>>> {
+        match try_parse_add_mana_effect(oracle) {
+            Some(Effect::Mana {
+                produced: ManaProduction::ChoiceAmongCombinations { options },
+                ..
+            }) => Some(options),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn sunken_ruins_pattern_parses_as_combinations() {
+        // CR 605.3b: Shadowmoor/Eventide filter land shape.
+        let options = extract_combinations("Add {U}{U}, {U}{B}, or {B}{B}")
+            .expect("should parse filter-land pattern");
+        assert_eq!(
+            options,
+            vec![
+                vec![ManaColor::Blue, ManaColor::Blue],
+                vec![ManaColor::Blue, ManaColor::Black],
+                vec![ManaColor::Black, ManaColor::Black],
+            ]
+        );
+    }
+
+    #[test]
+    fn all_ten_filter_land_color_pairs_parse() {
+        // Exhaustively cover the Shadowmoor/Eventide cycle.
+        let pairs: &[(&str, ManaColor, ManaColor)] = &[
+            (
+                "{W}{W}, {W}{U}, or {U}{U}",
+                ManaColor::White,
+                ManaColor::Blue,
+            ),
+            (
+                "{W}{W}, {W}{B}, or {B}{B}",
+                ManaColor::White,
+                ManaColor::Black,
+            ),
+            (
+                "{U}{U}, {U}{B}, or {B}{B}",
+                ManaColor::Blue,
+                ManaColor::Black,
+            ),
+            ("{U}{U}, {U}{R}, or {R}{R}", ManaColor::Blue, ManaColor::Red),
+            (
+                "{B}{B}, {B}{R}, or {R}{R}",
+                ManaColor::Black,
+                ManaColor::Red,
+            ),
+            (
+                "{B}{B}, {B}{G}, or {G}{G}",
+                ManaColor::Black,
+                ManaColor::Green,
+            ),
+            (
+                "{R}{R}, {R}{G}, or {G}{G}",
+                ManaColor::Red,
+                ManaColor::Green,
+            ),
+            (
+                "{R}{R}, {R}{W}, or {W}{W}",
+                ManaColor::Red,
+                ManaColor::White,
+            ),
+            (
+                "{G}{G}, {G}{W}, or {W}{W}",
+                ManaColor::Green,
+                ManaColor::White,
+            ),
+            (
+                "{G}{G}, {G}{U}, or {U}{U}",
+                ManaColor::Green,
+                ManaColor::Blue,
+            ),
+        ];
+        for (text, a, b) in pairs {
+            let oracle = format!("Add {text}");
+            let options = extract_combinations(&oracle)
+                .unwrap_or_else(|| panic!("expected combinations for {oracle}"));
+            assert_eq!(
+                options,
+                vec![vec![*a, *a], vec![*a, *b], vec![*b, *b]],
+                "combination options mismatch for {oracle}",
+            );
+        }
+    }
+
+    #[test]
+    fn single_mana_symbol_sequence_is_not_combinations() {
+        // A plain `Add {G}{G}` is `Fixed`, not `ChoiceAmongCombinations` —
+        // parse_mana_production_clause catches it first.
+        assert!(extract_combinations("Add {G}{G}").is_none());
+    }
+
+    #[test]
+    fn hybrid_symbols_reject_combinations_parse() {
+        // Hybrid `{W/U}` is not a pure-color symbol — must not parse.
+        assert!(extract_combinations("Add {W/U}{W}, {W}{U}, or {U}{U}").is_none());
+    }
+
+    #[test]
+    fn filter_land_trailing_text_rejects_parse() {
+        // The clause must be fully consumed — trailing words indicate a
+        // different shape that must fall through to other arms.
+        assert!(extract_combinations("Add {U}{U}, {U}{B}, or {B}{B} to your mana pool").is_none());
+    }
+
+    #[test]
+    fn trailing_period_is_tolerated() {
+        assert!(extract_combinations("Add {U}{U}, {U}{B}, or {B}{B}.").is_some());
+    }
 }

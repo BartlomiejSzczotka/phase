@@ -654,6 +654,18 @@ fn fmt_mana_production(mp: &ManaProduction) -> String {
             format!("{} of opponent land colors", fmt_quantity(count))
         }
         ManaProduction::ChoiceAmongExiledColors { .. } => "1 of exiled cards' colors".into(),
+        ManaProduction::ChoiceAmongCombinations { options } => {
+            let rendered: Vec<String> = options
+                .iter()
+                .map(|combo| {
+                    combo
+                        .iter()
+                        .map(|c| format!("{{{}}}", fmt_mana_color_short(c)))
+                        .collect::<String>()
+                })
+                .collect();
+            format!("one of: {}", rendered.join(", "))
+        }
     }
 }
 

@@ -1455,11 +1455,23 @@ fn count_available_sources(
 ) -> usize {
     let mut seen = HashSet::new();
     for opt in available {
-        if acceptable.contains(&opt.mana_type) && !used.contains(&opt.object_id) {
+        // CR 605.3b: Filter-land combination rows contribute multi-mana
+        // atomically. Any color in their combination satisfies the shard.
+        if !used.contains(&opt.object_id) && option_satisfies(opt, acceptable) {
             seen.insert(opt.object_id);
         }
     }
     seen.len()
+}
+
+/// True iff this source option can contribute any of the acceptable colors.
+/// For single-color rows, checks `mana_type` directly; for combination rows,
+/// checks whether any color in the combination is acceptable.
+fn option_satisfies(opt: &ManaSourceOption, acceptable: &[ManaType]) -> bool {
+    match &opt.atomic_combination {
+        Some(combo) => combo.iter().any(|t| acceptable.contains(t)),
+        None => acceptable.contains(&opt.mana_type),
+    }
 }
 
 /// Pick the source with the fewest alternative color options (LCV heuristic).
@@ -1472,14 +1484,14 @@ fn find_least_flexible_source(
 ) -> Option<ManaSourceOption> {
     available
         .iter()
-        .filter(|opt| acceptable.contains(&opt.mana_type) && !used.contains(&opt.object_id))
+        .filter(|opt| !used.contains(&opt.object_id) && option_satisfies(opt, acceptable))
         .min_by_key(|opt| {
             available
                 .iter()
                 .filter(|o| o.object_id == opt.object_id)
                 .count()
         })
-        .copied()
+        .cloned()
 }
 
 /// Auto-tap mana sources controlled by `player` to produce enough mana for `cost`.
@@ -1559,14 +1571,8 @@ pub(super) fn auto_tap_mana_sources(
     let mut to_tap: Vec<ManaSourceOption> = Vec::new();
     let mut used_sources: HashSet<ObjectId> = HashSet::new();
 
-    // Phase 1: Assign sources to colored shards using MCV/LCV constraint heuristic.
-    // The naive greedy approach (tap first matching source per shard) fails when
-    // a flexible source (dual land, multi-color dork) gets consumed for a color
-    // that a single-purpose source could have provided, leaving no source for
-    // a color only the flexible source can produce.
-    //
-    // MCV: process the most constrained shard first (fewest available sources).
-    // LCV: for each shard, prefer the least flexible source (fewest color options).
+    // Build the typed shard-requirements list first — used by both the
+    // combination pre-pass and the main MCV/LCV loop.
     let mut deferred_generic: usize = 0;
     let mut needs: Vec<(Vec<ManaType>, bool)> = Vec::new();
     for shard in shards {
@@ -1591,6 +1597,28 @@ pub(super) fn auto_tap_mana_sources(
     }
 
     let mut assigned = vec![false; needs.len()];
+
+    // Phase 0 (combo pre-pass): CR 605.3b + CR 106.1a — filter-land rows
+    // produce a full multi-mana combination atomically. A naive per-shard
+    // loop can't see that tapping one filter land satisfies two colored
+    // requirements. Pre-allocate combination sources against pairs of
+    // still-unfilled shards before falling through to the single-color loop.
+    assign_combination_sources(
+        &available,
+        &needs,
+        &mut assigned,
+        &mut used_sources,
+        &mut to_tap,
+    );
+
+    // Phase 1: Assign remaining single-color sources to shards using MCV/LCV.
+    // The naive greedy approach (tap first matching source per shard) fails when
+    // a flexible source (dual land, multi-color dork) gets consumed for a color
+    // that a single-purpose source could have provided, leaving no source for
+    // a color only the flexible source can produce.
+    //
+    // MCV: process the most constrained shard first (fewest available sources).
+    // LCV: for each shard, prefer the least flexible source (fewest color options).
     for _ in 0..needs.len() {
         let mut best_idx = None;
         let mut min_sources = usize::MAX;
@@ -1615,14 +1643,19 @@ pub(super) fn auto_tap_mana_sources(
         assigned[idx] = true;
     }
 
-    // Phase 2: satisfy generic cost + deferred shards with any remaining sources
+    // Phase 2: satisfy generic cost + deferred shards with any remaining sources.
+    // Skip combination sources — their value is in covering colored shards;
+    // spending a full 2-mana combination on a single generic is wasteful.
     let mut remaining_generic = generic as usize + deferred_generic;
     for option in &available {
         if remaining_generic == 0 {
             break;
         }
+        if option.atomic_combination.is_some() {
+            continue;
+        }
         if used_sources.insert(option.object_id) {
-            to_tap.push(*option);
+            to_tap.push(option.clone());
             remaining_generic = remaining_generic.saturating_sub(1);
         }
     }
@@ -1639,19 +1672,27 @@ pub(super) fn auto_tap_mana_sources(
                 .and_then(|obj| obj.abilities.get(idx))
                 .cloned();
             if let Some(ability_def) = ability_def {
-                // color_override tells resolve_mana_ability which color to produce
-                // for AnyOneColor sources (e.g., Treasure → specific color needed).
+                // color_override tells resolve_mana_ability how to resolve the
+                // ability's choice dimension. `SingleColor` replays a per-color
+                // pick (AnyOneColor/ChoiceAmongExiledColors); `Combination`
+                // carries a pre-chosen multi-mana sequence (filter lands).
                 // Errors are non-fatal here: auto-tap runs synchronously during payment,
                 // so sources can't change state between collection and resolution. If a
                 // source is somehow invalid (e.g., removed by a replacement effect), we
                 // skip it silently — the player can still manually tap other sources.
+                let override_value = match option.atomic_combination {
+                    Some(combo) => crate::types::game_state::ProductionOverride::Combination(combo),
+                    None => {
+                        crate::types::game_state::ProductionOverride::SingleColor(option.mana_type)
+                    }
+                };
                 let _ = mana_abilities::resolve_mana_ability(
                     state,
                     option.object_id,
                     player,
                     &ability_def,
                     events,
-                    Some(option.mana_type),
+                    Some(override_value),
                 );
             }
         } else {
@@ -1675,6 +1716,108 @@ pub(super) fn auto_tap_mana_sources(
             );
         }
     }
+}
+
+/// CR 605.3b + CR 106.1a: Greedy pre-pass for `ManaProduction::ChoiceAmongCombinations`
+/// (Shadowmoor/Eventide filter lands). Walks every source permanent that has
+/// combination rows, picks the combination that covers the most still-unfilled
+/// shards, and marks the source used + shards assigned. Runs before the
+/// single-color shard assigner so a filter land's 2 mana is allocated
+/// atomically instead of one shard at a time.
+///
+/// Uniqueness guarantee: every combination row for the same `object_id` shares
+/// an `atomic_combination`-bearing identity, but only one such row can be
+/// selected per object — when a combo is picked the object is inserted into
+/// `used_sources`, blocking further rows of every combination variant.
+fn assign_combination_sources(
+    available: &[ManaSourceOption],
+    needs: &[(Vec<ManaType>, bool)],
+    assigned: &mut [bool],
+    used_sources: &mut HashSet<ObjectId>,
+    to_tap: &mut Vec<ManaSourceOption>,
+) {
+    // Build per-object candidate list: for each object that has any
+    // `atomic_combination`-bearing rows, collect all of its combination rows.
+    let mut combo_objects: Vec<ObjectId> = Vec::new();
+    for opt in available {
+        if opt.atomic_combination.is_some()
+            && !combo_objects.contains(&opt.object_id)
+            && !used_sources.contains(&opt.object_id)
+        {
+            combo_objects.push(opt.object_id);
+        }
+    }
+
+    for oid in combo_objects {
+        if used_sources.contains(&oid) {
+            continue;
+        }
+        // Collect this object's combination rows in tier order.
+        let candidates: Vec<&ManaSourceOption> = available
+            .iter()
+            .filter(|o| o.object_id == oid && o.atomic_combination.is_some())
+            .collect();
+        if candidates.is_empty() {
+            continue;
+        }
+
+        // Score each candidate combo by the number of still-unfilled shards
+        // it can satisfy. A combo's colors are consumed in sequence against
+        // unmet needs: the same color unit can only satisfy one shard.
+        let mut best_score = 0usize;
+        let mut best_combo: Option<(&ManaSourceOption, Vec<usize>)> = None;
+        for cand in &candidates {
+            let combo = cand
+                .atomic_combination
+                .as_ref()
+                .expect("combination row invariant");
+            let (score, covered) = score_combination(combo, needs, assigned);
+            if score > best_score {
+                best_score = score;
+                best_combo = Some((cand, covered));
+            }
+        }
+
+        // Only commit the combo if it covers at least one colored shard. A
+        // combo that covers no colored shards would waste its second mana on
+        // generic — Phase 2 picks single-color sources for generic more
+        // efficiently.
+        if let Some((chosen, covered_indices)) = best_combo {
+            used_sources.insert(chosen.object_id);
+            to_tap.push((*chosen).clone());
+            for idx in covered_indices {
+                assigned[idx] = true;
+            }
+        }
+    }
+}
+
+/// Simulate applying a combination's mana to still-unfilled shard needs.
+/// Returns `(count_of_shards_covered, indices_of_covered_needs)` — each unit
+/// of mana in the combination may cover at most one shard. Preference is
+/// first-match in need order, mirroring Phase 1's MCV behaviour at a coarser
+/// grain (Phase 1 already re-orders per-shard scarcity, so here a naive
+/// first-fit is sufficient for the filter-land class).
+fn score_combination(
+    combo: &[ManaType],
+    needs: &[(Vec<ManaType>, bool)],
+    assigned: &[bool],
+) -> (usize, Vec<usize>) {
+    let mut locally_consumed: Vec<bool> = assigned.to_vec();
+    let mut covered = Vec::new();
+    for mana in combo {
+        for (i, (acceptable, _)) in needs.iter().enumerate() {
+            if locally_consumed[i] {
+                continue;
+            }
+            if acceptable.contains(mana) {
+                locally_consumed[i] = true;
+                covered.push(i);
+                break;
+            }
+        }
+    }
+    (covered.len(), covered)
 }
 
 /// Compute the maximum legal value of X the caster can choose for a pending cast.
@@ -2244,6 +2387,221 @@ mod tests {
             }),
         );
         town
+    }
+
+    /// CR 605.3b + CR 106.1a: Build a Sunken-Ruins-style filter land with both
+    /// the secondary `{T}: Add {C}` ability and the primary
+    /// `{U/B}, {T}: Add {U}{U}, {U}{B}, or {B}{B}` ability.
+    fn create_filter_land(
+        state: &mut GameState,
+        name: &str,
+        a: ManaColor,
+        b: ManaColor,
+    ) -> ObjectId {
+        let land = create_object(
+            state,
+            CardId(900),
+            PlayerId(0),
+            name.to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&land).unwrap();
+        obj.card_types.core_types.push(CoreType::Land);
+        obj.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Mana {
+                    produced: crate::types::ability::ManaProduction::Colorless {
+                        count: QuantityExpr::Fixed { value: 1 },
+                    },
+                    restrictions: vec![],
+                    grants: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Tap),
+        );
+        // Only the combinations ability is what we exercise in auto-tap tests.
+        obj.abilities.push(
+            AbilityDefinition::new(
+                AbilityKind::Activated,
+                Effect::Mana {
+                    produced: crate::types::ability::ManaProduction::ChoiceAmongCombinations {
+                        options: vec![vec![a, a], vec![a, b], vec![b, b]],
+                    },
+                    restrictions: vec![],
+                    grants: vec![],
+                    expiry: None,
+                },
+            )
+            .cost(AbilityCost::Tap),
+        );
+        land
+    }
+
+    #[test]
+    fn auto_tap_filter_land_covers_mixed_shards() {
+        // Cost `{U}{B}` with a single Sunken Ruins available: the combo
+        // pre-pass must pick the `{U}{B}` combination and tap the land once,
+        // producing both colors atomically.
+        let mut state = GameState::new_two_player(42);
+        create_filter_land(
+            &mut state,
+            "Sunken Ruins",
+            ManaColor::Blue,
+            ManaColor::Black,
+        );
+
+        let mut events = Vec::new();
+        auto_tap_mana_sources(
+            &mut state,
+            PlayerId(0),
+            &ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue, ManaCostShard::Black],
+                generic: 0,
+            },
+            &mut events,
+            None,
+        );
+
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Blue), 1);
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Black), 1);
+    }
+
+    #[test]
+    fn auto_tap_filter_land_picks_double_color_combination() {
+        // Cost `{U}{U}`: combo pre-pass must pick `{U}{U}` (covers both
+        // shards), not `{U}{B}` (wastes black).
+        let mut state = GameState::new_two_player(42);
+        create_filter_land(
+            &mut state,
+            "Sunken Ruins",
+            ManaColor::Blue,
+            ManaColor::Black,
+        );
+
+        let mut events = Vec::new();
+        auto_tap_mana_sources(
+            &mut state,
+            PlayerId(0),
+            &ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue, ManaCostShard::Blue],
+                generic: 0,
+            },
+            &mut events,
+            None,
+        );
+
+        assert_eq!(
+            state.players[0].mana_pool.count_color(ManaType::Blue),
+            2,
+            "auto-tap should pick {{U}}{{U}} combination"
+        );
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Black), 0);
+    }
+
+    #[test]
+    fn auto_tap_filter_land_covers_colored_plus_generic() {
+        // CR 605.3b: Cost `{U}{1}`. Combo pre-pass picks `{U}{U}` — the first
+        // {U} covers the shard, the second lands in the pool and can pay the
+        // {1} generic (via the regular payment path). Auto-tap's job is to
+        // ensure sufficient mana enters the pool; actual shard/generic
+        // consumption happens in the downstream payment step.
+        let mut state = GameState::new_two_player(42);
+        create_filter_land(
+            &mut state,
+            "Sunken Ruins",
+            ManaColor::Blue,
+            ManaColor::Black,
+        );
+
+        let mut events = Vec::new();
+        auto_tap_mana_sources(
+            &mut state,
+            PlayerId(0),
+            &ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 1,
+            },
+            &mut events,
+            None,
+        );
+
+        assert_eq!(
+            state.players[0].mana_pool.total(),
+            2,
+            "filter land produces 2 blue mana — covers shard + generic"
+        );
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Blue), 2);
+    }
+
+    #[test]
+    fn auto_tap_does_not_use_combo_for_pure_generic() {
+        // CR 605.3b: Pure generic cost `{1}` with a filter land available.
+        // The combo pre-pass must NOT commit the combo (no shards to cover)
+        // because spending a 2-mana combination on 1 generic wastes half
+        // the production. Phase 2 prefers the land's secondary
+        // `{T}: Add {C}` (non-combo) ability for the generic instead.
+        let mut state = GameState::new_two_player(42);
+        create_filter_land(
+            &mut state,
+            "Sunken Ruins",
+            ManaColor::Blue,
+            ManaColor::Black,
+        );
+
+        let mut events = Vec::new();
+        auto_tap_mana_sources(
+            &mut state,
+            PlayerId(0),
+            &ManaCost::Cost {
+                shards: vec![],
+                generic: 1,
+            },
+            &mut events,
+            None,
+        );
+
+        // The secondary `{T}: Add {C}` should satisfy the generic with a
+        // single colorless mana — NOT the combo (which would produce 2 mana
+        // of a random colored combination for only 1 generic).
+        assert_eq!(state.players[0].mana_pool.total(), 1);
+        assert_eq!(
+            state.players[0].mana_pool.count_color(ManaType::Colorless),
+            1,
+            "pure generic should draw from `{{T}}: Add {{C}}`, not the combination"
+        );
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Blue), 0);
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Black), 0);
+    }
+
+    #[test]
+    fn auto_tap_filter_land_does_not_prompt_user() {
+        // Regression: the filter-land activation must short-circuit the
+        // `WaitingFor::ChooseManaColor` prompt during auto-tap — the caller
+        // picks the combination via `ProductionOverride::Combination`.
+        // If the prompt surfaced, `resolve_mana_ability` would return Ok but
+        // with no mana added to the pool. Verify mana actually landed.
+        let mut state = GameState::new_two_player(42);
+        create_filter_land(&mut state, "Mystic Gate", ManaColor::White, ManaColor::Blue);
+
+        let mut events = Vec::new();
+        auto_tap_mana_sources(
+            &mut state,
+            PlayerId(0),
+            &ManaCost::Cost {
+                shards: vec![ManaCostShard::White, ManaCostShard::Blue],
+                generic: 0,
+            },
+            &mut events,
+            None,
+        );
+
+        // CR 605.3b: combination mana lands in the pool atomically, no prompt.
+        assert_eq!(state.players[0].mana_pool.total(), 2);
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, GameEvent::PermanentTapped { .. })));
     }
 
     #[test]

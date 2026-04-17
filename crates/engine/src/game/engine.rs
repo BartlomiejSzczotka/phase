@@ -750,16 +750,16 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
         )?,
         (
             WaitingFor::ChooseManaColor {
-                color_options,
+                choice,
                 pending_mana_ability,
                 ..
             },
-            GameAction::ChooseManaColor { color },
+            GameAction::ChooseManaColor { choice: chosen },
         ) => engine_casting::handle_choose_mana_color(
             state,
             pending_mana_ability,
-            color_options,
-            color,
+            choice,
+            chosen.clone(),
             &mut events,
         )?,
         // CR 702.138a: Player selected cards to exile from graveyard as escape cost.
@@ -4850,7 +4850,9 @@ mod tests {
         let result = apply_as_current(
             &mut state,
             GameAction::ChooseManaColor {
-                color: crate::types::mana::ManaType::Green,
+                choice: crate::types::game_state::ManaChoice::SingleColor(
+                    crate::types::mana::ManaType::Green,
+                ),
             },
         )
         .unwrap();

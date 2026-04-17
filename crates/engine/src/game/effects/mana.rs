@@ -228,6 +228,16 @@ fn resolve_mana_types_impl(
             };
             vec![first]
         }
+        // CR 605.3b + CR 106.1a: Filter-land combinations. When no override is
+        // supplied (stack-resolving paths or direct activation without choice),
+        // fall back to the first listed combination — mirrors the
+        // `ChoiceAmongExiledColors` precedent. `produce_mana_from_ability`
+        // selects the combination via `ProductionOverride::Combination`, so
+        // this branch is only hit on the "no override at all" path.
+        ManaProduction::ChoiceAmongCombinations { options } => options
+            .first()
+            .map(|combo| combo.iter().map(mana_color_to_type).collect())
+            .unwrap_or_default(),
     }
 }
 

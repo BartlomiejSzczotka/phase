@@ -171,17 +171,11 @@ pub(super) fn handle_tap_creatures_for_mana_ability(
 pub(super) fn handle_choose_mana_color(
     state: &mut GameState,
     pending_mana_ability: &PendingManaAbility,
-    color_options: &[crate::types::mana::ManaType],
-    chosen_color: crate::types::mana::ManaType,
+    prompt: &crate::types::game_state::ManaChoicePrompt,
+    chosen: crate::types::game_state::ManaChoice,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
-    mana_abilities::handle_choose_mana_color(
-        state,
-        pending_mana_ability,
-        color_options,
-        chosen_color,
-        events,
-    )
+    mana_abilities::handle_choose_mana_color(state, pending_mana_ability, prompt, chosen, events)
 }
 
 pub(super) fn handle_exile_from_graveyard_for_cost(

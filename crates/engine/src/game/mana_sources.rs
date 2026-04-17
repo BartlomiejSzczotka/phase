@@ -13,10 +13,16 @@ use super::mana_abilities;
 use super::mana_payment;
 use super::restrictions;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManaSourceOption {
     pub object_id: ObjectId,
     pub ability_index: Option<usize>,
+    /// Indexing/representative color for this row.
+    /// For normal sources this is the exact mana type produced.
+    /// For filter-land combination rows (`atomic_combination.is_some()`),
+    /// this mirrors the first color of the combination and is used only for
+    /// shard-matching lookup; the full mana production is driven by
+    /// `atomic_combination`.
     pub mana_type: ManaType,
     /// True for Treasure-style costs (`Composite { Tap, Sacrifice }`).
     /// Used by auto-tap to deprioritize sacrifice sources as last resort.
@@ -24,6 +30,13 @@ pub struct ManaSourceOption {
     /// True for costs like `{T}, Pay 1 life`.
     /// Used by auto-tap to prefer equivalent sources that do not spend life.
     pub requires_life_payment: bool,
+    /// CR 605.3b + CR 106.1a: Complete pre-chosen multi-mana sequence for
+    /// `ManaProduction::ChoiceAmongCombinations` sources (Shadowmoor/Eventide
+    /// filter lands). `None` for all other sources. When `Some`, a single
+    /// activation of this ability produces **every** mana type listed here,
+    /// atomically — the shard assigner must treat all combos sharing the same
+    /// `(object_id, ability_index)` as alternatives (pick at most one).
+    pub atomic_combination: Option<Vec<ManaType>>,
 }
 
 /// Check whether an ability cost includes a tap component.
@@ -161,6 +174,7 @@ fn land_mana_options(
                 mana_type,
                 requires_sacrifice: false,
                 requires_life_payment: false,
+                atomic_combination: None,
             });
         }
     }
@@ -196,13 +210,14 @@ fn scan_mana_abilities(
 
         let sacrifice = cost_requires_sacrifice(&ability.cost);
         let life_payment = cost_requires_life_payment(&ability.cost);
-        for mana_type in mana_options_from_ability(state, controller, object_id, ability) {
+        for row in emit_source_rows(state, controller, object_id, ability_index, ability) {
             let option = ManaSourceOption {
                 object_id,
                 ability_index: Some(ability_index),
-                mana_type,
+                mana_type: row.mana_type,
                 requires_sacrifice: sacrifice,
                 requires_life_payment: life_payment,
+                atomic_combination: row.atomic_combination,
             };
             if !options.contains(&option) {
                 options.push(option);
@@ -210,6 +225,48 @@ fn scan_mana_abilities(
         }
     }
     options
+}
+
+/// Per-ability source row: either a plain per-color candidate or a full
+/// multi-mana combination. Used by `scan_mana_abilities` to build
+/// `ManaSourceOption` rows uniformly across `ManaProduction` variants.
+struct SourceRow {
+    mana_type: ManaType,
+    atomic_combination: Option<Vec<ManaType>>,
+}
+
+fn emit_source_rows(
+    state: &GameState,
+    controller: PlayerId,
+    object_id: ObjectId,
+    _ability_index: usize,
+    ability: &AbilityDefinition,
+) -> Vec<SourceRow> {
+    let Effect::Mana { produced, .. } = &*ability.effect else {
+        return Vec::new();
+    };
+    match produced {
+        // CR 605.3b + CR 106.1a: Filter-land combinations. Emit one row per
+        // combination so the auto-tap shard assigner can pick whichever
+        // combination satisfies the pending cost.
+        ManaProduction::ChoiceAmongCombinations { options } => options
+            .iter()
+            .filter_map(|combo| {
+                let types: Vec<ManaType> = combo.iter().map(mana_color_to_type).collect();
+                types.first().copied().map(|first| SourceRow {
+                    mana_type: first,
+                    atomic_combination: Some(types),
+                })
+            })
+            .collect(),
+        _ => mana_options_from_production(state, controller, object_id, produced)
+            .into_iter()
+            .map(|mana_type| SourceRow {
+                mana_type,
+                atomic_combination: None,
+            })
+            .collect(),
+    }
 }
 
 /// CR 605.3b — Mana abilities must still satisfy activation conditions.
@@ -231,18 +288,6 @@ pub(crate) fn activation_condition_satisfied(
         &ability.activation_restrictions,
     )
     .is_ok()
-}
-
-fn mana_options_from_ability(
-    state: &GameState,
-    controller: PlayerId,
-    object_id: ObjectId,
-    ability: &AbilityDefinition,
-) -> Vec<ManaType> {
-    let Effect::Mana { produced, .. } = &*ability.effect else {
-        return Vec::new();
-    };
-    mana_options_from_production(state, controller, object_id, produced)
 }
 
 fn mana_options_from_production(
@@ -289,6 +334,23 @@ fn mana_options_from_production(
         // exiled-with this source via `state.exile_links` (Pit of Offerings).
         ManaProduction::ChoiceAmongExiledColors { source } => {
             super::effects::mana::exiled_color_options(state, *source, object_id)
+        }
+        // CR 605.3b + CR 106.1a: Filter lands — union of all colors appearing
+        // across the combination options. Used for UI frame-color display
+        // (`display_land_mana_colors`). The shard assigner in `casting_costs`
+        // does NOT consume this — it uses `atomic_combination` on each
+        // source row so combos are picked atomically.
+        ManaProduction::ChoiceAmongCombinations { options } => {
+            let mut out = Vec::new();
+            for combo in options {
+                for color in combo {
+                    let mana_type = mana_color_to_type(color);
+                    if !out.contains(&mana_type) {
+                        out.push(mana_type);
+                    }
+                }
+            }
+            out
         }
     }
 }

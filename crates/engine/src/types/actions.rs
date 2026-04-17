@@ -220,9 +220,10 @@ pub enum GameAction {
     SubmitPhyrexianChoices {
         choices: Vec<ShardChoice>,
     },
-    /// CR 605.3b: Choose which color an AnyOneColor mana ability produces.
+    /// CR 605.3b: Answer the `WaitingFor::ChooseManaColor` prompt.
+    /// Shape mirrors the prompt variant (`SingleColor` or `Combination`).
     ChooseManaColor {
-        color: super::mana::ManaType,
+        choice: super::game_state::ManaChoice,
     },
     /// CR 104.3a: A player may concede the game at any time. That player leaves the game.
     /// CR 800.4a: When a player leaves a multiplayer game, all objects owned by that player

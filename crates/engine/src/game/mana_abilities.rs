@@ -2,9 +2,11 @@ use crate::types::ability::{
     AbilityCost, AbilityDefinition, Effect, ManaProduction, ResolvedAbility, TargetFilter,
 };
 use crate::types::events::GameEvent;
-use crate::types::game_state::{GameState, ManaAbilityResume, PendingManaAbility, WaitingFor};
+use crate::types::game_state::{
+    GameState, ManaAbilityResume, ManaChoice, ManaChoicePrompt, PendingManaAbility,
+    ProductionOverride, WaitingFor,
+};
 use crate::types::identifiers::ObjectId;
-use crate::types::mana::ManaType;
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
@@ -157,16 +159,18 @@ pub fn resolve_triggered_mana_ability_inline(
 /// CR 605.3b: Mana abilities resolve immediately when activated.
 ///
 /// Pays the full ability cost (tap, sacrifice, etc.) via `pay_mana_ability_cost`,
-/// then produces mana. When `color_override` is `Some`, produces exactly that color
-/// instead of resolving the production descriptor — used by auto-tap to pick a
-/// specific color for `AnyOneColor` sources (Treasures, etc.).
+/// then produces mana. When `color_override` is `Some`, the choice dimension is
+/// already resolved (auto-tap during cost payment): `SingleColor` replays a
+/// single-color pick for `AnyOneColor`/`ChoiceAmongExiledColors`, while
+/// `Combination` carries a full pre-chosen multi-mana sequence for
+/// `ChoiceAmongCombinations` (filter lands).
 pub fn resolve_mana_ability(
     state: &mut GameState,
     source_id: ObjectId,
     player: PlayerId,
     ability_def: &AbilityDefinition,
     events: &mut Vec<GameEvent>,
-    color_override: Option<ManaType>,
+    color_override: Option<ProductionOverride>,
 ) -> Result<(), EngineError> {
     // Pay the full ability cost (tap, sacrifice, etc.)
     pay_mana_ability_cost(state, source_id, player, &ability_def.cost, events)?;
@@ -191,16 +195,19 @@ fn produce_mana_from_ability(
     player: PlayerId,
     ability_def: &AbilityDefinition,
     events: &mut Vec<GameEvent>,
-    color_override: Option<ManaType>,
+    color_override: Option<ProductionOverride>,
 ) {
     let produced_mana = match &*ability_def.effect {
-        Effect::Mana { produced, .. } => {
-            let resolved = resolve_mana_types(produced, state, player, source_id);
-            match color_override {
-                Some(color) => vec![color; resolved.len()],
-                None => resolved,
+        Effect::Mana { produced, .. } => match color_override {
+            // `Combination` is pre-chosen — skip `resolve_mana_types` entirely
+            // so the exact sequence lands in the pool (CR 605.3b).
+            Some(ProductionOverride::Combination(types)) => types,
+            Some(ProductionOverride::SingleColor(color)) => {
+                let resolved = resolve_mana_types(produced, state, player, source_id);
+                vec![color; resolved.len()]
             }
-        }
+            None => resolve_mana_types(produced, state, player, source_id),
+        },
         _ => Vec::new(),
     };
 
@@ -220,7 +227,7 @@ pub fn activate_mana_ability(
     ability_def: &AbilityDefinition,
     events: &mut Vec<GameEvent>,
     resume: ManaAbilityResume,
-    color_override: Option<ManaType>,
+    color_override: Option<ProductionOverride>,
 ) -> Result<WaitingFor, EngineError> {
     if let Some((count, creatures)) =
         tap_creature_cost_choice(state, player, source_id, &ability_def.cost)
@@ -244,16 +251,16 @@ pub fn activate_mana_ability(
         });
     }
 
-    // CR 605.3b: If the production has multiple color options and no override
-    // was provided (manual activation, not auto-tap), pay cost then pause for
-    // player choice. Cost is paid before the prompt so `handle_choose_mana_color`
+    // CR 605.3b: If the production has multiple options and no override was
+    // provided (manual activation, not auto-tap), pay cost then pause for the
+    // player's choice. Cost is paid before the prompt so `handle_choose_mana_color`
     // only needs to produce mana (consistent with the tap-creature chain path).
     if color_override.is_none() {
-        if let Some(options) = mana_color_choice_options(&ability_def.effect, state, source_id) {
+        if let Some(choice) = mana_choice_prompt(&ability_def.effect, state, source_id) {
             pay_mana_ability_cost(state, source_id, player, &ability_def.cost, events)?;
             return Ok(WaitingFor::ChooseManaColor {
                 player,
-                color_options: options,
+                choice,
                 pending_mana_ability: Box::new(PendingManaAbility {
                     player,
                     source_id,
@@ -276,47 +283,83 @@ pub fn activate_mana_ability(
     Ok(resume_waiting_for(player, resume))
 }
 
-/// Extract the color options from a mana ability that requires a player choice.
-/// Returns `Some(colors)` when 2+ colors are available, `None` otherwise.
-fn mana_color_choice_options(
+/// Extract the prompt shape for a mana ability that requires a player choice.
+///
+/// Returns `Some(ManaChoicePrompt::SingleColor)` when the player must pick one
+/// color from a set (AnyOneColor, ChoiceAmongExiledColors) and
+/// `Some(ManaChoicePrompt::Combination)` when the player must pick one of
+/// several fixed multi-mana sequences (filter lands). Returns `None` when the
+/// production is fully determined (Fixed, Colorless, single-option AnyOneColor).
+pub(crate) fn mana_choice_prompt(
     effect: &Effect,
     state: &GameState,
     source_id: ObjectId,
-) -> Option<Vec<ManaType>> {
+) -> Option<ManaChoicePrompt> {
     let Effect::Mana { produced, .. } = effect else {
         return None;
     };
     match produced {
         ManaProduction::AnyOneColor { color_options, .. } if color_options.len() > 1 => {
-            Some(color_options.iter().map(mana_color_to_type).collect())
+            Some(ManaChoicePrompt::SingleColor {
+                options: color_options.iter().map(mana_color_to_type).collect(),
+            })
         }
         ManaProduction::ChoiceAmongExiledColors { source } => {
             let options = super::effects::mana::exiled_color_options(state, *source, source_id);
             if options.len() > 1 {
-                Some(options)
+                Some(ManaChoicePrompt::SingleColor { options })
             } else {
                 None
             }
+        }
+        // CR 605.3b: Filter lands — pick one of N fixed multi-mana combinations.
+        ManaProduction::ChoiceAmongCombinations { options } if options.len() > 1 => {
+            Some(ManaChoicePrompt::Combination {
+                options: options
+                    .iter()
+                    .map(|combo| combo.iter().map(mana_color_to_type).collect())
+                    .collect(),
+            })
         }
         _ => None,
     }
 }
 
-/// CR 605.3b: Complete the mana color choice. Cost was already paid before the
-/// prompt (either in `activate_mana_ability` or `handle_tap_creatures_for_mana_ability`),
-/// so this only produces mana of the chosen color.
+/// CR 605.3b: Complete the mana color/combination choice. Cost was already
+/// paid before the prompt (either in `activate_mana_ability` or
+/// `handle_tap_creatures_for_mana_ability`), so this only produces mana.
+/// The `choice` shape must match the `prompt` shape — the engine rejects
+/// mismatches (e.g., answering `Combination` to a `SingleColor` prompt).
 pub fn handle_choose_mana_color(
     state: &mut GameState,
     pending: &PendingManaAbility,
-    color_options: &[ManaType],
-    chosen_color: ManaType,
+    prompt: &ManaChoicePrompt,
+    chosen: ManaChoice,
     events: &mut Vec<GameEvent>,
 ) -> Result<WaitingFor, EngineError> {
-    if !color_options.contains(&chosen_color) {
-        return Err(EngineError::InvalidAction(
-            "Chosen color is not among the legal options".to_string(),
-        ));
-    }
+    let override_value = match (prompt, chosen) {
+        (ManaChoicePrompt::SingleColor { options }, ManaChoice::SingleColor(color)) => {
+            if !options.contains(&color) {
+                return Err(EngineError::InvalidAction(
+                    "Chosen color is not among the legal options".to_string(),
+                ));
+            }
+            ProductionOverride::SingleColor(color)
+        }
+        (ManaChoicePrompt::Combination { options }, ManaChoice::Combination(combo)) => {
+            if !options.iter().any(|opt| opt == &combo) {
+                return Err(EngineError::InvalidAction(
+                    "Chosen combination is not among the legal options".to_string(),
+                ));
+            }
+            ProductionOverride::Combination(combo)
+        }
+        _ => {
+            return Err(EngineError::InvalidAction(
+                "Mana choice shape does not match the active prompt".to_string(),
+            ));
+        }
+    };
 
     let ability_def = state
         .objects
@@ -331,7 +374,7 @@ pub fn handle_choose_mana_color(
         pending.player,
         &ability_def,
         events,
-        Some(chosen_color),
+        Some(override_value),
     );
 
     Ok(resume_waiting_for(pending.player, pending.resume.clone()))
@@ -370,9 +413,7 @@ pub fn handle_tap_creatures_for_mana_ability(
 
     // If no color_override and production needs a choice, pay cost then pause.
     if pending.color_override.is_none() {
-        if let Some(options) =
-            mana_color_choice_options(&ability_def.effect, state, pending.source_id)
-        {
+        if let Some(choice) = mana_choice_prompt(&ability_def.effect, state, pending.source_id) {
             // Pay the tap-creature cost portion first, then pause for color choice.
             let mut chosen_iter = chosen.iter().copied();
             pay_mana_ability_cost_with_choices(
@@ -385,7 +426,7 @@ pub fn handle_tap_creatures_for_mana_ability(
             )?;
             return Ok(WaitingFor::ChooseManaColor {
                 player: pending.player,
-                color_options: options,
+                choice,
                 pending_mana_ability: Box::new(PendingManaAbility {
                     player: pending.player,
                     source_id: pending.source_id,
@@ -403,7 +444,7 @@ pub fn handle_tap_creatures_for_mana_ability(
         pending.player,
         &ability_def,
         events,
-        pending.color_override,
+        pending.color_override.clone(),
         chosen,
     )?;
 
@@ -469,7 +510,7 @@ fn resolve_mana_ability_with_tapped_creatures(
     player: PlayerId,
     ability_def: &AbilityDefinition,
     events: &mut Vec<GameEvent>,
-    color_override: Option<ManaType>,
+    color_override: Option<ProductionOverride>,
     tapped_creatures: &[ObjectId],
 ) -> Result<(), EngineError> {
     let mut chosen = tapped_creatures.iter().copied();
@@ -488,13 +529,14 @@ fn resolve_mana_ability_with_tapped_creatures(
     }
 
     let produced_mana = match &*ability_def.effect {
-        Effect::Mana { produced, .. } => {
-            let resolved = resolve_mana_types(produced, &*state, player, source_id);
-            match color_override {
-                Some(color) => vec![color; resolved.len()],
-                None => resolved,
+        Effect::Mana { produced, .. } => match color_override {
+            Some(ProductionOverride::Combination(types)) => types,
+            Some(ProductionOverride::SingleColor(color)) => {
+                let resolved = resolve_mana_types(produced, &*state, player, source_id);
+                vec![color; resolved.len()]
             }
-        }
+            None => resolve_mana_types(produced, &*state, player, source_id),
+        },
         _ => Vec::new(),
     };
 
@@ -1012,7 +1054,7 @@ mod tests {
             PlayerId(0),
             &def,
             &mut events,
-            Some(ManaType::Blue),
+            Some(ProductionOverride::SingleColor(ManaType::Blue)),
         )
         .unwrap();
 
@@ -1313,7 +1355,7 @@ mod tests {
             PlayerId(0),
             &def,
             &mut events,
-            Some(ManaType::Blue),
+            Some(ProductionOverride::SingleColor(ManaType::Blue)),
         )
         .unwrap();
 
@@ -1472,7 +1514,7 @@ mod tests {
             PlayerId(0),
             &def,
             &mut events,
-            Some(ManaType::Black),
+            Some(ProductionOverride::SingleColor(ManaType::Black)),
         )
         .unwrap();
 
@@ -1660,13 +1702,13 @@ mod tests {
         match &result {
             WaitingFor::ChooseManaColor {
                 player,
-                color_options,
+                choice: ManaChoicePrompt::SingleColor { options },
                 ..
             } => {
                 assert_eq!(*player, PlayerId(0));
-                assert_eq!(color_options, &[ManaType::Red, ManaType::Green]);
+                assert_eq!(options, &[ManaType::Red, ManaType::Green]);
             }
-            _ => panic!("expected ChooseManaColor, got {:?}", result),
+            _ => panic!("expected ChooseManaColor::SingleColor, got {:?}", result),
         }
     }
 
@@ -1698,14 +1740,16 @@ mod tests {
             color_override: None,
             resume: ManaAbilityResume::Priority,
         };
-        let color_options = vec![ManaType::Red, ManaType::Green];
+        let prompt = ManaChoicePrompt::SingleColor {
+            options: vec![ManaType::Red, ManaType::Green],
+        };
         let mut events = Vec::new();
 
         let result = handle_choose_mana_color(
             &mut state,
             &pending,
-            &color_options,
-            ManaType::Green,
+            &prompt,
+            ManaChoice::SingleColor(ManaType::Green),
             &mut events,
         )
         .unwrap();
@@ -1758,7 +1802,7 @@ mod tests {
             &ability,
             &mut events,
             ManaAbilityResume::Priority,
-            Some(ManaType::Green),
+            Some(ProductionOverride::SingleColor(ManaType::Green)),
         )
         .unwrap();
 
@@ -1767,5 +1811,210 @@ mod tests {
             "auto-tap with color_override should resolve immediately"
         );
         assert_eq!(state.players[0].mana_pool.count_color(ManaType::Green), 1);
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // ChoiceAmongCombinations (filter lands — Shadowmoor/Eventide).
+    // ─────────────────────────────────────────────────────────────
+
+    fn sunken_ruins_colored_ability() -> AbilityDefinition {
+        // CR 605.3b + CR 106.1a: `{U/B}, {T}: Add {U}{U}, {U}{B}, or {B}{B}`.
+        AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::Mana {
+                produced: ManaProduction::ChoiceAmongCombinations {
+                    options: vec![
+                        vec![ManaColor::Blue, ManaColor::Blue],
+                        vec![ManaColor::Blue, ManaColor::Black],
+                        vec![ManaColor::Black, ManaColor::Black],
+                    ],
+                },
+                restrictions: vec![],
+                grants: vec![],
+                expiry: None,
+            },
+        )
+        .cost(AbilityCost::Tap)
+    }
+
+    #[test]
+    fn activate_filter_land_prompts_with_combination_options() {
+        // CR 605.3b: Manual activation of a filter land (no override) must
+        // surface a Combination prompt, not a SingleColor prompt.
+        let mut state = GameState::new_two_player(42);
+        let ruins = create_object(
+            &mut state,
+            CardId(500),
+            PlayerId(0),
+            "Sunken Ruins".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&ruins).unwrap();
+        obj.card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Land);
+        let ability = sunken_ruins_colored_ability();
+        obj.abilities.push(ability.clone());
+
+        let mut events = Vec::new();
+        let result = activate_mana_ability(
+            &mut state,
+            ruins,
+            PlayerId(0),
+            0,
+            &ability,
+            &mut events,
+            ManaAbilityResume::Priority,
+            None,
+        )
+        .unwrap();
+
+        match &result {
+            WaitingFor::ChooseManaColor {
+                choice: ManaChoicePrompt::Combination { options },
+                ..
+            } => {
+                assert_eq!(
+                    options,
+                    &vec![
+                        vec![ManaType::Blue, ManaType::Blue],
+                        vec![ManaType::Blue, ManaType::Black],
+                        vec![ManaType::Black, ManaType::Black],
+                    ]
+                );
+            }
+            _ => panic!("expected ChooseManaColor::Combination, got {:?}", result),
+        }
+        // CR 605.3b: tap cost is paid before the prompt.
+        assert!(state.objects.get(&ruins).unwrap().tapped);
+    }
+
+    #[test]
+    fn handle_choose_combination_produces_exact_sequence() {
+        // CR 605.3b: The chosen combination lands verbatim in the pool.
+        let mut state = GameState::new_two_player(42);
+        let ruins = create_object(
+            &mut state,
+            CardId(500),
+            PlayerId(0),
+            "Sunken Ruins".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&ruins).unwrap();
+        obj.card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Land);
+        obj.abilities.push(sunken_ruins_colored_ability());
+
+        let pending = PendingManaAbility {
+            player: PlayerId(0),
+            source_id: ruins,
+            ability_index: 0,
+            color_override: None,
+            resume: ManaAbilityResume::Priority,
+        };
+        let prompt = ManaChoicePrompt::Combination {
+            options: vec![
+                vec![ManaType::Blue, ManaType::Blue],
+                vec![ManaType::Blue, ManaType::Black],
+                vec![ManaType::Black, ManaType::Black],
+            ],
+        };
+        let mut events = Vec::new();
+
+        handle_choose_mana_color(
+            &mut state,
+            &pending,
+            &prompt,
+            ManaChoice::Combination(vec![ManaType::Blue, ManaType::Black]),
+            &mut events,
+        )
+        .unwrap();
+
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Blue), 1);
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Black), 1);
+        assert_eq!(state.players[0].mana_pool.total(), 2);
+    }
+
+    #[test]
+    fn combination_override_bypasses_choice_and_produces_exact_mana() {
+        // Auto-tap path: override short-circuits the prompt and emits the
+        // combination atomically.
+        let mut state = GameState::new_two_player(42);
+        let ruins = create_object(
+            &mut state,
+            CardId(500),
+            PlayerId(0),
+            "Sunken Ruins".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&ruins).unwrap();
+        obj.card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Land);
+        let ability = sunken_ruins_colored_ability();
+        obj.abilities.push(ability.clone());
+
+        let mut events = Vec::new();
+        let result = activate_mana_ability(
+            &mut state,
+            ruins,
+            PlayerId(0),
+            0,
+            &ability,
+            &mut events,
+            ManaAbilityResume::Priority,
+            Some(ProductionOverride::Combination(vec![
+                ManaType::Blue,
+                ManaType::Black,
+            ])),
+        )
+        .unwrap();
+
+        assert!(matches!(result, WaitingFor::Priority { .. }));
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Blue), 1);
+        assert_eq!(state.players[0].mana_pool.count_color(ManaType::Black), 1);
+    }
+
+    #[test]
+    fn handle_choose_rejects_mismatched_choice_shape() {
+        // A SingleColor answer to a Combination prompt must error out.
+        let mut state = GameState::new_two_player(42);
+        let ruins = create_object(
+            &mut state,
+            CardId(500),
+            PlayerId(0),
+            "Sunken Ruins".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&ruins).unwrap();
+        obj.card_types
+            .core_types
+            .push(crate::types::card_type::CoreType::Land);
+        obj.abilities.push(sunken_ruins_colored_ability());
+
+        let pending = PendingManaAbility {
+            player: PlayerId(0),
+            source_id: ruins,
+            ability_index: 0,
+            color_override: None,
+            resume: ManaAbilityResume::Priority,
+        };
+        let prompt = ManaChoicePrompt::Combination {
+            options: vec![
+                vec![ManaType::Blue, ManaType::Blue],
+                vec![ManaType::Blue, ManaType::Black],
+                vec![ManaType::Black, ManaType::Black],
+            ],
+        };
+        let mut events = Vec::new();
+        let result = handle_choose_mana_color(
+            &mut state,
+            &pending,
+            &prompt,
+            ManaChoice::SingleColor(ManaType::Blue),
+            &mut events,
+        );
+        assert!(result.is_err(), "mismatched shape must be rejected");
     }
 }

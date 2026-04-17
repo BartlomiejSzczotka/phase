@@ -446,13 +446,58 @@ pub enum ManaAbilityResume {
     },
 }
 
+/// CR 605.3b + CR 106.1a: A pre-resolved choice that short-circuits the normal
+/// `ChooseManaColor` prompt. Auto-tap sets this when the cost-payment planner
+/// has already determined the exact mana to produce; manual activation leaves
+/// it `None` so the player is prompted.
+///
+/// Typed enum (never a bool): `SingleColor` covers the one-color-repeated
+/// variants (`AnyOneColor`, `ChoiceAmongExiledColors`), while `Combination`
+/// carries the full pre-chosen multi-mana sequence for
+/// `ChoiceAmongCombinations` (Shadowmoor/Eventide filter lands).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum ProductionOverride {
+    /// The caller picked a single color; every unit of mana the ability
+    /// produces becomes this color (mirrors the pre-widening `Option<ManaType>`
+    /// semantics).
+    SingleColor(ManaType),
+    /// The caller picked one complete combination from a
+    /// `ChoiceAmongCombinations` option set; the ability produces exactly
+    /// these mana types in order.
+    Combination(Vec<ManaType>),
+}
+
+/// CR 605.3b: The shape of the prompt surfaced via `WaitingFor::ChooseManaColor`.
+/// Typed enum rather than a bool discriminator: the continuation logic is
+/// identical (validate choice → produce mana → resume), only the option set
+/// differs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum ManaChoicePrompt {
+    /// Legacy prompt shape: pick one color from the list (Treasure,
+    /// City of Brass, Pit of Offerings, `AnyOneColor`).
+    SingleColor { options: Vec<ManaType> },
+    /// Filter-land prompt: pick one complete multi-mana combination.
+    Combination { options: Vec<Vec<ManaType>> },
+}
+
+/// CR 605.3b: Player's answer to a `ManaChoicePrompt`, carried by
+/// `GameAction::ChooseManaColor`. Shape mirrors the prompt variant.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data")]
+pub enum ManaChoice {
+    SingleColor(ManaType),
+    Combination(Vec<ManaType>),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingManaAbility {
     pub player: PlayerId,
     pub source_id: ObjectId,
     pub ability_index: usize,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub color_override: Option<ManaType>,
+    pub color_override: Option<ProductionOverride>,
     pub resume: ManaAbilityResume,
 }
 
@@ -1048,11 +1093,14 @@ pub enum WaitingFor {
         creatures: Vec<ObjectId>,
         pending_mana_ability: Box<PendingManaAbility>,
     },
-    /// CR 605.3b: AnyOneColor mana ability with multiple color options — player
-    /// must choose which color to produce before mana is added to the pool.
+    /// CR 605.3b: Mana ability with a choice dimension — player must answer
+    /// before mana is added to the pool. The prompt shape (`SingleColor` vs
+    /// `Combination`) depends on the `ManaProduction` variant. Both shapes
+    /// share this single `WaitingFor` variant so AI candidate generation,
+    /// multiplayer filtering, and auto-pass all follow one code path.
     ChooseManaColor {
         player: PlayerId,
-        color_options: Vec<crate::types::mana::ManaType>,
+        choice: ManaChoicePrompt,
         pending_mana_ability: Box<PendingManaAbility>,
     },
     /// CR 702.138a: Player must choose cards to exile from graveyard as escape cost.
