@@ -10,6 +10,7 @@ import {
   getOpponentIds,
 } from "../../viewmodel/gameStateView.ts";
 import { BoardInteractionContext } from "./BoardInteractionContext.tsx";
+import { CombatLine } from "./CombatLine.tsx";
 import { PlayerArea } from "./PlayerArea.tsx";
 
 export function GameBoard() {
@@ -208,7 +209,7 @@ export function GameBoard() {
           </div>
         )}
 
-        <div className="h-1 shrink-0" />
+        <CombatLine />
 
         <PlayerArea
           battlefieldView={playerBattlefieldView}
