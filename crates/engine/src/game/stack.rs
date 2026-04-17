@@ -174,6 +174,22 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                         *enter_transformed = true;
                     }
                 }
+                // CR 306.5b + CR 310.4b + CR 614.1c: Planeswalkers and battles
+                // have the intrinsic replacement "This permanent enters with N
+                // [loyalty/defense] counters on it." Seed these counters onto
+                // the ZoneChange ProposedEvent so Doubling-Season-class
+                // AddCounter replacements (CR 614.1a) see and modify them as
+                // the replacement pipeline runs.
+                let intrinsic = super::printed_cards::intrinsic_etb_counters(obj);
+                if !intrinsic.is_empty() {
+                    if let crate::types::proposed_event::ProposedEvent::ZoneChange {
+                        enter_with_counters,
+                        ..
+                    } = &mut proposed
+                    {
+                        enter_with_counters.extend(intrinsic);
+                    }
+                }
             }
 
             match super::replacement::replace_event(state, proposed, events) {
@@ -196,14 +212,17 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                             if let Some(new_controller) = controller_override {
                                 obj.controller = new_controller;
                             }
-                            // CR 614.1c: Apply counters from replacement pipeline
-                            // (e.g., saga lore counters per CR 714.3a).
-                            super::engine_replacement::apply_etb_counters(
-                                obj,
-                                &enter_with_counters,
-                                events,
-                            );
                         }
+                        // CR 614.1c: Apply counters from replacement pipeline
+                        // (e.g., saga lore counters per CR 714.3a, planeswalker
+                        // intrinsic loyalty per CR 306.5b, battle intrinsic
+                        // defense per CR 310.4b).
+                        super::engine_replacement::apply_etb_counters(
+                            state,
+                            object_id,
+                            &enter_with_counters,
+                            events,
+                        );
                         // CR 712.14a + CR 310.11b: Apply transformation if entering
                         // transformed (propagated from ExileWithAltCost permission).
                         if enter_transformed && to == Zone::Battlefield {
@@ -224,11 +243,9 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
                             .map(|(_, ct, n)| (ct.clone(), *n))
                             .collect();
                         if !pending.is_empty() {
-                            if let Some(obj) = state.objects.get_mut(&object_id) {
-                                super::engine_replacement::apply_etb_counters(
-                                    obj, &pending, events,
-                                );
-                            }
+                            super::engine_replacement::apply_etb_counters(
+                                state, object_id, &pending, events,
+                            );
                             state
                                 .pending_etb_counters
                                 .retain(|(oid, _, _)| *oid != object_id);

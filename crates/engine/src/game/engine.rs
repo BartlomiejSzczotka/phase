@@ -1983,12 +1983,28 @@ fn handle_play_land(
     let origin_zone = if in_hand { Zone::Hand } else { Zone::Graveyard };
 
     // Route through the replacement pipeline (handles ETB replacements like shock lands)
-    let proposed = crate::types::proposed_event::ProposedEvent::zone_change(
+    let mut proposed = crate::types::proposed_event::ProposedEvent::zone_change(
         object_id,
         origin_zone,
         Zone::Battlefield,
         None,
     );
+
+    // CR 306.5b + CR 310.4b + CR 614.1c: Seed the intrinsic "enters with N
+    // counters" replacement for planeswalkers and battles entering the
+    // battlefield via a play-from-zone action.
+    if let Some(obj) = state.objects.get(&object_id) {
+        let intrinsic = super::printed_cards::intrinsic_etb_counters(obj);
+        if !intrinsic.is_empty() {
+            if let crate::types::proposed_event::ProposedEvent::ZoneChange {
+                enter_with_counters,
+                ..
+            } = &mut proposed
+            {
+                enter_with_counters.extend(intrinsic);
+            }
+        }
+    }
 
     match super::replacement::replace_event(state, proposed, events) {
         super::replacement::ReplacementResult::Execute(event) => {
@@ -2011,22 +2027,27 @@ fn handle_play_land(
                     if let Some(new_controller) = controller_override {
                         obj.controller = new_controller;
                     }
-                    // CR 614.1c: Apply counters from replacement pipeline.
-                    engine_replacement::apply_etb_counters(obj, &enter_with_counters, events);
-                    // CR 614.1c: Apply pending ETB counters from delayed triggers
-                    // (e.g., "that creature enters with an additional +1/+1 counter").
-                    let pending: Vec<_> = state
+                }
+                // CR 614.1c: Apply counters from replacement pipeline.
+                engine_replacement::apply_etb_counters(
+                    state,
+                    object_id,
+                    &enter_with_counters,
+                    events,
+                );
+                // CR 614.1c: Apply pending ETB counters from delayed triggers
+                // (e.g., "that creature enters with an additional +1/+1 counter").
+                let pending: Vec<_> = state
+                    .pending_etb_counters
+                    .iter()
+                    .filter(|(oid, _, _)| *oid == object_id)
+                    .map(|(_, ct, n)| (ct.clone(), *n))
+                    .collect();
+                if !pending.is_empty() {
+                    engine_replacement::apply_etb_counters(state, object_id, &pending, events);
+                    state
                         .pending_etb_counters
-                        .iter()
-                        .filter(|(oid, _, _)| *oid == object_id)
-                        .map(|(_, ct, n)| (ct.clone(), *n))
-                        .collect();
-                    if !pending.is_empty() {
-                        engine_replacement::apply_etb_counters(obj, &pending, events);
-                        state
-                            .pending_etb_counters
-                            .retain(|(oid, _, _)| *oid != object_id);
-                    }
+                        .retain(|(oid, _, _)| *oid != object_id);
                 }
             }
 

@@ -2190,30 +2190,31 @@ pub fn pay_ability_cost(
         }
         // CR 606.4: Loyalty abilities use loyalty counter adjustment as their cost.
         // Called after target selection when the ability was initiated interactively.
+        // Routes through the single-authority counter resolver so replacement
+        // effects (Vorinclex, Doubling Season) can apply per CR 614.1a and
+        // obj.loyalty stays in sync with counters[Loyalty] (CR 306.5b).
         AbilityCost::Loyalty { amount } => {
             let amount = *amount;
-            let obj = state
-                .objects
-                .get(&source_id)
-                .ok_or_else(|| EngineError::InvalidAction("Planeswalker not found".to_string()))?;
-            let current = obj.loyalty.unwrap_or(0) as i32;
-            let new_loyalty = (current + amount).max(0) as u32;
-            let obj = state.objects.get_mut(&source_id).unwrap();
-            obj.loyalty = Some(new_loyalty);
-            obj.counters
-                .insert(crate::types::counter::CounterType::Loyalty, new_loyalty);
-            if amount > 0 {
-                events.push(GameEvent::CounterAdded {
-                    object_id: source_id,
-                    counter_type: crate::types::counter::CounterType::Loyalty,
-                    count: amount as u32,
-                });
-            } else if amount < 0 {
-                events.push(GameEvent::CounterRemoved {
-                    object_id: source_id,
-                    counter_type: crate::types::counter::CounterType::Loyalty,
-                    count: (-amount) as u32,
-                });
+            match amount.cmp(&0) {
+                std::cmp::Ordering::Greater => {
+                    super::effects::counters::add_counter_with_replacement(
+                        state,
+                        source_id,
+                        crate::types::counter::CounterType::Loyalty,
+                        amount as u32,
+                        events,
+                    );
+                }
+                std::cmp::Ordering::Less => {
+                    super::effects::counters::remove_counter_with_replacement(
+                        state,
+                        source_id,
+                        crate::types::counter::CounterType::Loyalty,
+                        (-amount) as u32,
+                        events,
+                    );
+                }
+                std::cmp::Ordering::Equal => {}
             }
         }
         // Other cost types (Exile, PayLife, etc.) require interactive resolution

@@ -285,7 +285,11 @@ mod tests {
         );
         let obj = state.objects.get_mut(&id).unwrap();
         obj.card_types.core_types.push(CoreType::Planeswalker);
+        // CR 306.5b: A planeswalker's loyalty IS the count of loyalty counters
+        // on it. Seed both so the field and counter map start in sync.
         obj.loyalty = Some(loyalty);
+        obj.counters
+            .insert(crate::types::counter::CounterType::Loyalty, loyalty);
         obj.abilities = abilities;
         obj.entered_battlefield_turn = Some(state.turn_number);
         id
