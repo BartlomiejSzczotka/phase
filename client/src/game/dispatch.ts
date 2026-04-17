@@ -66,6 +66,19 @@ let isAnimating = false;
 /** Unified queue for local actions and remote state updates. */
 const pendingQueue: PendingWork[] = [];
 
+/**
+ * The local action currently being processed (set while inside processAction).
+ * Used alongside pendingQueue to deduplicate rapid double-clicks: if the same
+ * action is already in flight, a second dispatch is a silent no-op rather than
+ * a queued duplicate that would fail against a transitioned engine state.
+ */
+let inFlightLocalAction: GameAction | null = null;
+
+/** Structural equality for GameAction — action objects are small plain JSON. */
+function actionsEqual(a: GameAction, b: GameAction): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 async function processAction(action: GameAction, actor: number): Promise<void> {
   const { adapter, gameState } = useGameStore.getState();
   if (!adapter || !gameState) {
@@ -195,7 +208,12 @@ async function processQueue(): Promise<void> {
     const next = pendingQueue.shift()!;
     try {
       if (next.kind === "local") {
-        await processAction(next.action, next.actor);
+        inFlightLocalAction = next.action;
+        try {
+          await processAction(next.action, next.actor);
+        } finally {
+          inFlightLocalAction = null;
+        }
       } else {
         await processRemoteUpdateInner(next.state, next.events, next.legalResult);
       }
@@ -235,6 +253,18 @@ export async function dispatchAction(
   actor: number = getPlayerId(),
 ): Promise<void> {
   if (isAnimating) {
+    // Enqueue-time de-dup: if the exact same action is already in flight or
+    // already queued, silently resolve. Covers rapid double-clicks (e.g. a
+    // planeswalker ability fired twice before the first transitions the
+    // engine into TargetSelection).
+    if (inFlightLocalAction && actionsEqual(inFlightLocalAction, action)) {
+      return;
+    }
+    for (const pending of pendingQueue) {
+      if (pending.kind === "local" && actionsEqual(pending.action, action)) {
+        return;
+      }
+    }
     debugLog(`dispatch queued (mutex held): ${action.type}, queue=${pendingQueue.length}`, "warn");
     return new Promise<void>((resolve, reject) => {
       pendingQueue.push({ kind: "local", action, actor, resolve, reject });
@@ -242,12 +272,14 @@ export async function dispatchAction(
   }
 
   isAnimating = true;
+  inFlightLocalAction = action;
   try {
     await processAction(action, actor);
   } catch (e) {
     debugLog(`dispatch error for ${action.type}: ${e instanceof Error ? e.message : String(e)}`);
     throw e;
   } finally {
+    inFlightLocalAction = null;
     if (pendingQueue.length > 0) {
       processQueue().catch(() => { isAnimating = false; });
     } else {
