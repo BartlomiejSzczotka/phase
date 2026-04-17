@@ -53,15 +53,29 @@ function makeGameObject(overrides: Partial<GameObject> = {}): GameObject {
 }
 
 describe("collectObjectActions", () => {
-  it("keeps both play-land and cast-spell actions for the same object", () => {
-    const actions: GameAction[] = [
+  it("returns the engine-provided bucket for the requested object", () => {
+    // Engine-grouped map mirrors what `legal_actions_full` produces in Rust:
+    // each key is a source ObjectId; each value is the subset of legal actions
+    // whose `source_object()` equals that id. The viewmodel does not classify.
+    const obj1Actions: GameAction[] = [
       { type: "PlayLand", data: { object_id: 1, card_id: 100 } },
       { type: "CastSpell", data: { object_id: 1, card_id: 100, targets: [] } },
       { type: "ActivateAbility", data: { source_id: 1, ability_index: 0 } },
+    ];
+    const obj2Actions: GameAction[] = [
       { type: "CastSpell", data: { object_id: 2, card_id: 200, targets: [] } },
     ];
+    const grouped: Record<string, GameAction[]> = {
+      "1": obj1Actions,
+      "2": obj2Actions,
+    };
 
-    expect(collectObjectActions(actions, 1)).toEqual(actions.slice(0, 3));
+    expect(collectObjectActions(grouped, 1)).toEqual(obj1Actions);
+    expect(collectObjectActions(grouped, 2)).toEqual(obj2Actions);
+    // Unknown id (e.g. a hand card with no legal actions): empty array, never undefined.
+    expect(collectObjectActions(grouped, 999)).toEqual([]);
+    // Missing map (e.g. pre-init): empty array, no crash.
+    expect(collectObjectActions(undefined, 1)).toEqual([]);
   });
 });
 

@@ -114,7 +114,11 @@ fn accounted_object_ids(state: &GameState, player: PlayerId) -> Vec<ObjectId> {
     );
     object_ids.extend(state.stack.iter().filter_map(|entry| match &entry.kind {
         StackEntryKind::Spell { .. } => Some(entry.source_id),
-        StackEntryKind::ActivatedAbility { .. } | StackEntryKind::TriggeredAbility { .. } => None,
+        // CR 113.3b: Activated abilities (including KeywordAction) are not card
+        // sources for deck knowledge — only spells expose their card source.
+        StackEntryKind::ActivatedAbility { .. }
+        | StackEntryKind::TriggeredAbility { .. }
+        | StackEntryKind::KeywordAction { .. } => None,
     }));
 
     object_ids

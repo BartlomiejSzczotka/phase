@@ -455,6 +455,26 @@ pub fn legal_actions(state: &GameState) -> Vec<GameAction> {
 pub fn legal_actions_with_costs(
     state: &GameState,
 ) -> (Vec<GameAction>, HashMap<ObjectId, ManaCost>) {
+    let (actions, spell_costs, _grouped) = legal_actions_full(state);
+    (actions, spell_costs)
+}
+
+/// Tuple returned by `legal_actions_full`: flat actions, spell-cost map,
+/// per-source-object action grouping.
+pub type LegalActionsFull = (
+    Vec<GameAction>,
+    HashMap<ObjectId, ManaCost>,
+    HashMap<ObjectId, Vec<GameAction>>,
+);
+
+/// Returns legal actions, spell costs, AND a per-permanent action grouping.
+///
+/// `legal_actions_by_object` maps each permanent (or hand-zone card) to the
+/// subset of legal actions whose `source_object()` equals that id. The grouping
+/// is computed from the flat list via the engine-authoritative
+/// `GameAction::source_object()` method — the frontend uses this map directly
+/// instead of introspecting `GameAction` variants client-side.
+pub fn legal_actions_full(state: &GameState) -> LegalActionsFull {
     let mut actions: Vec<GameAction> = validated_candidate_actions(state)
         .into_iter()
         .map(|candidate| candidate.action)
@@ -481,7 +501,15 @@ pub fn legal_actions_with_costs(
     // priority_actions), but the frontend needs them to avoid incorrect auto-pass.
     actions.extend(activatable_mana_ability_actions(state));
 
-    (actions, spell_costs)
+    // Group by source object using the engine-authoritative classifier.
+    let mut grouped: HashMap<ObjectId, Vec<GameAction>> = HashMap::new();
+    for action in &actions {
+        if let Some(id) = action.source_object() {
+            grouped.entry(id).or_default().push(action.clone());
+        }
+    }
+
+    (actions, spell_costs, grouped)
 }
 
 /// CR 605.1b: Enumerate activatable mana abilities for the priority player.
@@ -533,12 +561,53 @@ fn activatable_mana_ability_actions(state: &GameState) -> Vec<GameAction> {
 #[cfg(test)]
 mod tests {
     use super::{
-        candidate_actions, cheap_reject_candidate, legal_actions, validated_candidate_actions,
+        candidate_actions, cheap_reject_candidate, legal_actions, legal_actions_full,
+        validated_candidate_actions,
     };
     use crate::types::ability::ManaContribution;
     use crate::types::actions::GameAction;
     use crate::types::game_state::{GameState, WaitingFor};
+    use crate::types::identifiers::ObjectId;
     use crate::types::player::PlayerId;
+
+    #[test]
+    fn legal_actions_by_object_groups_flat_list_correctly() {
+        // Flat list and grouped map are derived from the same actions; every
+        // entry in the grouped map must equal source_object() of its actions,
+        // and every action with Some(id) must appear under that id exactly once.
+        let state = GameState::new_two_player(42);
+        let (flat, _, grouped) = legal_actions_full(&state);
+
+        // Each grouped vector contains only actions whose source_object matches the key.
+        for (id, actions) in &grouped {
+            for action in actions {
+                assert_eq!(
+                    action.source_object(),
+                    Some(*id),
+                    "action {} grouped under wrong id",
+                    action.variant_name()
+                );
+            }
+        }
+
+        // Every action in the flat list with a source_object appears in the grouped map.
+        for action in &flat {
+            if let Some(id) = action.source_object() {
+                let bucket = grouped.get(&id).unwrap_or_else(|| {
+                    panic!("action {} missing from grouped map", action.variant_name())
+                });
+                assert!(
+                    bucket.contains(action),
+                    "action {} not found in its own bucket",
+                    action.variant_name()
+                );
+            }
+        }
+
+        // Lookup for a non-existent object returns None (defensive — callers may
+        // request hand-zone or battlefield ids that have no legal actions).
+        assert!(!grouped.contains_key(&ObjectId(99_999)));
+    }
 
     #[test]
     fn legal_actions_filter_out_reducer_illegal_priority_candidates() {

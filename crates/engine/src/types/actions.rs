@@ -284,6 +284,81 @@ impl GameAction {
             GameAction::TapLandForMana { .. } | GameAction::UntapLandForMana { .. }
         )
     }
+
+    /// Engine-side authoritative mapping from action → permanent it acts on.
+    ///
+    /// Used by `legal_actions_with_costs` to group `legal_actions` by source
+    /// permanent so the frontend can look up "what can I do with this card?"
+    /// via a single map lookup instead of introspecting `GameAction` variants
+    /// (which would push engine-owned structural knowledge into the client).
+    ///
+    /// Returns `Some(id)` for actions that act on a single permanent or
+    /// hand-zone card object; `None` for global actions (`PassPriority`,
+    /// `MulliganDecision`, etc.) and for multi-target actions whose "source"
+    /// is ambiguous (`DeclareAttackers`, `AssignCombatDamage`, etc.).
+    ///
+    /// EXHAUSTIVE: every variant must be classified. Adding a new variant
+    /// without updating this method is a compile-time error.
+    pub fn source_object(&self) -> Option<ObjectId> {
+        match self {
+            GameAction::PlayLand { object_id, .. } => Some(*object_id),
+            GameAction::CastSpell { object_id, .. } => Some(*object_id),
+            GameAction::ActivateAbility { source_id, .. } => Some(*source_id),
+            GameAction::TapLandForMana { object_id } => Some(*object_id),
+            GameAction::UntapLandForMana { object_id } => Some(*object_id),
+            GameAction::Equip { equipment_id, .. } => Some(*equipment_id),
+            GameAction::CrewVehicle { vehicle_id, .. } => Some(*vehicle_id),
+            GameAction::ActivateStation { spacecraft_id, .. } => Some(*spacecraft_id),
+            GameAction::SaddleMount { mount_id, .. } => Some(*mount_id),
+            GameAction::Transform { object_id } => Some(*object_id),
+            GameAction::PlayFaceDown { object_id, .. } => Some(*object_id),
+            GameAction::TurnFaceUp { object_id } => Some(*object_id),
+            GameAction::ChooseRingBearer { target } => Some(*target),
+            GameAction::TapForConvoke { object_id, .. } => Some(*object_id),
+            GameAction::ChooseLegend { keep } => Some(*keep),
+            // Actions with no per-permanent anchor.
+            GameAction::PassPriority
+            | GameAction::DeclareAttackers { .. }
+            | GameAction::DeclareBlockers { .. }
+            | GameAction::MulliganDecision { .. }
+            | GameAction::SelectCards { .. }
+            | GameAction::SelectTargets { .. }
+            | GameAction::ChooseTarget { .. }
+            | GameAction::ChooseReplacement { .. }
+            | GameAction::CancelCast
+            | GameAction::SubmitSideboard { .. }
+            | GameAction::ChoosePlayDraw { .. }
+            | GameAction::ChooseOption { .. }
+            | GameAction::SelectModes { .. }
+            | GameAction::DecideOptionalCost { .. }
+            | GameAction::ChooseAdventureFace { .. }
+            | GameAction::ChooseModalFace { .. }
+            | GameAction::ChooseWarpCost { .. }
+            | GameAction::ActivateNinjutsu { .. }
+            | GameAction::DecideOptionalEffect { .. }
+            | GameAction::PayUnlessCost { .. }
+            | GameAction::PayCombatTax { .. }
+            | GameAction::ChooseDungeon { .. }
+            | GameAction::ChooseDungeonRoom { .. }
+            | GameAction::HarmonizeTap { .. }
+            | GameAction::DeclareCompanion { .. }
+            | GameAction::CompanionToHand
+            | GameAction::DiscoverChoice { .. }
+            | GameAction::ChooseTopOrBottom { .. }
+            | GameAction::ChooseBattleProtector { .. }
+            | GameAction::SetAutoPass { .. }
+            | GameAction::CancelAutoPass
+            | GameAction::AssignCombatDamage { .. }
+            | GameAction::DistributeAmong { .. }
+            | GameAction::RetargetSpell { .. }
+            | GameAction::LearnDecision { .. }
+            | GameAction::SelectCategoryPermanents { .. }
+            | GameAction::ChooseX { .. }
+            | GameAction::SubmitPhyrexianChoices { .. }
+            | GameAction::ChooseManaColor { .. }
+            | GameAction::Concede { .. } => None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -378,5 +453,96 @@ mod tests {
         let serialized = serde_json::to_string(&action).unwrap();
         let deserialized: GameAction = serde_json::from_str(&serialized).unwrap();
         assert_eq!(action, deserialized);
+    }
+
+    #[test]
+    fn source_object_for_every_permanent_action_variant() {
+        let oid = ObjectId(7);
+        let cid = CardId(1);
+        let cases: &[(GameAction, Option<ObjectId>)] = &[
+            (
+                GameAction::PlayLand {
+                    object_id: oid,
+                    card_id: cid,
+                },
+                Some(oid),
+            ),
+            (
+                GameAction::CastSpell {
+                    object_id: oid,
+                    card_id: cid,
+                    targets: vec![],
+                },
+                Some(oid),
+            ),
+            (
+                GameAction::ActivateAbility {
+                    source_id: oid,
+                    ability_index: 0,
+                },
+                Some(oid),
+            ),
+            (GameAction::TapLandForMana { object_id: oid }, Some(oid)),
+            (GameAction::UntapLandForMana { object_id: oid }, Some(oid)),
+            (
+                GameAction::Equip {
+                    equipment_id: oid,
+                    target_id: ObjectId(99),
+                },
+                Some(oid),
+            ),
+            (
+                GameAction::CrewVehicle {
+                    vehicle_id: oid,
+                    creature_ids: vec![],
+                },
+                Some(oid),
+            ),
+            (
+                GameAction::ActivateStation {
+                    spacecraft_id: oid,
+                    creature_id: None,
+                },
+                Some(oid),
+            ),
+            (
+                GameAction::SaddleMount {
+                    mount_id: oid,
+                    creature_ids: vec![],
+                },
+                Some(oid),
+            ),
+            (GameAction::Transform { object_id: oid }, Some(oid)),
+            (
+                GameAction::PlayFaceDown {
+                    object_id: oid,
+                    card_id: cid,
+                },
+                Some(oid),
+            ),
+            (GameAction::TurnFaceUp { object_id: oid }, Some(oid)),
+            (
+                GameAction::TapForConvoke {
+                    object_id: oid,
+                    mana_type: super::super::mana::ManaType::White,
+                },
+                Some(oid),
+            ),
+            (GameAction::ChooseLegend { keep: oid }, Some(oid)),
+            // Non-permanent actions return None.
+            (GameAction::PassPriority, None),
+            (GameAction::MulliganDecision { keep: true }, None),
+            (GameAction::CancelCast, None),
+            (GameAction::CompanionToHand, None),
+            (GameAction::CancelAutoPass, None),
+        ];
+        for (action, expected) in cases {
+            assert_eq!(
+                action.source_object(),
+                *expected,
+                "source_object mismatch for {}",
+                action.variant_name()
+            );
+        }
     }
 }

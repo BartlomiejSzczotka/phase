@@ -5,7 +5,7 @@ use rand_chacha::ChaCha20Rng;
 use serde::Serialize;
 use wasm_bindgen::prelude::*;
 
-use engine::ai_support::{auto_pass_recommended, legal_actions_with_costs};
+use engine::ai_support::{auto_pass_recommended, legal_actions_full};
 use engine::database::CardDatabase;
 use engine::game::engine::apply;
 use engine::game::{
@@ -35,6 +35,10 @@ struct LegalActionsResult {
     /// Effective mana costs for castable spells, keyed by object_id.
     /// Reflects all cost modifiers (reductions, commander tax, alt costs).
     spell_costs: std::collections::HashMap<ObjectId, ManaCost>,
+    /// Engine-grouped subset of `actions` keyed by `GameAction::source_object()`.
+    /// Frontend uses this for "what can I do with this card?" lookups so it
+    /// doesn't have to introspect `GameAction` variants client-side.
+    legal_actions_by_object: std::collections::HashMap<ObjectId, Vec<GameAction>>,
 }
 
 /// Serialize a Rust value to a JS object via JSON.
@@ -378,12 +382,13 @@ pub fn get_filtered_game_state(viewer: u8) -> JsValue {
 #[wasm_bindgen]
 pub fn get_legal_actions_js() -> JsValue {
     match with_state(|state| {
-        let (actions, spell_costs) = legal_actions_with_costs(state);
+        let (actions, spell_costs, legal_actions_by_object) = legal_actions_full(state);
         let auto_pass = auto_pass_recommended(state, &actions);
         to_js(&LegalActionsResult {
             actions,
             auto_pass_recommended: auto_pass,
             spell_costs,
+            legal_actions_by_object,
         })
     }) {
         Ok(val) => val,

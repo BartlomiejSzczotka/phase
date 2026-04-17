@@ -18,6 +18,7 @@ export function MobileHandDrawer() {
   const player = useGameStore((s) => s.gameState?.players[playerId]);
   const objects = useGameStore((s) => s.gameState?.objects);
   const legalActions = useGameStore((s) => s.legalActions);
+  const legalActionsByObject = useGameStore((s) => s.legalActionsByObject);
   const inspectObject = useUiStore((s) => s.inspectObject);
   const setPendingAbilityChoice = useUiStore((s) => s.setPendingAbilityChoice);
 
@@ -66,7 +67,7 @@ export function MobileHandDrawer() {
       const obj = objects[objectId];
       if (!obj) return;
 
-      const allActions = collectObjectActions(legalActions, objectId as ObjectId);
+      const allActions = collectObjectActions(legalActionsByObject, objectId as ObjectId);
       if (allActions.length === 0) return;
 
       inspectObject(null);
@@ -78,7 +79,7 @@ export function MobileHandDrawer() {
         setPendingAbilityChoice({ objectId: objectId as ObjectId, actions: allActions });
       }
     },
-    [hasPriority, objects, legalActions, inspectObject, setPendingAbilityChoice, setOpen],
+    [hasPriority, objects, legalActionsByObject, inspectObject, setPendingAbilityChoice, setOpen],
   );
 
   if (!player || !objects) return null;

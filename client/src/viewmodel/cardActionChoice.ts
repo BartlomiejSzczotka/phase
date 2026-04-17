@@ -1,16 +1,18 @@
 import type { GameAction, ObjectId } from "../adapter/types.ts";
 
+/**
+ * Look up the legal actions whose `source_object()` is `objectId`.
+ *
+ * Per CLAUDE.md "the frontend is a display layer, not a logic layer", the
+ * mapping from `GameAction` variant to "the permanent it acts on" is owned
+ * by the engine via `GameAction::source_object()`. This function is now a
+ * trivial map lookup over the engine-provided `legalActionsByObject` field
+ * — never a client-side discriminated-union introspection.
+ */
 export function collectObjectActions(
-  legalActions: GameAction[],
+  legalActionsByObject: Record<string, GameAction[]> | undefined,
   objectId: ObjectId,
 ): GameAction[] {
-  const playActions = legalActions.filter(
-    (action) =>
-      (action.type === "PlayLand" || action.type === "CastSpell")
-      && Number(action.data.object_id) === Number(objectId),
-  );
-  const abilityActions = legalActions.filter(
-    (action) => action.type === "ActivateAbility" && Number(action.data.source_id) === Number(objectId),
-  );
-  return [...playActions, ...abilityActions];
+  if (!legalActionsByObject) return [];
+  return legalActionsByObject[String(objectId)] ?? [];
 }

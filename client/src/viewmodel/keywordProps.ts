@@ -27,6 +27,37 @@ function splitPascalCase(s: string): string {
   return NAME_OVERRIDES[s] ?? s.replace(/([a-z])([A-Z])/g, "$1 $2");
 }
 
+/**
+ * Extract the N parameter from a Crew(N) keyword on this object, or null if
+ * the object has no Crew keyword. Mirrors the Saddle accessor below.
+ *
+ * CR 702.122a — Crew is parameterized: "Crew N" gates which creature subsets
+ * can pay the cost. The frontend reads this for the modal label only.
+ */
+export function getCrewPower(keywords: Keyword[]): number | null {
+  for (const kw of keywords) {
+    if (typeof kw === "object" && kw !== null && "Crew" in kw) {
+      const value = (kw as Record<string, unknown>).Crew;
+      if (typeof value === "number") return value;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract the N parameter from a Saddle(N) keyword on this object, or null if
+ * the object has no Saddle keyword. CR 702.171a parameterized keyword.
+ */
+export function getSaddlePower(keywords: Keyword[]): number | null {
+  for (const kw of keywords) {
+    if (typeof kw === "object" && kw !== null && "Saddle" in kw) {
+      const value = (kw as Record<string, unknown>).Saddle;
+      if (typeof value === "number") return value;
+    }
+  }
+  return null;
+}
+
 /** Extract the display name from a Keyword value. */
 export function getKeywordName(kw: Keyword): string {
   if (typeof kw === "string") return splitPascalCase(kw);

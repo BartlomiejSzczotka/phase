@@ -512,6 +512,7 @@ export type WaitingFor =
   | { type: "EquipTarget"; data: { player: PlayerId; equipment_id: ObjectId; valid_targets: ObjectId[] } }
   | { type: "CrewVehicle"; data: { player: PlayerId; vehicle_id: ObjectId; crew_power: number; eligible_creatures: ObjectId[] } }
   | { type: "StationTarget"; data: { player: PlayerId; spacecraft_id: ObjectId; eligible_creatures: ObjectId[] } }
+  | { type: "SaddleMount"; data: { player: PlayerId; mount_id: ObjectId; saddle_power: number; eligible_creatures: ObjectId[] } }
   | { type: "ScryChoice"; data: { player: PlayerId; cards: ObjectId[] } }
   | { type: "DigChoice"; data: { player: PlayerId; cards: ObjectId[]; keep_count: number; up_to?: boolean; selectable_cards?: ObjectId[]; kept_destination?: Zone | null; rest_destination?: Zone | null } }
   | { type: "SurveilChoice"; data: { player: PlayerId; cards: ObjectId[] } }
@@ -661,6 +662,7 @@ export type GameAction =
   | { type: "Equip"; data: { equipment_id: ObjectId; target_id: ObjectId } }
   | { type: "CrewVehicle"; data: { vehicle_id: ObjectId; creature_ids: ObjectId[] } }
   | { type: "ActivateStation"; data: { spacecraft_id: ObjectId; creature_id?: ObjectId | null } }
+  | { type: "SaddleMount"; data: { mount_id: ObjectId; creature_ids: ObjectId[] } }
   | { type: "Transform"; data: { object_id: ObjectId } }
   | { type: "PlayFaceDown"; data: { object_id: ObjectId; card_id: CardId } }
   | { type: "TurnFaceUp"; data: { object_id: ObjectId } }
@@ -881,6 +883,12 @@ export interface LegalActionsResult {
   autoPassRecommended: boolean;
   /** Effective mana costs for castable spells, keyed by object_id string. */
   spellCosts?: Record<string, ManaCost>;
+  /**
+   * Engine-grouped subset of `actions` keyed by `GameAction::source_object()`.
+   * Frontend uses this for "what can I do with this card?" lookups so it
+   * doesn't have to introspect `GameAction` variants client-side.
+   */
+  legalActionsByObject?: Record<string, GameAction[]>;
 }
 
 export interface EngineAdapter {

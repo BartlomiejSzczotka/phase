@@ -223,8 +223,12 @@ pub(crate) fn assess_spell_impact(state: &GameState, entry: &StackEntry) -> f64 
 
             score.min(8.0)
         }
-        // Activated/triggered abilities: moderate value — they're free to re-trigger
-        StackEntryKind::ActivatedAbility { .. } | StackEntryKind::TriggeredAbility { .. } => 0.5,
+        // Activated/triggered abilities: moderate value — they're free to re-trigger.
+        // KeywordAction (Crew/Equip/Saddle/Station) is similarly low-value to counter:
+        // the cost was paid at announcement and the activation can be repeated.
+        StackEntryKind::ActivatedAbility { .. }
+        | StackEntryKind::TriggeredAbility { .. }
+        | StackEntryKind::KeywordAction { .. } => 0.5,
     }
 }
 

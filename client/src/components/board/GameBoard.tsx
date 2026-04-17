@@ -126,11 +126,27 @@ export function GameBoard() {
 
     if (waitingFor?.type === "Priority" && canActForWaitingState) {
       for (const action of legalActions) {
-        if (action.type !== "ActivateAbility") continue;
-        const object = gameState.objects[action.data.source_id];
-        const effectType = object?.abilities?.[action.data.ability_index]?.effect?.type;
-        if (effectType !== "Mana") {
-          activatableObjectIds.add(action.data.source_id);
+        // Standard ActivateAbility — exclude mana abilities (handled by the
+        // mana-tappable ring, not the cyan activatable ring).
+        if (action.type === "ActivateAbility") {
+          const object = gameState.objects[action.data.source_id];
+          const effectType = object?.abilities?.[action.data.ability_index]?.effect?.type;
+          if (effectType !== "Mana") {
+            activatableObjectIds.add(action.data.source_id);
+          }
+          continue;
+        }
+        // CR 113.3b: Activated keyword abilities — Crew/Station/Equip/Saddle
+        // are activations on a permanent and should surface the cyan
+        // activatable affordance the same way ActivateAbility does.
+        if (action.type === "CrewVehicle") {
+          activatableObjectIds.add(action.data.vehicle_id);
+        } else if (action.type === "ActivateStation") {
+          activatableObjectIds.add(action.data.spacecraft_id);
+        } else if (action.type === "SaddleMount") {
+          activatableObjectIds.add(action.data.mount_id);
+        } else if (action.type === "Equip") {
+          activatableObjectIds.add(action.data.equipment_id);
         }
       }
     }

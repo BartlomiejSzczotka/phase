@@ -34,6 +34,7 @@ export function ZoneHand({ zone }: ZoneHandProps) {
   const playerId = usePlayerId();
   const objects = useGameStore((s) => s.gameState?.objects);
   const legalActions = useGameStore((s) => s.legalActions);
+  const legalActionsByObject = useGameStore((s) => s.legalActionsByObject);
   const waitingFor = useGameStore((s) => s.waitingFor);
   const setPendingAbilityChoice = useUiStore((s) => s.setPendingAbilityChoice);
   const inspectObject = useUiStore((s) => s.inspectObject);
@@ -90,7 +91,7 @@ export function ZoneHand({ zone }: ZoneHandProps) {
       const obj = objects[objectId];
       if (!obj) return;
 
-      const allActions = collectObjectActions(legalActions, objectId as ObjectId);
+      const allActions = collectObjectActions(legalActionsByObject, objectId as ObjectId);
 
       if (allActions.length === 0) return;
       inspectObject(null);
@@ -100,7 +101,7 @@ export function ZoneHand({ zone }: ZoneHandProps) {
         setPendingAbilityChoice({ objectId: objectId as ObjectId, actions: allActions });
       }
     },
-    [objects, legalActions, inspectObject, setPendingAbilityChoice],
+    [objects, legalActionsByObject, inspectObject, setPendingAbilityChoice],
   );
 
   // Auto-collapse when targeting mode activates

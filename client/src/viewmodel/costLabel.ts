@@ -6,6 +6,7 @@ import type {
   SerializedAbility,
   SerializedAbilityCost,
 } from "../adapter/types.ts";
+import { getCrewPower, getSaddlePower } from "./keywordProps.ts";
 
 // Converts Rust ManaCostShard variant names to MTG abbreviations.
 // This is the canonical bridge between engine serialization and display—
@@ -125,6 +126,41 @@ export function abilityChoiceLabel(
       ? object.name
       : object.back_face?.name ?? object.name;
     return { label: `Play ${landFaceName}`, description: "Play this card as a land" };
+  }
+  // CR 702.122a: Crew N — read N from the engine-provided keyword.
+  if (action.type === "CrewVehicle") {
+    const n = getCrewPower(object.keywords);
+    return {
+      label: n != null ? `Crew ${n}` : "Crew",
+      description: n != null
+        ? `Tap any number of other creatures you control with total power ${n} or greater.`
+        : "Tap creatures to crew this Vehicle.",
+    };
+  }
+  // CR 702.184a: Station — single-creature cost; per-creature counter count.
+  if (action.type === "ActivateStation") {
+    return {
+      label: "Station",
+      description:
+        "Tap another untapped creature you control; put charge counters equal to its power on this Spacecraft.",
+    };
+  }
+  // CR 702.171a: Saddle N.
+  if (action.type === "SaddleMount") {
+    const n = getSaddlePower(object.keywords);
+    return {
+      label: n != null ? `Saddle ${n}` : "Saddle",
+      description: n != null
+        ? `Tap any number of other untapped creatures you control with total power ${n} or greater.`
+        : "Tap creatures to saddle this Mount.",
+    };
+  }
+  // CR 702.6a: Equip — target a creature you control.
+  if (action.type === "Equip") {
+    return {
+      label: "Equip",
+      description: "Attach this Equipment to target creature you control.",
+    };
   }
   return { label: "Tap for Mana" };
 }

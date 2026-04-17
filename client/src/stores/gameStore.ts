@@ -17,11 +17,12 @@ import { getPlayerId } from "../hooks/usePlayerId";
 import { loadCheckpoints, saveGame } from "../services/gamePersistence";
 
 /** Map a LegalActionsResult to the store fields it owns — single source of truth. */
-export function legalResultState(result: LegalActionsResult): Pick<GameStoreState, "legalActions" | "autoPassRecommended" | "spellCosts"> {
+export function legalResultState(result: LegalActionsResult): Pick<GameStoreState, "legalActions" | "autoPassRecommended" | "spellCosts" | "legalActionsByObject"> {
   return {
     legalActions: result.actions,
     autoPassRecommended: result.autoPassRecommended,
     spellCosts: result.spellCosts ?? {},
+    legalActionsByObject: result.legalActionsByObject ?? {},
   };
 }
 
@@ -64,6 +65,12 @@ interface GameStoreState {
   autoPassRecommended: boolean;
   /** Effective mana costs for castable spells, keyed by object_id string. */
   spellCosts: Record<string, ManaCost>;
+  /**
+   * Engine-grouped subset of `legalActions` keyed by source object id.
+   * Frontend "what can I do with this card?" lookups go through this map
+   * instead of introspecting GameAction variants client-side.
+   */
+  legalActionsByObject: Record<string, GameAction[]>;
   stateHistory: GameState[];
   turnCheckpoints: GameState[];
   /**
@@ -120,6 +127,7 @@ const initialState: GameStoreState = {
   legalActions: [],
   autoPassRecommended: false,
   spellCosts: {},
+  legalActionsByObject: {},
   stateHistory: [],
   turnCheckpoints: [],
   lobbyProgress: null,

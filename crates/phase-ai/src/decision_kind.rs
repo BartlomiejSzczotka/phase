@@ -61,6 +61,7 @@ pub fn classify(waiting_for: &WaitingFor, action: &GameAction) -> DecisionKind {
         | WaitingFor::EquipTarget { .. }
         | WaitingFor::CrewVehicle { .. }
         | WaitingFor::StationTarget { .. }
+        | WaitingFor::SaddleMount { .. }
         | WaitingFor::ScryChoice { .. }
         | WaitingFor::DigChoice { .. }
         | WaitingFor::SurveilChoice { .. }
