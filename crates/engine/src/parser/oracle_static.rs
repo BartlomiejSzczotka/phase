@@ -30,7 +30,7 @@ use crate::types::ability::{
     StaticDefinition, TargetFilter, TypeFilter, TypedFilter,
 };
 use crate::types::card_type::{CoreType, Supertype};
-use crate::types::keywords::Keyword;
+use crate::types::keywords::{Keyword, KeywordKind};
 use crate::types::mana::{ManaColor, ManaCost};
 use crate::types::phase::Phase;
 use crate::types::statics::{
@@ -5171,10 +5171,18 @@ fn try_parse_max_hand_size(tp: &TextPair<'_>, text: &str) -> Option<StaticDefini
     )
 }
 
-/// Handles three patterns:
-/// 1. "Once during each of your turns, you may cast [filter] from your graveyard." (Lurrus, Karador)
-/// 2. "You may play [filter] from your graveyard." (Crucible of Worlds, Icetill Explorer)
-/// 3. "You may cast [filter] from your graveyard." (Conduit of Worlds)
+/// Handles three patterns, each with an optional alt-cost rider:
+/// 1. "Once during each of your turns, you may cast [filter] from your graveyard[ rider]." (Lurrus, Karador)
+/// 2. "You may play [filter] from your graveyard[ rider]." (Crucible of Worlds, Icetill Explorer)
+/// 3. "You may cast [filter] from your graveyard[ rider]." (Conduit of Worlds, Ninja Teen)
+///
+/// Rider grammar (both possessive and number-insensitive):
+///   " using " alt("its" | "their") " " <keyword_name> " " alt("ability" | "abilities")
+///
+/// When present, the rider injects `FilterProp::HasKeywordKind { value: kind }` into the
+/// returned `affected: TargetFilter`, so eligibility is gated on that granted keyword.
+/// CR 604.2 + CR 118.9: static continuous effect granting permission to cast via an
+/// alternative cost associated with the named keyword.
 fn try_parse_graveyard_cast_permission(text: &str, lower: &str) -> Option<StaticDefinition> {
     // Determine pattern and extract the rest after the prefix
     let (rest, once_per_turn, play_mode) = if let Some(r) = nom_tag_lower(
@@ -5196,7 +5204,7 @@ fn try_parse_graveyard_cast_permission(text: &str, lower: &str) -> Option<Static
         return None;
     };
 
-    let (filter_text, _) = nom_primitives::split_once_on(rest, " from your graveyard")
+    let (filter_text, trailing) = nom_primitives::split_once_on(rest, " from your graveyard")
         .ok()
         .map(|(_, pair)| pair)?;
 
@@ -5217,14 +5225,63 @@ fn try_parse_graveyard_cast_permission(text: &str, lower: &str) -> Option<Static
 
     let (filter, _) = parse_type_phrase(&cleaned);
 
+    // Parse optional alt-cost rider from the text after "from your graveyard".
+    let rider_kind = parse_alt_cost_rider(trailing).ok().map(|(_, k)| k);
+
+    let affected = if let Some(kind) = rider_kind {
+        inject_keyword_kind_filter_prop(filter, kind)
+    } else {
+        filter
+    };
+
     Some(
         StaticDefinition::new(StaticMode::GraveyardCastPermission {
             once_per_turn,
             play_mode,
         })
-        .affected(filter)
+        .affected(affected)
         .description(text.to_string()),
     )
+}
+
+/// Parse the optional " using (its|their) <keyword> (ability|abilities)" rider on
+/// graveyard-cast-permission statics. Returns the named alt-cost keyword's kind.
+/// CR 118.9: the rider restricts the permission to casting via the named alt cost.
+fn parse_alt_cost_rider(input: &str) -> OracleResult<'_, KeywordKind> {
+    preceded(
+        tag(" using "),
+        preceded(
+            terminated(alt((tag("its"), tag("their"))), tag(" ")),
+            terminated(
+                nom_primitives::parse_alt_cost_keyword_name_to_kind,
+                preceded(tag(" "), alt((tag("abilities"), tag("ability")))),
+            ),
+        ),
+    )
+    .parse(input)
+}
+
+/// Inject a `HasKeywordKind` property into a `TargetFilter`. If the filter is already
+/// `Typed`, push into its `properties`. Otherwise wrap with `And` over a new typed
+/// filter carrying only the keyword constraint.
+fn inject_keyword_kind_filter_prop(filter: TargetFilter, kind: KeywordKind) -> TargetFilter {
+    match filter {
+        TargetFilter::Typed(mut tf) => {
+            tf.properties
+                .push(FilterProp::HasKeywordKind { value: kind });
+            TargetFilter::Typed(tf)
+        }
+        other => TargetFilter::And {
+            filters: vec![
+                other,
+                TargetFilter::Typed(TypedFilter {
+                    type_filters: vec![],
+                    controller: None,
+                    properties: vec![FilterProp::HasKeywordKind { value: kind }],
+                }),
+            ],
+        },
+    }
 }
 
 /// CR 601.2b + CR 118.9a: Parse "you may cast spells from your hand without paying their mana costs."
@@ -7852,6 +7909,103 @@ mod tests {
                 "Expected Typed filter with Permanent type, got: {:?}",
                 def.affected
             );
+        }
+    }
+
+    // --- Alt-cost rider tests (Ninja Teen et al., CR 118.9 / CR 702.190a) ---
+
+    #[test]
+    fn graveyard_cast_permission_ninja_teen_sneak_rider() {
+        // Ninja Teen Level 3 rider: grants GY-cast permission gated on Sneak.
+        let text = "You may cast creature spells from your graveyard using their sneak abilities.";
+        let def = parse_static_line(text).expect("should parse Ninja Teen rider");
+        assert!(matches!(
+            def.mode,
+            StaticMode::GraveyardCastPermission {
+                once_per_turn: false,
+                play_mode: CardPlayMode::Cast,
+            }
+        ));
+        let filter = def.affected.expect("should have affected filter");
+        let TargetFilter::Typed(tf) = filter else {
+            panic!("expected Typed filter, got: {filter:?}");
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Creature));
+        assert!(
+            tf.properties.iter().any(|p| matches!(
+                p,
+                FilterProp::HasKeywordKind {
+                    value: KeywordKind::Sneak
+                }
+            )),
+            "expected HasKeywordKind{{Sneak}} in properties, got: {:?}",
+            tf.properties
+        );
+    }
+
+    #[test]
+    fn graveyard_cast_permission_self_ref_rider_all_keywords() {
+        // Self-referential riders on the 5 shipping cards (Brokkos/Mutate,
+        // Phoenix/Bestow, Sabin+Underdog/Blitz, Timeline Culler/Warp).
+        let cases = [
+            ("mutate", KeywordKind::Mutate),
+            ("bestow", KeywordKind::Bestow),
+            ("blitz", KeywordKind::Blitz),
+            ("warp", KeywordKind::Warp),
+        ];
+        for (name, expected_kind) in cases {
+            let text =
+                format!("You may cast this card from your graveyard using its {name} ability.");
+            let def = parse_static_line(&text)
+                .unwrap_or_else(|| panic!("should parse self-ref rider for {name}"));
+            let filter = def
+                .affected
+                .unwrap_or_else(|| panic!("missing affected filter for {name}"));
+            let has_kind = match filter {
+                TargetFilter::Typed(tf) => tf.properties.iter().any(|p| {
+                    matches!(
+                        p,
+                        FilterProp::HasKeywordKind { value } if *value == expected_kind
+                    )
+                }),
+                TargetFilter::And { filters } => filters.iter().any(|f| {
+                    matches!(f, TargetFilter::Typed(tf)
+                        if tf.properties.iter().any(|p| matches!(
+                            p,
+                            FilterProp::HasKeywordKind { value } if *value == expected_kind
+                        ))
+                    )
+                }),
+                _ => false,
+            };
+            assert!(
+                has_kind,
+                "missing HasKeywordKind{{{expected_kind:?}}} for {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn graveyard_cast_permission_no_rider_leaves_filter_clean() {
+        // Lurrus / Muldrotha / Karador / Conduit / Yawgmoth's Will regression:
+        // permissions without a rider must not carry any HasKeywordKind prop.
+        let cases = [
+            "Once during each of your turns, you may cast a permanent spell with mana value 2 or less from your graveyard.",
+            "Once during each of your turns, you may cast a creature spell from your graveyard.",
+            "You may cast permanent spells from your graveyard.",
+        ];
+        for text in cases {
+            let def = parse_static_line(text)
+                .unwrap_or_else(|| panic!("should parse no-rider text: {text:?}"));
+            if let Some(TargetFilter::Typed(tf)) = def.affected {
+                assert!(
+                    !tf.properties
+                        .iter()
+                        .any(|p| matches!(p, FilterProp::HasKeywordKind { .. })),
+                    "unexpected HasKeywordKind in {text:?}: {:?}",
+                    tf.properties
+                );
+            }
         }
     }
 
