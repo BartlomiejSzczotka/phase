@@ -3,65 +3,9 @@ import { AnimatePresence, motion } from "framer-motion";
 
 import { useCardImage } from "../../hooks/useCardImage";
 
-/** Known effect API types supported by the engine. */
-const SUPPORTED_EFFECTS = [
-  "DealDamage", "GainLife", "LoseLife", "Draw", "DiscardCard",
-  "Destroy", "ChangeZone", "Counter",
-  "AddCounter", "RemoveCounter", "Token",
-  "Pump", "Tap", "Untap",
-  "Sacrifice",
-] as const;
-
-/** Known trigger modes supported by the engine (with real handlers). */
-const SUPPORTED_TRIGGERS = [
-  "ChangesZone", "ChangesZoneAll",
-  "DamageDone", "DamageDoneOnce", "DamageAll", "DamageDealtOnce", "DamageDoneOnceByController",
-  "SpellCast", "SpellCastOrCopy",
-  "Attacks", "AttackersDeclared", "AttackersDeclaredOneTarget",
-  "Blocks", "BlockersDeclared",
-  "Countered",
-  "CounterAdded", "CounterAddedOnce", "CounterAddedAll",
-  "CounterRemoved", "CounterRemovedOnce",
-  "Taps", "TapAll", "Untaps", "UntapAll",
-  "LifeGained", "LifeLost", "LifeLostAll",
-] as const;
-
-/** Known keyword abilities (non-Unknown variants). */
-const SUPPORTED_KEYWORDS = [
-  "Flying", "First Strike", "Double Strike", "Deathtouch",
-  "Haste", "Hexproof", "Indestructible", "Lifelink",
-  "Menace", "Reach", "Trample", "Vigilance",
-  "Flash", "Defender", "Fear", "Intimidate",
-  "Shroud", "Skulk", "Shadow", "Horsemanship",
-  "Wither", "Infect", "Afflict",
-  "Prowess", "Undying", "Persist", "Cascade",
-  "Exalted", "Flanking", "Evolve", "Extort",
-  "Exploit", "Explore", "Ascend", "Soulbond",
-  "Convoke", "Delve", "Devoid", "Changeling", "Phasing",
-  "Protection", "Ward",
-  "Cycling", "Equip", "Enchant", "Kicker", "Flashback",
-  "Retrace", "Bestow", "Morph", "Emerge", "Evoke",
-  "Suspend", "Madness", "Miracle", "Overload",
-  "Entwine", "Buyback", "Affinity",
-  "Crew", "Fabricate", "Outlast",
-] as const;
-
-/** Static ability modes supported by the engine. */
-const SUPPORTED_STATICS = [
-  "Continuous",
-  "CantAttack", "CantBlock", "CantBeTargeted", "CantBeCast",
-  "CantBeActivated", "CastWithFlash", "ReduceCost", "RaiseCost",
-  "CantGainLife", "CantLoseLife", "MustAttack", "MustBlock",
-  "CantDraw", "Panharmonicon", "IgnoreHexproof",
-] as const;
-
-/** Replacement effect types with real handlers. */
-const SUPPORTED_REPLACEMENTS = [
-  "DamageDone", "Moved", "Destroy", "Draw",
-  "GainLife", "LifeReduced",
-  "AddCounter", "RemoveCounter",
-  "Tap", "Untap", "Counter", "CreateToken",
-] as const;
+// Supported handlers are now derived from the coverage export, not a hardcoded list.
+// See `extractHandlerUsage` below — a handler is listed iff the parser produces it
+// on ≥1 fully supported card, which filters out stubs and dead API surface.
 
 // --- Per-card coverage types ---
 
@@ -89,6 +33,8 @@ interface CardCoverageResult {
   gap_count?: number;
   oracle_text?: string;
   parse_details?: ParsedItem[];
+  /** Set codes the card has been printed in (from MTGJSON `printings`). */
+  printings?: string[];
 }
 
 interface GapFrequency {
@@ -136,7 +82,7 @@ interface FormatCoverageSummary {
 
 const MAX_VISIBLE_CARDS = 200;
 
-type MainView = "card-coverage" | "gap-analysis" | "supported-handlers";
+type MainView = "card-coverage" | "by-set" | "gap-analysis" | "supported-handlers";
 type HandlerTab = "effects" | "triggers" | "keywords" | "statics" | "replacements";
 type StatusFilter = "all" | "supported" | "unsupported";
 type SortMode = "name" | "gaps-desc" | "gaps-asc";
@@ -171,7 +117,7 @@ export function CardCoverageDashboard() {
 
       {/* Tab bar */}
       <div className="flex flex-wrap gap-1.5 border-b border-white/10 px-4 py-3 sm:gap-2 sm:px-6">
-        {(["card-coverage", "gap-analysis", "supported-handlers"] as const).map((view) => (
+        {(["card-coverage", "by-set", "gap-analysis", "supported-handlers"] as const).map((view) => (
           <button
             key={view}
             onClick={() => setMainView(view)}
@@ -181,7 +127,13 @@ export function CardCoverageDashboard() {
                 : "border-white/8 bg-black/20 text-slate-400 hover:border-white/14 hover:text-slate-100"
             }`}
           >
-            {view === "card-coverage" ? "Card Coverage" : view === "gap-analysis" ? "Gap Analysis" : "Supported Handlers"}
+            {view === "card-coverage"
+              ? "Card Coverage"
+              : view === "by-set"
+                ? "By Set"
+                : view === "gap-analysis"
+                  ? "Gap Analysis"
+                  : "Supported Handlers"}
           </button>
         ))}
       </div>
@@ -189,6 +141,8 @@ export function CardCoverageDashboard() {
       {/* Content */}
       {mainView === "card-coverage" ? (
         <CardCoverageView />
+      ) : mainView === "by-set" ? (
+        <BySetView />
       ) : mainView === "gap-analysis" ? (
         <GapAnalysisView />
       ) : (
@@ -226,7 +180,7 @@ function CardCoverageView() {
   const hasActiveFilter = search.length >= 2 || statusFilter !== "all";
 
   const filteredCards = useMemo(() => {
-    if (!coverage || !hasActiveFilter) return [];
+    if (!coverage) return [];
     const lowerSearch = search.toLowerCase();
     const filtered = coverage.cards.filter((card) => {
       if (statusFilter === "supported" && !card.supported) return false;
@@ -246,7 +200,7 @@ function CardCoverageView() {
         break;
     }
     return filtered;
-  }, [coverage, search, statusFilter, hasActiveFilter, sortMode]);
+  }, [coverage, search, statusFilter, sortMode]);
 
   const activeCard = useMemo(() => {
     if (!selectedCard) return null;
@@ -389,15 +343,8 @@ function CardCoverageView() {
 
           {/* Scrollable card list */}
           <div className="min-h-0 flex-1 overflow-y-auto" ref={listRef} tabIndex={-1}>
-            {!hasActiveFilter ? (
-              <div className="px-3 py-10 text-center">
-                <div className="text-xs text-slate-500">
-                  Search or filter to browse {coverage.total_cards.toLocaleString()} cards
-                </div>
-              </div>
-            ) : (
-              <>
-                {visibleCards.map((card, i) => {
+            <>
+              {visibleCards.map((card, i) => {
                   const cardKey = `${card.card_name}-${i}`;
                   const isSelected = selectedCard === cardKey;
                   const isFocused = focusIndex === i;
@@ -438,8 +385,7 @@ function CardCoverageView() {
                 {filteredCards.length === 0 && (
                   <div className="px-3 py-10 text-center text-xs text-slate-500">No matches</div>
                 )}
-              </>
-            )}
+            </>
           </div>
 
           {/* List footer */}
@@ -528,6 +474,238 @@ function DetailEmptyState({ coverage }: { coverage: CoverageSummary }) {
                 );
               })}
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// --- By Set View ---
+
+const MIN_SET_CARDS = 20;
+const MIN_SET_COVERAGE = 90;
+
+interface SetCoverage {
+  set_code: string;
+  total: number;
+  supported: number;
+  pct: number;
+  gap_cards: CardCoverageResult[];
+}
+
+/** Aggregate cards by set code. A card counts toward every set it was printed in. */
+function aggregateBySet(cards: CardCoverageResult[]): SetCoverage[] {
+  const totals = new Map<string, { total: number; supported: number; gaps: CardCoverageResult[] }>();
+  for (const card of cards) {
+    const printings = card.printings ?? [];
+    for (const code of printings) {
+      let entry = totals.get(code);
+      if (!entry) {
+        entry = { total: 0, supported: 0, gaps: [] };
+        totals.set(code, entry);
+      }
+      entry.total += 1;
+      if (card.supported) {
+        entry.supported += 1;
+      } else {
+        entry.gaps.push(card);
+      }
+    }
+  }
+  return [...totals.entries()]
+    .map(([set_code, v]) => ({
+      set_code,
+      total: v.total,
+      supported: v.supported,
+      pct: v.total > 0 ? (100 * v.supported) / v.total : 0,
+      gap_cards: v.gaps,
+    }))
+    .filter((s) => s.total >= MIN_SET_CARDS && s.pct >= MIN_SET_COVERAGE)
+    .sort((a, b) => b.pct - a.pct || b.total - a.total);
+}
+
+function BySetView() {
+  const [coverage, setCoverage] = useState<CoverageSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [expandedSet, setExpandedSet] = useState<string | null>(null);
+  const [selectedGapCard, setSelectedGapCard] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetch(__COVERAGE_DATA_URL__)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data: CoverageSummary) => setCoverage(data))
+      .catch(() => setCoverage(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const sets = useMemo(() => (coverage ? aggregateBySet(coverage.cards) : []), [coverage]);
+
+  if (loading) {
+    return (
+      <div className="flex flex-1 items-center justify-center p-8">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/20 border-t-sky-300" />
+      </div>
+    );
+  }
+
+  if (!coverage) {
+    return (
+      <div className="flex-1 p-8 text-center text-sm text-slate-400">
+        No coverage data available.
+      </div>
+    );
+  }
+
+  const hasPrintings = coverage.cards.some((c) => (c.printings ?? []).length > 0);
+  if (!hasPrintings) {
+    return (
+      <div className="flex-1 p-8 text-center text-sm text-slate-400">
+        <p className="mb-2">Set membership data is not in this coverage export.</p>
+        <p className="font-mono text-xs text-slate-500">
+          Regenerate with: ./scripts/gen-card-data.sh
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div className="border-b border-white/10 px-4 py-3 text-xs text-slate-400 sm:px-6">
+        Sets with &ge;{MIN_SET_CARDS} cards and &ge;{MIN_SET_COVERAGE}% fully supported. Expand a set to inspect remaining gaps.
+        <span className="ml-2 text-slate-500">({sets.length} sets)</span>
+      </div>
+
+      <div className="flex-1 overflow-y-auto px-4 py-4 sm:px-6">
+        <div className="space-y-1">
+          {sets.map((s) => (
+            <SetRow
+              key={s.set_code}
+              set={s}
+              isExpanded={expandedSet === s.set_code}
+              onToggle={() => {
+                setExpandedSet(expandedSet === s.set_code ? null : s.set_code);
+                setSelectedGapCard(null);
+              }}
+              selectedGapCard={selectedGapCard}
+              onSelectGapCard={(name) =>
+                setSelectedGapCard(selectedGapCard === name ? null : name)
+              }
+            />
+          ))}
+          {sets.length === 0 && (
+            <div className="px-3 py-10 text-center text-xs text-slate-500">
+              No sets meet the threshold yet.
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SetRow({
+  set,
+  isExpanded,
+  onToggle,
+  selectedGapCard,
+  onSelectGapCard,
+}: {
+  set: SetCoverage;
+  isExpanded: boolean;
+  onToggle: () => void;
+  selectedGapCard: string | null;
+  onSelectGapCard: (name: string) => void;
+}) {
+  const barColor =
+    set.pct >= 98
+      ? "from-emerald-500 to-emerald-300"
+      : set.pct >= 95
+        ? "from-emerald-600 to-emerald-400"
+        : "from-teal-600 to-teal-400";
+
+  const selectedCard =
+    selectedGapCard != null
+      ? set.gap_cards.find((c) => c.card_name === selectedGapCard) ?? null
+      : null;
+
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        className={`flex w-full items-center gap-3 rounded-[10px] border px-3 py-2 text-left text-[13px] transition ${
+          isExpanded
+            ? "border-sky-400/30 bg-sky-500/8"
+            : "border-white/5 bg-black/12 hover:border-white/10"
+        }`}
+      >
+        <span className={`text-[10px] transition ${isExpanded ? "rotate-90" : ""}`}>&#9654;</span>
+        <span className="w-14 shrink-0 font-mono text-xs font-semibold uppercase tracking-wider text-slate-200">
+          {set.set_code}
+        </span>
+        <div className="relative h-3 min-w-0 flex-1 overflow-hidden rounded bg-black/30">
+          <div
+            className={`absolute inset-y-0 left-0 rounded bg-gradient-to-r ${barColor}`}
+            style={{ width: `${Math.min(set.pct, 100)}%` }}
+          />
+        </div>
+        <span className="shrink-0 font-mono text-[11px] text-emerald-300/90">
+          {set.pct.toFixed(1)}%
+        </span>
+        <span className="hidden shrink-0 font-mono text-[11px] text-slate-400 sm:inline">
+          {set.supported}/{set.total}
+        </span>
+        {set.gap_cards.length > 0 && (
+          <span className="shrink-0 rounded-full bg-rose-500/12 px-2 py-0.5 font-mono text-[10px] text-rose-300/90">
+            {set.gap_cards.length} gap{set.gap_cards.length === 1 ? "" : "s"}
+          </span>
+        )}
+      </button>
+
+      {isExpanded && (
+        <div className="ml-3 mt-1 border-l border-white/8 pl-3 pt-1 sm:ml-6 sm:pl-4">
+          {set.gap_cards.length === 0 ? (
+            <div className="py-2 text-[11px] text-slate-500">No unsupported cards in this set.</div>
+          ) : (
+            <>
+              <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.14em] text-slate-500">
+                Unsupported cards ({set.gap_cards.length}) — click one to inspect parse tree
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {set.gap_cards.map((card) => {
+                  const active = selectedGapCard === card.card_name;
+                  return (
+                    <button
+                      key={card.card_name}
+                      onClick={() => onSelectGapCard(card.card_name)}
+                      className={`rounded-[6px] border px-2 py-1 text-[11px] transition ${
+                        active
+                          ? "border-sky-400/60 bg-sky-500/16 text-sky-100"
+                          : "border-rose-400/20 bg-rose-500/8 text-rose-200/90 hover:border-rose-400/40"
+                      }`}
+                      title={
+                        (card.gap_details ?? [])
+                          .map((g) => g.handler)
+                          .join(", ") || "no gap details"
+                      }
+                    >
+                      {card.card_name}
+                      {(card.gap_count ?? 0) > 0 && (
+                        <span className="ml-1.5 text-[9px] text-rose-300/70">×{card.gap_count}</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+              {selectedCard && (
+                <div className="mt-3 rounded-[10px] border border-white/10 bg-black/30">
+                  <CardParseDetail card={selectedCard} />
+                </div>
+              )}
+            </>
+          )}
         </div>
       )}
     </div>
@@ -1361,43 +1539,136 @@ function CopyButton({ text, label, className = "" }: { text: string; label: stri
   );
 }
 
-// --- Supported Handlers View (existing functionality) ---
+// --- Supported Handlers View (derived from engine-produced parse data) ---
+
+interface HandlerUsage {
+  label: string;
+  count: number;
+}
+
+/** Category on a ParsedItem matches the HandlerTab buckets (except "effects" == "ability"). */
+const HANDLER_TAB_TO_CATEGORIES: Record<HandlerTab, ParseCategory[]> = {
+  effects: ["ability"],
+  triggers: ["trigger"],
+  keywords: ["keyword"],
+  statics: ["static"],
+  replacements: ["replacement"],
+};
+
+/** Walk the parse tree, counting handlers by category from fully supported cards only.
+ *  A handler present on a supported card means: parser produced it AND the card is considered
+ *  supported end-to-end — i.e., the resolver has a real path for it. Handlers that only appear
+ *  on unsupported cards or never appear are filtered out as stubs/unused. */
+function extractHandlerUsage(
+  cards: CardCoverageResult[],
+): Record<HandlerTab, HandlerUsage[]> {
+  const perCategory: Record<ParseCategory, Map<string, number>> = {
+    ability: new Map(),
+    trigger: new Map(),
+    keyword: new Map(),
+    static: new Map(),
+    replacement: new Map(),
+    cost: new Map(),
+  };
+
+  const visit = (items: ParsedItem[] | undefined) => {
+    if (!items) return;
+    for (const item of items) {
+      if (item.supported) {
+        const m = perCategory[item.category];
+        m.set(item.label, (m.get(item.label) ?? 0) + 1);
+      }
+      visit(item.children);
+    }
+  };
+
+  for (const card of cards) {
+    if (!card.supported) continue;
+    visit(card.parse_details);
+  }
+
+  const result: Record<HandlerTab, HandlerUsage[]> = {
+    effects: [],
+    triggers: [],
+    keywords: [],
+    statics: [],
+    replacements: [],
+  };
+
+  for (const tab of Object.keys(HANDLER_TAB_TO_CATEGORIES) as HandlerTab[]) {
+    const merged = new Map<string, number>();
+    for (const cat of HANDLER_TAB_TO_CATEGORIES[tab]) {
+      for (const [label, count] of perCategory[cat]) {
+        merged.set(label, (merged.get(label) ?? 0) + count);
+      }
+    }
+    result[tab] = [...merged.entries()]
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label));
+  }
+
+  return result;
+}
 
 function SupportedHandlersView() {
+  const [coverage, setCoverage] = useState<CoverageSummary | null>(null);
+  const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [activeTab, setActiveTab] = useState<HandlerTab>("effects");
 
+  useEffect(() => {
+    fetch(__COVERAGE_DATA_URL__)
+      .then((res) => {
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res.json();
+      })
+      .then((data: CoverageSummary) => setCoverage(data))
+      .catch(() => setCoverage(null))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const usage = useMemo(
+    () => (coverage ? extractHandlerUsage(coverage.cards) : null),
+    [coverage],
+  );
+
   const filteredItems = useMemo(() => {
+    if (!usage) return [];
+    const items = usage[activeTab];
     const lowerSearch = search.toLowerCase();
-    const items =
-      activeTab === "effects"
-        ? SUPPORTED_EFFECTS
-        : activeTab === "triggers"
-          ? SUPPORTED_TRIGGERS
-          : activeTab === "keywords"
-            ? SUPPORTED_KEYWORDS
-            : activeTab === "statics"
-              ? SUPPORTED_STATICS
-              : SUPPORTED_REPLACEMENTS;
-
     if (!lowerSearch) return items;
-    return items.filter((item) => item.toLowerCase().includes(lowerSearch));
-  }, [search, activeTab]);
+    return items.filter((item) => item.label.toLowerCase().includes(lowerSearch));
+  }, [search, activeTab, usage]);
 
-  const tabs: { key: HandlerTab; label: string; count: number }[] = [
-    { key: "effects", label: "Effects", count: SUPPORTED_EFFECTS.length },
-    { key: "triggers", label: "Triggers", count: SUPPORTED_TRIGGERS.length },
-    { key: "keywords", label: "Keywords", count: SUPPORTED_KEYWORDS.length },
-    { key: "statics", label: "Statics", count: SUPPORTED_STATICS.length },
-    { key: "replacements", label: "Replacements", count: SUPPORTED_REPLACEMENTS.length },
-  ];
+  const tabs: { key: HandlerTab; label: string; count: number }[] = useMemo(
+    () =>
+      [
+        { key: "effects" as const, label: "Effects" },
+        { key: "triggers" as const, label: "Triggers" },
+        { key: "keywords" as const, label: "Keywords" },
+        { key: "statics" as const, label: "Statics" },
+        { key: "replacements" as const, label: "Replacements" },
+      ].map((t) => ({ ...t, count: usage?.[t.key].length ?? 0 })),
+    [usage],
+  );
 
-  const totalHandlers =
-    SUPPORTED_EFFECTS.length +
-    SUPPORTED_TRIGGERS.length +
-    SUPPORTED_KEYWORDS.length +
-    SUPPORTED_STATICS.length +
-    SUPPORTED_REPLACEMENTS.length;
+  const totalHandlers = tabs.reduce((sum, t) => sum + t.count, 0);
+
+  if (loading) {
+    return (
+      <div className="flex flex-1 items-center justify-center p-8">
+        <div className="h-8 w-8 animate-spin rounded-full border-2 border-white/20 border-t-sky-300" />
+      </div>
+    );
+  }
+
+  if (!coverage || !usage) {
+    return (
+      <div className="flex-1 p-8 text-center text-sm text-slate-400">
+        No coverage data available.
+      </div>
+    );
+  }
 
   return (
     <>
@@ -1405,10 +1676,10 @@ function SupportedHandlersView() {
       <div className="border-b border-white/10 px-4 py-4 sm:px-6">
         <div className="mb-2 flex flex-col gap-1 text-sm sm:flex-row sm:items-center sm:justify-between">
           <span className="text-slate-300">
-            {totalHandlers} total handlers implemented
+            {totalHandlers} handlers observed on supported cards
           </span>
-          <span className="font-mono text-xs text-emerald-300 sm:text-sm">
-            {SUPPORTED_EFFECTS.length} effects / {SUPPORTED_TRIGGERS.length} triggers / {SUPPORTED_KEYWORDS.length} keywords
+          <span className="font-mono text-xs text-slate-500 sm:text-sm">
+            derived from parser output &middot; stubs &amp; unused variants excluded
           </span>
         </div>
         <div className="h-2.5 w-full overflow-hidden rounded-full bg-black/30">
@@ -1452,24 +1723,29 @@ function SupportedHandlersView() {
         <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-3">
           {filteredItems.map((item) => (
             <div
-              key={item}
+              key={item.label}
               className="flex min-h-11 items-center gap-2 rounded-[16px] border border-white/8 bg-black/16 px-3 py-2 text-sm text-slate-200"
             >
               <span className="text-emerald-300">&#10003;</span>
-              {item}
+              <span className="min-w-0 flex-1 truncate">{item.label}</span>
+              <span className="shrink-0 font-mono text-[11px] tabular-nums text-slate-500">
+                {item.count.toLocaleString()} card{item.count === 1 ? "" : "s"}
+              </span>
             </div>
           ))}
         </div>
         {filteredItems.length === 0 && (
           <p className="py-8 text-center text-sm text-gray-500">
-            No matches found for &ldquo;{search}&rdquo;
+            {search
+              ? `No matches found for \u201C${search}\u201D`
+              : "No handlers in this category are produced by the parser on fully supported cards."}
           </p>
         )}
       </div>
 
       {/* Footer */}
       <div className="border-t border-white/10 px-4 py-3 text-center text-xs text-slate-500 sm:px-6">
-        {totalHandlers} total handlers across {tabs.length} categories
+        {totalHandlers} handlers across {tabs.length} categories &middot; engine-derived from {coverage.supported_cards.toLocaleString()} supported cards
       </div>
     </>
   );

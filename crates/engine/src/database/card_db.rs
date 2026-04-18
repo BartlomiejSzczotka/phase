@@ -19,6 +19,10 @@ pub struct CardDatabase {
     /// when `get_by_name` returns None (export path doesn't build `CardRules`).
     pub(crate) layout_index: HashMap<String, LayoutKind>,
     pub(crate) legalities: HashMap<String, CardLegalities>,
+    /// Maps face key (lowercased card name) → set codes the card was printed in.
+    /// Populated only via the export path (MTGJSON `printings` field).
+    /// Used by the coverage dashboard to group cards by set.
+    pub(crate) printings_index: HashMap<String, Vec<String>>,
     pub(crate) errors: Vec<(PathBuf, String)>,
 }
 
@@ -49,6 +53,7 @@ impl CardDatabase {
         let mut oracle_id_index: HashMap<String, Vec<String>> = HashMap::new();
         let mut layout_index: HashMap<String, LayoutKind> = HashMap::new();
         let mut legalities = HashMap::new();
+        let mut printings_index: HashMap<String, Vec<String>> = HashMap::new();
 
         for (_name, entry) in entries {
             let key = entry.face.name.to_lowercase();
@@ -63,6 +68,10 @@ impl CardDatabase {
             }
             face_index.insert(key.clone(), entry.face);
 
+            if !entry.printings.is_empty() {
+                printings_index.insert(key.clone(), entry.printings);
+            }
+
             let normalized = normalize_legalities(&entry.legalities);
             if !normalized.is_empty() {
                 legalities.insert(key, normalized);
@@ -75,6 +84,7 @@ impl CardDatabase {
             oracle_id_index,
             layout_index,
             legalities,
+            printings_index,
             errors: Vec::new(),
         }
     }
@@ -116,6 +126,14 @@ impl CardDatabase {
     pub fn legality_status(&self, name: &str, format: LegalityFormat) -> Option<LegalityStatus> {
         self.get_legalities(name)
             .and_then(|m| m.get(&format).copied())
+    }
+
+    /// Returns the set codes a card has been printed in (e.g. `["M11", "LEA"]`),
+    /// or `None` if the card was loaded via a path that doesn't record printings.
+    pub fn printings_for(&self, name: &str) -> Option<&[String]> {
+        self.printings_index
+            .get(&name.to_lowercase())
+            .map(Vec::as_slice)
     }
 
     pub fn card_count(&self) -> usize {
@@ -162,6 +180,9 @@ struct CardExportEntry {
     /// MTGJSON layout string for multi-face cards (e.g. "modal_dfc", "transform").
     #[serde(default)]
     layout: Option<String>,
+    /// Set codes the card has been printed in (from MTGJSON `printings`).
+    #[serde(default)]
+    printings: Vec<String>,
 }
 
 /// Convert MTGJSON layout string to runtime `LayoutKind`.

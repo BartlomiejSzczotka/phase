@@ -26,6 +26,10 @@ struct CardExportEntry {
     /// `LayoutKind` when loading from the export (where `CardRules` is not available).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     layout: Option<String>,
+    /// Set codes the card has been printed in (from MTGJSON `printings`).
+    /// Used by the coverage dashboard to group supported/gap cards by set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    printings: Vec<String>,
 }
 
 fn build_export_layout(
@@ -241,6 +245,7 @@ fn main() {
                         face,
                         legalities,
                         layout: layout_str,
+                        printings: faces[0].printings.clone(),
                     },
                 );
             }
@@ -263,6 +268,7 @@ fn main() {
                     face,
                     legalities,
                     layout: None,
+                    printings: faces[0].printings.clone(),
                 },
             );
         }

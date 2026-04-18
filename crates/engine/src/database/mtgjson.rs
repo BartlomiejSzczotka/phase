@@ -51,6 +51,8 @@ pub struct AtomicCard {
     pub legalities: HashMap<String, String>,
     #[serde(default)]
     pub leadership_skills: Option<LeadershipSkills>,
+    #[serde(default)]
+    pub printings: Vec<String>,
     pub identifiers: AtomicIdentifiers,
 }
 

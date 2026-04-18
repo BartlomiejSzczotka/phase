@@ -112,6 +112,10 @@ pub struct CardCoverageResult {
     /// Hierarchical parse tree showing what each piece of Oracle text was parsed into.
     #[serde(skip_serializing_if = "Vec::is_empty", default)]
     pub parse_details: Vec<ParsedItem>,
+    /// Set codes the card has been printed in (from MTGJSON `printings`).
+    /// Used by the coverage dashboard to aggregate cards by set.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub printings: Vec<String>,
 }
 
 /// A normalized Oracle text pattern with frequency and example cards.
@@ -2163,6 +2167,11 @@ pub fn analyze_coverage(card_db: &CardDatabase) -> CoverageSummary {
         }
         let gap_count = gap_details.len();
 
+        let printings = card_db
+            .printings_for(key)
+            .map(|slice| slice.to_vec())
+            .unwrap_or_default();
+
         cards.push(CardCoverageResult {
             card_name: face.name.clone(),
             set_code: String::new(),
@@ -2171,6 +2180,7 @@ pub fn analyze_coverage(card_db: &CardDatabase) -> CoverageSummary {
             gap_count,
             oracle_text: face.oracle_text.clone(),
             parse_details,
+            printings,
         });
     }
 

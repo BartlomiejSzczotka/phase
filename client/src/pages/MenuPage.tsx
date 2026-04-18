@@ -191,24 +191,37 @@ export function MenuPage() {
           {formatCoverage.length > 0 && (
             <button
               onClick={() => navigate("/coverage")}
-              className="mt-6 grid grid-cols-2 gap-x-3 gap-y-1 rounded-xl border border-white/6 bg-black/16 px-4 py-2.5 transition-colors hover:border-white/12 hover:bg-black/24 sm:grid-cols-4"
+              title="Open the coverage dashboard"
+              aria-label="Open card coverage dashboard"
+              className="group mt-6 flex cursor-pointer flex-col gap-2 rounded-xl border border-sky-400/30 bg-sky-500/[0.06] px-4 py-3 shadow-[0_0_0_1px_rgba(56,189,248,0.08)] transition-colors hover:border-sky-400/60 hover:bg-sky-500/[0.12] hover:shadow-[0_0_0_1px_rgba(56,189,248,0.22)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-sky-400/70"
             >
-              {formatCoverage.map(([label, summary]) => (
-                <span key={label} className="flex items-center justify-between gap-2 px-1">
-                  <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                    {label}
-                  </span>
-                  <span className={`font-mono text-[11px] font-medium ${
-                    summary.coverage_pct > 70
-                      ? "text-emerald-400"
-                      : summary.coverage_pct > 40
-                        ? "text-yellow-400"
-                        : "text-red-400"
-                  }`}>
-                    {summary.coverage_pct.toFixed(0)}%
-                  </span>
+              <div className="flex items-center justify-between gap-3">
+                <span className="flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[0.16em] text-sky-200">
+                  <span aria-hidden>&#128269;</span>
+                  Card Coverage Dashboard
                 </span>
-              ))}
+                <span className="text-[11px] font-medium text-sky-300 transition-transform group-hover:translate-x-0.5">
+                  View details &rarr;
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-x-3 gap-y-1 sm:grid-cols-4">
+                {formatCoverage.map(([label, summary]) => (
+                  <span key={label} className="flex items-center justify-between gap-2 px-1">
+                    <span className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      {label}
+                    </span>
+                    <span className={`font-mono text-[11px] font-medium ${
+                      summary.coverage_pct > 70
+                        ? "text-emerald-400"
+                        : summary.coverage_pct > 40
+                          ? "text-yellow-400"
+                          : "text-red-400"
+                    }`}>
+                      {summary.coverage_pct.toFixed(0)}%
+                    </span>
+                  </span>
+                ))}
+              </div>
             </button>
           )}
         </div>
