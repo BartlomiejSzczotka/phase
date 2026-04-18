@@ -23,6 +23,7 @@ import {
   type DeckCompatibilityResult,
 } from "../../services/deckCompatibility";
 import { ImportDeckModal } from "./ImportDeckModal";
+import { PreconDeckModal } from "./PreconDeckModal";
 import { MenuPanel } from "./MenuShell";
 import { menuButtonClass } from "./buttonStyles";
 import {
@@ -285,6 +286,7 @@ export function MyDecks({
   const [activeTab, setActiveTab] = useState<MyDecksTab>("decks");
   const [deckNames, setDeckNames] = useState<string[]>([]);
   const [showImport, setShowImport] = useState(false);
+  const [showPrecon, setShowPrecon] = useState(false);
   const [showFeedManager, setShowFeedManager] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [compatibilities, setCompatibilities] = useState<Record<string, DeckCompatibilityResult>>({});
@@ -745,6 +747,23 @@ export function MyDecks({
                 </span>
               </button>
 
+              <button
+                onClick={() => setShowPrecon(true)}
+                className="group relative flex aspect-[4/3] flex-col items-center justify-center gap-2 overflow-hidden rounded-xl ring-1 ring-white/10 transition hover:bg-white/5 hover:ring-white/20"
+              >
+                <svg
+                  xmlns="http://www.w3.org/2000/svg"
+                  viewBox="0 0 20 20"
+                  fill="currentColor"
+                  className="h-8 w-8 text-gray-500 transition-colors group-hover:text-gray-300"
+                >
+                  <path d="M3 3.5A1.5 1.5 0 0 1 4.5 2h7A1.5 1.5 0 0 1 13 3.5v13a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 3 16.5v-13Zm11.25.5a.75.75 0 0 1 .75.75v11.5a.75.75 0 0 1-1.5 0V4.75a.75.75 0 0 1 .75-.75Zm2.5 1.5a.75.75 0 0 1 .75.75v8.5a.75.75 0 0 1-1.5 0v-8.5a.75.75 0 0 1 .75-.75Z" />
+                </svg>
+                <span className="text-xs font-medium text-gray-500 transition-colors group-hover:text-gray-300">
+                  Preconstructed
+                </span>
+              </button>
+
               {userDecks.map((deckName) => (
                 <DeckTile
                   key={deckName}
@@ -825,6 +844,15 @@ export function MyDecks({
         open={showImport}
         onClose={() => setShowImport(false)}
         onImported={handleImported}
+      />
+      <PreconDeckModal
+        open={showPrecon}
+        onClose={() => setShowPrecon(false)}
+        onImported={(name) => {
+          const names = listSavedDeckNames();
+          setDeckNames(names);
+          if (mode === "select") onSelectDeck?.(name);
+        }}
       />
       <FeedManagerModal
         open={showFeedManager}
