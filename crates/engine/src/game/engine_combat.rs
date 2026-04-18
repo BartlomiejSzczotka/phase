@@ -428,6 +428,16 @@ pub(super) fn handle_assign_combat_damage(
 }
 
 /// CR 508.8: If no creatures are declared as attackers, skip declare blockers and combat damage steps.
+///
+/// This helper is intentionally asymmetric with `handle_empty_blockers`:
+/// - CR 508.8 *explicitly* skips declare blockers and combat damage when there
+///   are no attackers — no priority window is owed during skipped steps.
+/// - CR 509.1 (handled by `handle_empty_blockers`) says the declare blockers
+///   step still runs even if no blockers are declared, and CR 117.1c requires
+///   AP priority during it (required for instants and CR 702.49 Ninjutsu-family
+///   activations — notably Sneak, which is restricted to this step).
+///
+/// Do not "harmonize" the two paths: collapsing them reintroduces the Sneak bug.
 pub(super) fn handle_empty_attackers(
     state: &mut GameState,
     events: &mut Vec<GameEvent>,
@@ -460,8 +470,13 @@ pub(super) fn handle_empty_blockers(
         return Ok(waiting_for);
     }
 
-    turns::advance_phase(state, events);
-    Ok(turns::auto_advance(state, events))
+    // CR 117.1c: The active player receives priority during the declare blockers step,
+    // even when no blockers were declared. Required for instants and Ninjutsu-family
+    // activations (CR 702.49) — notably Sneak, which is restricted to this step.
+    priority::reset_priority(state);
+    Ok(WaitingFor::Priority {
+        player: state.active_player,
+    })
 }
 
 #[cfg(test)]

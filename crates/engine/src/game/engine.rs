@@ -235,9 +235,18 @@ fn run_auto_pass_loop(state: &mut GameState, result: &mut ActionResult) {
                 }
             }
 
-            // UntilEndOfTurn: auto-submit empty blockers
-            WaitingFor::DeclareBlockers { player, .. }
-                if state
+            // Auto-submit empty blockers when there's nothing to choose:
+            //   (a) the defender is in UntilEndOfTurn mode, OR
+            //   (b) no legal blocks are available — CR 509.1 says the turn-based action
+            //       still runs, and CR 117.1c requires the active player to receive
+            //       priority during the step (instants and Ninjutsu-family activations
+            //       per CR 702.49 — notably Sneak, which is restricted to this step).
+            WaitingFor::DeclareBlockers {
+                player,
+                valid_blocker_ids,
+                ..
+            } if valid_blocker_ids.is_empty()
+                || state
                     .auto_pass
                     .get(player)
                     .is_some_and(|m| matches!(m, AutoPassMode::UntilEndOfTurn)) =>
@@ -7732,8 +7741,18 @@ mod phase_trigger_regression_tests {
         assert_eq!(state.objects[&ajani].power, Some(3));
         assert_eq!(state.objects[&ajani].toughness, Some(3));
 
-        apply_as_current(&mut state, GameAction::PassPriority).unwrap();
-        let combat_result = apply_as_current(&mut state, GameAction::PassPriority).unwrap();
+        // CR 117.1c: Active player gets priority in every step — so from
+        // DeclareAttackers we pass through: declare attackers (AP, NAP) →
+        // declare blockers (AP, NAP, after auto-submitted empty block) →
+        // combat damage resolves → end-of-combat → post-combat main.
+        let mut combat_result = None;
+        for _ in 0..8 {
+            if state.phase == Phase::PostCombatMain {
+                break;
+            }
+            combat_result = Some(apply_as_current(&mut state, GameAction::PassPriority).unwrap());
+        }
+        let combat_result = combat_result.expect("combat should advance");
 
         assert!(matches!(
             combat_result.waiting_for,
@@ -8927,6 +8946,74 @@ mod phase_trigger_regression_tests {
             exile_moves, 1,
             "reflexive must fire exactly once per CR 603.12a; got {exile_moves} exile \
              transitions of the copy source (expected 1)"
+        );
+    }
+
+    /// CR 117.1c + CR 509.1 + CR 702.49: When an attacker exists but the defending
+    /// player has no legal blockers, the declare blockers step still runs and the
+    /// active player still receives priority during it. This window is what makes
+    /// Ninjutsu-family activations (notably Sneak, CR 702.49 variant — restricted
+    /// to this step only) reachable when attacking into an empty board.
+    #[test]
+    fn declare_blockers_grants_ap_priority_when_no_legal_blockers() {
+        let mut state = new_game(42);
+        state.turn_number = 2;
+        state.phase = Phase::DeclareAttackers;
+        state.active_player = PlayerId(0);
+        state.priority_player = PlayerId(0);
+
+        let attacker = create_object(
+            &mut state,
+            CardId(500),
+            PlayerId(0),
+            "Attacker".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&attacker).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(2);
+            obj.toughness = Some(2);
+            obj.entered_battlefield_turn = Some(1);
+        }
+        // Defender has no creatures — no legal blocks.
+
+        state.waiting_for = WaitingFor::DeclareAttackers {
+            player: PlayerId(0),
+            valid_attacker_ids: vec![attacker],
+            valid_attack_targets: vec![AttackTarget::Player(PlayerId(1))],
+        };
+
+        apply_as_current(
+            &mut state,
+            GameAction::DeclareAttackers {
+                attacks: vec![(attacker, AttackTarget::Player(PlayerId(1)))],
+            },
+        )
+        .unwrap();
+
+        // AP passes in DeclareAttackers; NAP passes; engine advances into
+        // DeclareBlockers, auto-submits empty blockers (nothing to choose),
+        // and — per CR 117.1c — hands priority back to the active player
+        // *during the declare blockers step*.
+        apply_as_current(&mut state, GameAction::PassPriority).unwrap();
+        let result = apply_as_current(&mut state, GameAction::PassPriority).unwrap();
+
+        assert_eq!(
+            state.phase,
+            Phase::DeclareBlockers,
+            "step should be declare blockers, not skipped past"
+        );
+        assert!(
+            matches!(
+                result.waiting_for,
+                WaitingFor::Priority {
+                    player: PlayerId(0)
+                }
+            ),
+            "active player must receive priority in declare blockers step \
+             (CR 117.1c) so they can activate Sneak (CR 702.49); got {:?}",
+            result.waiting_for
         );
     }
 }

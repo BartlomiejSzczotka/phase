@@ -852,22 +852,22 @@ pub fn auto_advance(state: &mut GameState, events: &mut Vec<GameEvent>) -> Waiti
                     .as_ref()
                     .is_some_and(|c| !c.attackers.is_empty());
                 if has_attackers {
+                    // CR 509.1 + CR 117.1c: The declare blockers turn-based action always
+                    // runs — even when no legal blocks are available — and the active
+                    // player always receives priority during the step (required for
+                    // instants and Ninjutsu-family activations per CR 702.49, notably
+                    // Sneak which is restricted to this step). The phase layer only
+                    // emits the interactive waiting state; whether to auto-submit empty
+                    // blockers (because no legal blocks exist, or because the defender
+                    // is in UntilEndOfTurn mode) is decided by `run_auto_pass_loop`.
                     let defending = super::players::next_player(state, state.active_player);
-                    // CR 509.1a: Compute valid block pairs first — a creature that can't
-                    // legally block any attacker (e.g. ground creature vs flyer) is not a
-                    // valid blocker for auto-pass purposes.
                     let valid_block_targets = super::combat::get_valid_block_targets(state);
-                    if !valid_block_targets.is_empty() {
-                        let valid_blocker_ids: Vec<_> =
-                            valid_block_targets.keys().copied().collect();
-                        return WaitingFor::DeclareBlockers {
-                            player: defending,
-                            valid_blocker_ids,
-                            valid_block_targets,
-                        };
-                    }
-                    // CR 509.1a: No legal blocks available — step has no declarations.
-                    advance_phase(state, events);
+                    let valid_blocker_ids: Vec<_> = valid_block_targets.keys().copied().collect();
+                    return WaitingFor::DeclareBlockers {
+                        player: defending,
+                        valid_blocker_ids,
+                        valid_block_targets,
+                    };
                 } else {
                     // CR 508.8: Declare blockers and combat damage steps are skipped if no attackers.
                     state.phase = Phase::EndCombat;
