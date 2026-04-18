@@ -248,7 +248,7 @@ pub fn validate_attackers(state: &GameState, attacker_ids: &[ObjectId]) -> Resul
                 return Err(format!("{:?} has Defender", id));
             }
         }
-        if obj.static_definitions.iter().any(|sd| {
+        if super::static_abilities::active_static_definitions(state, obj).any(|sd| {
             matches!(
                 sd.mode,
                 StaticMode::CantAttack | StaticMode::CantAttackOrBlock
@@ -348,7 +348,7 @@ pub fn validate_blockers(
         if blocker.tapped {
             return Err(format!("{:?} is tapped", blocker_id));
         }
-        if blocker.static_definitions.iter().any(|sd| {
+        if super::static_abilities::active_static_definitions(state, blocker).any(|sd| {
             matches!(
                 sd.mode,
                 StaticMode::CantBlock | StaticMode::CantAttackOrBlock
@@ -673,7 +673,7 @@ pub fn validate_blockers(
             if obj.tapped {
                 continue;
             }
-            if obj.static_definitions.iter().any(|sd| {
+            if super::static_abilities::active_static_definitions(state, obj).any(|sd| {
                 matches!(
                     sd.mode,
                     StaticMode::CantBlock | StaticMode::CantAttackOrBlock
@@ -1283,7 +1283,7 @@ pub fn get_valid_attacker_ids(state: &GameState) -> Vec<ObjectId> {
                             ..Default::default()
                         },
                     ))
-                && !obj.static_definitions.iter().any(|sd| {
+                && !super::static_abilities::active_static_definitions(state, obj).any(|sd| {
                     matches!(
                         sd.mode,
                         StaticMode::CantAttack | StaticMode::CantAttackOrBlock
@@ -1313,7 +1313,7 @@ pub fn can_block_pair(state: &GameState, blocker_id: ObjectId, attacker_id: Obje
     let Some(attacker) = state.objects.get(&attacker_id) else {
         return false;
     };
-    if blocker.static_definitions.iter().any(|sd| {
+    if super::static_abilities::active_static_definitions(state, blocker).any(|sd| {
         matches!(
             sd.mode,
             StaticMode::CantBlock | StaticMode::CantAttackOrBlock
@@ -1625,7 +1625,7 @@ pub fn has_potential_attackers(state: &GameState) -> bool {
                                 ..Default::default()
                             },
                         ))
-                    && !obj.static_definitions.iter().any(|sd| {
+                    && !super::static_abilities::active_static_definitions(state, obj).any(|sd| {
                         matches!(
                             sd.mode,
                             StaticMode::CantAttack | StaticMode::CantAttackOrBlock

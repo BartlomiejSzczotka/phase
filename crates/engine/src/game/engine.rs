@@ -1930,15 +1930,16 @@ fn record_graveyard_play_permission(state: &mut GameState, source: Option<Object
     if let Some(source_id) = source {
         // Check if the source has a once_per_turn permission
         if let Some(obj) = state.objects.get(&source_id) {
-            let is_once_per_turn = obj.static_definitions.iter().any(|s| {
-                matches!(
-                    s.mode,
-                    StaticMode::GraveyardCastPermission {
-                        once_per_turn: true,
-                        ..
-                    }
-                )
-            });
+            let is_once_per_turn = super::static_abilities::active_static_definitions(state, obj)
+                .any(|s| {
+                    matches!(
+                        s.mode,
+                        StaticMode::GraveyardCastPermission {
+                            once_per_turn: true,
+                            ..
+                        }
+                    )
+                });
             if is_once_per_turn {
                 state.graveyard_cast_permissions_used.insert(source_id);
             }

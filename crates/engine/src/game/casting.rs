@@ -34,6 +34,7 @@ use super::quantity::resolve_quantity;
 use super::restrictions;
 use super::speed::{effective_speed, set_speed};
 use super::stack;
+use super::static_abilities::active_static_definitions;
 use super::targeting;
 
 pub(crate) fn variable_speed_payment_range(cost: &AbilityCost, max_speed: u8) -> Option<(u8, u8)> {
@@ -481,7 +482,7 @@ fn graveyard_objects_castable_by_permission(
             if obj.controller != player {
                 return None;
             }
-            obj.static_definitions.iter().find_map(|s| match s.mode {
+            active_static_definitions(state, obj).find_map(|s| match s.mode {
                 StaticMode::GraveyardCastPermission { once_per_turn, .. } => s
                     .affected
                     .as_ref()
@@ -518,12 +519,13 @@ fn graveyard_permission_source(
         if obj.controller != player {
             return None;
         }
-        let (filter, once_per_turn) = obj.static_definitions.iter().find_map(|s| match s.mode {
-            StaticMode::GraveyardCastPermission { once_per_turn, .. } => {
-                s.affected.as_ref().map(|f| (f, once_per_turn))
-            }
-            _ => None,
-        })?;
+        let (filter, once_per_turn) =
+            active_static_definitions(state, obj).find_map(|s| match s.mode {
+                StaticMode::GraveyardCastPermission { once_per_turn, .. } => {
+                    s.affected.as_ref().map(|f| (f, once_per_turn))
+                }
+                _ => None,
+            })?;
         // CR 604.2: Skip if this source's once-per-turn permission was already used
         if once_per_turn && state.graveyard_cast_permissions_used.contains(&src_id) {
             return None;
@@ -561,7 +563,7 @@ pub fn graveyard_lands_playable_by_permission(
             if obj.controller != player {
                 return None;
             }
-            obj.static_definitions.iter().find_map(|s| match s.mode {
+            active_static_definitions(state, obj).find_map(|s| match s.mode {
                 StaticMode::GraveyardCastPermission {
                     once_per_turn,
                     play_mode: CardPlayMode::Play,
@@ -610,7 +612,7 @@ fn has_hand_cast_free_permission(
         if src_obj.controller != player {
             return false;
         }
-        src_obj.static_definitions.iter().any(|s| {
+        active_static_definitions(state, src_obj).any(|s| {
             s.mode == StaticMode::CastFromHandFree
                 && s.affected.as_ref().is_some_and(|filter| {
                     super::filter::matches_target_filter(

@@ -34,6 +34,23 @@ use crate::types::phase::Phase;
 use crate::types::triggers::{AttackTargetFilter, TriggerMode};
 use crate::types::zones::Zone;
 
+/// Returns true if `filter` references the trigger source itself — directly
+/// (`TargetFilter::SelfRef`) or transitively inside an `Or`/`And`/`Not`
+/// composition (e.g. "this creature or another creature", "a creature other
+/// than ~"). Used to decide whether a trigger needs its `trigger_zones`
+/// extended to non-battlefield zones so that LTB / similar triggers can fire
+/// after the source object has moved.
+fn filter_references_self(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::SelfRef => true,
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => {
+            filters.iter().any(filter_references_self)
+        }
+        TargetFilter::Not { filter } => filter_references_self(filter),
+        _ => false,
+    }
+}
+
 fn self_recursion_trigger_zone(ability: &crate::types::ability::AbilityDefinition) -> Option<Zone> {
     match ability.effect.as_ref() {
         crate::types::ability::Effect::ChangeZone {
@@ -1940,7 +1957,16 @@ fn try_parse_event(
         let mut def = make_base();
         def.mode = TriggerMode::LeavesBattlefield;
         def.valid_card = Some(subject.clone());
-        def.trigger_zones = vec![Zone::Battlefield, Zone::Graveyard, Zone::Exile];
+        // CR 113.6k + CR 603.10: Self-referential LTB triggers (e.g. Oblivion Ring,
+        // "when ~ leaves the battlefield") must continue to function after the
+        // source has moved to graveyard/exile, because the trigger ability is tied
+        // to the object that left. Non-self-referential LTB triggers (e.g. "whenever
+        // a creature you control leaves the battlefield") live on a permanent that
+        // is still on the battlefield, so `trigger_zones` stays empty (battlefield
+        // default).
+        if filter_references_self(subject) {
+            def.trigger_zones = vec![Zone::Battlefield, Zone::Graveyard, Zone::Exile];
+        }
         return Some((TriggerMode::LeavesBattlefield, def));
     }
 
@@ -4908,6 +4934,27 @@ mod tests {
         assert_eq!(def.valid_card, Some(TargetFilter::SelfRef));
         assert!(def.trigger_zones.contains(&Zone::Graveyard));
         assert!(def.trigger_zones.contains(&Zone::Exile));
+    }
+
+    /// CR 113.6k: A non-self-referential LTB trigger (source stays on the
+    /// battlefield while some other object leaves) must NOT extend its
+    /// `trigger_zones` into graveyard/exile — otherwise the trigger would
+    /// continue to fire even after its source permanent was removed.
+    #[test]
+    fn trigger_leaves_battlefield_non_self_ref_keeps_default_zones() {
+        let def = parse_trigger_line(
+            "Whenever a creature you control leaves the battlefield, each opponent loses 1 life.",
+            "Ninja Teen",
+        );
+        assert_eq!(def.mode, TriggerMode::LeavesBattlefield);
+        assert!(
+            !def.trigger_zones.contains(&Zone::Graveyard),
+            "non-self-ref LTB must not extend to graveyard"
+        );
+        assert!(
+            !def.trigger_zones.contains(&Zone::Exile),
+            "non-self-ref LTB must not extend to exile"
+        );
     }
 
     #[test]

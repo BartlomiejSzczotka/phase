@@ -1,12 +1,48 @@
 use std::collections::HashMap;
 
 use crate::game::filter::{matches_target_filter, FilterContext};
+use crate::game::game_object::GameObject;
 use crate::game::layers::evaluate_condition;
-use crate::types::ability::{TargetFilter, TypedFilter};
+use crate::types::ability::{StaticDefinition, TargetFilter, TypedFilter};
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
 use crate::types::player::PlayerId;
 use crate::types::statics::{ProhibitionScope, StaticMode};
+
+/// CR 604.1 + CR 613.1 + CR 702.26b + CR 114.4: Iterate over an object's static
+/// definitions that are currently *functioning* and whose `condition` (if any) holds.
+///
+/// Callers should use this in place of `obj.static_definitions.iter()` whenever they
+/// extract data-carrying modes (e.g. `GraveyardCastPermission`, `CastFromHandFree`,
+/// `CantAttack`) or gate behavior on a static's presence, so that `ClassLevelGE`,
+/// `HasCounters`, `DuringYourTurn`, and every other `StaticCondition` are honored
+/// uniformly across the engine.
+///
+/// This helper encodes three layered rules:
+/// - **CR 702.26b**: Phased-out permanents' abilities don't function.
+/// - **CR 114.4**: In the command zone, only emblems' abilities function.
+/// - **CR 613.1 + 604.1**: Each static's `condition` (e.g. "as long as") is
+///   re-evaluated continuously and gates whether the effect applies.
+pub(crate) fn active_static_definitions<'a>(
+    state: &'a GameState,
+    obj: &'a GameObject,
+) -> Box<dyn Iterator<Item = &'a StaticDefinition> + 'a> {
+    // CR 702.26b: Phased-out permanents' static abilities don't function.
+    if obj.is_phased_out() {
+        return Box::new(std::iter::empty());
+    }
+    // CR 114.4: Objects in the command zone don't function unless they are emblems.
+    if obj.zone == crate::types::zones::Zone::Command && !obj.is_emblem {
+        return Box::new(std::iter::empty());
+    }
+    let source_id = obj.id;
+    let controller = obj.controller;
+    Box::new(obj.static_definitions.iter().filter(move |def| {
+        def.condition
+            .as_ref()
+            .is_none_or(|cond| evaluate_condition(state, cond, controller, source_id))
+    }))
+}
 
 /// Handler function type for static ability modes.
 /// Receives the `StaticMode` variant the handler was registered under.
