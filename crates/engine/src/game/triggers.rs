@@ -21,6 +21,7 @@ use crate::types::zones::Zone;
 
 use super::ability_utils::build_resolved_from_def;
 use super::filter::{matches_target_filter, spell_record_matches_filter, FilterContext};
+use super::game_object::GameObject;
 use super::speed::{
     effective_speed, has_max_speed, mark_speed_trigger_used, speed_key_source,
     speed_trigger_available,
@@ -108,15 +109,20 @@ struct MatchedTrigger {
 fn collect_matching_triggers(
     state: &GameState,
     event: &GameEvent,
-    obj_id: ObjectId,
-    controller: PlayerId,
-    trigger_defs: &[TriggerDefinition],
+    source_obj: &GameObject,
     timestamp: u32,
     zone_filter: Option<Zone>,
     batched_this_pass: &mut HashSet<(ObjectId, usize)>,
 ) -> Vec<MatchedTrigger> {
     let mut pending = Vec::new();
-    for (trig_idx, trig_def) in trigger_defs.iter().enumerate() {
+    let obj_id = source_obj.id;
+    let controller = source_obj.controller;
+    // CR 702.26b + CR 114.4: `active_trigger_definitions` owns the phased-out /
+    // command-zone gate. CR 603.4 intervening-if is still the two-point check
+    // inside this function (condition block below) and at resolution.
+    for (trig_idx, trig_def) in
+        super::functioning_abilities::active_trigger_definitions(state, source_obj)
+    {
         // Zone guard: only fire a trigger if its declared zones include the zone being scanned.
         // Empty trigger_zones defaults to battlefield-only (engine-internal triggers like
         // prowess/ward). Parser-created non-battlefield triggers set trigger_zones explicitly.
@@ -336,9 +342,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                     collect_matching_triggers(
                         state,
                         event,
-                        obj_id,
-                        obj.controller,
-                        &obj.trigger_definitions,
+                        obj,
                         obj.entered_battlefield_turn.unwrap_or(0),
                         Some(Zone::Battlefield),
                         &mut batched_this_pass,
@@ -563,9 +567,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                     collect_matching_triggers(
                         state,
                         event,
-                        *moved_id,
-                        obj.controller,
-                        &obj.trigger_definitions,
+                        obj,
                         obj.entered_battlefield_turn.unwrap_or(0),
                         Some(Zone::Battlefield),
                         &mut batched_this_pass,
@@ -597,9 +599,7 @@ pub fn process_triggers(state: &mut GameState, events: &[GameEvent]) {
                     collect_matching_triggers(
                         state,
                         event,
-                        obj_id,
-                        obj.controller,
-                        &obj.trigger_definitions,
+                        obj,
                         0,
                         Some(zone),
                         &mut batched_this_pass,
@@ -980,7 +980,11 @@ pub fn check_state_triggers(state: &mut GameState) {
     let mut pending: Vec<PendingTrigger> = Vec::new();
 
     for obj_id in source_ids {
-        let (controller, timestamp, trigger_defs) = {
+        // CR 702.26b + CR 114.4: `active_trigger_definitions` owns the
+        // phased-out / command-zone gate. We clone the yielded triggers to a
+        // local Vec so the mutable-state pass below (push_pending_trigger_to_stack)
+        // doesn't collide with the shared borrow on `state.objects`.
+        let (controller, timestamp, trigger_defs): (PlayerId, u32, Vec<TriggerDefinition>) = {
             let Some(obj) = state.objects.get(&obj_id) else {
                 continue;
             };
@@ -990,7 +994,9 @@ pub fn check_state_triggers(state: &mut GameState) {
             (
                 obj.controller,
                 obj.entered_battlefield_turn.unwrap_or(0),
-                obj.trigger_definitions.clone(),
+                super::functioning_abilities::active_trigger_definitions(state, obj)
+                    .map(|(_, def)| def.clone())
+                    .collect(),
             )
         };
 
