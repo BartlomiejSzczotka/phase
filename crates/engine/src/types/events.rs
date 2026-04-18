@@ -429,6 +429,15 @@ pub enum GameEvent {
         power_delta: i32,
         toughness_delta: i32,
     },
+    /// CR 702.85a: Cascade exiled the entire library (or whatever remained
+    /// after replacement effects) without finding a nonland card with
+    /// `mana_value < source_mv`. Emitted before the bottom-shuffle so the
+    /// log/UI can announce the miss without inferring it from absence.
+    CascadeMissed {
+        controller: PlayerId,
+        source_id: ObjectId,
+        exiled_count: u32,
+    },
 }
 
 #[cfg(test)]

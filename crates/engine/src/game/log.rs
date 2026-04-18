@@ -156,7 +156,8 @@ fn categorize(event: &GameEvent) -> LogCategory {
         GameEvent::EffectResolved { .. }
         | GameEvent::BecomesTarget { .. }
         | GameEvent::ReplacementApplied { .. }
-        | GameEvent::CrimeCommitted { .. } => LogCategory::Trigger,
+        | GameEvent::CrimeCommitted { .. }
+        | GameEvent::CascadeMissed { .. } => LogCategory::Trigger,
 
         GameEvent::CreatureDestroyed { .. } | GameEvent::PermanentSacrificed { .. } => {
             LogCategory::Destroy
@@ -821,6 +822,16 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
             text(" declined combat tax ("),
             num(dropped.len() as i32),
             text(" creature(s) dropped)"),
+        ],
+        GameEvent::CascadeMissed {
+            controller,
+            exiled_count,
+            ..
+        } => vec![
+            player_seg(state, *controller),
+            text(" cascaded but found no eligible card ("),
+            num(*exiled_count as i32),
+            text(" cards exiled)"),
         ],
     }
 }

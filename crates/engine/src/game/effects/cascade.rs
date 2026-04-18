@@ -122,8 +122,14 @@ pub fn resolve(
             };
         }
         None => {
-            // CR 702.85a: Library exhausted with no eligible hit — shuffle all
-            // exiled misses to the bottom in random order.
+            // CR 702.85a: Library exhausted with no eligible hit — emit a
+            // CascadeMissed event for the log/UI, then shuffle all exiled
+            // misses to the bottom in random order.
+            events.push(GameEvent::CascadeMissed {
+                controller,
+                source_id: ability.source_id,
+                exiled_count: exiled_misses.len() as u32,
+            });
             shuffle_to_bottom(state, &exiled_misses, events);
         }
     }
