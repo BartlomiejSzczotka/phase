@@ -8,7 +8,7 @@ use crate::game::mana_abilities;
 use crate::game::mana_sources;
 use crate::types::ability::ChoiceType;
 use crate::types::ability::TargetRef;
-use crate::types::actions::{GameAction, LearnOption};
+use crate::types::actions::{CastChoice, GameAction, LearnOption};
 use crate::types::card::LayoutKind;
 use crate::types::card_type::CoreType;
 use crate::types::game_state::{ConvokeMode, GameState, TargetSelectionSlot, WaitingFor};
@@ -188,12 +188,16 @@ pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
             .collect(),
         WaitingFor::DiscoverChoice { player, .. } => vec![
             candidate(
-                GameAction::DiscoverChoice { cast: true },
+                GameAction::DiscoverChoice {
+                    choice: CastChoice::Cast,
+                },
                 TacticalClass::Selection,
                 Some(*player),
             ),
             candidate(
-                GameAction::DiscoverChoice { cast: false },
+                GameAction::DiscoverChoice {
+                    choice: CastChoice::Decline,
+                },
                 TacticalClass::Selection,
                 Some(*player),
             ),
@@ -204,12 +208,16 @@ pub fn candidate_actions_exact(state: &GameState) -> Vec<CandidateAction> {
         // hit has no legal targets and would fizzle.
         WaitingFor::CascadeChoice { player, .. } => vec![
             candidate(
-                GameAction::CascadeChoice { cast: true },
+                GameAction::CascadeChoice {
+                    choice: CastChoice::Cast,
+                },
                 TacticalClass::Selection,
                 Some(*player),
             ),
             candidate(
-                GameAction::CascadeChoice { cast: false },
+                GameAction::CascadeChoice {
+                    choice: CastChoice::Decline,
+                },
                 TacticalClass::Selection,
                 Some(*player),
             ),

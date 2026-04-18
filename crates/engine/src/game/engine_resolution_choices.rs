@@ -118,8 +118,9 @@ pub(super) fn handle_resolution_choice(
                 hit_card,
                 exiled_misses,
             },
-            GameAction::DiscoverChoice { cast },
+            GameAction::DiscoverChoice { choice },
         ) => {
+            let cast = matches!(choice, crate::types::actions::CastChoice::Cast);
             if cast {
                 if let Some(obj) = state.objects.get_mut(&hit_card) {
                     obj.casting_permissions.push(
@@ -153,8 +154,9 @@ pub(super) fn handle_resolution_choice(
                 exiled_misses,
                 source_mv,
             },
-            GameAction::CascadeChoice { cast },
+            GameAction::CascadeChoice { choice },
         ) => {
+            let cast = matches!(choice, crate::types::actions::CastChoice::Cast);
             if cast {
                 // CR 702.85a: Grant a cast-from-exile permission gated by
                 // `CascadeResultingMvBelow`. The second MV check is enforced

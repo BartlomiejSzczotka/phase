@@ -7,6 +7,25 @@ use super::match_config::DeckCardCount;
 use super::player::PlayerId;
 use crate::game::combat::AttackTarget;
 
+/// CR 701.57a + CR 702.85a: Player decision for any "you may cast that card
+/// without paying its mana cost" mid-resolution choice (Discover, Cascade).
+/// Bool flags are not composable — this enum can grow new branches (e.g.,
+/// "Cast face-down", "Put into hand" already exists for Discover) without
+/// changing call sites that already exhaustively match.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum CastChoice {
+    /// CR 701.57a + CR 702.85a: Cast the offered card without paying its mana
+    /// cost. The cast pipeline still enforces target legality, alternative
+    /// constraints (e.g., `CascadeResultingMvBelow`), and other CR 601.2
+    /// checks.
+    Cast,
+    /// CR 701.57a + CR 702.85a: Decline the offer. For Discover the card goes
+    /// to hand; for Cascade the card joins the misses on the bottom of the
+    /// library in a random order.
+    Decline,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, strum::IntoStaticStr)]
 #[serde(tag = "type", content = "data")]
 pub enum GameAction {
@@ -183,14 +202,11 @@ pub enum GameAction {
     CompanionToHand,
     /// CR 701.57a: Choose to cast discovered card or put it to hand.
     DiscoverChoice {
-        /// true = cast without paying mana cost, false = put to hand
-        cast: bool,
+        choice: CastChoice,
     },
     /// CR 702.85a: Choose to cast the cascaded card without paying its mana cost.
     CascadeChoice {
-        /// true = cast without paying mana cost, false = decline (card joins
-        /// misses on the bottom of the library in a random order).
-        cast: bool,
+        choice: CastChoice,
     },
     /// CR 401.4: Choose top or bottom of library.
     ChooseTopOrBottom {
