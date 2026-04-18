@@ -1673,10 +1673,13 @@ fn try_split_and_can_attack_despite_defender(text: &str) -> Option<Vec<StaticDef
     type VE<'a> = nom_language::error::VerboseError<&'a str>;
     let lower = text.to_lowercase();
 
+    // `scan_preceded` advances past each space so `remaining` always starts on
+    // a word — so the tag begins at "and", not at the leading space. We then
+    // strip the trailing space of `before` to produce clean Line A text.
     let (before, matched, _rest) = nom_primitives::scan_preceded(&lower, |i: &str| {
         alt((
-            tag::<_, _, VE>(" and can attack as though it didn't have defender"),
-            tag::<_, _, VE>(" and can attack as though they didn't have defender"),
+            tag::<_, _, VE>("and can attack as though it didn't have defender"),
+            tag::<_, _, VE>("and can attack as though they didn't have defender"),
         ))
         .parse(i)
     })?;
@@ -1685,11 +1688,14 @@ fn try_split_and_can_attack_despite_defender(text: &str) -> Option<Vec<StaticDef
     // offsets into `lower` also index into the original-case `text`.
     let before_len = before.len();
     let matched_len = matched.len();
-    let line_a = format!(
-        "{}{}",
-        &text[..before_len],
-        &text[before_len + matched_len..]
-    );
+    // Drop the trailing space that precedes the "and" marker so Line A doesn't
+    // end up with " ." before its terminating period.
+    let cut_end = if before.ends_with(' ') {
+        before_len - 1
+    } else {
+        before_len
+    };
+    let line_a = format!("{}{}", &text[..cut_end], &text[before_len + matched_len..]);
 
     let mut defs = parse_static_line_multi(&line_a);
     if defs.is_empty() {

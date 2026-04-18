@@ -52,8 +52,7 @@ use super::oracle_special::{
     parse_harmonize_keyword, parse_solve_condition, try_parse_die_roll_table,
 };
 use super::oracle_static::{
-    parse_static_line, parse_static_line_multi, try_parse_graveyard_keyword_grant_clause,
-    GraveyardGrantedKeywordKind,
+    parse_static_line_multi, try_parse_graveyard_keyword_grant_clause, GraveyardGrantedKeywordKind,
 };
 use super::oracle_trigger::parse_trigger_lines;
 use super::oracle_util::{parse_mana_symbols, parse_number, strip_reminder_text, TextPair};
@@ -217,8 +216,16 @@ fn try_parse_graveyard_keyword_static_with_continuation(line: &str) -> Option<St
     )
 }
 
-fn parse_static_line_with_graveyard_keyword_continuation(line: &str) -> Option<StaticDefinition> {
-    try_parse_graveyard_keyword_static_with_continuation(line).or_else(|| parse_static_line(line))
+/// Returns every `StaticDefinition` produced by `line`, with the
+/// graveyard-keyword-continuation front door checked first (CR 702.99 etc.)
+/// and then delegating to `parse_static_line_multi` so compound forms
+/// (e.g., cross-mode conjunctions) emit all their constituent statics
+/// rather than silently dropping the extras.
+fn parse_static_line_with_graveyard_keyword_continuation(line: &str) -> Vec<StaticDefinition> {
+    if let Some(def) = try_parse_graveyard_keyword_static_with_continuation(line) {
+        return vec![def];
+    }
+    parse_static_line_multi(line)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -654,10 +661,9 @@ pub fn parse_oracle_text(
         if lower == "your speed can increase beyond 4."
             || lower == "your speed can increase beyond 4"
         {
-            if let Some(static_def) =
-                parse_static_line_with_graveyard_keyword_continuation(&static_line)
-            {
-                result.statics.push(static_def);
+            let defs = parse_static_line_with_graveyard_keyword_continuation(&static_line);
+            if !defs.is_empty() {
+                result.statics.extend(defs);
                 i += 1;
                 continue;
             }
@@ -707,32 +713,20 @@ pub fn parse_oracle_text(
                     let trimmed = clause.trim().trim_end_matches('.');
                     if !trimmed.is_empty() {
                         let clause_dot = format!("{trimmed}.");
-                        if let Some(sd) =
-                            parse_static_line_with_graveyard_keyword_continuation(&clause_dot)
-                        {
-                            result.statics.push(sd);
-                        }
+                        result.statics.extend(
+                            parse_static_line_with_graveyard_keyword_continuation(&clause_dot),
+                        );
                     }
                 }
                 i += 1;
                 continue;
             }
-            // CR 602.5: Compound "can't attack/block, and ... activated abilities
-            // can't be activated" — route through multi to get both statics.
-            if lower.contains("activated abilities can't be activated")
-                && (lower.contains("can't attack") || lower.contains("can't block"))
-            {
-                let multi = parse_static_line_multi(&static_line);
-                if !multi.is_empty() {
-                    result.statics.extend(multi);
-                    i += 1;
-                    continue;
-                }
-            }
-            if let Some(static_def) =
-                parse_static_line_with_graveyard_keyword_continuation(&static_line)
-            {
-                result.statics.push(static_def);
+            // Compound detection (CR 602.5 can't-be-activated, cross-mode conjunctions,
+            // life-total locks, etc.) is already owned by `parse_static_line_multi`,
+            // which the wrapper below delegates to.
+            let defs = parse_static_line_with_graveyard_keyword_continuation(&static_line);
+            if !defs.is_empty() {
+                result.statics.extend(defs);
                 i += 1;
                 continue;
             }
@@ -996,16 +990,20 @@ pub fn parse_oracle_text(
                 // otherwise consume the line before Priority 14 for instants/sorceries.
                 if let Some((aw_name, effect_text)) = strip_ability_word_with_name(&line) {
                     let effect_static = normalize_self_refs_for_static(&effect_text, card_name);
-                    if let Some(mut static_def) =
-                        parse_static_line_with_graveyard_keyword_continuation(&effect_static)
-                    {
-                        if static_def.condition.is_none() {
-                            if let Some(cond) = ability_word_to_condition(&aw_name) {
-                                static_def.condition = Some(cond);
+                    let mut defs =
+                        parse_static_line_with_graveyard_keyword_continuation(&effect_static);
+                    if !defs.is_empty() {
+                        if let Some(cond) = ability_word_to_condition(&aw_name) {
+                            for def in &mut defs {
+                                if def.condition.is_none() {
+                                    def.condition = Some(cond.clone());
+                                }
                             }
                         }
-                        static_def.description = Some(line.to_string());
-                        result.statics.push(static_def);
+                        for def in &mut defs {
+                            def.description = Some(line.to_string());
+                        }
+                        result.statics.extend(defs);
                         i += 1;
                         continue;
                     }
@@ -1018,27 +1016,13 @@ pub fn parse_oracle_text(
                         let trimmed = clause.trim().trim_end_matches('.');
                         if !trimmed.is_empty() {
                             let clause_dot = format!("{trimmed}.");
-                            if let Some(sd) =
-                                parse_static_line_with_graveyard_keyword_continuation(&clause_dot)
-                            {
-                                result.statics.push(sd);
-                            }
+                            result.statics.extend(
+                                parse_static_line_with_graveyard_keyword_continuation(&clause_dot),
+                            );
                         }
                     }
                     i += 1;
                     continue;
-                }
-                // CR 602.5: Compound "can't attack/block, and its activated abilities
-                // can't be activated" → produces multiple statics (CantAttackOrBlock + CantBeActivated).
-                if lower.contains("activated abilities can't be activated")
-                    && (lower.contains("can't attack") || lower.contains("can't block"))
-                {
-                    let multi = parse_static_line_multi(&static_line);
-                    if !multi.is_empty() {
-                        result.statics.extend(multi);
-                        i += 1;
-                        continue;
-                    }
                 }
                 // Compound clause: casting time restriction + per-turn limit joined by " and "
                 // E.g., Fires of Invention: "You can cast spells only during your turn and
@@ -1049,28 +1033,21 @@ pub fn parse_oracle_text(
                         let trimmed = clause.trim().trim_end_matches('.');
                         if !trimmed.is_empty() {
                             let clause_dot = format!("{trimmed}.");
-                            if let Some(sd) =
-                                parse_static_line_with_graveyard_keyword_continuation(&clause_dot)
-                            {
-                                result.statics.push(sd);
-                            }
+                            result.statics.extend(
+                                parse_static_line_with_graveyard_keyword_continuation(&clause_dot),
+                            );
                         }
                     }
                     i += 1;
                     continue;
                 }
-                if let Some(static_def) =
-                    parse_static_line_with_graveyard_keyword_continuation(&static_line)
-                {
-                    result.statics.push(static_def);
-                    i += 1;
-                    continue;
-                }
-                // Use parse_static_line_multi to capture compound statics
-                // (e.g., "attacks or blocks each combat if able" → MustAttack + MustBlock).
-                let multi = parse_static_line_multi(&static_line);
-                if !multi.is_empty() {
-                    result.statics.extend(multi);
+                // Compound detection (CR 602.5 can't-be-activated, cross-mode conjunctions,
+                // "attacks or blocks each combat if able" → MustAttack + MustBlock, life-total
+                // locks, etc.) is already owned by `parse_static_line_multi`, which the wrapper
+                // delegates to.
+                let defs = parse_static_line_with_graveyard_keyword_continuation(&static_line);
+                if !defs.is_empty() {
+                    result.statics.extend(defs);
                     i += 1;
                     continue;
                 }
@@ -1444,16 +1421,17 @@ pub fn parse_oracle_text(
             // Try as static
             if is_static_pattern(&effect_lower) {
                 let effect_static = normalize_self_refs_for_static(&effect_text, card_name);
-                if let Some(mut static_def) =
-                    parse_static_line_with_graveyard_keyword_continuation(&effect_static)
-                {
-                    // B7: Attach ability word condition to static definition
-                    if static_def.condition.is_none() {
-                        if let Some(cond) = aw_condition.clone() {
-                            static_def.condition = Some(cond);
+                let mut defs =
+                    parse_static_line_with_graveyard_keyword_continuation(&effect_static);
+                if !defs.is_empty() {
+                    if let Some(cond) = aw_condition.clone() {
+                        for def in &mut defs {
+                            if def.condition.is_none() {
+                                def.condition = Some(cond.clone());
+                            }
                         }
                     }
-                    result.statics.push(static_def);
+                    result.statics.extend(defs);
                     i += 1;
                     continue;
                 }
@@ -1478,16 +1456,9 @@ pub fn parse_oracle_text(
         // heuristics miss it. Try the actual static parser before falling through
         // to generic dispatch/unimplemented categorization.
         let static_line = normalize_self_refs_for_static(&line, card_name);
-        if let Some(static_def) =
-            parse_static_line_with_graveyard_keyword_continuation(&static_line)
-        {
-            result.statics.push(static_def);
-            i += 1;
-            continue;
-        }
-        let multi = parse_static_line_multi(&static_line);
-        if !multi.is_empty() {
-            result.statics.extend(multi);
+        let defs = parse_static_line_with_graveyard_keyword_continuation(&static_line);
+        if !defs.is_empty() {
+            result.statics.extend(defs);
             i += 1;
             continue;
         }
