@@ -638,6 +638,21 @@ fn project_deck_cards(raw: &[DeckCardRaw]) -> Vec<DeckCardEntry> {
         .collect()
 }
 
+/// Total physical cards in main + commander (the "is this actually a deck?"
+/// yardstick). Sideboard is excluded because many non-decks (Secret Lair,
+/// Jumpstart, sample product) list their whole content under mainBoard.
+fn deck_card_total(raw: &DeckRaw) -> u32 {
+    raw.main_board.iter().map(|c| c.count).sum::<u32>()
+        + raw.commander.iter().map(|c| c.count).sum::<u32>()
+}
+
+/// Minimum card count to qualify as a "deck" (MTG Limited-format minimum,
+/// CR 100.2a). Anything smaller is a product — Secret Lair Drops, half-
+/// jumpstart packs, welcome boosters, sample decks, toolkits, etc. MTGJSON
+/// ships all of these in AllDeckFiles and distinguishing them by `type`
+/// alone is brittle (every new product line invents a new type string).
+const MIN_DECK_CARDS: u32 = 40;
+
 /// Collect the names of cards in a deck that aren't playable in the engine.
 /// Dedups while preserving first-seen order so the skipped sidecar is readable.
 fn unsupported_cards(raw: &DeckRaw, db: &CardDatabase) -> Vec<String> {
@@ -714,6 +729,7 @@ fn run_decks(remaining_args: &[String]) {
 
     let mut included: BTreeMap<String, DeckEntry> = BTreeMap::new();
     let mut skipped: Vec<SkippedDeck> = Vec::new();
+    let mut too_small: u32 = 0;
     let mut read_errors: u32 = 0;
 
     let entries = std::fs::read_dir(&decks_dir)
@@ -743,6 +759,10 @@ fn run_decks(remaining_args: &[String]) {
             .unwrap_or("unknown")
             .to_string();
         let raw = parsed.data;
+        if deck_card_total(&raw) < MIN_DECK_CARDS {
+            too_small += 1;
+            continue;
+        }
         let unsupported = unsupported_cards(&raw, &card_db);
         if unsupported.is_empty() {
             included.insert(
@@ -771,11 +791,13 @@ fn run_decks(remaining_args: &[String]) {
     std::fs::write(&output, &json)
         .unwrap_or_else(|e| panic!("Failed to write {}: {e}", output.display()));
     eprintln!(
-        "Wrote {} decks to {} ({} bytes; {} skipped, {} read errors)",
+        "Wrote {} decks to {} ({} bytes; {} skipped for unsupported cards, {} dropped as non-decks (<{} cards), {} read errors)",
         included.len(),
         output.display(),
         json.len(),
         skipped.len(),
+        too_small,
+        MIN_DECK_CARDS,
         read_errors
     );
 
