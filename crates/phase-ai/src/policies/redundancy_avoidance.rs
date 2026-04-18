@@ -332,7 +332,8 @@ fn redundancy_delta(
         // CR 702.85a: Cascade has no targets or redundancy — the redundancy
         // policy treats it as a no-op here; the cascade resolver handles the
         // cast-or-decline choice through its own WaitingFor state.
-        | Effect::Cascade => None,
+        | Effect::Cascade
+        | Effect::Reveal { .. } => None,
     }
 }
 

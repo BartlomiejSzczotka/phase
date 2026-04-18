@@ -342,6 +342,9 @@ fn filter_inner(
             .objects
             .get(&object_id)
             .is_some_and(|obj| obj.name == *name),
+        // CR 400.3: Owner is a player-resolving filter (resolves to the owner of
+        // source_id), meaningless as an object-matching predicate.
+        TargetFilter::Owner => false,
     }
 }
 
@@ -459,7 +462,8 @@ fn zone_change_filter_inner(
         | TargetFilter::ParentTargetController
         | TargetFilter::DefendingPlayer
         | TargetFilter::StackAbility
-        | TargetFilter::StackSpell => false,
+        | TargetFilter::StackSpell
+        | TargetFilter::Owner => false,
     }
 }
 
@@ -603,7 +607,8 @@ pub fn spell_record_matches_filter(
         | TargetFilter::ParentTargetController
         | TargetFilter::DefendingPlayer
         | TargetFilter::HasChosenName
-        | TargetFilter::Named { .. } => false,
+        | TargetFilter::Named { .. }
+        | TargetFilter::Owner => false,
     }
 }
 
@@ -711,7 +716,8 @@ fn spell_object_matches_filter_inner(
         | TargetFilter::ParentTargetController
         | TargetFilter::DefendingPlayer
         | TargetFilter::HasChosenName
-        | TargetFilter::Named { .. } => false,
+        | TargetFilter::Named { .. }
+        | TargetFilter::Owner => false,
     }
 }
 

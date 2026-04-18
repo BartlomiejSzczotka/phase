@@ -233,6 +233,7 @@ fn fmt_target(filter: &TargetFilter) -> String {
             .collect::<Vec<_>>()
             .join(" + "),
         TargetFilter::Typed(tf) => fmt_typed_filter(tf),
+        TargetFilter::Owner => "owner".into(),
     }
 }
 
@@ -843,6 +844,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
         | Effect::ForceBlock { target }
         | Effect::Transform { target }
         | Effect::Shuffle { target }
+        | Effect::Reveal { target }
         | Effect::Regenerate { target } => {
             d.push(("target".into(), fmt_target(target)));
         }

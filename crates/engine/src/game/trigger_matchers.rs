@@ -520,7 +520,8 @@ pub(super) fn target_filter_matches_object(
         | TargetFilter::ParentTarget
         | TargetFilter::ParentTargetController
         | TargetFilter::StackAbility
-        | TargetFilter::StackSpell => false,
+        | TargetFilter::StackSpell
+        | TargetFilter::Owner => false,
         TargetFilter::Any
         | TargetFilter::SelfRef
         | TargetFilter::Typed(_)

@@ -86,6 +86,7 @@ pub mod put_on_top_or_bottom;
 pub mod regenerate;
 pub mod register_bending;
 pub mod remove_from_combat;
+pub mod reveal;
 pub mod reveal_hand;
 pub mod reveal_top;
 pub mod reveal_until;
@@ -314,6 +315,7 @@ pub fn resolve_effect(
         Effect::SearchLibrary { .. } => search_library::resolve(state, ability, events),
         Effect::Seek { .. } => seek::resolve(state, ability, events),
         Effect::RevealHand { .. } => reveal_hand::resolve(state, ability, events),
+        Effect::Reveal { .. } => reveal::resolve(state, ability, events),
         Effect::RevealTop { .. } => reveal_top::resolve(state, ability, events),
         Effect::ExileTop { .. } => exile_top::resolve(state, ability, events),
         Effect::TargetOnly { .. } => Ok(()), // no-op: targeting is established at cast time
@@ -590,6 +592,7 @@ fn extract_event_context_filter(effect: &Effect) -> Option<&TargetFilter> {
         | Effect::MoveCounters { target, .. }
         | Effect::ChangeZone { target, .. }
         | Effect::RevealHand { target, .. }
+        | Effect::Reveal { target, .. }
         | Effect::Fight { target, .. }
         | Effect::Attach { target, .. }
         | Effect::Transform { target, .. }

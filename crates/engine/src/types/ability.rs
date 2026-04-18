@@ -1361,6 +1361,12 @@ pub enum TargetFilter {
     Named {
         name: String,
     },
+    /// CR 400.3: Resolves to the owner of the object referenced by `source_id`.
+    /// Used for "its owner's library/hand/graveyard" phrasings where the acting
+    /// player must be the card's owner, not its current controller (e.g.,
+    /// Nexus of Fate's shuffle-back replacement when the card is under opposing
+    /// control via Mind Control).
+    Owner,
 }
 
 /// A dynamic game quantity — a runtime lookup into the game state.
@@ -2934,6 +2940,13 @@ pub enum Effect {
         #[serde(default)]
         count: Option<QuantityExpr>,
     },
+    /// CR 701.20: Reveal a specific object (resolved from `target`) to all players.
+    /// Distinct from `RevealHand` (zone-wide) and `RevealTop` (library depth-N).
+    /// Per CR 701.20b, revealing does not move the card.
+    Reveal {
+        #[serde(default = "default_target_filter_self_ref")]
+        target: TargetFilter,
+    },
     /// CR 701.20a: Reveal the top N card(s) of a player's library.
     RevealTop {
         /// The player whose library to reveal from.
@@ -3637,6 +3650,7 @@ impl Effect {
             | Effect::Shuffle { target, .. }
             | Effect::Transform { target, .. }
             | Effect::RevealHand { target, .. }
+            | Effect::Reveal { target, .. }
             | Effect::TargetOnly { target, .. }
             | Effect::Suspect { target, .. }
             | Effect::Connive { target, .. }
@@ -3819,6 +3833,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Transform { .. } => "Transform",
         Effect::SearchLibrary { .. } => "SearchLibrary",
         Effect::RevealHand { .. } => "RevealHand",
+        Effect::Reveal { .. } => "Reveal",
         Effect::RevealTop { .. } => "RevealTop",
         Effect::ExileTop { .. } => "ExileTop",
         Effect::TargetOnly { .. } => "TargetOnly",
@@ -4118,6 +4133,7 @@ impl From<&Effect> for EffectKind {
             Effect::Transform { .. } => EffectKind::Transform,
             Effect::SearchLibrary { .. } => EffectKind::SearchLibrary,
             Effect::RevealHand { .. } => EffectKind::Reveal,
+            Effect::Reveal { .. } => EffectKind::Reveal,
             Effect::RevealTop { .. } => EffectKind::Reveal,
             Effect::ExileTop { .. } => EffectKind::ExileTop,
             Effect::TargetOnly { .. } => EffectKind::TargetOnly,

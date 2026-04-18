@@ -1882,13 +1882,21 @@ fn apply_single_replacement(
             };
             let post_effect = match (branch, &repl_def.mode) {
                 (ReplacementBranch::Execute, ReplacementMode::Mandatory) => {
-                    repl_def.execute.as_deref().and_then(|def| {
-                        if EventModifiers::has_only_event_modifier(Some(def)) {
-                            None
-                        } else {
-                            Some(Box::new(def.clone()))
-                        }
-                    })
+                    repl_def
+                        .execute
+                        .as_deref()
+                        .and_then(|def| match &*def.effect {
+                            // CR 614.6: a top-level ChangeZone is absorbed as a
+                            // destination redirect by `event_modifiers_for_ability`.
+                            // Its sub_ability (if any) is the real post-resolution
+                            // work — e.g., Reveal → Shuffle for Nexus of Fate-style
+                            // shuffle-back. `has_only_event_modifier` would classify
+                            // the whole def as fully absorbed and silently drop the
+                            // chain, so we take the sub_ability explicitly here.
+                            Effect::ChangeZone { .. } => def.sub_ability.clone(),
+                            _ if EventModifiers::has_only_event_modifier(Some(def)) => None,
+                            _ => Some(Box::new(def.clone())),
+                        })
                 }
                 _ => None,
             };

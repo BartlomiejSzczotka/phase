@@ -37,6 +37,18 @@ pub fn resolve(
                 _ => None,
             })
             .unwrap_or(ability.controller)
+    } else if matches!(
+        &ability.effect,
+        Effect::Shuffle {
+            target: TargetFilter::Owner
+        }
+    ) {
+        // CR 400.3: "its owner's library" resolves to the owner of source_id.
+        state
+            .objects
+            .get(&ability.source_id)
+            .map(|obj| obj.owner)
+            .unwrap_or(ability.controller)
     } else {
         ability.controller
     };
@@ -271,6 +283,70 @@ mod tests {
             state.players[1].library.len(),
             p1_lib_before.len(),
             "opponent's library size preserved under shuffle"
+        );
+    }
+
+    /// CR 400.3 + CR 701.24: `Effect::Shuffle { target: Owner }` must route to the
+    /// owner of `ability.source_id`, NOT the ability's controller. This is the
+    /// shuffle-back path for Nexus of Fate / Blightsteel under Mind Control:
+    /// opponent controls the card, but it shuffles into its owner's library.
+    #[test]
+    fn shuffle_owner_routes_to_source_objects_owner_not_controller() {
+        use crate::types::ability::Effect;
+        let mut state = GameState::new_two_player(42);
+        // P0 owns the Blightsteel; P1 currently controls it (Mind Control).
+        // Populate both libraries so we can distinguish.
+        for i in 0..3 {
+            create_object(
+                &mut state,
+                CardId(i + 1),
+                PlayerId(0),
+                format!("P0 Card {}", i),
+                Zone::Library,
+            );
+            create_object(
+                &mut state,
+                CardId(10 + i + 1),
+                PlayerId(1),
+                format!("P1 Card {}", i),
+                Zone::Library,
+            );
+        }
+        let blightsteel = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0), // owner
+            "Blightsteel Colossus".to_string(),
+            Zone::Library,
+        );
+        // Simulate Mind Control: P1 controls the P0-owned card.
+        if let Some(obj) = state.objects.get_mut(&blightsteel) {
+            obj.controller = PlayerId(1);
+        }
+        let p0_lib_before = state.players[0].library.clone();
+        let p1_lib_before = state.players[1].library.clone();
+
+        // ability.controller = P1 (thief), source_id = the P0-owned Blightsteel.
+        let ability = ResolvedAbility::new(
+            Effect::Shuffle {
+                target: TargetFilter::Owner,
+            },
+            vec![],
+            blightsteel,
+            PlayerId(1),
+        );
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        // Owner's (P0's) library shuffled; thief's (P1's) library untouched.
+        assert_eq!(
+            state.players[1].library, p1_lib_before,
+            "thief's library must not be shuffled — ownership, not control, is authoritative"
+        );
+        assert_eq!(
+            state.players[0].library.len(),
+            p0_lib_before.len(),
+            "owner's library size preserved under shuffle"
         );
     }
 }

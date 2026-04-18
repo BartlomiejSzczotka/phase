@@ -1388,58 +1388,150 @@ fn parse_creature_die_exile_replacement(
     Some(def)
 }
 
-/// Parse "If a card/token would be put into a graveyard, exile it instead."
-/// Handles Rest in Peace ("from anywhere"), Leyline of the Void ("from anywhere" + opponent scope).
+/// Parse graveyard-destination zone-change replacements (CR 614.6).
+///
+/// Shared prefix: `"if <subject> would be put into <scope> graveyard[ from anywhere],"`.
+/// Dispatches via `alt()` between two outcome branches:
+///   * **exile**: "exile it instead." — Rest in Peace, Leyline of the Void.
+///   * **shuffle-back**: "[reveal ~ and ]shuffle it into its owner's library instead." —
+///     Nexus of Fate, Progenitus, Blightsteel/Darksteel Colossus, Legacy Weapon.
+///
+/// The affected object is not known until replacement resolution time, so the
+/// anaphoric "it" is encoded as `TargetFilter::SelfRef` on a top-level
+/// `Effect::ChangeZone` — `event_modifiers_for_ability` absorbs this as a
+/// destination redirect (CR 614.1). For shuffle-back, the follow-up
+/// Reveal(CR 701.20) + Shuffle(CR 701.24) actions hang off the `sub_ability`
+/// chain and run via the mandatory post-replacement-effect hook after the
+/// redirected ZoneChange physically resolves. Owner-routing (CR 400.3) is
+/// enforced at the zone layer, which reads `obj.owner` when writing to a library.
 fn parse_graveyard_exile_replacement(
     norm_lower: &str,
     original_text: &str,
 ) -> Option<ReplacementDefinition> {
-    if !nom_primitives::scan_contains(norm_lower, "would be put into") {
-        return None;
-    }
-    if !nom_primitives::scan_contains(norm_lower, "graveyard") {
-        return None;
-    }
-    if !nom_primitives::scan_contains(norm_lower, "exile") {
-        return None;
+    use nom::sequence::preceded;
+
+    // Scope of the subject's destination graveyard. Valid-card filter is keyed
+    // off this: "opponent's graveyard" ⇒ `Owned { controller: Opponent }`.
+    #[derive(Clone)]
+    enum Scope {
+        Any,
+        Opponent,
     }
 
-    // Determine scope: "a card or token" / "a card" → None (matches everything)
-    // "an opponent's graveyard" → opponent-owned cards
-    // CR 400.3 + CR 108.3: Cards go to owner's graveyard, so "opponent's graveyard"
-    // means cards owned by an opponent.
-    let valid_card = if nom_primitives::scan_contains(norm_lower, "an opponent's graveyard")
-        || nom_primitives::scan_contains(norm_lower, "opponent's graveyard")
-    {
-        Some(TargetFilter::Typed(TypedFilter::default().properties(
+    // The outcome clause ("exile it instead" or the shuffle-back phrasing)
+    // determines what ChangeZone + sub_ability chain we emit.
+    #[derive(Clone)]
+    enum Outcome {
+        Exile,
+        ShuffleBack { reveal: bool },
+    }
+
+    let ((scope, outcome), _rest) = nom_on_lower(original_text, norm_lower, |i| {
+        // Prefix: "if <subject> would be put into <scope> graveyard[ from anywhere], "
+        let (i, _) = tag::<_, _, VerboseError<&str>>("if ").parse(i)?;
+        // Subject: accept any phrase up to " would be put into " — covers
+        // "a card", "a nontoken creature", "~", "a creature an opponent controls", …
+        let (i, _) = take_until::<_, _, VerboseError<&str>>(" would be put into ").parse(i)?;
+        let (i, _) = tag::<_, _, VerboseError<&str>>(" would be put into ").parse(i)?;
+        let (i, scope) = alt((
+            value(Scope::Opponent, tag("an opponent's graveyard")),
+            value(Scope::Opponent, tag("an opponents graveyard")),
+            value(Scope::Opponent, tag("opponent's graveyard")),
+            value(
+                Scope::Any,
+                preceded(take_until(" graveyard"), tag(" graveyard")),
+            ),
+        ))
+        .parse(i)?;
+        let (i, _) = opt(tag(" from anywhere")).parse(i)?;
+        let (i, _) = tag(", ").parse(i)?;
+
+        // Outcome dispatch. The shuffle-back variant optionally prefixes
+        // "reveal ~ and " (CR 701.20); the exile variant has no such prefix.
+        let (i, outcome) = alt((
+            value(Outcome::Exile, tag("exile it instead")),
+            value(
+                Outcome::ShuffleBack { reveal: true },
+                tag("reveal ~ and shuffle it into its owner's library instead"),
+            ),
+            value(
+                Outcome::ShuffleBack { reveal: false },
+                tag("shuffle it into its owner's library instead"),
+            ),
+        ))
+        .parse(i)?;
+
+        Ok((i, (scope, outcome)))
+    })?;
+
+    // Destination routing is determined by the outcome branch.
+    let destination = match &outcome {
+        Outcome::Exile => Zone::Exile,
+        Outcome::ShuffleBack { .. } => Zone::Library,
+    };
+
+    // CR 400.3 + CR 108.3: "opponent's graveyard" means cards owned by an opponent
+    // (cards go to owner's graveyard, so ownership is the stable discriminant).
+    let valid_card = match scope {
+        Scope::Opponent => Some(TargetFilter::Typed(TypedFilter::default().properties(
             vec![FilterProp::Owned {
                 controller: ControllerRef::Opponent,
             }],
-        )))
-    } else {
-        None
+        ))),
+        Scope::Any => None,
     };
 
-    // The anaphoric "it"/"that card" refers to the object whose zone change is being
-    // replaced. SelfRef is semantically correct: "exile the same object this replacement
-    // is modifying," consistent with the ETB-tapped pattern. The replacement pipeline
-    // extracts only the destination zone from this ChangeZone — the affected object
-    // is already known from the ProposedEvent.
+    // Build the ChangeZone redirect. `event_modifiers_for_ability` extracts only
+    // the `destination` field from this top-level ChangeZone — other fields here
+    // (owner_library, etc.) are inert metadata along the redirect path.
+    let redirect = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::ChangeZone {
+            destination,
+            origin: None,
+            target: TargetFilter::SelfRef,
+            owner_library: false,
+            enter_transformed: false,
+            under_your_control: false,
+            enter_tapped: false,
+            enters_attacking: false,
+            up_to: false,
+        },
+    );
+
+    // For shuffle-back, attach the Reveal → Shuffle(Owner) chain as sub_ability.
+    // The mandatory post-effect extractor at `replacement.rs` sees a top-level
+    // ChangeZone and stashes `sub_ability` to run after the redirected move lands.
+    let execute = match outcome {
+        Outcome::Exile => redirect,
+        Outcome::ShuffleBack { reveal } => {
+            // CR 701.24: shuffle into owner's library. CR 400.3 is the owner-routing
+            // authority — TargetFilter::Owner resolves to state.objects[source_id].owner,
+            // correct under Mind Control / Threads of Disloyalty when control ≠ ownership.
+            let shuffle = AbilityDefinition::new(
+                AbilityKind::Spell,
+                Effect::Shuffle {
+                    target: TargetFilter::Owner,
+                },
+            );
+            let post = if reveal {
+                // CR 701.20: reveal the affected object before shuffling.
+                AbilityDefinition::new(
+                    AbilityKind::Spell,
+                    Effect::Reveal {
+                        target: TargetFilter::SelfRef,
+                    },
+                )
+                .sub_ability(shuffle)
+            } else {
+                shuffle
+            };
+            redirect.sub_ability(post)
+        }
+    };
+
     let mut def = ReplacementDefinition::new(ReplacementEvent::Moved)
-        .execute(AbilityDefinition::new(
-            AbilityKind::Spell,
-            Effect::ChangeZone {
-                destination: Zone::Exile,
-                origin: None,
-                target: TargetFilter::SelfRef,
-                owner_library: false,
-                enter_transformed: false,
-                under_your_control: false,
-                enter_tapped: false,
-                enters_attacking: false,
-                up_to: false,
-            },
-        ))
+        .execute(execute)
         .destination_zone(Zone::Graveyard)
         .description(original_text.to_string());
     if let Some(filter) = valid_card {
@@ -2368,6 +2460,117 @@ mod tests {
     #[test]
     fn replacement_non_match_returns_none() {
         assert!(parse_replacement_line("Destroy target creature.", "Some Card").is_none());
+    }
+
+    /// CR 614.6 + 701.20 + 701.24 + 400.3: Nexus of Fate-family shuffle-back replacement.
+    /// Verifies the full chain ChangeZone(Library) → Reveal(SelfRef) → Shuffle(Owner).
+    /// Parametric across Nexus of Fate / Progenitus / Blightsteel / Darksteel / Legacy Weapon
+    /// because all five share structurally identical wording.
+    #[test]
+    fn replacement_shuffle_back_with_reveal_full_chain() {
+        for card in [
+            "Nexus of Fate",
+            "Progenitus",
+            "Blightsteel Colossus",
+            "Darksteel Colossus",
+            "Legacy Weapon",
+        ] {
+            let text = format!(
+                "If {card} would be put into a graveyard from anywhere, reveal {card} and \
+                 shuffle it into its owner's library instead."
+            );
+            let def = parse_replacement_line(&text, card)
+                .unwrap_or_else(|| panic!("failed to parse shuffle-back line for {card}"));
+
+            assert_eq!(def.event, ReplacementEvent::Moved);
+            assert_eq!(def.destination_zone, Some(Zone::Graveyard));
+            assert!(matches!(def.mode, ReplacementMode::Mandatory));
+
+            // Execute: ChangeZone { destination: Library, target: SelfRef }
+            let execute = def.execute.as_ref().unwrap();
+            assert!(matches!(
+                *execute.effect,
+                Effect::ChangeZone {
+                    destination: Zone::Library,
+                    target: TargetFilter::SelfRef,
+                    ..
+                }
+            ));
+            // First sub_ability: Reveal { target: SelfRef }
+            let reveal = execute
+                .sub_ability
+                .as_ref()
+                .unwrap_or_else(|| panic!("{card}: missing reveal sub_ability"));
+            assert!(matches!(
+                *reveal.effect,
+                Effect::Reveal {
+                    target: TargetFilter::SelfRef
+                }
+            ));
+            // Second sub_ability: Shuffle { target: Owner }
+            let shuffle = reveal
+                .sub_ability
+                .as_ref()
+                .unwrap_or_else(|| panic!("{card}: missing shuffle sub_ability"));
+            assert!(matches!(
+                *shuffle.effect,
+                Effect::Shuffle {
+                    target: TargetFilter::Owner
+                }
+            ));
+        }
+    }
+
+    /// Building-block: the `opt(tag("reveal ~ and "))` combinator must independently
+    /// accept the no-reveal variant. Exercises the shuffle-back branch without the
+    /// CR 701.20 prefix.
+    #[test]
+    fn replacement_shuffle_back_without_reveal() {
+        let def = parse_replacement_line(
+            "If ~ would be put into a graveyard from anywhere, shuffle it into its owner's \
+             library instead.",
+            "Synthetic",
+        )
+        .expect("no-reveal shuffle-back must parse");
+
+        let execute = def.execute.as_ref().unwrap();
+        // No Reveal step — Shuffle hangs directly off the redirect ChangeZone.
+        let shuffle = execute.sub_ability.as_ref().expect("shuffle sub_ability");
+        assert!(matches!(
+            *shuffle.effect,
+            Effect::Shuffle {
+                target: TargetFilter::Owner
+            }
+        ));
+        // Ensure the single sub_ability is shuffle — not a reveal with nested shuffle.
+        assert!(
+            shuffle.sub_ability.is_none(),
+            "no-reveal branch must not stash a trailing sub_ability"
+        );
+    }
+
+    /// Regression: exile-branch must remain fully backward-compatible after the
+    /// dispatcher refactor. Rest in Peace / Leyline-style wording.
+    #[test]
+    fn replacement_graveyard_exile_branch_still_parses() {
+        let def = parse_replacement_line(
+            "If a card would be put into a graveyard from anywhere, exile it instead.",
+            "Rest in Peace",
+        )
+        .expect("exile branch must parse");
+        let execute = def.execute.as_ref().unwrap();
+        assert!(matches!(
+            *execute.effect,
+            Effect::ChangeZone {
+                destination: Zone::Exile,
+                target: TargetFilter::SelfRef,
+                ..
+            }
+        ));
+        assert!(
+            execute.sub_ability.is_none(),
+            "exile branch has no post-redirect sub_ability"
+        );
     }
 
     #[test]
