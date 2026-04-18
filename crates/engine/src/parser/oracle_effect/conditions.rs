@@ -909,6 +909,9 @@ fn static_condition_to_ability_condition(sc: &StaticCondition) -> Option<Ability
         | StaticCondition::SourceInZone { .. }
         | StaticCondition::DefendingPlayerControls { .. }
         | StaticCondition::SourceAttackingAlone
+        | StaticCondition::SourceIsAttacking
+        | StaticCondition::SourceIsBlocking
+        | StaticCondition::SourceIsBlocked
         | StaticCondition::IsMonarch
         | StaticCondition::HasCityBlessing
         | StaticCondition::OpponentPoisonAtLeast { .. }

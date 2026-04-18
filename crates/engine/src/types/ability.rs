@@ -1751,6 +1751,18 @@ pub enum StaticCondition {
     },
     /// CR 506.5: True when the source creature is the only attacking creature.
     SourceAttackingAlone,
+    /// CR 508.1k + CR 506.4: True when the source creature is currently an attacking creature.
+    /// CR 508.1k defines "attacking creature" (becomes one when declared, remains until removed
+    /// or combat ends). CR 506.4 defines when a creature stops being an attacker.
+    SourceIsAttacking,
+    /// CR 509.1g + CR 506.4: True when the source creature is currently a blocking creature.
+    /// CR 509.1g defines "blocking creature" (becomes one when declared, remains until removed
+    /// or combat ends). CR 506.4 defines when a creature stops being a blocker.
+    SourceIsBlocking,
+    /// CR 509.1h: True when the source creature has been blocked this combat.
+    /// Once a creature is blocked, it remains blocked for the rest of combat even
+    /// if all its blockers leave — mirrors `AttackerInfo.blocked` (sticky flag).
+    SourceIsBlocked,
     /// CR 724.1: True when the controller is the monarch.
     IsMonarch,
     /// CR 702.131a: True when the controller has the city's blessing (Ascend).

@@ -113,23 +113,37 @@ fn parse_opponent_poison_conditions(input: &str) -> OracleResult<'_, StaticCondi
     Ok((rest, StaticCondition::OpponentPoisonAtLeast { count }))
 }
 
+/// Shared subject dispatcher for source-referential predicates.
+///
+/// Consumes `"<subject> "` — the trailing `"is"` / `"isn't"` is dispatched by the
+/// caller so negation (`"~ isn't attacking"`) composes cleanly.
+///
+/// Subjects: "~", "this creature", "this permanent", "this land", "this artifact",
+/// "this enchantment", "equipped creature", "enchanted creature".
+fn parse_source_subject(input: &str) -> OracleResult<'_, &str> {
+    alt((
+        tag("~ "),
+        tag("this creature "),
+        tag("this permanent "),
+        tag("this land "),
+        tag("this artifact "),
+        tag("this enchantment "),
+        tag("equipped creature "),
+        tag("enchanted creature "),
+    ))
+    .parse(input)
+}
+
 /// CR 611.2b: Compose subject × predicate for tapped/untapped.
 ///
-/// Subject: "~ is ", "this creature is ", "this permanent is ", "this land is ",
-/// "this artifact is ", "equipped creature is ", "enchanted creature is "
-/// Predicate: "tapped" → SourceIsTapped, "untapped" → Not(SourceIsTapped)
+/// Predicate: "tapped" → SourceIsTapped, "untapped" → Not(SourceIsTapped).
+/// Only the affirmative `"is"` form is produced in Oracle text for tapped/untapped
+/// (both are themselves past participles — there is no `"isn't tapped"` idiom),
+/// so we only dispatch `tag("is ")` here. Negation patterns live in
+/// `parse_combat_state_predicate`.
 fn parse_tapped_untapped(input: &str) -> OracleResult<'_, StaticCondition> {
-    let (rest, _) = alt((
-        tag("~ is "),
-        tag("this creature is "),
-        tag("this permanent is "),
-        tag("this land is "),
-        tag("this artifact is "),
-        tag("this enchantment is "),
-        tag("equipped creature is "),
-        tag("enchanted creature is "),
-    ))
-    .parse(input)?;
+    let (rest, _) = parse_source_subject(input)?;
+    let (rest, _) = tag("is ").parse(rest)?;
     alt((
         value(StaticCondition::SourceIsTapped, tag("tapped")),
         value(
@@ -142,12 +156,52 @@ fn parse_tapped_untapped(input: &str) -> OracleResult<'_, StaticCondition> {
     .parse(rest)
 }
 
+/// CR 508.1k / CR 509.1g / CR 509.1h: Parse subject × combat-state predicate.
+///
+/// Composes `parse_source_subject` with:
+/// - `"is"` / `"isn't"` for affirmative vs negated predicate,
+/// - one of `"attacking or blocking"` (longest-match first) / `"attacking"` /
+///   `"blocking"` / `"blocked"`.
+///
+/// `"attacking or blocking"` emits `Or([SourceIsAttacking, SourceIsBlocking])`
+/// via the existing `StaticCondition::Or` combinator — no dedicated variant.
+fn parse_combat_state_predicate(input: &str) -> OracleResult<'_, StaticCondition> {
+    let (rest, _) = parse_source_subject(input)?;
+    let (rest, negated) =
+        alt((value(false, tag("is ")), value(true, tag("isn't ")))).parse(rest)?;
+    let (rest, predicate) = alt((
+        // Longest-match first — nom's `alt` is first-match.
+        map(tag("attacking or blocking"), |_| StaticCondition::Or {
+            conditions: vec![
+                StaticCondition::SourceIsAttacking,
+                StaticCondition::SourceIsBlocking,
+            ],
+        }),
+        value(StaticCondition::SourceIsAttacking, tag("attacking")),
+        value(StaticCondition::SourceIsBlocking, tag("blocking")),
+        value(StaticCondition::SourceIsBlocked, tag("blocked")),
+    ))
+    .parse(rest)?;
+    let result = if negated {
+        StaticCondition::Not {
+            condition: Box::new(predicate),
+        }
+    } else {
+        predicate
+    };
+    Ok((rest, result))
+}
+
 /// CR 611.2b: Parse source-state conditions (tapped, untapped, entered this turn).
 fn parse_source_state_conditions(input: &str) -> OracleResult<'_, StaticCondition> {
     alt((
         // CR 611.2b: Tapped/untapped — composed as subject × predicate.
         // Parse subject ("~ is", "this creature is", etc.) then branch on "tapped"/"untapped".
         parse_tapped_untapped,
+        // CR 508.1k / CR 509.1g / CR 509.1h: Combat-state predicates —
+        // "is attacking" / "is blocking" / "is blocked" / "is attacking or blocking"
+        // and their negations ("isn't attacking", etc.).
+        parse_combat_state_predicate,
         // CR 400.7: Entered this turn
         value(
             StaticCondition::SourceEnteredThisTurn,
@@ -1435,6 +1489,89 @@ mod tests {
             parse_inner_condition("this aura entered the battlefield this turn").unwrap();
         assert_eq!(rest, "");
         assert_eq!(c, StaticCondition::SourceEnteredThisTurn);
+    }
+
+    // -- Combat-state predicate tests (CR 508.1k / CR 509.1g / CR 509.1h) --
+
+    #[test]
+    fn test_source_is_attacking() {
+        let (rest, c) = parse_inner_condition("~ is attacking").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceIsAttacking);
+    }
+
+    #[test]
+    fn test_this_creature_is_attacking() {
+        let (rest, c) = parse_inner_condition("this creature is attacking").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceIsAttacking);
+    }
+
+    #[test]
+    fn test_equipped_creature_is_attacking() {
+        let (rest, c) = parse_inner_condition("equipped creature is attacking").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceIsAttacking);
+    }
+
+    #[test]
+    fn test_enchanted_creature_is_attacking() {
+        let (rest, c) = parse_inner_condition("enchanted creature is attacking").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceIsAttacking);
+    }
+
+    #[test]
+    fn test_source_isnt_attacking() {
+        // Gaea's Liege: "as long as ~ isn't attacking, ..."
+        let (rest, c) = parse_inner_condition("~ isn't attacking").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            c,
+            StaticCondition::Not {
+                condition: Box::new(StaticCondition::SourceIsAttacking),
+            }
+        );
+    }
+
+    #[test]
+    fn test_source_is_blocking() {
+        let (rest, c) = parse_inner_condition("~ is blocking").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceIsBlocking);
+    }
+
+    #[test]
+    fn test_source_is_blocked() {
+        let (rest, c) = parse_inner_condition("~ is blocked").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceIsBlocked);
+    }
+
+    #[test]
+    fn test_source_is_attacking_or_blocking() {
+        // Composes via the existing `Or` combinator — no bespoke variant.
+        let (rest, c) = parse_inner_condition("~ is attacking or blocking").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(
+            c,
+            StaticCondition::Or {
+                conditions: vec![
+                    StaticCondition::SourceIsAttacking,
+                    StaticCondition::SourceIsBlocking,
+                ],
+            }
+        );
+    }
+
+    #[test]
+    fn test_tapped_untapped_regression_after_subject_refactor() {
+        // Regression guard: after extracting `parse_source_subject` (which now consumes
+        // only "<subject> " without trailing "is"), the tapped/untapped path must still
+        // resolve correctly.
+        let (rest, c) = parse_inner_condition("~ is tapped").unwrap();
+        assert_eq!(rest, "");
+        assert_eq!(c, StaticCondition::SourceIsTapped);
     }
 
     // -- "You've [done X] this turn" tests (Phase 4) --

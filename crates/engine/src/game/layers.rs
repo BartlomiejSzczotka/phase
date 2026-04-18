@@ -274,6 +274,24 @@ pub(crate) fn evaluate_condition(
                     .first()
                     .is_some_and(|a| a.object_id == source_id)
         }),
+        // CR 508.1k: Source creature is currently an attacker.
+        StaticCondition::SourceIsAttacking => state
+            .combat
+            .as_ref()
+            .is_some_and(|combat| combat.attackers.iter().any(|a| a.object_id == source_id)),
+        // CR 509.1g: Source creature is currently a blocker.
+        StaticCondition::SourceIsBlocking => state
+            .combat
+            .as_ref()
+            .is_some_and(|combat| combat.blocker_to_attacker.contains_key(&source_id)),
+        // CR 509.1h: Source creature has been blocked this combat (sticky flag).
+        StaticCondition::SourceIsBlocked => state.combat.as_ref().is_some_and(|combat| {
+            combat
+                .attackers
+                .iter()
+                .find(|a| a.object_id == source_id)
+                .is_some_and(|a| a.blocked)
+        }),
         // CR 724.1: True when the controller is the monarch.
         StaticCondition::IsMonarch => state.monarch == Some(controller),
         // CR 702.131a: True when the controller has the city's blessing.
@@ -2637,6 +2655,125 @@ mod tests {
             &StaticCondition::SourceIsTapped,
             PlayerId(0),
             id
+        ));
+    }
+
+    // -- Combat-state predicate evaluator tests (CR 508.1k / CR 509.1g / CR 509.1h) --
+
+    #[test]
+    fn evaluate_source_is_attacking_true_when_in_attackers() {
+        use crate::game::combat::{AttackerInfo, CombatState};
+        let mut state = setup();
+        let id = make_creature(&mut state, "Attacker", 2, 2, PlayerId(0));
+        state.combat = Some(CombatState {
+            attackers: vec![AttackerInfo::attacking_player(id, PlayerId(1))],
+            ..Default::default()
+        });
+        assert!(evaluate_condition_for_test(
+            &state,
+            &StaticCondition::SourceIsAttacking,
+            PlayerId(0),
+            id,
+        ));
+    }
+
+    #[test]
+    fn evaluate_source_is_attacking_false_when_no_combat() {
+        let mut state = setup();
+        let id = make_creature(&mut state, "Idle", 2, 2, PlayerId(0));
+        assert!(!evaluate_condition_for_test(
+            &state,
+            &StaticCondition::SourceIsAttacking,
+            PlayerId(0),
+            id,
+        ));
+    }
+
+    #[test]
+    fn evaluate_source_is_attacking_false_when_not_in_attackers() {
+        use crate::game::combat::{AttackerInfo, CombatState};
+        let mut state = setup();
+        let attacker = make_creature(&mut state, "Attacker", 2, 2, PlayerId(0));
+        let bystander = make_creature(&mut state, "Bystander", 2, 2, PlayerId(0));
+        state.combat = Some(CombatState {
+            attackers: vec![AttackerInfo::attacking_player(attacker, PlayerId(1))],
+            ..Default::default()
+        });
+        assert!(!evaluate_condition_for_test(
+            &state,
+            &StaticCondition::SourceIsAttacking,
+            PlayerId(0),
+            bystander,
+        ));
+    }
+
+    #[test]
+    fn evaluate_source_is_blocking_true_when_in_blocker_map() {
+        use crate::game::combat::CombatState;
+        let mut state = setup();
+        let blocker = make_creature(&mut state, "Blocker", 2, 2, PlayerId(1));
+        let attacker = make_creature(&mut state, "Attacker", 2, 2, PlayerId(0));
+        let mut combat = CombatState::default();
+        combat.blocker_to_attacker.insert(blocker, vec![attacker]);
+        state.combat = Some(combat);
+        assert!(evaluate_condition_for_test(
+            &state,
+            &StaticCondition::SourceIsBlocking,
+            PlayerId(1),
+            blocker,
+        ));
+    }
+
+    #[test]
+    fn evaluate_source_is_blocking_false_when_not_blocking() {
+        use crate::game::combat::CombatState;
+        let mut state = setup();
+        let blocker = make_creature(&mut state, "Blocker", 2, 2, PlayerId(1));
+        state.combat = Some(CombatState::default());
+        assert!(!evaluate_condition_for_test(
+            &state,
+            &StaticCondition::SourceIsBlocking,
+            PlayerId(1),
+            blocker,
+        ));
+    }
+
+    #[test]
+    fn evaluate_source_is_blocked_true_when_sticky_flag_set() {
+        // CR 509.1h: A creature remains blocked even if all the creatures blocking
+        // it are removed from combat — `AttackerInfo.blocked` is set during blocker
+        // declaration and never cleared.
+        use crate::game::combat::{AttackerInfo, CombatState};
+        let mut state = setup();
+        let id = make_creature(&mut state, "Attacker", 2, 2, PlayerId(0));
+        let mut info = AttackerInfo::attacking_player(id, PlayerId(1));
+        info.blocked = true;
+        state.combat = Some(CombatState {
+            attackers: vec![info],
+            ..Default::default()
+        });
+        assert!(evaluate_condition_for_test(
+            &state,
+            &StaticCondition::SourceIsBlocked,
+            PlayerId(0),
+            id,
+        ));
+    }
+
+    #[test]
+    fn evaluate_source_is_blocked_false_when_flag_unset() {
+        use crate::game::combat::{AttackerInfo, CombatState};
+        let mut state = setup();
+        let id = make_creature(&mut state, "Attacker", 2, 2, PlayerId(0));
+        state.combat = Some(CombatState {
+            attackers: vec![AttackerInfo::attacking_player(id, PlayerId(1))],
+            ..Default::default()
+        });
+        assert!(!evaluate_condition_for_test(
+            &state,
+            &StaticCondition::SourceIsBlocked,
+            PlayerId(0),
+            id,
         ));
     }
 
