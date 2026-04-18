@@ -1526,6 +1526,11 @@ fn evaluate_cascade_constraint(
 
     let (index, resulting_mv) = match state.objects.get(&object_id) {
         Some(obj) => {
+            // CR 202.3b: On the stack, X uses the chosen value for MV. The
+            // printed `mana_cost.mana_value()` contributes 0 for each {X} shard
+            // (CR 107.3b), so add `cost_x_paid` to reconstruct the MV as seen
+            // by the "resulting spell's mana value" comparison of CR 702.85a.
+            let resulting_mv = obj.mana_cost.mana_value() + obj.cost_x_paid.unwrap_or(0);
             let idx = obj.casting_permissions.iter().position(|p| {
                 matches!(
                     p,
@@ -1536,7 +1541,7 @@ fn evaluate_cascade_constraint(
                 )
             });
             match idx {
-                Some(i) => (i, obj.mana_cost.mana_value()),
+                Some(i) => (i, resulting_mv),
                 None => return CascadeCheck::NotApplicable,
             }
         }

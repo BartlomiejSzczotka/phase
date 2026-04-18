@@ -26,13 +26,13 @@ pub fn resolve(
         return Err(EffectError::InvalidParam("Expected Cascade".to_string()));
     }
 
-    // CR 202.3b + CR 702.85a: Read source MV from the stack spell object. X on
-    // the stack already reflects the chosen value, so `mana_value()` returns
-    // the correct comparator for both fixed and X-cost cascade spells.
+    // CR 202.3b + CR 702.85a: Read source MV from the stack spell object.
+    // `mana_cost.mana_value()` contributes 0 for {X} shards (CR 107.3b), so
+    // add `cost_x_paid` to reflect the chosen value of X on the stack.
     let source_mv = state
         .objects
         .get(&ability.source_id)
-        .map(|obj| obj.mana_cost.mana_value())
+        .map(|obj| obj.mana_cost.mana_value() + obj.cost_x_paid.unwrap_or(0))
         .unwrap_or(0);
 
     let player = state
