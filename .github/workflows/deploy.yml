@@ -87,11 +87,9 @@ jobs:
         run: |
           mkdir -p data
           ./scripts/gen-card-data.sh
-          # Mirror the artifacts the later steps (validate, hash, badges) read
-          # from data/. gen-card-data.sh is the source of truth and writes to
-          # client/public/.
-          cp client/public/card-data.json data/card-data.json
-          cp client/public/coverage-data.json data/coverage-data.json
+          # gen-card-data.sh mirrors card-data.json + coverage-data.json into
+          # data/ itself, so downstream steps (validate, hash, badges) can
+          # read from data/ without the workflow knowing the layout.
 
       - name: Validate card-data against engine schema
         # Deploy gate — parse the freshly produced card-data through the same

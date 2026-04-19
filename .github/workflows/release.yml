@@ -73,7 +73,8 @@ jobs:
         run: |
           mkdir -p data
           ./scripts/gen-card-data.sh
-          cp client/public/card-data.json data/card-data.json
+          # gen-card-data.sh mirrors card-data.json + coverage-data.json into
+          # data/ itself, so downstream steps can read from data/ uniformly.
 
       - name: Validate card-data against engine schema
         # Deploy gate — refuse to ship card-data the current engine cannot parse.

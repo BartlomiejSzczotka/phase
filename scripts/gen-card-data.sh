@@ -149,6 +149,13 @@ promote_tmp "$OUTPUT_TMP"       "$OUTPUT"
 promote_tmp "$NAMES_OUTPUT_TMP" "$NAMES_OUTPUT"
 echo "Promoted $OUTPUT and $NAMES_OUTPUT"
 
+# Mirror card-data.json into the data/ root so downstream tools that consume
+# `<data-root>/card-data.json` (coverage-report, card-data-validate when run
+# against `data/`, etc.) can find it without the workflow having to know the
+# generator's output layout. Single source of truth: this script.
+mkdir -p "$DATA_DIR"
+cp "$OUTPUT" "$DATA_DIR/card-data.json"
+
 # Content-addressed copy: emit a sibling `card-data-<sha256-prefix>.json` that
 # deploys can upload to a long-cache, immutable R2 URL. Each WASM bundle is
 # baked (via Vite) with the hashed URL of the card-data it was built against,
@@ -191,6 +198,8 @@ if [ "$coverage_ok" = 1 ]; then
     promote_tmp "$COVERAGE_OUTPUT_TMP"  "$COVERAGE_OUTPUT"
     promote_tmp "$COVERAGE_SUMMARY_TMP" "$COVERAGE_SUMMARY"
     echo "Promoted $COVERAGE_OUTPUT and $COVERAGE_SUMMARY"
+    # Mirror to data/ for downstream tools that consume `<data-root>/coverage-data.json`.
+    cp "$COVERAGE_OUTPUT" "$DATA_DIR/coverage-data.json"
   fi
 fi
 
