@@ -6378,4 +6378,92 @@ mod tests {
             other => panic!("expected PumpAll, got {:?}", other),
         }
     }
+
+    // CR 201.3 / CR 113.6: Petrified Hamlet — full four-line parse must
+    // produce a ChangesZone trigger (choose a land card name, persist=true),
+    // a continuous static granting `{T}: Add {C}.` to every land whose name
+    // matches the chosen name, the CantBeActivated static on
+    // `HasChosenName` sources, and the card's own `{T}: Add {C}.`
+    // activated mana ability — zero Unimplemented ambiances.
+    #[test]
+    fn petrified_hamlet_full_parse() {
+        use crate::types::ability::{ChoiceType, Effect};
+        let text = "When this land enters, choose a land card name.\n\
+                    Activated abilities of sources with the chosen name can't be activated unless they're mana abilities.\n\
+                    Lands with the chosen name have \"{T}: Add {C}.\"\n\
+                    {T}: Add {C}.";
+        let r = parse(text, "Petrified Hamlet", &[], &["Land"], &[]);
+
+        // No Unimplemented anywhere.
+        for a in &r.abilities {
+            assert!(
+                !matches!(*a.effect, Effect::Unimplemented { .. }),
+                "ability Unimplemented: {:?}",
+                a
+            );
+        }
+        for t in &r.triggers {
+            let exec = t.execute.as_ref().expect("trigger execute");
+            assert!(
+                !matches!(*exec.effect, Effect::Unimplemented { .. }),
+                "trigger Unimplemented: {:?}",
+                t
+            );
+        }
+
+        // Trigger: choose-a-land-card-name with persist=true.
+        assert_eq!(r.triggers.len(), 1);
+        let trig = &r.triggers[0];
+        assert_eq!(trig.mode, TriggerMode::ChangesZone);
+        assert_eq!(trig.destination, Some(Zone::Battlefield));
+        let trig_exec = trig.execute.as_ref().unwrap();
+        assert!(
+            matches!(
+                *trig_exec.effect,
+                Effect::Choose {
+                    choice_type: ChoiceType::CardName,
+                    persist: true,
+                }
+            ),
+            "expected Choose{{CardName, persist:true}}, got {:?}",
+            trig_exec.effect
+        );
+
+        // One activated mana ability ({T}: Add {C}).
+        let mana_abils: Vec<_> = r
+            .abilities
+            .iter()
+            .filter(|a| matches!(*a.effect, Effect::Mana { .. }))
+            .collect();
+        assert_eq!(mana_abils.len(), 1);
+
+        // Two statics: CantBeActivated (HasChosenName) + continuous grant on
+        // Lands-with-the-chosen-name.
+        assert_eq!(r.statics.len(), 2);
+        let has_cant_be_activated = r
+            .statics
+            .iter()
+            .any(|s| matches!(&s.mode, StaticMode::CantBeActivated { .. }));
+        assert!(has_cant_be_activated, "expected CantBeActivated static");
+
+        let grant_static = r
+            .statics
+            .iter()
+            .find(|s| matches!(&s.mode, StaticMode::Continuous))
+            .expect("expected continuous grant static");
+        match &grant_static.affected {
+            Some(TargetFilter::And { filters }) => {
+                assert_eq!(filters.len(), 2);
+                assert_eq!(filters[1], TargetFilter::HasChosenName);
+            }
+            other => {
+                panic!("expected And[Typed(Land), HasChosenName] for grant static, got {other:?}")
+            }
+        }
+        assert_eq!(grant_static.modifications.len(), 1);
+        assert!(matches!(
+            &grant_static.modifications[0],
+            ContinuousModification::GrantAbility { .. }
+        ));
+    }
 }

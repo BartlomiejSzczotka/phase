@@ -19,10 +19,10 @@ use crate::parser::oracle_static::{
 };
 use crate::parser::oracle_warnings::push_warning;
 use crate::types::ability::{
-    AbilityDefinition, AbilityKind, CategoryChooserScope, Chooser, ContinuousModification,
-    ControllerRef, Duration, Effect, GainLifePlayer, LibraryPosition, MultiTargetSpec, PaymentCost,
-    PreventionAmount, PreventionScope, PtValue, QuantityExpr, QuantityRef, StaticDefinition,
-    TargetFilter, TypedFilter,
+    AbilityDefinition, AbilityKind, CategoryChooserScope, ChoiceType, Chooser,
+    ContinuousModification, ControllerRef, Duration, Effect, GainLifePlayer, LibraryPosition,
+    MultiTargetSpec, PaymentCost, PreventionAmount, PreventionScope, PtValue, QuantityExpr,
+    QuantityRef, StaticDefinition, TargetFilter, TypedFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::player::PlayerCounterKind;
@@ -1190,8 +1190,13 @@ pub(super) fn lower_choose_ast(ast: ChooseImperativeAst) -> Effect {
         ChooseImperativeAst::TargetOnly { target } => Effect::TargetOnly { target },
         ChooseImperativeAst::Reparse { text } => super::parse_effect(&text),
         ChooseImperativeAst::NamedChoice { choice_type } => Effect::Choose {
+            // CR 201.3 / CR 113.6: "With the chosen name" static/trigger filters
+            // (Petrified Hamlet, Cheering Fanatic) resolve against the source
+            // object's `chosen_attributes`. CardName choices must persist so
+            // those later references find the bound name; other choice types
+            // are consumed via `last_named_choice` and do not need persistence.
+            persist: matches!(choice_type, ChoiceType::CardName),
             choice_type,
-            persist: false,
         },
         ChooseImperativeAst::RevealHandFilter { card_filter } => Effect::RevealHand {
             target: TargetFilter::Any,

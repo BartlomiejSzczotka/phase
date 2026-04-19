@@ -3979,6 +3979,7 @@ pub(crate) fn try_parse_named_choice(lower: &str) -> Option<ChoiceType> {
         tag::<_, _, E>("a card name"),
         tag("a nonland card name"),
         tag("a creature card name"),
+        tag("a land card name"),
     ))
     .parse(rest)
     .is_ok()
@@ -13852,6 +13853,30 @@ mod tests {
             ),
             "Expected GrantNextSpellAbility(HasKeyword(Improvise)), got {:?}",
             def.effect
+        );
+    }
+
+    // CR 201.3: "choose a land card name" is a CardName choice scoped to the
+    // land type (Petrified Hamlet). The alt-list accepts the land-qualified
+    // form just like the existing creature-qualified and nonland-qualified
+    // variants.
+    #[test]
+    fn named_choice_accepts_land_card_name() {
+        assert_eq!(
+            super::try_parse_named_choice("choose a land card name"),
+            Some(ChoiceType::CardName)
+        );
+        assert_eq!(
+            super::try_parse_named_choice("choose a card name"),
+            Some(ChoiceType::CardName)
+        );
+        assert_eq!(
+            super::try_parse_named_choice("choose a nonland card name"),
+            Some(ChoiceType::CardName)
+        );
+        assert_eq!(
+            super::try_parse_named_choice("choose a creature card name"),
+            Some(ChoiceType::CardName)
         );
     }
 }

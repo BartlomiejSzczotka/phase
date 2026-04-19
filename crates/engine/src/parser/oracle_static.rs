@@ -3120,6 +3120,23 @@ fn parse_continuous_subject_filter(subject: &str) -> Option<TargetFilter> {
         return Some(filter);
     }
 
+    // CR 201.3 / CR 113.6: "<type-phrase> with the chosen name" — the chosen-name
+    // name-picker class (Petrified Hamlet, Cheering Fanatic, Disruptor Flute, ...).
+    // The type prefix selects the object class; `HasChosenName` restricts it to
+    // objects whose name matches the source's `ChosenAttribute::CardName` (bound
+    // by a preceding `Effect::Choose { CardName, persist: true }`).
+    if let Ok((_, (type_part, _))) =
+        nom_primitives::split_once_on(tp.lower, " with the chosen name")
+    {
+        let type_part_original = tp.original[..type_part.len()].trim();
+        let (type_filter, type_rest) = parse_type_phrase(type_part_original);
+        if type_rest.trim().is_empty() && !matches!(type_filter, TargetFilter::Any) {
+            return Some(TargetFilter::And {
+                filters: vec![type_filter, TargetFilter::HasChosenName],
+            });
+        }
+    }
+
     if let Some(filter) = parse_modified_creature_subject_filter(trimmed) {
         return Some(filter);
     }
@@ -10202,6 +10219,39 @@ mod tests {
             }
         );
         assert_eq!(def.affected, Some(TargetFilter::HasChosenName));
+    }
+
+    // CR 201.3 / CR 113.6: Petrified Hamlet — "Lands with the chosen name
+    // have \"{T}: Add {C}.\"" grants a quoted mana ability to every land
+    // whose name matches the CardName persisted on the source by the
+    // preceding ETB choose-a-land-card-name trigger.
+    #[test]
+    fn lands_with_chosen_name_grant_quoted_ability() {
+        let def = parse_static_line("Lands with the chosen name have \"{T}: Add {C}.\"").unwrap();
+        match &def.affected {
+            Some(TargetFilter::And { filters }) => {
+                assert_eq!(filters.len(), 2);
+                assert!(
+                    matches!(
+                        &filters[0],
+                        TargetFilter::Typed(tf) if tf.type_filters.contains(&TypeFilter::Land)
+                    ),
+                    "expected land typed filter, got {:?}",
+                    filters[0]
+                );
+                assert_eq!(filters[1], TargetFilter::HasChosenName);
+            }
+            other => panic!("expected And[Typed(Land), HasChosenName], got {other:?}"),
+        }
+        assert_eq!(def.modifications.len(), 1);
+        assert!(
+            matches!(
+                &def.modifications[0],
+                ContinuousModification::GrantAbility { .. }
+            ),
+            "expected GrantAbility, got {:?}",
+            def.modifications[0]
+        );
     }
 
     #[test]
