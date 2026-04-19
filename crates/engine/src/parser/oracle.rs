@@ -866,6 +866,21 @@ pub fn parse_oracle_text(
             continue;
         }
 
+        // Priority 5-pre: "Whenever you cast [spell], that [subject] enters with
+        // [counters] on it" is a replacement effect per CR 614.1c, not a
+        // triggered ability — despite the "whenever" framing. Intercept before
+        // the generic trigger dispatch routes it through the SpellCast matcher.
+        // Applies to Wildgrowth Archaic and cousin cards (Runadi, Boreal
+        // Outrider, Torgal, …). `parse_replacement_line` handles all the
+        // compositional variants (fixed / X / "where X is …").
+        if has_trigger_prefix(&lower) && scan_contains(&lower, "enters with") {
+            if let Some(rep_def) = parse_replacement_line(&line, card_name) {
+                result.replacements.push(rep_def);
+                i += 1;
+                continue;
+            }
+        }
+
         // Priority 5-6: Triggered abilities — starts with When/Whenever/At
         // CR 603.2: Compound triggers ("When X and when Y, effect") produce
         // multiple TriggerDefinitions sharing the same execute effect.

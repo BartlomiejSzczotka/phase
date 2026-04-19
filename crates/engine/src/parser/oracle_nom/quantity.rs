@@ -326,6 +326,12 @@ fn parse_number_of_inner(input: &str) -> OracleResult<'_, QuantityRef> {
             QuantityRef::DungeonsCompleted,
             tag("dungeons you've completed"),
         ),
+        // CR 202.2 + CR 601.2h: "the number of colors of mana spent to cast it"
+        // (Wildgrowth Archaic and the cousin-card family).
+        value(
+            QuantityRef::ColorsSpentOnSelf,
+            tag("colors of mana spent to cast it"),
+        ),
     )))
     .parse(input)
 }
@@ -899,6 +905,17 @@ mod tests {
     #[test]
     fn test_parse_quantity_failure() {
         assert!(parse_quantity("xyz").is_err());
+    }
+
+    /// CR 202.2 + CR 601.2h: "the number of colors of mana spent to cast it"
+    /// resolves to `QuantityRef::ColorsSpentOnSelf`. Used by Wildgrowth Archaic
+    /// and the cousin-card family for ETB-counter quantity expressions.
+    #[test]
+    fn parses_colors_spent_to_cast_it() {
+        let (rest, q) =
+            parse_quantity_ref("the number of colors of mana spent to cast it").unwrap();
+        assert_eq!(q, QuantityRef::ColorsSpentOnSelf);
+        assert_eq!(rest, "");
     }
 
     #[test]

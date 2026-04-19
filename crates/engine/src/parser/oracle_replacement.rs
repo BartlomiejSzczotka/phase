@@ -191,6 +191,17 @@ pub fn parse_replacement_line(text: &str, card_name: &str) -> Option<Replacement
         );
     }
 
+    // --- "Whenever you cast [spell], that [subject] enters with ... counter(s) on it" ---
+    // CR 614.1c: Despite the "whenever you cast" framing, "enters with" is a
+    // replacement effect (not a triggered ability), so Wildgrowth Archaic and
+    // its cousin family (Runadi, Boreal Outrider, Torgal, …) are modeled as
+    // static replacements on the *cast spell itself*, not delayed triggers.
+    // This branch must run before `parse_enters_with_counters` so the
+    // "whenever you cast …" prefix is recognized first.
+    if let Some(def) = parse_whenever_you_cast_enters_with(&norm_lower, &text) {
+        return Some(def);
+    }
+
     // --- "[Subject] enters/escapes with N [type] counter(s)" ---
     // CR 614.1c: Handles "enters with", "escapes with" (CR 702.138), and
     // kicker-conditional "if was kicked, it enters with" (CR 702.33d).
@@ -1184,6 +1195,140 @@ fn parse_enters_with_counters(
     }
 
     Some(def)
+}
+
+/// CR 614.1c + CR 601.2: Parse "Whenever you cast a [spell], that [subject]
+/// enters with [an additional] [count] [type] counter(s) on it[, where X is
+/// [quantity]]" as a replacement effect on the *cast spell itself*.
+///
+/// Despite the "whenever you cast" framing, CR 614.1c classifies "enters with"
+/// as a replacement effect, not a triggered ability. Wildgrowth Archaic and its
+/// cousin family (Runadi, Boreal Outrider, Torgal, …) all share this shape.
+///
+/// Composition:
+///   "whenever you cast " → spell filter → ", that " → subject →
+///   " enters with " → count-prefix → counter-type → " counter(s) on it"
+///   [", where x is " → quantity ref] [trailing punctuation]
+fn parse_whenever_you_cast_enters_with(
+    norm_lower: &str,
+    original_text: &str,
+) -> Option<ReplacementDefinition> {
+    // Prefix.
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("whenever you cast ")
+        .parse(norm_lower)
+        .ok()?;
+
+    // Drop the article before the spell filter.
+    let (rest, _) = alt((
+        tag::<_, _, VerboseError<&str>>("a "),
+        tag("an "),
+        tag("another "),
+    ))
+    .parse(rest)
+    .ok()?;
+
+    // Spell filter — split on ", that " to isolate the filter text from the subject.
+    // `split_once_on` returns `Ok(("", (prefix, suffix)))`.
+    let (_, (spell_filter_text, after_that_text)) =
+        nom_primitives::split_once_on(rest, ", that ").ok()?;
+    let (spell_filter, filter_rest) = parse_type_phrase(spell_filter_text);
+    // Require that the spell filter cleanly consumed its text (modulo trailing
+    // "spell" token which parse_type_phrase leaves in the remainder on some paths).
+    let filter_rest = filter_rest.trim();
+    if !filter_rest.is_empty() && filter_rest != "spell" && filter_rest != "spells" {
+        return None;
+    }
+    let TargetFilter::Typed(mut spell_typed) = spell_filter else {
+        return None;
+    };
+    // The Oracle text says "you cast" — constrain to the controller.
+    spell_typed.controller = Some(ControllerRef::You);
+
+    // Subject — "creature", "permanent", or "spell" — and " enters with ".
+    let (rest, _subject) = alt((
+        tag::<_, _, VerboseError<&str>>("creature "),
+        tag("permanent "),
+        tag("spell "),
+    ))
+    .parse(after_that_text)
+    .ok()?;
+    let (rest, _) = tag::<_, _, VerboseError<&str>>("enters with ")
+        .parse(rest)
+        .ok()?;
+
+    // Count prefix: "an additional" | "N additional" | plain "N" | "x additional" | "x".
+    // Mirrors `try_parse_enters_with_additional_counters` — the Wildgrowth
+    // family always uses "additional" but the underlying shape matches.
+    let (rest, fixed_count) =
+        if let Ok((r, _)) = tag::<_, _, VerboseError<&str>>("an additional ").parse(rest) {
+            (r, Some(1u32))
+        } else if let Ok((r, _)) = alt((
+            tag::<_, _, VerboseError<&str>>("x additional "),
+            tag("X additional "),
+        ))
+        .parse(rest)
+        {
+            // X is dynamic — actual value comes from the trailing "where X is …" clause.
+            (r, None)
+        } else if let Ok((r, n)) = nom_primitives::parse_number(rest) {
+            let (r, _) = tag::<_, _, VerboseError<&str>>(" additional ")
+                .parse(r)
+                .or_else(|_| tag::<_, _, VerboseError<&str>>(" ").parse(r))
+                .ok()?;
+            (r, Some(n))
+        } else {
+            return None;
+        };
+
+    // Counter type.
+    let (rest, counter_type) = alt((
+        value("P1P1".to_string(), tag::<_, _, VerboseError<&str>>("+1/+1")),
+        value("M1M1".to_string(), tag("-1/-1")),
+    ))
+    .parse(rest)
+    .ok()?;
+
+    // " counter on it" / " counters on it" with optional trailing punctuation.
+    let (rest, _) = alt((
+        tag::<_, _, VerboseError<&str>>(" counter on it"),
+        tag(" counters on it"),
+    ))
+    .parse(rest)
+    .ok()?;
+
+    // Optional trailing "where X is [quantity]" clause.
+    let count_expr = match fixed_count {
+        Some(n) => QuantityExpr::Fixed { value: n as i32 },
+        None => {
+            // Expect ", where x is " then a quantity ref.
+            let (rest, _) = alt((
+                tag::<_, _, VerboseError<&str>>(", where x is "),
+                tag(", where X is "),
+            ))
+            .parse(rest)
+            .ok()?;
+            let qty_text = rest.trim_end_matches('.').trim();
+            let qty = crate::parser::oracle_quantity::parse_quantity_ref(qty_text)?;
+            QuantityExpr::Ref { qty }
+        }
+    };
+
+    let put_counter = AbilityDefinition::new(
+        AbilityKind::Spell,
+        Effect::PutCounter {
+            counter_type,
+            count: count_expr,
+            target: TargetFilter::SelfRef,
+        },
+    );
+
+    Some(
+        ReplacementDefinition::new(ReplacementEvent::Moved)
+            .execute(put_counter)
+            .valid_card(TargetFilter::Typed(spell_typed))
+            .destination_zone(Zone::Battlefield)
+            .description(original_text.to_string()),
+    )
 }
 
 /// Extract kicker-conditional prefix from "if ~ was kicked [with its {cost} kicker], it enters with..."
@@ -4258,5 +4403,67 @@ mod tests {
             split_on_clone_source_zone("any creature card in any graveyard, except...").unwrap();
         assert_eq!(type_text, "any creature card");
         assert_eq!(zone, Zone::Graveyard);
+    }
+
+    /// CR 614.1c + CR 601.2h + CR 202.2: Wildgrowth Archaic's replacement line
+    /// ("Whenever you cast a creature spell, that creature enters with X
+    /// additional +1/+1 counters on it, where X is the number of colors of
+    /// mana spent to cast it.") parses into a `Moved` replacement on the
+    /// entering creature with `PutCounter { count: Ref(ColorsSpentOnSelf) }`.
+    #[test]
+    fn parses_wildgrowth_archaic_replacement() {
+        let text = "Whenever you cast a creature spell, that creature enters with X additional +1/+1 counters on it, where X is the number of colors of mana spent to cast it.";
+        let def = parse_replacement_line(text, "Wildgrowth Archaic")
+            .expect("Wildgrowth line should parse as a replacement");
+        assert_eq!(def.event, ReplacementEvent::Moved);
+        assert_eq!(def.destination_zone, Some(Zone::Battlefield));
+
+        // valid_card: creature controlled by the Archaic's controller.
+        let TargetFilter::Typed(ref tf) = def.valid_card.as_ref().expect("valid_card set") else {
+            panic!("expected Typed filter, got {:?}", def.valid_card);
+        };
+        assert_eq!(tf.type_filters, vec![TypeFilter::Creature]);
+        assert_eq!(tf.controller, Some(ControllerRef::You));
+
+        // execute: PutCounter { target: SelfRef, count: Ref(ColorsSpentOnSelf) }.
+        let exec = def.execute.as_ref().expect("execute set");
+        let Effect::PutCounter {
+            counter_type,
+            count,
+            target,
+        } = &*exec.effect
+        else {
+            panic!("expected PutCounter, got {:?}", exec.effect);
+        };
+        assert_eq!(counter_type, "P1P1");
+        assert_eq!(target, &TargetFilter::SelfRef);
+        assert_eq!(
+            count,
+            &QuantityExpr::Ref {
+                qty: QuantityRef::ColorsSpentOnSelf
+            }
+        );
+    }
+
+    /// Regression: a plain "Whenever you cast" trigger without an "enters with"
+    /// body must NOT be misrouted to the replacement path.
+    #[test]
+    fn plain_whenever_you_cast_is_not_replacement() {
+        let text = "Whenever you cast a creature spell, draw a card.";
+        assert!(parse_replacement_line(text, "Filler").is_none());
+    }
+
+    /// Regression: "Whenever you cast" with a fixed additional counter amount
+    /// (no "where X is …" tail) also parses cleanly. Covers the cousin shape
+    /// where the count is a literal number.
+    #[test]
+    fn parses_fixed_count_variant() {
+        let text = "Whenever you cast a creature spell, that creature enters with an additional +1/+1 counter on it.";
+        let def = parse_replacement_line(text, "Filler").expect("should parse");
+        let exec = def.execute.as_ref().expect("execute set");
+        let Effect::PutCounter { count, .. } = &*exec.effect else {
+            panic!("expected PutCounter");
+        };
+        assert_eq!(count, &QuantityExpr::Fixed { value: 1 });
     }
 }
