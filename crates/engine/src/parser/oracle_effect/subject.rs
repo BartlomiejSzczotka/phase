@@ -962,29 +962,34 @@ fn build_become_clause(
     // CR 702.xxx: Prepare (Strixhaven) — "becomes prepared" / "becomes
     // unprepared" toggles the PreparedState on the target creature. Must
     // intercept before parse_animation_spec which would try to classify
-    // "prepared" / "unprepared" as a subtype. Assign when WotC publishes SOS
-    // CR update.
-    let become_lower = become_text.to_lowercase();
-    if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("prepared").parse(become_lower.as_str())
-    {
-        if rest.trim().is_empty() {
-            let target = application
-                .target
-                .clone()
-                .unwrap_or(crate::types::ability::TargetFilter::ParentTarget);
-            return Some(super::parsed_clause(Effect::BecomePrepared { target }));
-        }
+    // "prepared" / "unprepared" as a subtype. `all_consuming` enforces that
+    // the matched tag covers the full `become_text` trailer; longer-match
+    // alternative is listed first so "unprepared" doesn't get shadowed by
+    // "prepared". Assign when WotC publishes SOS CR update.
+    #[derive(Clone, Copy)]
+    enum PreparedKind {
+        Prepared,
+        Unprepared,
     }
-    if let Ok((rest, _)) =
-        tag::<_, _, VerboseError<&str>>("unprepared").parse(become_lower.as_str())
+    let become_lower = become_text.trim().to_lowercase();
+    if let Ok((_, kind)) = all_consuming(alt((
+        value(
+            PreparedKind::Unprepared,
+            tag::<_, _, VerboseError<&str>>("unprepared"),
+        ),
+        value(PreparedKind::Prepared, tag("prepared")),
+    )))
+    .parse(become_lower.as_str())
     {
-        if rest.trim().is_empty() {
-            let target = application
-                .target
-                .clone()
-                .unwrap_or(crate::types::ability::TargetFilter::ParentTarget);
-            return Some(super::parsed_clause(Effect::BecomeUnprepared { target }));
-        }
+        let target = application
+            .target
+            .clone()
+            .unwrap_or(crate::types::ability::TargetFilter::ParentTarget);
+        let effect = match kind {
+            PreparedKind::Prepared => Effect::BecomePrepared { target },
+            PreparedKind::Unprepared => Effect::BecomeUnprepared { target },
+        };
+        return Some(super::parsed_clause(effect));
     }
 
     // CR 707.2 / CR 613.1a: "become a copy of [target]" — copy copiable characteristics.

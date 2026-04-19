@@ -153,9 +153,7 @@ pub fn resolve_top(state: &mut GameState, events: &mut Vec<GameEvent>) {
         let obj = state.objects.get(&entry.id);
         let has_paradigm = obj.is_some_and(|o| {
             !o.is_token
-                && o.keywords
-                    .iter()
-                    .any(|k| matches!(k, crate::types::keywords::Keyword::Paradigm))
+                && super::keywords::has_keyword(o, &crate::types::keywords::Keyword::Paradigm)
         });
         if has_paradigm {
             let card_name = obj.map(|o| o.name.clone()).unwrap_or_default();

@@ -30,7 +30,10 @@ fn main() {
             println!("OK: {} cards parsed from {}", count, path.display());
         }
         Err(e) => {
-            eprintln!("FAIL: {} could not be parsed by current engine schema", path.display());
+            eprintln!(
+                "FAIL: {} could not be parsed by current engine schema",
+                path.display()
+            );
             eprintln!("      {e}");
             process::exit(1);
         }

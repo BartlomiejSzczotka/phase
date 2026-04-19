@@ -1878,3 +1878,46 @@ mod station_synthesis_tests {
         );
     }
 }
+
+// CR 702.xxx: Loader-side invariant for Prepare (Strixhaven). The resolver in
+// `game/effects/prepare.rs::has_prepare_face` keys off
+// `back_face.layout_kind == Some(LayoutKind::Prepare)` to gate the Biblioplex
+// "only creatures with prepare spells can become prepared" rule. That gate
+// holds only if the layout-string `"prepare"` round-trips through
+// `map_layout` / `map_layout_str` / `CardLayout::Prepare` consistently.
+// Locking those mappings here prevents a loader regression from silently
+// neutering Biblioplex. Assign when WotC publishes SOS CR update.
+#[cfg(test)]
+mod prepare_layout_invariant_tests {
+    use super::*;
+    use crate::types::card::{CardFace, CardLayout};
+
+    #[test]
+    fn mtgjson_layout_prepare_maps_to_layout_kind_prepare() {
+        // `map_layout` returns the synthesis-local LayoutKind; the
+        // `"prepare"` string is the MTGJSON-side marker for the Strixhaven
+        // two-face Adventure-family frame.
+        assert_eq!(map_layout("prepare"), LayoutKind::Prepare);
+    }
+
+    #[test]
+    fn card_layout_prepare_back_face_is_tagged_prepare() {
+        // The printed-cards loader pattern-matches on `CardLayout::Prepare(_, back)`
+        // to populate `back_face.layout_kind = Some(LayoutKind::Prepare)`. The test
+        // asserts that a `CardLayout::Prepare` constructed from a "prepare"
+        // layout string exposes its back face through `layout_faces`, keeping
+        // the loader's match-arm assumption load-bearing.
+        let a = CardFace {
+            name: "Front".to_string(),
+            ..CardFace::default()
+        };
+        let b = CardFace {
+            name: "Back".to_string(),
+            ..CardFace::default()
+        };
+        let layout = CardLayout::Prepare(a, b);
+        let faces = layout_faces(&layout);
+        assert_eq!(faces.len(), 2, "Prepare layout exposes both faces");
+        assert_eq!(faces[1].name, "Back");
+    }
+}
