@@ -154,6 +154,21 @@ pub enum GameAction {
         card_id: CardId,
         creature_to_return: ObjectId,
     },
+    /// CR 601.2b + CR 118.9a: Cast a spell from hand for free via a
+    /// `StaticMode::CastFromHandFree` permission source (Zaffai and the
+    /// Tempests — "Once during each of your turns, you may cast an instant or
+    /// sorcery spell from your hand without paying its mana cost").
+    ///
+    /// The implicit Omniscience silent-free path uses `GameAction::CastSpell`
+    /// with `CastingVariant::Normal` and a `NoCost` short-circuit — this
+    /// dedicated action variant is reserved for `OncePerTurn` permissions where
+    /// the player's "may cast" choice and the source-slot consumption must be
+    /// visible at the action layer.
+    CastSpellForFree {
+        object_id: ObjectId,
+        card_id: CardId,
+        source_id: ObjectId,
+    },
     /// CR 609.3: Accept or decline an optional effect ("You may X").
     DecideOptionalEffect {
         accept: bool,
@@ -356,6 +371,7 @@ impl GameAction {
             GameAction::PlayLand { object_id, .. } => Some(*object_id),
             GameAction::CastSpell { object_id, .. } => Some(*object_id),
             GameAction::CastSpellAsSneak { gy_object, .. } => Some(*gy_object),
+            GameAction::CastSpellForFree { object_id, .. } => Some(*object_id),
             GameAction::ActivateAbility { source_id, .. } => Some(*source_id),
             GameAction::TapLandForMana { object_id } => Some(*object_id),
             GameAction::UntapLandForMana { object_id } => Some(*object_id),

@@ -5794,10 +5794,26 @@ fn inject_keyword_kind_filter_prop(filter: TargetFilter, kind: KeywordKind) -> T
     }
 }
 
-/// CR 601.2b + CR 118.9a: Parse "you may cast spells from your hand without paying their mana costs."
-/// This is a continuous static ability (Omniscience, Tamiyo emblem) — not a one-shot effect.
+/// CR 601.2b + CR 118.9a: Parse "you may cast spells from your hand without
+/// paying their mana costs" (Omniscience, Tamiyo emblem) and the per-turn
+/// variant "once during each of your turns, you may cast [filter] from your
+/// hand without paying its mana cost" (Zaffai). Continuous static — not a
+/// one-shot effect.
 fn try_parse_hand_cast_free_permission(text: &str, lower: &str) -> Option<StaticDefinition> {
-    let rest = nom_tag_lower(lower, lower, "you may cast ")?;
+    // CR 601.2b: Prefix determines frequency. `OncePerTurn` (Zaffai) is the
+    // explicit-choice path; `Unlimited` (Omniscience) runs silently.
+    let (rest, frequency) = if let Some(r) = nom_tag_lower(
+        lower,
+        lower,
+        "once during each of your turns, you may cast ",
+    ) {
+        (r, CastFrequency::OncePerTurn)
+    } else {
+        (
+            nom_tag_lower(lower, lower, "you may cast ")?,
+            CastFrequency::Unlimited,
+        )
+    };
     // Must contain "from your hand" and "without paying"
     let (filter_text, hand_rest) = nom_primitives::split_once_on(rest, " from your hand")
         .ok()
@@ -5810,11 +5826,9 @@ fn try_parse_hand_cast_free_permission(text: &str, lower: &str) -> Option<Static
     // Intentional: "spells" with no qualifier → Any filter (Omniscience) — no warning needed.
     if filter_text == "spells" {
         return Some(
-            StaticDefinition::new(StaticMode::CastFromHandFree {
-                frequency: CastFrequency::Unlimited,
-            })
-            .affected(TargetFilter::Any)
-            .description(text.to_string()),
+            StaticDefinition::new(StaticMode::CastFromHandFree { frequency })
+                .affected(TargetFilter::Any)
+                .description(text.to_string()),
         );
     }
 
@@ -5840,11 +5854,9 @@ fn try_parse_hand_cast_free_permission(text: &str, lower: &str) -> Option<Static
     }
 
     Some(
-        StaticDefinition::new(StaticMode::CastFromHandFree {
-            frequency: CastFrequency::Unlimited,
-        })
-        .affected(filter)
-        .description(text.to_string()),
+        StaticDefinition::new(StaticMode::CastFromHandFree { frequency })
+            .affected(filter)
+            .description(text.to_string()),
     )
 }
 
@@ -8656,6 +8668,44 @@ mod tests {
         let text = "You may cast a spell from your hand.";
         let lower = text.to_lowercase();
         assert!(try_parse_hand_cast_free_permission(text, &lower).is_none());
+    }
+
+    /// CR 601.2b: Zaffai and the Tempests — once-per-turn cast-from-hand-free.
+    #[test]
+    fn hand_cast_free_zaffai_once_per_turn() {
+        let text = "Once during each of your turns, you may cast an instant or sorcery spell from your hand without paying its mana cost.";
+        let def = parse_static_line(text).expect("should parse Zaffai text");
+        assert!(
+            matches!(
+                def.mode,
+                StaticMode::CastFromHandFree {
+                    frequency: CastFrequency::OncePerTurn,
+                }
+            ),
+            "expected CastFromHandFree {{ OncePerTurn }}, got: {:?}",
+            def.mode
+        );
+        // Affected filter must reject non-instant/sorcery hand spells.
+        let filter = def.affected.expect("should have affected filter");
+        match filter {
+            TargetFilter::Or { .. } | TargetFilter::Typed(_) => {
+                // Either an Or { Instant, Sorcery } union or a Typed filter whose
+                // type_filters cover instant/sorcery — both are structurally valid.
+            }
+            other => panic!("unexpected filter for Zaffai: {other:?}"),
+        }
+    }
+
+    /// CR 601.2b: Zaffai parser must NOT be intercepted by the graveyard-cast
+    /// permission branch when the zone is "from your hand".
+    #[test]
+    fn hand_cast_free_zaffai_not_intercepted_by_graveyard_branch() {
+        let text = "Once during each of your turns, you may cast an instant or sorcery spell from your hand without paying its mana cost.";
+        let lower = text.to_lowercase();
+        // Graveyard branch must decline (zone is hand, not graveyard).
+        assert!(try_parse_graveyard_cast_permission(text, &lower).is_none());
+        // Hand-free branch must succeed.
+        assert!(try_parse_hand_cast_free_permission(text, &lower).is_some());
     }
 
     // ── Fix 1: Irregular plural subtype normalization ──

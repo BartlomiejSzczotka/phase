@@ -331,6 +331,7 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             | GameAction::PlayLand { .. }
             | GameAction::CastSpell { .. }
             | GameAction::CastSpellAsSneak { .. }
+            | GameAction::CastSpellForFree { .. }
             | GameAction::CancelCast
             | GameAction::PayUnlessCost { .. }
             | GameAction::PayCombatTax { .. } => {
@@ -1494,6 +1495,26 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                 gy_object,
                 card_id,
                 creature_to_return,
+                &mut events,
+            )?
+        }
+        // CR 601.2b + CR 118.9a: CastFromHandFree opt-in path — cast a hand
+        // spell for free via a once-per-turn permission source (Zaffai).
+        (
+            WaitingFor::Priority { player },
+            GameAction::CastSpellForFree {
+                object_id,
+                card_id,
+                source_id,
+            },
+        ) => {
+            let p = *player;
+            super::casting::handle_cast_spell_for_free(
+                state,
+                p,
+                object_id,
+                card_id,
+                source_id,
                 &mut events,
             )?
         }

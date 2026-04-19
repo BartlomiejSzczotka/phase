@@ -885,3 +885,139 @@ fn choice_cost_falls_through_when_preferred_unpayable() {
         "fallback life cost should have been paid"
     );
 }
+
+// --- CastFromHandFree { OncePerTurn } tests (Zaffai and the Tempests) ---
+
+/// CR 601.2b + CR 118.9a: Zaffai's once-per-turn permission emits a
+/// `CastSpellForFree` candidate for a matching hand spell. Casting via it
+/// consumes the source's slot and finalizes the spell on the stack with
+/// `CastingVariant::HandPermission`.
+#[test]
+fn zaffai_once_per_turn_hand_free_casts_with_no_mana() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    // Zaffai-equivalent permission: "once during each of your turns, you may cast
+    // an instant or sorcery spell from your hand without paying its mana cost".
+    let source_id = scenario
+        .add_creature(P0, "Zaffai, Thunder Conductor", 0, 0)
+        .with_static_definition(
+            StaticDefinition::new(StaticMode::CastFromHandFree {
+                frequency: CastFrequency::OncePerTurn,
+            })
+            .affected(TargetFilter::Typed(
+                engine::types::ability::TypedFilter::new(TypeFilter::Instant),
+            )),
+        )
+        .id();
+    let bolt_id = scenario.add_bolt_to_hand(P0);
+
+    let mut runner = scenario.build();
+    let card_id = runner.state().objects[&bolt_id].card_id;
+    let mana_before = runner.state().players[0].mana_pool.clone();
+
+    // Legal-actions must surface a `CastSpellForFree` candidate for (bolt, Zaffai).
+    let actions = engine::ai_support::legal_actions(runner.state());
+    let found = actions.iter().any(|a| {
+        matches!(
+            a,
+            GameAction::CastSpellForFree {
+                object_id,
+                source_id: src,
+                ..
+            } if *object_id == bolt_id && *src == source_id
+        )
+    });
+    assert!(
+        found,
+        "CastSpellForFree should appear in legal_actions for a matching hand spell"
+    );
+
+    let result = runner
+        .act(GameAction::CastSpellForFree {
+            object_id: bolt_id,
+            card_id,
+            source_id,
+        })
+        .expect("CastSpellForFree should succeed");
+
+    // Bolt requires target selection (Any) — resolve it and finalize.
+    if let WaitingFor::TargetSelection { .. } = &result.waiting_for {
+        runner
+            .act(GameAction::SelectTargets {
+                targets: vec![TargetRef::Player(P1)],
+            })
+            .expect("target selection should succeed");
+    }
+
+    // Bolt should now be on the stack.
+    assert_eq!(runner.state().stack.len(), 1, "bolt should be on the stack");
+    // CastingVariant::HandPermission must be recorded on the stack entry.
+    let entry = runner.state().stack.last().unwrap();
+    match &entry.kind {
+        StackEntryKind::Spell {
+            casting_variant, ..
+        } => {
+            assert!(
+                matches!(
+                    casting_variant,
+                    CastingVariant::HandPermission { source, frequency }
+                        if *source == source_id && *frequency == CastFrequency::OncePerTurn
+                ),
+                "stack entry variant = {casting_variant:?}",
+            );
+        }
+        other => panic!("expected Spell on stack, got {other:?}"),
+    }
+    // CR 118.9a: No mana was paid.
+    assert_eq!(
+        runner.state().players[0].mana_pool,
+        mana_before,
+        "no mana should have been paid"
+    );
+    // CR 601.2b: Source's once-per-turn slot is consumed.
+    assert!(
+        runner
+            .state()
+            .hand_cast_free_permissions_used
+            .contains(&source_id),
+        "source should be recorded as used"
+    );
+}
+
+/// CR 601.2b + CR 400.7: After the once-per-turn slot is consumed, no further
+/// `CastSpellForFree` candidate is emitted this turn.
+#[test]
+fn zaffai_second_cast_is_suppressed_same_turn() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    let source_id = scenario
+        .add_creature(P0, "Zaffai, Thunder Conductor", 0, 0)
+        .with_static_definition(
+            StaticDefinition::new(StaticMode::CastFromHandFree {
+                frequency: CastFrequency::OncePerTurn,
+            })
+            .affected(TargetFilter::Typed(
+                engine::types::ability::TypedFilter::new(TypeFilter::Instant),
+            )),
+        )
+        .id();
+    let _bolt_id = scenario.add_bolt_to_hand(P0);
+
+    let mut runner = scenario.build();
+    // Mark the source as already used this turn.
+    runner
+        .state_mut()
+        .hand_cast_free_permissions_used
+        .insert(source_id);
+
+    let actions = engine::ai_support::legal_actions(runner.state());
+    let found = actions
+        .iter()
+        .any(|a| matches!(a, GameAction::CastSpellForFree { .. }));
+    assert!(
+        !found,
+        "consumed once-per-turn slot must suppress further CastSpellForFree candidates"
+    );
+}

@@ -1546,6 +1546,69 @@ pub fn handle_cast_spell_as_sneak(
     continue_with_prepared(state, player, prepared, events)
 }
 
+/// CR 601.2b + CR 118.9a: Cast a spell from hand for free via a
+/// `StaticMode::CastFromHandFree` permission source (Zaffai).
+///
+/// Validates:
+/// - `object_id` is in the caster's hand and matches `card_id`.
+/// - `source_id` controls an active `CastFromHandFree` static whose filter
+///   matches `object_id`, and its once-per-turn slot (when applicable) has
+///   not been consumed this turn.
+///
+/// Builds a `CastingVariant::HandPermission { source, frequency }` override and
+/// routes through the standard casting pipeline. On finalize-to-stack,
+/// `casting_costs.rs` records `source_id` in `hand_cast_free_permissions_used`
+/// for `OncePerTurn` frequencies.
+///
+/// Omniscience's `Unlimited` silent path is NOT routed through here — it uses
+/// `GameAction::CastSpell` with `CastingVariant::Normal` and a `NoCost`
+/// short-circuit. This entry point is reserved for the opt-in choice surface.
+pub fn handle_cast_spell_for_free(
+    state: &mut GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    card_id: CardId,
+    source_id: ObjectId,
+    events: &mut Vec<GameEvent>,
+) -> Result<WaitingFor, EngineError> {
+    let obj = state
+        .objects
+        .get(&object_id)
+        .ok_or_else(|| EngineError::InvalidAction("Object not found".to_string()))?;
+    if obj.card_id != card_id {
+        return Err(EngineError::InvalidAction(format!(
+            "Object {object_id:?} does not match card_id {card_id:?}"
+        )));
+    }
+    // CR 601.2b: Spell must be in the caster's hand.
+    if obj.zone != Zone::Hand || obj.owner != player {
+        return Err(EngineError::ActionNotAllowed(
+            "CastSpellForFree requires a hand card owned by the caster".to_string(),
+        ));
+    }
+    // CR 601.2b + CR 400.7: The granting source's permission must be active and
+    // filter-matched. `hand_cast_free_permission_source` also enforces that any
+    // `OncePerTurn` slot has not already been consumed this turn.
+    let (matched_source, frequency) = hand_cast_free_permission_source(state, player, obj)
+        .ok_or_else(|| {
+            EngineError::ActionNotAllowed(
+                "No CastFromHandFree permission source admits this spell".to_string(),
+            )
+        })?;
+    if matched_source != source_id {
+        return Err(EngineError::ActionNotAllowed(
+            "Named source is not the permission grantor for this spell".to_string(),
+        ));
+    }
+    let variant = CastingVariant::HandPermission {
+        source: source_id,
+        frequency,
+    };
+    let prepared =
+        prepare_spell_cast_with_variant_override(state, player, object_id, Some(variant))?;
+    continue_with_prepared(state, player, prepared, events)
+}
+
 /// Cast a spell from hand (or command zone, exile, graveyard in Commander/alternate-cost formats).
 pub fn handle_cast_spell(
     state: &mut GameState,
@@ -1960,6 +2023,96 @@ pub fn spell_has_legal_targets(
         }
         Err(_) => false,
     }
+}
+
+/// CR 601.2b + CR 118.9a: Check whether `object_id` can legally be cast for
+/// free via the given `source_id` right now. Mirrors `can_cast_object_now`'s
+/// timing/targeting checks using a `CastingVariant::HandPermission { source,
+/// frequency }` override so the mana cost is `NoCost` and the source's
+/// once-per-turn slot (if any) is consulted.
+pub fn can_cast_for_free_now(
+    state: &GameState,
+    player: PlayerId,
+    object_id: ObjectId,
+    source_id: ObjectId,
+    frequency: CastFrequency,
+) -> bool {
+    let variant = CastingVariant::HandPermission {
+        source: source_id,
+        frequency,
+    };
+    let Ok(prepared) =
+        prepare_spell_cast_with_variant_override(state, player, object_id, Some(variant))
+    else {
+        return false;
+    };
+    let Some(obj) = state.objects.get(&prepared.object_id) else {
+        return false;
+    };
+    // CR 118.9a: NoCost means mana affordability is automatic; the remaining
+    // gate is legal-targets for targeted spells (permanent spells skip via
+    // `spell_has_legal_targets` semantics).
+    prepared.modal.is_some() || spell_has_legal_targets(state, obj, player)
+}
+
+/// CR 601.2b: Enumerate `(object_id, source_id, frequency)` candidates for
+/// `CastSpellForFree` — for each hand-spell the caller could cast and each
+/// active `CastFromHandFree { OncePerTurn }` permission source that admits it.
+///
+/// `Unlimited` sources (Omniscience) are intentionally excluded: they route
+/// through the implicit `CastSpell` silent-free path to avoid duplicating the
+/// same candidate action under two different action variants.
+pub fn hand_cast_free_candidates(
+    state: &GameState,
+    player: PlayerId,
+) -> Vec<(ObjectId, ObjectId, CastFrequency)> {
+    // CR 601.2b + CR 400.7: Collect active (source_id, frequency, filter)
+    // triples for OncePerTurn permissions that haven't been consumed this turn.
+    let sources: Vec<(ObjectId, TargetFilter, CastFrequency)> = state
+        .battlefield
+        .iter()
+        .filter_map(|&src_id| {
+            let src_obj = state.objects.get(&src_id)?;
+            if src_obj.controller != player {
+                return None;
+            }
+            active_static_definitions(state, src_obj).find_map(|s| match s.mode {
+                StaticMode::CastFromHandFree { frequency } => {
+                    if frequency == CastFrequency::OncePerTurn
+                        && state.hand_cast_free_permissions_used.contains(&src_id)
+                    {
+                        None
+                    } else if frequency == CastFrequency::OncePerTurn {
+                        s.affected.as_ref().map(|f| (src_id, f.clone(), frequency))
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+        })
+        .collect();
+
+    if sources.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    let Some(player_data) = state.players.iter().find(|p| p.id == player) else {
+        return out;
+    };
+    for &hand_id in &player_data.hand {
+        for (src_id, filter, frequency) in &sources {
+            let ctx = super::filter::FilterContext::from_source_with_controller(*src_id, player);
+            if !super::filter::matches_target_filter(state, hand_id, filter, &ctx) {
+                continue;
+            }
+            if can_cast_for_free_now(state, player, hand_id, *src_id, *frequency) {
+                out.push((hand_id, *src_id, *frequency));
+            }
+        }
+    }
+    out
 }
 
 pub fn can_cast_object_now(state: &GameState, player: PlayerId, object_id: ObjectId) -> bool {

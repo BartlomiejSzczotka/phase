@@ -1507,6 +1507,24 @@ fn priority_actions(state: &GameState, player: PlayerId) -> Vec<CandidateAction>
         }
     }
 
+    // CR 601.2b + CR 118.9a: Opt-in CastFromHandFree once-per-turn candidates
+    // (Zaffai and the Tempests). Each (hand spell, source) pair that passes the
+    // filter AND hasn't had its slot consumed this turn yields one candidate.
+    for (object_id, source_id, _freq) in casting::hand_cast_free_candidates(state, player) {
+        let Some(obj) = state.objects.get(&object_id) else {
+            continue;
+        };
+        actions.push(candidate(
+            GameAction::CastSpellForFree {
+                object_id,
+                card_id: obj.card_id,
+                source_id,
+            },
+            TacticalClass::Spell,
+            Some(player),
+        ));
+    }
+
     for &obj_id in &state.battlefield {
         if let Some(obj) = state.objects.get(&obj_id) {
             if obj.controller == player {
