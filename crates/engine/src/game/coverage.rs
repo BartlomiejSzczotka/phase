@@ -4551,18 +4551,31 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
 
     // Build the pool of parsed elements
     let mut elements: Vec<ParsedElement<'_>> = Vec::new();
-    for a in &face.abilities {
-        elements.push(ParsedElement::Ability(a));
-        for mode_ab in &a.mode_abilities {
-            elements.push(ParsedElement::Ability(mode_ab));
+    // CR 614.1a: A sub_ability chained via `ConditionInstead` (and similar
+    // AbilityCondition wrappers) carries its own Oracle line text — e.g. an
+    // "Infusion — If you gained life this turn, destroy all creatures instead."
+    // line attached to the primary PumpAll ability on Withering Curse. The
+    // per-line audit must match sub_ability descriptions too, otherwise such
+    // lines are falsely reported as SilentDrop.
+    fn push_ability_tree<'a>(def: &'a AbilityDefinition, out: &mut Vec<ParsedElement<'a>>) {
+        out.push(ParsedElement::Ability(def));
+        for mode_ab in &def.mode_abilities {
+            out.push(ParsedElement::Ability(mode_ab));
         }
+        if let Some(sub) = &def.sub_ability {
+            push_ability_tree(sub, out);
+        }
+        if let Some(else_ab) = &def.else_ability {
+            push_ability_tree(else_ab, out);
+        }
+    }
+    for a in &face.abilities {
+        push_ability_tree(a, &mut elements);
     }
     for t in &face.triggers {
         elements.push(ParsedElement::Trigger(t));
         if let Some(exec) = &t.execute {
-            for mode_ab in &exec.mode_abilities {
-                elements.push(ParsedElement::Ability(mode_ab));
-            }
+            push_ability_tree(exec, &mut elements);
         }
     }
     for s in &face.static_abilities {

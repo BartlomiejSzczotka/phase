@@ -41,7 +41,8 @@ use super::oracle_keyword::{
 };
 use super::oracle_level::parse_level_blocks;
 use super::oracle_modal::{
-    lower_oracle_block, parse_oracle_block, strip_ability_word, strip_ability_word_with_name,
+    extract_ability_word_reminder_body, lower_oracle_block, parse_oracle_block, strip_ability_word,
+    strip_ability_word_with_name,
 };
 use super::oracle_replacement::parse_replacement_line;
 use super::oracle_saga::{is_saga_chapter, parse_saga_chapters};
@@ -574,6 +575,16 @@ pub fn parse_oracle_text(
             i += 1;
             continue;
         }
+
+        // CR 207.2c: Ability words have no rules meaning. For the Increment-class
+        // pattern (`<ability-word> (<body>)`) where the printed reminder text IS
+        // the rules body — e.g., SOS Increment / Opus / Repartee / Converge —
+        // extract the parenthesized body and dispatch it as if it were the line
+        // itself. Without this, `strip_reminder_text` (next line) would erase
+        // the entire body and leave only the bare ability-word name, producing
+        // zero parsed abilities for these cards.
+        let reminder_body_owned = extract_ability_word_reminder_body(raw_line);
+        let raw_line: &str = reminder_body_owned.as_deref().unwrap_or(raw_line);
 
         let line = strip_reminder_text(raw_line);
         // Strip "X can't be 0." casting constraint suffix — annotation only, not an ability.

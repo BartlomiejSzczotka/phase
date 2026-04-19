@@ -384,6 +384,145 @@ pub(super) fn strip_ability_word_with_name(line: &str) -> Option<(String, String
     split_short_label_prefix(line, 4).map(|(name, rest)| (name.to_lowercase(), rest.to_string()))
 }
 
+/// Known ability-word names. Per CR 207.2c, ability words are italicized flavor
+/// markers that tie together cards with similar functionality but have no rules
+/// meaning — their body text must parse through ordinary trigger/effect/static
+/// machinery. The list below unions CR 207.2c (the rulebook enumeration) with
+/// the five new SOS ability words whose bodies carry real rules text inside
+/// the parenthesized reminder. Paradigm is NOT an ability word — it's a real
+/// keyword and lives in `oracle_keyword.rs`.
+///
+/// Used exclusively by parser dispatch (Pattern A: `<word> (body)` reminder
+/// extraction). The list must stay lowercase and pre-trimmed so nom `tag()`
+/// can match it on a lowercased input slice.
+pub(super) const ABILITY_WORD_NAMES: &[&str] = &[
+    // CR 207.2c
+    "adamant",
+    "addendum",
+    "alliance",
+    "battalion",
+    "bloodrush",
+    "celebration",
+    "channel",
+    "chroma",
+    "cohort",
+    "constellation",
+    "converge",
+    "council's dilemma",
+    "coven",
+    "delirium",
+    "descend 4",
+    "descend 8",
+    "disappear",
+    "domain",
+    "eerie",
+    "eminence",
+    "enrage",
+    "fateful hour",
+    "fathomless descent",
+    "ferocious",
+    "flurry",
+    "formidable",
+    "grandeur",
+    "hellbent",
+    "heroic",
+    "imprint",
+    "inspired",
+    "join forces",
+    "kinship",
+    "landfall",
+    "lieutenant",
+    "magecraft",
+    "metalcraft",
+    "morbid",
+    "pack tactics",
+    "paradox",
+    "parley",
+    "radiance",
+    "raid",
+    "rally",
+    "renew",
+    "revolt",
+    "secret council",
+    "spell mastery",
+    "strive",
+    "survival",
+    "sweep",
+    "tempting offer",
+    "threshold",
+    "undergrowth",
+    "valiant",
+    "vivid",
+    "void",
+    "will of the council",
+    // SOS additions (flavor markers only — all rules live inside the reminder)
+    "increment",
+    "infusion",
+    "opus",
+    "repartee",
+];
+
+/// Match a known ability-word name at the start of a lowercased input, enforcing
+/// a trailing word boundary. Returns the remainder after the name.
+///
+/// CR 207.2c: Ability words have no rules meaning; this combinator is purely
+/// for parser dispatch — it lets the reminder-body extractor distinguish
+/// `Increment (Whenever ...)` from random lines that happen to start with an
+/// open paren.
+pub(super) fn parse_known_ability_word_name(
+    input: &str,
+) -> nom::IResult<&str, &'static str, VerboseError<&str>> {
+    for name in ABILITY_WORD_NAMES {
+        if let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>(*name).parse(input) {
+            // Word-boundary guard: next char must be non-alphanumeric or end.
+            if rest.is_empty() || !rest.chars().next().unwrap().is_alphanumeric() {
+                return Ok((rest, *name));
+            }
+        }
+    }
+    Err(nom::Err::Error(VerboseError { errors: vec![] }))
+}
+
+/// Pattern A (CR 207.2c): Detect a line of the form `<ability-word> (<body>)`
+/// where the body text lives ONLY inside the reminder parentheses and nothing
+/// follows the closing paren. This is the SOS Increment/Opus/Repartee form
+/// where the printed reminder IS the rules body. Returns the extracted body
+/// (contents between the parens, trimmed) so the caller can dispatch it
+/// through the normal per-line parser pipeline as if the ability word
+/// weren't present.
+///
+/// Returns `None` for:
+/// - lines without a recognized ability-word prefix,
+/// - lines where text follows the closing `)`,
+/// - bodies containing nested parens (current Oracle text does not nest),
+/// - empty bodies.
+pub(super) fn extract_ability_word_reminder_body(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let lower = trimmed.to_lowercase();
+    let (after_name, _name) = parse_known_ability_word_name(&lower).ok()?;
+    // Require exactly " (" between the name and the body — no em-dash, no colon.
+    let after_space = after_name.strip_prefix(' ')?;
+    let body_start_lower = after_space.strip_prefix('(')?;
+    // Body must end with ')' and nothing (besides optional whitespace) after it.
+    let (body_lower, tail_lower) = body_start_lower.rsplit_once(')')?;
+    if !tail_lower.trim().is_empty() {
+        return None;
+    }
+    if body_lower.trim().is_empty() {
+        return None;
+    }
+    // structural: not dispatch — nested-paren guard. Oracle text does not nest
+    // reminder text, so this rejects only malformed input.
+    if body_lower.contains('(') {
+        return None;
+    }
+    // Compute the matching byte range in the original-case string so we return
+    // the body with original capitalization preserved.
+    let body_start_byte = trimmed.len() - body_start_lower.len();
+    let body_end_byte = body_start_byte + body_lower.len();
+    Some(trimmed[body_start_byte..body_end_byte].trim().to_string())
+}
+
 /// Scan for modal count override phrases at word boundaries using nom combinators.
 /// Returns (min_choices, max_choices) for matching phrases.
 fn scan_modal_count_override(text: &str) -> Option<(usize, usize)> {
@@ -414,6 +553,54 @@ fn scan_modal_count_override(text: &str) -> Option<(usize, usize)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_ability_word_reminder_body_increment() {
+        // CR 207.2c: SOS Increment — reminder body IS the rules text.
+        let raw = "Increment (Whenever you cast a spell, if the amount of mana you spent is greater than this creature's power or toughness, put a +1/+1 counter on this creature.)";
+        let body = extract_ability_word_reminder_body(raw).expect("should extract Increment body");
+        assert!(body.starts_with("Whenever you cast a spell"));
+        assert!(body.ends_with("put a +1/+1 counter on this creature."));
+    }
+
+    #[test]
+    fn extract_ability_word_reminder_body_rejects_em_dash_form() {
+        // The Infusion em-dash form is handled by `strip_ability_word_with_name`,
+        // not by this extractor.
+        let raw = "Infusion — If you gained life this turn, destroy all creatures instead.";
+        assert_eq!(extract_ability_word_reminder_body(raw), None);
+    }
+
+    #[test]
+    fn extract_ability_word_reminder_body_rejects_trailing_text() {
+        // Body must be ONLY inside the parens; text after the closing paren
+        // indicates a different pattern (e.g. a keyword with inline reminder).
+        let raw = "Increment (reminder) extra text";
+        assert_eq!(extract_ability_word_reminder_body(raw), None);
+    }
+
+    #[test]
+    fn extract_ability_word_reminder_body_rejects_unknown_word() {
+        // Non-ability-word prefixes must not trigger extraction, otherwise
+        // keyword lines like "Ward (reminder)" would be falsely swallowed.
+        let raw = "Wardwalk (When this creature enters, ...)";
+        assert_eq!(extract_ability_word_reminder_body(raw), None);
+    }
+
+    #[test]
+    fn extract_ability_word_reminder_body_preserves_original_case() {
+        let raw =
+            "Opus (Whenever you cast an instant or sorcery spell, put a +1/+1 counter on it.)";
+        let body = extract_ability_word_reminder_body(raw).expect("should extract Opus body");
+        assert!(body.starts_with("Whenever you cast an instant"));
+    }
+
+    #[test]
+    fn parse_known_ability_word_enforces_word_boundary() {
+        // "landfall" must match, but "landfallen" must not (different word).
+        assert!(parse_known_ability_word_name("landfall — whenever").is_ok());
+        assert!(parse_known_ability_word_name("landfallen").is_err());
+    }
 
     #[test]
     fn parse_modal_choose_count_variants() {
