@@ -6885,6 +6885,41 @@ mod tests {
     use crate::types::mana::ManaColor;
     use crate::types::zones::Zone;
 
+    /// CR 601.2f: Regression gate — "This ability costs {1} less to activate
+    /// for each page counter on this artifact" must parse into an
+    /// `Effect::Unimplemented` sub_ability whose description carries the full
+    /// cost-reduction sentence, so `strip_cost_reduction_node` can promote it
+    /// to `def.cost_reduction`. Previously the bare `"this "` subject-prefix
+    /// in `strip_subject_clause` caused the sentence to be misparsed as
+    /// `Effect::Counter { target: Any }` by finding the noun "counter" (in
+    /// "page counter") and mistaking it for the verb "counter" (as in
+    /// counter-a-spell). Reproduced on Diary of Dreams.
+    #[test]
+    fn diary_of_dreams_cost_reduction_not_misparsed_as_counterspell() {
+        let def = parse_effect_chain(
+            "Draw a card. This ability costs {1} less to activate for each page counter on this artifact.",
+            AbilityKind::Activated,
+        );
+        // The effect chain itself must be Draw (no counterspell poisoning).
+        assert!(
+            matches!(&*def.effect, Effect::Draw { .. }),
+            "expected Draw as primary effect, got {:?}",
+            def.effect
+        );
+        // The cost-reduction sentence MUST reach `strip_cost_reduction_node`
+        // as Unimplemented text. The sub_ability may be present (before
+        // extraction) or absorbed into def.cost_reduction by the downstream
+        // `extract_cost_reduction_from_chain` pass run from `oracle.rs`. Here
+        // we only verify it's NOT a spurious Counter effect.
+        if let Some(sub) = &def.sub_ability {
+            assert!(
+                !matches!(&*sub.effect, Effect::Counter { .. }),
+                "sub_ability must not be a counter-spell effect, got {:?}",
+                sub.effect
+            );
+        }
+    }
+
     #[test]
     fn where_x_binds_siblings_in_same_sentence() {
         // CR 107.3i: "all instances of X on an object have the same value".

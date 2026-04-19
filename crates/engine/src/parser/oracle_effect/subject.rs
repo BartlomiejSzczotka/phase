@@ -1518,7 +1518,16 @@ pub(crate) const PREDICATE_VERBS: &[&str] = &[
     "connive",
     "copy",
     "assign",
-    "counter",
+    // NOTE: "counter" intentionally omitted from this list. The verb "counter"
+    // (as in counter-a-spell, CR 701.5) only appears at the absolute start of
+    // an imperative sentence, where first-word dispatch in
+    // `parse_counter_ast` handles it. Every occurrence of "counter" / "counters"
+    // *after* a subject is the noun form (CR 122.1) — "a +1/+1 counter on it",
+    // "page counter on this artifact", "hit counters on them". Including it
+    // here caused subject-stripped clauses to be misparsed as counter-spell
+    // effects (e.g., Diary of Dreams' cost-reduction sentence, Wildgrowth
+    // Archaic's "that creature enters with X additional +1/+1 counters on it",
+    // Retto's "that creature enters with two +1/+1 counters on it").
     "create",
     "deal",
     "discard",
