@@ -397,6 +397,25 @@ pub fn evaluate_layers(state: &mut GameState) {
             obj.assigns_no_combat_damage = false;
         }
     }
+    // CR 702.94a + CR 400.3: Hand-zone continuous effects (Lorehold-style
+    // "Each [filter] card in your hand has [keyword]") grant keywords to hand
+    // objects. Reset those hand objects' keywords to their base set each layers
+    // pass so hand-zone grants don't accumulate across evaluations. Scoped
+    // narrowly to `keywords` because A6 only supports keyword grants to hand
+    // objects; other characteristics (P/T, types, abilities) are not granted to
+    // hand objects by any currently-supported static. Extend this reset set
+    // before landing a static that modifies them.
+    let hand_ids: Vec<ObjectId> = state
+        .players
+        .iter()
+        .flat_map(|p| p.hand.iter().copied())
+        .collect();
+    for id in hand_ids {
+        if let Some(obj) = state.objects.get_mut(&id) {
+            obj.sync_missing_base_characteristics();
+            obj.keywords = obj.base_keywords.clone();
+        }
+    }
 
     // Step 2: Apply copy effects first so copied static abilities exist before later layers.
     let copy_effects = gather_active_effects_for_layer(state, Layer::Copy);
@@ -836,11 +855,21 @@ fn order_by_timestamp(effects: &[&ActiveContinuousEffect]) -> Vec<ActiveContinuo
 }
 
 /// Apply a single continuous effect to all affected objects.
+///
+/// CR 400.3 + CR 702.94a: The filter's `InZone` property (via
+/// `TargetFilter::extract_in_zone`) selects which zone's objects are scanned.
+/// Absence of `InZone` defaults to the battlefield (current behavior). This
+/// supports non-battlefield grant statics like Lorehold's "Each instant and
+/// sorcery card in your hand has miracle {2}", whose filter carries
+/// `InZone { zone: Hand }`.
 fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffect) {
-    // Find affected objects
-    let bf_ids: Vec<ObjectId> = state.battlefield.clone();
+    let scan_zone = effect
+        .affected_filter
+        .extract_in_zone()
+        .unwrap_or(crate::types::zones::Zone::Battlefield);
+    let scan_ids = super::targeting::zone_object_ids(state, scan_zone);
     let ctx = FilterContext::from_source(state, effect.source_id);
-    let affected_ids: Vec<ObjectId> = bf_ids
+    let affected_ids: Vec<ObjectId> = scan_ids
         .iter()
         .filter(|&&id| matches_target_filter(state, id, &effect.affected_filter, &ctx))
         .copied()
@@ -3112,5 +3141,126 @@ mod tests {
         let bear_obj = state.objects.get(&bear).unwrap();
         assert_eq!(bear_obj.power, Some(3));
         assert_eq!(bear_obj.toughness, Some(3));
+    }
+
+    /// CR 702.94a + CR 400.3: A continuous static ability whose `affected`
+    /// filter carries `InZone { zone: Hand }` applies to hand objects rather
+    /// than battlefield objects. Verifies `apply_continuous_effect` dispatches
+    /// on the filter's zone.
+    #[test]
+    fn hand_zone_static_grants_keyword_to_hand_card() {
+        use crate::types::ability::{FilterProp, TypedFilter};
+        use crate::types::keywords::Keyword;
+        use crate::types::mana::ManaCost;
+
+        let mut state = setup();
+
+        let grant_static = StaticDefinition::new(StaticMode::Continuous)
+            .affected(TargetFilter::Typed(
+                TypedFilter::new(TypeFilter::Instant)
+                    .controller(ControllerRef::You)
+                    .properties(vec![FilterProp::InZone { zone: Zone::Hand }]),
+            ))
+            .modifications(vec![ContinuousModification::AddKeyword {
+                keyword: Keyword::Miracle(ManaCost::Cost {
+                    shards: vec![],
+                    generic: 2,
+                }),
+            }]);
+
+        // Place a "Lorehold"-style source on the battlefield that grants
+        // miracle {2} to each instant card in its controller's hand.
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "HandGrantSource".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let src = state.objects.get_mut(&source).unwrap();
+            src.card_types.core_types.push(CoreType::Creature);
+            src.base_card_types = src.card_types.clone();
+            src.static_definitions.push(grant_static.clone());
+            src.base_static_definitions = vec![grant_static];
+        }
+
+        // Put an instant in the same player's hand.
+        let bolt = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "TestBolt".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&bolt).unwrap();
+            obj.card_types.core_types.push(CoreType::Instant);
+            obj.base_card_types = obj.card_types.clone();
+        }
+
+        // Hand objects don't need player.hand population for create_object's
+        // zone routing — but `zone_object_ids(Hand)` reads `state.players[n].hand`.
+        // Add bolt to the player's hand vector explicitly.
+        if let Some(player) = state.players.iter_mut().find(|p| p.id == PlayerId(0)) {
+            player.hand.push(bolt);
+        }
+
+        // Pre-condition: hand card has no keywords.
+        assert!(state.objects[&bolt].keywords.is_empty());
+
+        evaluate_layers(&mut state);
+
+        // Post-condition: the hand card now has Miracle({2}).
+        let obj = state.objects.get(&bolt).unwrap();
+        assert!(
+            obj.keywords
+                .iter()
+                .any(|k| matches!(k, Keyword::Miracle(_))),
+            "expected hand card to have Miracle after layers pass, got {:?}",
+            obj.keywords,
+        );
+
+        // Also: an instant owned by the opponent should NOT receive the grant
+        // (controller: You on the filter restricts to source controller's hand).
+        let opp_bolt = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(1),
+            "OpponentBolt".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&opp_bolt).unwrap();
+            obj.card_types.core_types.push(CoreType::Instant);
+            obj.base_card_types = obj.card_types.clone();
+        }
+        if let Some(player) = state.players.iter_mut().find(|p| p.id == PlayerId(1)) {
+            player.hand.push(opp_bolt);
+        }
+
+        evaluate_layers(&mut state);
+        let opp_obj = state.objects.get(&opp_bolt).unwrap();
+        assert!(
+            !opp_obj
+                .keywords
+                .iter()
+                .any(|k| matches!(k, Keyword::Miracle(_))),
+            "opponent's hand card must NOT receive the grant (controller: You)",
+        );
+
+        // A re-evaluation must NOT stack keywords — the reset logic should clear
+        // hand-zone grants to base before re-applying.
+        evaluate_layers(&mut state);
+        let obj = state.objects.get(&bolt).unwrap();
+        let miracle_count = obj
+            .keywords
+            .iter()
+            .filter(|k| matches!(k, Keyword::Miracle(_)))
+            .count();
+        assert_eq!(
+            miracle_count, 1,
+            "hand-zone keyword grant must not accumulate across layers passes"
+        );
     }
 }

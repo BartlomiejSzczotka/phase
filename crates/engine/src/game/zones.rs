@@ -211,9 +211,12 @@ pub fn move_to_zone(
         }
     }
 
-    // Mark layers dirty when objects enter the battlefield
-    // (exit-side dirty marking is handled by apply_zone_exit_cleanup)
-    if to == Zone::Battlefield {
+    // Mark layers dirty when objects enter the battlefield, or the hand (so
+    // Lorehold-style hand-zone grants re-apply to newly-drawn cards).
+    // Exit-side dirty marking is handled by apply_zone_exit_cleanup.
+    // CR 702.94a + CR 400.3: hand-zone continuous effects require re-evaluation
+    // when a hand object appears or departs.
+    if to == Zone::Battlefield || to == Zone::Hand || from == Zone::Hand {
         state.layers_dirty = true;
     }
 
