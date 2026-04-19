@@ -521,8 +521,7 @@ function aggregateBySet(cards: CardCoverageResult[]): SetCoverage[] {
       pct: v.total > 0 ? (100 * v.supported) / v.total : 0,
       gap_cards: v.gaps,
     }))
-    .filter((s) => s.total >= MIN_SET_CARDS && s.pct >= MIN_SET_COVERAGE)
-    .sort((a, b) => b.pct - a.pct || b.total - a.total);
+    .filter((s) => s.total >= MIN_SET_CARDS && s.pct >= MIN_SET_COVERAGE);
 }
 
 function BySetView() {
@@ -542,8 +541,16 @@ function BySetView() {
       .finally(() => setLoading(false));
   }, []);
 
-  const sets = useMemo(() => (coverage ? aggregateBySet(coverage.cards) : []), [coverage]);
   const setList = useSetList();
+  const sets = useMemo(() => {
+    if (!coverage) return [];
+    const aggregated = aggregateBySet(coverage.cards);
+    return aggregated.sort((a, b) => {
+      const aDate = setList?.[a.set_code]?.releaseDate ?? "";
+      const bDate = setList?.[b.set_code]?.releaseDate ?? "";
+      return bDate.localeCompare(aDate);
+    });
+  }, [coverage, setList]);
 
   if (loading) {
     return (
