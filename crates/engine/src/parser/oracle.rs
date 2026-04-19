@@ -1264,6 +1264,28 @@ pub fn parse_oracle_text(
             }
         }
 
+        // Priority 8f: Kicker / Multikicker / Replicate cost lines — must run BEFORE Priority 9
+        // (spell catch-all) so these keyword declarations on spell cards don't become Unimplemented.
+        // We cannot use is_keyword_cost_line here because it would also catch "escape", "flashback",
+        // etc. whose specific em-dash parsers run between Priority 9 and Priority 13.
+        // Note: "mayhem" IS in is_keyword_cost_line and is handled at Priority 1b via MTGJSON
+        // keywords when present; this guard catches it when keywords[] is empty.
+        if alt((
+            tag::<_, _, VerboseError<&str>>("kicker"),
+            tag("multikicker"),
+            tag("replicate"),
+            tag("mayhem"),
+        ))
+        .parse(lower.as_str())
+        .is_ok()
+        {
+            if let Some(kw) = parse_keyword_from_oracle(&lower) {
+                result.extracted_keywords.push(kw);
+            }
+            i += 1;
+            continue;
+        }
+
         // Priority 9: Imperative verb for instants/sorceries
         if is_spell {
             // B7: Strip ability-word prefix and attach condition for spell effects.
