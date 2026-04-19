@@ -3,8 +3,8 @@ use crate::game::filter::{matches_target_filter, FilterContext};
 use crate::game::printed_cards::{apply_copiable_values, intrinsic_copiable_values};
 use crate::game::speed::{effective_speed, has_max_speed};
 use crate::types::ability::{
-    BasicLandType, ContinuousModification, CopiableValues, Duration, QuantityExpr, StaticCondition,
-    StaticDefinition, TargetFilter, TypedFilter,
+    BasicLandType, CastingPermission, ContinuousModification, CopiableValues, Duration,
+    QuantityExpr, StaticCondition, StaticDefinition, TargetFilter, TypedFilter,
 };
 use crate::types::card_type::is_land_subtype;
 use crate::types::counter::CounterType;
@@ -37,6 +37,51 @@ pub fn prune_end_of_combat_effects(state: &mut GameState) {
         .retain(|e| e.duration != Duration::UntilEndOfCombat);
     if state.transient_continuous_effects.len() != before {
         state.layers_dirty = true;
+    }
+}
+
+/// CR 514.2 + CR 611.2a: Remove `PlayFromExile` casting permissions whose
+/// `Duration::UntilEndOfTurn` expires at cleanup. Called from the cleanup step
+/// alongside `prune_end_of_turn_effects`.
+///
+/// Only `PlayFromExile` is durational. Other casting-permission variants
+/// (`AdventureCreature`, `ExileWithAltCost`, `ExileWithEnergyCost`, `WarpExile`)
+/// persist until the object leaves exile (handled by `zones::apply_zone_exit_cleanup`).
+pub fn prune_end_of_turn_casting_permissions(state: &mut GameState) {
+    for obj in state.objects.values_mut() {
+        obj.casting_permissions.retain(|p| match p {
+            CastingPermission::PlayFromExile {
+                duration: Duration::UntilEndOfTurn,
+                ..
+            } => false,
+            // All other permission variants — and PlayFromExile with a
+            // non-end-of-turn duration — are unaffected by cleanup.
+            CastingPermission::PlayFromExile { .. }
+            | CastingPermission::AdventureCreature
+            | CastingPermission::ExileWithAltCost { .. }
+            | CastingPermission::ExileWithEnergyCost
+            | CastingPermission::WarpExile { .. } => true,
+        });
+    }
+}
+
+/// CR 514.2 + CR 611.2a/b: Remove `PlayFromExile` permissions granted to
+/// `active_player` whose `Duration::UntilYourNextTurn` expires at that
+/// player's untap step. Called from the untap step alongside
+/// `prune_until_next_turn_effects`.
+pub fn prune_until_next_turn_casting_permissions(state: &mut GameState, active_player: PlayerId) {
+    for obj in state.objects.values_mut() {
+        obj.casting_permissions.retain(|p| match p {
+            CastingPermission::PlayFromExile {
+                duration: Duration::UntilYourNextTurn,
+                granted_to,
+            } => *granted_to != active_player,
+            CastingPermission::PlayFromExile { .. }
+            | CastingPermission::AdventureCreature
+            | CastingPermission::ExileWithAltCost { .. }
+            | CastingPermission::ExileWithEnergyCost
+            | CastingPermission::WarpExile { .. } => true,
+        });
     }
 }
 
@@ -3261,6 +3306,123 @@ mod tests {
         assert_eq!(
             miracle_count, 1,
             "hand-zone keyword grant must not accumulate across layers passes"
+        );
+    }
+
+    fn make_exiled_card(state: &mut GameState, owner: PlayerId) -> ObjectId {
+        create_object(
+            state,
+            CardId(0),
+            owner,
+            "Exiled Card".to_string(),
+            Zone::Exile,
+        )
+    }
+
+    #[test]
+    fn end_of_turn_prune_clears_until_end_of_turn_play_from_exile() {
+        let mut state = setup();
+        let exiled = make_exiled_card(&mut state, PlayerId(0));
+        state
+            .objects
+            .get_mut(&exiled)
+            .unwrap()
+            .casting_permissions
+            .push(CastingPermission::PlayFromExile {
+                duration: Duration::UntilEndOfTurn,
+                granted_to: PlayerId(0),
+            });
+
+        prune_end_of_turn_casting_permissions(&mut state);
+
+        assert!(
+            state.objects[&exiled].casting_permissions.is_empty(),
+            "UntilEndOfTurn PlayFromExile should expire at cleanup"
+        );
+    }
+
+    #[test]
+    fn end_of_turn_prune_preserves_other_durations() {
+        let mut state = setup();
+        let exiled = make_exiled_card(&mut state, PlayerId(0));
+        let perms = &mut state.objects.get_mut(&exiled).unwrap().casting_permissions;
+        perms.push(CastingPermission::PlayFromExile {
+            duration: Duration::UntilYourNextTurn,
+            granted_to: PlayerId(0),
+        });
+        perms.push(CastingPermission::PlayFromExile {
+            duration: Duration::Permanent,
+            granted_to: PlayerId(0),
+        });
+        perms.push(CastingPermission::AdventureCreature);
+
+        prune_end_of_turn_casting_permissions(&mut state);
+
+        assert_eq!(
+            state.objects[&exiled].casting_permissions.len(),
+            3,
+            "non-UntilEndOfTurn permissions must survive cleanup"
+        );
+    }
+
+    #[test]
+    fn until_your_next_turn_prune_expires_for_grantee_only() {
+        let mut state = setup();
+        let card_a = make_exiled_card(&mut state, PlayerId(0));
+        let card_b = make_exiled_card(&mut state, PlayerId(1));
+        state
+            .objects
+            .get_mut(&card_a)
+            .unwrap()
+            .casting_permissions
+            .push(CastingPermission::PlayFromExile {
+                duration: Duration::UntilYourNextTurn,
+                granted_to: PlayerId(0),
+            });
+        state
+            .objects
+            .get_mut(&card_b)
+            .unwrap()
+            .casting_permissions
+            .push(CastingPermission::PlayFromExile {
+                duration: Duration::UntilYourNextTurn,
+                granted_to: PlayerId(1),
+            });
+
+        // Active player is P0 — only P0's permission should expire.
+        prune_until_next_turn_casting_permissions(&mut state, PlayerId(0));
+
+        assert!(
+            state.objects[&card_a].casting_permissions.is_empty(),
+            "P0's UntilYourNextTurn permission should expire on P0's untap"
+        );
+        assert_eq!(
+            state.objects[&card_b].casting_permissions.len(),
+            1,
+            "P1's permission must survive P0's untap"
+        );
+    }
+
+    #[test]
+    fn until_your_next_turn_prune_ignores_end_of_turn_duration() {
+        let mut state = setup();
+        let exiled = make_exiled_card(&mut state, PlayerId(0));
+        state
+            .objects
+            .get_mut(&exiled)
+            .unwrap()
+            .casting_permissions
+            .push(CastingPermission::PlayFromExile {
+                duration: Duration::UntilEndOfTurn,
+                granted_to: PlayerId(0),
+            });
+
+        prune_until_next_turn_casting_permissions(&mut state, PlayerId(0));
+
+        assert_eq!(
+            state.objects[&exiled].casting_permissions.len(),
+            1,
+            "UntilEndOfTurn permissions are pruned by the cleanup step, not untap"
         );
     }
 }
