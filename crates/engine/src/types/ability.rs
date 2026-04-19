@@ -1349,6 +1349,22 @@ pub enum TargetFilter {
     TrackedSet {
         id: super::identifiers::TrackedSetId,
     },
+    /// CR 701.33 + CR 701.18: Intersection of a tracked set with a type filter.
+    /// Matches objects that are BOTH members of the tracked set AND satisfy the
+    /// inner type filter. Used to route "X cards revealed this way" downstream
+    /// sub_abilities — the Dig resolver populates a tracked set with the cards
+    /// kept (revealed) by the player's selection, and follow-up effects like
+    /// "Put all land cards revealed this way onto the battlefield tapped" use
+    /// this variant to restrict their targets to only the revealed subset that
+    /// matches the type filter.
+    ///
+    /// Example: Zimone's Experiment produces `TrackedSetFiltered { id: 0
+    /// /* sentinel resolved to the most recent tracked set */, filter:
+    /// Typed(Land) }` for the land-routing sub_ability.
+    TrackedSetFiltered {
+        id: super::identifiers::TrackedSetId,
+        filter: Box<TargetFilter>,
+    },
     /// CR 610.3: Cards exiled by a specific source via "exile until ~ leaves" links.
     /// Resolves via relational `state.exile_links` lookup, not intrinsic object properties.
     ExiledBySource,

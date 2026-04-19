@@ -178,6 +178,76 @@ mod tests {
         assert!(matches!(state.waiting_for, WaitingFor::Priority { .. }));
     }
 
+    /// CR 701.33 + CR 701.18: After the player's `SelectCards` resolves a
+    /// `DigChoice`, the kept (revealed) cards must be published to
+    /// `state.tracked_object_sets` so downstream sub_abilities can route
+    /// them by type via `TargetFilter::TrackedSetFiltered`. Zimone's
+    /// Experiment depends on this — its post-Dig `"Put all land cards
+    /// revealed this way onto the battlefield tapped"` resolves against
+    /// the tracked set the Dig choice publishes.
+    #[test]
+    fn dig_choice_publishes_kept_cards_as_tracked_set() {
+        use crate::game::engine_resolution_choices::{
+            handle_resolution_choice, ResolutionChoiceOutcome,
+        };
+        use crate::types::actions::GameAction;
+        use crate::types::identifiers::TrackedSetId;
+
+        let mut state = GameState::new_two_player(42);
+        let mut card_ids = Vec::new();
+        for i in 0..5 {
+            let id = create_object(
+                &mut state,
+                CardId(i + 1),
+                PlayerId(0),
+                format!("Card {}", i),
+                Zone::Library,
+            );
+            card_ids.push(id);
+        }
+        let cards_on_top: Vec<_> = state.players[0].library[..5].to_vec();
+        let kept: Vec<_> = cards_on_top[..2].to_vec();
+
+        // Simulate Zimone's Dig setup: keep up to 2, no inline destination,
+        // rest → library bottom. Matches the parse shape of Zimone's post-
+        // `parse_dig_from_among`-patch Dig.
+        let waiting = WaitingFor::DigChoice {
+            player: PlayerId(0),
+            selectable_cards: cards_on_top.clone(),
+            cards: cards_on_top.clone(),
+            keep_count: 2,
+            up_to: true,
+            kept_destination: None,
+            rest_destination: Some(Zone::Library),
+            source_id: Some(ObjectId(100)),
+        };
+        let action = GameAction::SelectCards {
+            cards: kept.clone(),
+        };
+        let next_id_before = state.next_tracked_set_id;
+        let mut events = Vec::new();
+
+        let outcome = handle_resolution_choice(&mut state, waiting, action, &mut events)
+            .expect("DigChoice resolution must succeed");
+        assert!(matches!(outcome, ResolutionChoiceOutcome::WaitingFor(_)));
+
+        // A fresh tracked set must have been inserted with exactly the kept cards.
+        let tracked_id = TrackedSetId(next_id_before);
+        let set = state
+            .tracked_object_sets
+            .get(&tracked_id)
+            .expect("tracked set must be inserted for the kept cards");
+        assert_eq!(
+            *set, kept,
+            "tracked set must contain exactly the kept cards"
+        );
+        assert_eq!(
+            state.next_tracked_set_id,
+            next_id_before + 1,
+            "next_tracked_set_id must have advanced"
+        );
+    }
+
     /// CR 107.3a + CR 601.2b: Dig's filter evaluation must flow through
     /// `FilterContext::from_ability`, so dynamic thresholds (e.g. `CmcLE { X }`)
     /// resolve against the caster's announced `chosen_x`. Bucket-B regression test

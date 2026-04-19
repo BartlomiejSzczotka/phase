@@ -4254,6 +4254,30 @@ mod tests {
 
     // ── Feature 4: "and/or" separator ──
 
+    /// CR 608.2b: "creature and/or land" composes via existing "and/or"
+    /// support to `TargetFilter::Or { [Creature, Land] }`. Regression guard
+    /// for Zimone's Experiment: the compound type filter on Dig's reveal
+    /// gate must produce `Or` (not drop to `Any`) so the Dig's `filter`
+    /// correctly restricts the player's selectable set during DigChoice.
+    #[test]
+    fn creature_and_or_land_composes_to_or_filter() {
+        let (f, _) = parse_type_phrase("creature and/or land");
+        match f {
+            TargetFilter::Or { ref filters } => {
+                assert_eq!(filters.len(), 2);
+                assert_eq!(
+                    filters[0],
+                    TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature))
+                );
+                assert_eq!(
+                    filters[1],
+                    TargetFilter::Typed(TypedFilter::new(TypeFilter::Land))
+                );
+            }
+            other => panic!("Expected Or filter, got {:?}", other),
+        }
+    }
+
     #[test]
     fn artifact_and_or_enchantment() {
         let (f, _) = parse_type_phrase("artifact and/or enchantment");

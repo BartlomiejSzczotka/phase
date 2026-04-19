@@ -339,6 +339,19 @@ pub(super) fn handle_resolution_choice(
             for &obj_id in &kept {
                 zones::move_to_zone(state, obj_id, kept_zone, events);
             }
+            // CR 701.33 + CR 701.18: Publish the kept (revealed) cards as a
+            // tracked set so downstream sub_abilities can route them by type
+            // via `TargetFilter::TrackedSetFiltered`. Used by Zimone's
+            // Experiment — "Put all land cards revealed this way onto the
+            // battlefield tapped and put all creature cards revealed this way
+            // into your hand" consume this set. Safe to populate
+            // unconditionally; unused tracked sets are harmless and resolved
+            // by the latest-set-wins sentinel binding pass.
+            if !kept.is_empty() {
+                let tracked_id = crate::types::identifiers::TrackedSetId(state.next_tracked_set_id);
+                state.next_tracked_set_id += 1;
+                state.tracked_object_sets.insert(tracked_id, kept.clone());
+            }
             match rest_destination {
                 Some(Zone::Library) => {
                     for &obj_id in &unkept {

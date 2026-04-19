@@ -218,6 +218,9 @@ fn fmt_target(filter: &TargetFilter) -> String {
         TargetFilter::SpecificObject { id } => format!("object #{}", id.0),
         TargetFilter::SpecificPlayer { id } => format!("player #{}", id.0),
         TargetFilter::TrackedSet { id } => format!("tracked set #{}", id.0),
+        TargetFilter::TrackedSetFiltered { id, filter } => {
+            format!("tracked set #{} matching {}", id.0, fmt_target(filter))
+        }
         TargetFilter::ExiledBySource => "cards exiled by source".into(),
         TargetFilter::HasChosenName => "card with the chosen name".into(),
         TargetFilter::Named { name } => format!("card named {name}"),

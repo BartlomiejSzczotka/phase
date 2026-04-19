@@ -6687,6 +6687,26 @@ fn try_parse_put_zone_change(lower: &str, text: &str) -> Option<Effect> {
                 return None;
             }
             let (target, _) = parse_target(target_text);
+            // CR 701.33: Restrict the target to cards revealed by the preceding
+            // Dig effect when the phrase "revealed this way" appears in the
+            // target text. The Dig resolver populates `state.tracked_object_sets`
+            // with the kept (revealed) cards; `TargetFilter::TrackedSetFiltered`
+            // reads that set and intersects it with the original type filter.
+            // `TrackedSetId(0)` is a sentinel resolved to the most recent
+            // tracked set (via the existing `bind_tracked_set_to_effect` pass
+            // for delayed triggers; direct sub_abilities observe the latest
+            // set via `filter_inner`'s lookup). Used by Zimone's Experiment:
+            // "Put all land cards revealed this way onto the battlefield
+            // tapped and put all creature cards revealed this way into your
+            // hand."
+            let target = if scan_contains_phrase(before.lower, "revealed this way") {
+                TargetFilter::TrackedSetFiltered {
+                    id: crate::types::identifiers::TrackedSetId(0),
+                    filter: Box::new(target),
+                }
+            } else {
+                target
+            };
             // CR 110.2: "under your control" overrides the entering object's controller.
             let under_your_control = scan_contains_phrase(after_put_tp.lower, "under your control");
             return Some(Effect::ChangeZone {
@@ -9290,6 +9310,120 @@ mod tests {
             effect.condition.is_none(),
             "inner AbilityDefinition must carry no condition when none was present originally"
         );
+    }
+
+    /// CR 701.33 + CR 701.18 + CR 608.2b: Zimone's Experiment end-to-end.
+    ///
+    /// `"Look at the top five cards of your library. You may reveal up to two
+    /// creature and/or land cards from among them, then put the rest on the
+    /// bottom of your library in a random order. Put all land cards revealed
+    /// this way onto the battlefield tapped and put all creature cards
+    /// revealed this way into your hand."`
+    ///
+    /// Asserts the full compound parse tree:
+    /// - Top-level `Dig` with `count=5, keep_count=Some(2), up_to=true,
+    ///   reveal=true, filter=Or([Creature, Land]), destination=None (no
+    ///   auto-route), rest_destination=Some(Library)`.
+    /// - Sub_ability chain routes revealed cards by type through
+    ///   `TargetFilter::TrackedSetFiltered`: lands enter battlefield tapped;
+    ///   creatures go to hand.
+    #[test]
+    fn zimones_experiment_full_parse_tree() {
+        let def = parse_effect_chain(
+            "Look at the top five cards of your library. You may reveal up to two creature and/or land cards from among them, then put the rest on the bottom of your library in a random order. Put all land cards revealed this way onto the battlefield tapped and put all creature cards revealed this way into your hand.",
+            AbilityKind::Spell,
+        );
+        // Top-level: Dig, patched by the reveal-only DigFromAmong continuation.
+        let Effect::Dig {
+            count,
+            keep_count,
+            up_to,
+            reveal,
+            filter,
+            destination,
+            rest_destination,
+        } = &*def.effect
+        else {
+            panic!("expected Effect::Dig at top level, got {:?}", def.effect);
+        };
+        assert_eq!(*count, QuantityExpr::Fixed { value: 5 });
+        assert_eq!(*keep_count, Some(2));
+        assert!(*up_to, "up_to must be true (reveal up to two)");
+        assert!(*reveal, "reveal must be true (reveal-form continuation)");
+        assert_eq!(
+            *destination, None,
+            "destination must be None (reveal-only; downstream sub_abilities route by type)"
+        );
+        assert_eq!(*rest_destination, Some(crate::types::zones::Zone::Library));
+        // Filter must be Or { [Creature, Land] }.
+        match filter {
+            TargetFilter::Or { filters } => {
+                assert_eq!(filters.len(), 2);
+                assert!(filters.iter().any(
+                    |f| matches!(f, TargetFilter::Typed(tf) if tf.type_filters == vec![TypeFilter::Creature])
+                ));
+                assert!(filters.iter().any(
+                    |f| matches!(f, TargetFilter::Typed(tf) if tf.type_filters == vec![TypeFilter::Land])
+                ));
+            }
+            other => panic!("expected Or {{ [Creature, Land] }}, got {other:?}"),
+        }
+
+        // First sub_ability: ChangeZone { TrackedSetFiltered(Land) → Battlefield tapped }.
+        let sub1 = def
+            .sub_ability
+            .as_ref()
+            .expect("first sub_ability (Land routing) must exist");
+        let Effect::ChangeZone {
+            destination: dest1,
+            target: target1,
+            enter_tapped,
+            ..
+        } = &*sub1.effect
+        else {
+            panic!(
+                "expected ChangeZone in first sub_ability, got {:?}",
+                sub1.effect
+            );
+        };
+        assert_eq!(*dest1, crate::types::zones::Zone::Battlefield);
+        assert!(*enter_tapped, "lands must enter battlefield tapped");
+        match target1 {
+            TargetFilter::TrackedSetFiltered { id: _, filter } => match filter.as_ref() {
+                TargetFilter::Typed(tf) => {
+                    assert_eq!(tf.type_filters, vec![TypeFilter::Land]);
+                }
+                other => panic!("expected Typed(Land), got {other:?}"),
+            },
+            other => panic!("expected TrackedSetFiltered, got {other:?}"),
+        }
+
+        // Second sub_ability: ChangeZone { TrackedSetFiltered(Creature) → Hand }.
+        let sub2 = sub1
+            .sub_ability
+            .as_ref()
+            .expect("second sub_ability (Creature routing) must exist");
+        let Effect::ChangeZone {
+            destination: dest2,
+            target: target2,
+            ..
+        } = &*sub2.effect
+        else {
+            panic!(
+                "expected ChangeZone in second sub_ability, got {:?}",
+                sub2.effect
+            );
+        };
+        assert_eq!(*dest2, crate::types::zones::Zone::Hand);
+        match target2 {
+            TargetFilter::TrackedSetFiltered { id: _, filter } => match filter.as_ref() {
+                TargetFilter::Typed(tf) => {
+                    assert_eq!(tf.type_filters, vec![TypeFilter::Creature]);
+                }
+                other => panic!("expected Typed(Creature), got {other:?}"),
+            },
+            other => panic!("expected TrackedSetFiltered, got {other:?}"),
+        }
     }
 
     #[test]

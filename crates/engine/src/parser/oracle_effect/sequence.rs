@@ -660,13 +660,21 @@ pub(super) fn apply_clause_continuation(
                 filter,
                 destination,
                 rest_destination,
+                reveal,
                 ..
             } = &mut *previous.effect
             {
                 *keep_count = Some(count);
                 *up_to = is_up_to;
                 *filter = card_filter;
-                *destination = Some(kept_dest);
+                // CR 701.33: When `destination` is None the kept cards are NOT
+                // auto-routed by the Dig resolver; downstream sub_abilities
+                // read the tracked set and route by type. Also promote the
+                // Dig to reveal:true — "from among them" is a reveal-form.
+                *destination = kept_dest;
+                if kept_dest.is_none() {
+                    *reveal = true;
+                }
                 if let Some(rd) = rest_dest {
                     *rest_destination = Some(rd);
                 }
@@ -936,11 +944,18 @@ pub(super) fn parse_intrinsic_continuation_ast(
 /// - "you may reveal a creature card from among them and put it into your hand"
 /// - "put two of them into your hand and the rest on the bottom of your library in any order"
 fn parse_dig_from_among(lower: &str, _original: &str) -> Option<ContinuationAst> {
-    // Determine kept-cards destination
+    // Determine kept-cards destination. `None` is the reveal-only form (Zimone's
+    // Experiment): "reveal up to N <filter> cards from among them, then put the
+    // rest on the bottom" — the kept cards are NOT auto-routed; subsequent
+    // sub_abilities route them by type via `TargetFilter::TrackedSetFiltered`.
     let destination = if nom_primitives::scan_contains(lower, "onto the battlefield") {
-        Zone::Battlefield
+        Some(Zone::Battlefield)
+    } else if nom_primitives::scan_contains(lower, "into your hand")
+        || nom_primitives::scan_contains(lower, "into their hand")
+    {
+        Some(Zone::Hand)
     } else {
-        Zone::Hand
+        None
     };
 
     // "put N of them into your hand [and the rest on the bottom]" — no filter, count explicit.
@@ -1346,6 +1361,27 @@ pub(super) fn parse_followup_continuation_ast(
                 && (nom_primitives::scan_contains(&lower, "onto the battlefield")
                     || nom_primitives::scan_contains(&lower, "into your hand")
                     || nom_primitives::scan_contains(&lower, "into their hand")) =>
+        {
+            parse_dig_from_among(&lower, text)
+        }
+        // CR 701.33: "[You may] reveal [up to] N <filter> cards from among
+        // them" after Dig — the reveal-only form where the kept cards are NOT
+        // immediately routed to a fixed destination. Used by cards like
+        // Zimone's Experiment where subsequent sub_abilities route the
+        // revealed cards by type via `TargetFilter::TrackedSetFiltered`. The
+        // Dig resolver populates a tracked set with the kept cards;
+        // downstream effects consume that set.
+        //
+        // The guard is `from among` + `reveal` without any inline destination
+        // phrase — if the clause carried its own destination, the previous
+        // arm (with inline-destination requirement) would have matched first.
+        Effect::Dig { .. }
+            if nom_primitives::scan_contains(&lower, "reveal")
+                && (nom_primitives::scan_contains(&lower, "from among them")
+                    || nom_primitives::scan_contains(&lower, "from among those cards"))
+                && !nom_primitives::scan_contains(&lower, "onto the battlefield")
+                && !nom_primitives::scan_contains(&lower, "into your hand")
+                && !nom_primitives::scan_contains(&lower, "into their hand") =>
         {
             parse_dig_from_among(&lower, text)
         }
@@ -1817,7 +1853,7 @@ mod tests {
                 count: 2,
                 up_to: false,
                 filter: TargetFilter::Any,
-                destination: Zone::Hand,
+                destination: Some(Zone::Hand),
                 rest_destination: Some(Zone::Library),
             })
         );
@@ -1837,7 +1873,7 @@ mod tests {
                 count: 1,
                 up_to: false,
                 filter: TargetFilter::Any,
-                destination: Zone::Hand,
+                destination: Some(Zone::Hand),
                 rest_destination: Some(Zone::Library),
             })
         );
@@ -1856,7 +1892,7 @@ mod tests {
                 count: 2,
                 up_to: false,
                 filter: TargetFilter::Any,
-                destination: Zone::Hand,
+                destination: Some(Zone::Hand),
                 rest_destination: Some(Zone::Graveyard),
             })
         );

@@ -305,6 +305,29 @@ fn filter_inner(
             .tracked_object_sets
             .get(id)
             .is_some_and(|set| set.contains(&object_id)),
+        // CR 701.33 + CR 701.18: Intersection of a tracked set with an inner
+        // type filter. Used by Zimone's Experiment to route "X cards revealed
+        // this way" — the Dig resolver populates a tracked set with the kept
+        // (revealed) cards; this filter restricts the target space to the
+        // subset matching the inner type. `TrackedSetId(0)` is a sentinel
+        // resolved to the most recent tracked set by the same binding pass
+        // that handles plain `TrackedSet` continuations (see
+        // `effects::delayed_trigger::bind_tracked_set_to_effect`).
+        TargetFilter::TrackedSetFiltered { id, filter } => {
+            let in_set = state
+                .tracked_object_sets
+                .get(id)
+                .is_some_and(|set| set.contains(&object_id));
+            in_set
+                && filter_inner(
+                    state,
+                    object_id,
+                    filter,
+                    source_id,
+                    source_controller,
+                    ability,
+                )
+        }
         // CR 607.2a + CR 406.6: Match cards exiled by source via exile-until-leaves links.
         // CR 610.3: Linked abilities track which cards were exiled by the first ability.
         TargetFilter::ExiledBySource => state.objects.get(&object_id).is_some_and(|obj| {
@@ -453,6 +476,7 @@ fn zone_change_filter_inner(
         TargetFilter::AttachedTo
         | TargetFilter::LastCreated
         | TargetFilter::TrackedSet { .. }
+        | TargetFilter::TrackedSetFiltered { .. }
         | TargetFilter::ExiledBySource
         | TargetFilter::TriggeringSpellController
         | TargetFilter::TriggeringSpellOwner
@@ -598,6 +622,7 @@ pub fn spell_record_matches_filter(
         | TargetFilter::AttachedTo
         | TargetFilter::LastCreated
         | TargetFilter::TrackedSet { .. }
+        | TargetFilter::TrackedSetFiltered { .. }
         | TargetFilter::ExiledBySource
         | TargetFilter::TriggeringSpellController
         | TargetFilter::TriggeringSpellOwner
@@ -707,6 +732,7 @@ fn spell_object_matches_filter_inner(
         | TargetFilter::AttachedTo
         | TargetFilter::LastCreated
         | TargetFilter::TrackedSet { .. }
+        | TargetFilter::TrackedSetFiltered { .. }
         | TargetFilter::ExiledBySource
         | TargetFilter::TriggeringSpellController
         | TargetFilter::TriggeringSpellOwner

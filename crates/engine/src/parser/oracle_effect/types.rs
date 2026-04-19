@@ -188,11 +188,15 @@ pub(super) enum ContinuationAst {
     },
     /// CR 701.20e + CR 608.2c: "Put up to N [filter] from among them onto the battlefield/into
     /// your hand" after Dig — patches the Dig's keep_count, filter, destination, and rest_destination.
+    ///
+    /// `destination: None` is the reveal-only form where the kept cards are
+    /// NOT routed to a fixed destination; subsequent sub_abilities route them
+    /// by type via `TargetFilter::TrackedSetFiltered` (Zimone's Experiment).
     DigFromAmong {
         count: u32,
         up_to: bool,
         filter: TargetFilter,
-        destination: Zone,
+        destination: Option<Zone>,
         /// Set when the same clause encodes both kept and rest destinations, e.g.,
         /// "put two of them into your hand and the rest on the bottom of your library".
         /// When None, a subsequent PutRest continuation handles rest_destination.

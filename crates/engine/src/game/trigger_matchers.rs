@@ -532,6 +532,7 @@ pub(super) fn target_filter_matches_object(
         | TargetFilter::AttachedTo
         | TargetFilter::LastCreated
         | TargetFilter::TrackedSet { .. }
+        | TargetFilter::TrackedSetFiltered { .. }
         | TargetFilter::ExiledBySource
         | TargetFilter::HasChosenName
         | TargetFilter::Named { .. } => super::filter::matches_target_filter(
