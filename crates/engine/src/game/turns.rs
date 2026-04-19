@@ -794,8 +794,9 @@ pub fn auto_advance(state: &mut GameState, events: &mut Vec<GameEvent>) -> Waiti
                     // the start of the active player's first precombat main
                     // phase: offer to cast a copy of each exiled paradigm
                     // source the player controls. Modeled alongside the saga
-                    // lore-counter hook (CR 714.3b precedent, CR 505.3
-                    // anchor). Assign when WotC publishes SOS CR update.
+                    // lore-counter hook (CR 505.4 anchor for beginning-of-
+                    // precombat-main turn-based actions). Assign when WotC
+                    // publishes SOS CR update.
                     let active = state.active_player;
                     if super::effects::paradigm::enqueue_offer_if_any(state, active) {
                         return state.waiting_for.clone();

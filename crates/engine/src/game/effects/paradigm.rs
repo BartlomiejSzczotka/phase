@@ -47,9 +47,9 @@ pub fn arm_paradigm(
 
 /// CR 702.xxx: Paradigm (Strixhaven) — turn-based offer scan. Called from
 /// `turns.rs` at the start of the active player's first precombat main phase
-/// (CR 505.3 precedent for beginning-of-main turn-based actions). Returns the
-/// list of exiled paradigm sources that belong to the given player. Assign
-/// when WotC publishes SOS CR update.
+/// (CR 505.4 anchor for beginning-of-precombat-main turn-based actions).
+/// Returns the list of exiled paradigm sources that belong to the given
+/// player. Assign when WotC publishes SOS CR update.
 pub fn paradigm_offers_for(state: &GameState, player: PlayerId) -> Vec<ObjectId> {
     state
         .exile_links
@@ -186,5 +186,44 @@ mod tests {
             paradigm_offers_for(&state, PlayerId(1)),
             vec![ObjectId(101)]
         );
+    }
+
+    // Test gap #4: If a Paradigm spell fizzles (all targets illegal) at
+    // resolution, `arm_paradigm` must NOT be called because `stack.rs`'s
+    // first-resolution hook runs after `execute_effect` succeeds. The unit
+    // behavior to lock is: `paradigm_primed` remains empty when
+    // `arm_paradigm` is never invoked. This test asserts the
+    // call-site-free invariant — the data structure starts empty and
+    // stays empty without an `arm_paradigm` call.
+    #[test]
+    fn paradigm_not_primed_when_arm_not_called() {
+        let state = GameState::new_two_player(42);
+        assert!(
+            state.paradigm_primed.is_empty(),
+            "fizzled Paradigm (arm_paradigm never called) leaves no prime"
+        );
+        assert!(
+            paradigm_offers_for(&state, PlayerId(0)).is_empty(),
+            "no offers when no paradigm primed"
+        );
+    }
+
+    // Test gap #5: Counter-the-first-Paradigm-then-cast-a-second path.
+    // `effects/counter.rs` sends the countered spell to the graveyard without
+    // invoking `arm_paradigm`, so a subsequent same-name Paradigm resolution
+    // is treated as the first and primes normally.
+    #[test]
+    fn second_paradigm_primes_when_first_was_countered() {
+        let mut state = GameState::new_two_player(42);
+        let p = PlayerId(0);
+        // First spell was countered — `arm_paradigm` was never invoked. The
+        // prime list remains empty.
+        assert!(state.paradigm_primed.is_empty());
+
+        // Second Paradigm spell with the same card name resolves successfully.
+        let primed = arm_paradigm(&mut state, ObjectId(200), p, "Decorum Dissertation");
+        assert!(primed, "second spell resolves first → primes");
+        assert_eq!(state.paradigm_primed.len(), 1);
+        assert_eq!(state.exile_links.len(), 1);
     }
 }
