@@ -199,8 +199,13 @@ pub fn choose_attackers_with_targets_with_profile(
             ProjectionHorizon::OpponentAttackersDeclared,
         )
         .ok();
-        let cb_damage =
-            crackback_damage(state, player, &opponents, &attacking_ids, projection.as_ref());
+        let cb_damage = crackback_damage(
+            state,
+            player,
+            &opponents,
+            &attacking_ids,
+            projection.as_ref(),
+        );
         if cb_damage >= my_life {
             // Sort non-vigilance attackers by value descending — hold back most valuable first
             let mut non_vigilance: Vec<(usize, f64)> = attacking_ids

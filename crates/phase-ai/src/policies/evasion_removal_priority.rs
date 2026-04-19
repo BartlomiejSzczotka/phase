@@ -126,8 +126,7 @@ fn velocity_score(
         return 0.0;
     };
 
-    let samples =
-        crate::projection::threat_velocity(ctx.state, &projection, target.controller);
+    let samples = crate::projection::threat_velocity(ctx.state, &projection, target.controller);
 
     match samples.get(&target_id) {
         Some(VelocitySample::Changed { delta }) if *delta > 0 => {

@@ -23,9 +23,7 @@ use crate::features::{
 use crate::plan::{derive_snapshot, PlanSnapshot};
 use crate::planner::quick_state_hash;
 use crate::policies::registry::PolicyId;
-use crate::projection::{
-    project_to, BailReason, Projection, ProjectionHorizon, ProjectionKey,
-};
+use crate::projection::{project_to, BailReason, Projection, ProjectionHorizon, ProjectionKey};
 use crate::strategy_profile::StrategyProfile;
 use crate::synergy::SynergyGraph;
 

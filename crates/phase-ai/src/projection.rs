@@ -525,7 +525,10 @@ mod tests {
             target_opponent: PlayerId(1),
         };
         let samples = threat_velocity(&base, &projection, PlayerId(1));
-        assert_eq!(samples.get(&id), Some(&VelocitySample::Changed { delta: 0 }));
+        assert_eq!(
+            samples.get(&id),
+            Some(&VelocitySample::Changed { delta: 0 })
+        );
     }
 
     #[test]
@@ -543,7 +546,10 @@ mod tests {
             target_opponent: PlayerId(1),
         };
         let samples = threat_velocity(&base, &projection, PlayerId(1));
-        assert_eq!(samples.get(&id), Some(&VelocitySample::Changed { delta: 8 }));
+        assert_eq!(
+            samples.get(&id),
+            Some(&VelocitySample::Changed { delta: 8 })
+        );
     }
 
     #[test]
