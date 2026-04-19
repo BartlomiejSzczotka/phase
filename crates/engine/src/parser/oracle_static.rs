@@ -1129,6 +1129,19 @@ fn parse_static_line_inner(text: &str, inverted: InvertedAsLongAs) -> Option<Sta
         return Some(def);
     }
 
+    // --- "this spell can't be copied" ---
+    // CR 707.10: Self-referential uncopyability, attached to the spell's
+    // GameObject at cast time via the static pipeline. Runtime enforcement
+    // lives in effects/copy_spell.rs. "this spell" is in SELF_REF_PARSE_ONLY_PHRASES
+    // (not normalized to `~`), so match it literally.
+    if nom_primitives::scan_contains(tp.lower, "can't be copied") {
+        return Some(
+            StaticDefinition::new(StaticMode::CantBeCopied)
+                .affected(TargetFilter::SelfRef)
+                .description(text.to_string()),
+        );
+    }
+
     // --- "can't be countered" ---
     // CR 101.2: "Can't" effects override "can" effects.
     if nom_primitives::scan_contains(tp.lower, "can't be countered") {
@@ -6607,6 +6620,17 @@ mod tests {
         // CR 101.2: "can't be countered" emits CantBeCountered, not CantBeCast
         let def = parse_static_line("Carnage Tyrant can't be countered.").unwrap();
         assert_eq!(def.mode, StaticMode::CantBeCountered);
+        assert_eq!(def.affected, Some(TargetFilter::SelfRef));
+        assert!(def.description.is_some());
+    }
+
+    #[test]
+    fn static_this_spell_cant_be_copied() {
+        // CR 707.10: "This spell can't be copied." — Choreographed Sparks-class.
+        // "this spell" is a SELF_REF_PARSE_ONLY phrase (not normalized to ~),
+        // so the parser must recognize it as a self-ref static directly.
+        let def = parse_static_line("This spell can't be copied.").unwrap();
+        assert_eq!(def.mode, StaticMode::CantBeCopied);
         assert_eq!(def.affected, Some(TargetFilter::SelfRef));
         assert!(def.description.is_some());
     }

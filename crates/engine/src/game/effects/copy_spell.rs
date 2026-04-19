@@ -2,6 +2,7 @@ use crate::types::ability::{EffectError, EffectKind, ResolvedAbility};
 use crate::types::events::GameEvent;
 use crate::types::game_state::{CopyTargetSlot, GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
+use crate::types::statics::StaticMode;
 use crate::types::zones::Zone;
 
 /// CR 707.10: Copy a spell — create a copy on the stack with the same characteristics and choices.
@@ -18,6 +19,26 @@ pub fn resolve(
         .last()
         .cloned()
         .ok_or_else(|| EffectError::MissingParam("No spell on stack to copy".to_string()))?;
+
+    // CR 707.10 + CR 101.2: A spell with "this spell can't be copied" is
+    // uncopyable — the copy attempt fails with no effect. Check the target
+    // spell's static definitions via the single-authority helper used by
+    // counter.rs for the analogous CantBeCountered case.
+    let has_cant_be_copied = state
+        .objects
+        .get(&top_entry.id)
+        .map(|obj| {
+            super::super::functioning_abilities::active_static_definitions(state, obj)
+                .any(|sd| sd.mode == StaticMode::CantBeCopied)
+        })
+        .unwrap_or(false);
+    if has_cant_be_copied {
+        events.push(GameEvent::EffectResolved {
+            kind: EffectKind::from(&ability.effect),
+            source_id: ability.source_id,
+        });
+        return Ok(());
+    }
 
     // Allocate a new object ID for the copy
     let copy_id = ObjectId(state.next_object_id);

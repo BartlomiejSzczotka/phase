@@ -4875,6 +4875,7 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
                 effective_lower.contains("cost") && effective_lower.contains("more")
             }
             StaticMode::CantBeCountered => effective_lower.contains("can't be countered"),
+            StaticMode::CantBeCopied => effective_lower.contains("can't be copied"),
             // CR 119.7: "can't gain life" or its compound form "life total can't change"
             // (Platinum Emperion / Teferi's Protection both emit CantGainLife from
             // the bidirectional life-lock phrase).

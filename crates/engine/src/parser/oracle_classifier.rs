@@ -89,6 +89,7 @@ const STATIC_CONTAINS_PATTERNS: &[&str] = &[
     "can't attack",
     "can't block",
     "can't be countered",
+    "can't be copied",
     "can't be the target",
     "can't be sacrificed",
     "doesn't untap",

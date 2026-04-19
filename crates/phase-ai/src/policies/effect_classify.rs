@@ -320,6 +320,7 @@ pub(crate) fn static_mode_polarity(mode: &StaticMode) -> EffectPolarity {
         | StaticMode::CantBeBlockedExceptBy { .. }
         | StaticMode::CantBeTargeted
         | StaticMode::CantBeCountered
+        | StaticMode::CantBeCopied
         | StaticMode::Protection
         | StaticMode::CastWithFlash => EffectPolarity::Beneficial,
         // Continuous, cost changes, and others depend on modifications/context

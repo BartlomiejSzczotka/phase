@@ -95,6 +95,9 @@ pub fn build_static_registry() -> HashMap<StaticMode, StaticAbilityHandler> {
     registry.insert(StaticMode::Indestructible, handle_indestructible);
     // CR 113.6g: CantBeCountered — spell can't be countered by spells or abilities.
     registry.insert(StaticMode::CantBeCountered, handle_cant_be_countered);
+    // CR 707.10: CantBeCopied — spell can't be copied by spells or abilities.
+    // Runtime enforcement is in effects/copy_spell.rs via active_static_definitions.
+    registry.insert(StaticMode::CantBeCopied, handle_cant_be_copied);
     registry.insert(StaticMode::CantBeDestroyed, handle_cant_be_destroyed);
     // CR 702.34: FlashBack — allows casting from graveyard, exiled after resolution.
     registry.insert(StaticMode::FlashBack, handle_flashback);
@@ -303,6 +306,19 @@ fn handle_cant_be_countered(
 ) -> Vec<StaticEffect> {
     vec![StaticEffect::RuleModification {
         mode: "CantBeCountered".to_string(),
+    }]
+}
+
+/// Handler for CantBeCopied -- spell cannot be copied.
+/// CR 707.10: Runtime enforcement in effects/copy_spell.rs via
+/// active_static_definitions on the targeted spell's GameObject.
+fn handle_cant_be_copied(
+    _state: &GameState,
+    _mode: &StaticMode,
+    _source_id: ObjectId,
+) -> Vec<StaticEffect> {
+    vec![StaticEffect::RuleModification {
+        mode: "CantBeCopied".to_string(),
     }]
 }
 

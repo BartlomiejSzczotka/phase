@@ -289,6 +289,9 @@ pub enum StaticMode {
     CastFromHandFree,
     /// CR 101.2: This spell/permanent can't be countered.
     CantBeCountered,
+    /// CR 101.2 + CR 707.10: This spell can't be copied by spells or abilities.
+    /// Enforced in `copy_spell::resolve` when selecting the spell to copy.
+    CantBeCopied,
     /// CR 604.3: Cards in specified zones can't enter the battlefield.
     CantEnterBattlefieldFrom,
     /// CR 604.3: Players can't cast spells from specified zones.
@@ -534,6 +537,7 @@ impl fmt::Display for StaticMode {
             } => write!(f, "GraveyardCastPermission({play_mode},{once_per_turn})"),
             StaticMode::CastFromHandFree => write!(f, "CastFromHandFree"),
             StaticMode::CantBeCountered => write!(f, "CantBeCountered"),
+            StaticMode::CantBeCopied => write!(f, "CantBeCopied"),
             StaticMode::CantEnterBattlefieldFrom => write!(f, "CantEnterBattlefieldFrom"),
             StaticMode::CantCastFrom => write!(f, "CantCastFrom"),
             StaticMode::CantCastDuring { who, when } => {
@@ -696,6 +700,7 @@ impl FromStr for StaticMode {
             }
             "CastFromHandFree" => StaticMode::CastFromHandFree,
             "CantBeCountered" => StaticMode::CantBeCountered,
+            "CantBeCopied" => StaticMode::CantBeCopied,
             "CantEnterBattlefieldFrom" => StaticMode::CantEnterBattlefieldFrom,
             "CantCastFrom" => StaticMode::CantCastFrom,
             // Tier 1
