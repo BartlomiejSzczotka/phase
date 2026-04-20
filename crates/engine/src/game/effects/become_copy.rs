@@ -587,6 +587,7 @@ mod tests {
                 enters_attacking: false,
                 tapped: false,
                 count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                extra_keywords: vec![],
             },
             vec![TargetRef::Object(clone)],
             clone,

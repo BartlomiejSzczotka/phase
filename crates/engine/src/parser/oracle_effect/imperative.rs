@@ -840,9 +840,14 @@ pub(super) fn parse_search_and_creation_ast(
     if let Some((_, _)) = nom_on_lower(text, lower, |input| value((), tag("create ")).parse(input))
     {
         return match try_parse_token(lower, text) {
-            Some(Effect::CopyTokenOf { target, .. }) => {
-                Some(SearchCreationImperativeAst::CopyTokenOf { target })
-            }
+            Some(Effect::CopyTokenOf {
+                target,
+                extra_keywords,
+                ..
+            }) => Some(SearchCreationImperativeAst::CopyTokenOf {
+                target,
+                extra_keywords,
+            }),
             Some(Effect::Token {
                 name,
                 power,
@@ -897,11 +902,15 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
             rest_destination: None,
             reveal,
         },
-        SearchCreationImperativeAst::CopyTokenOf { target } => Effect::CopyTokenOf {
+        SearchCreationImperativeAst::CopyTokenOf {
+            target,
+            extra_keywords,
+        } => Effect::CopyTokenOf {
             target,
             enters_attacking: false,
             tapped: false,
             count: QuantityExpr::Fixed { value: 1 },
+            extra_keywords,
         },
         SearchCreationImperativeAst::Token { token } => Effect::Token {
             name: token.name,

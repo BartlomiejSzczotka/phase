@@ -5130,6 +5130,66 @@ mod tests {
         );
     }
 
+    /// CR 207.2c (Strive) + CR 115.1d ("any number of") + CR 707.2 (CopyTokenOf) +
+    /// CR 702.10 (Haste) + CR 603.7 (delayed trigger): Twinflame's full parse —
+    /// multi-target {min:0,max:None}, per-target CopyTokenOf{ParentTarget,
+    /// extra_keywords:[Haste]}, delayed exile of "those tokens" with
+    /// uses_tracked_set=true.
+    #[test]
+    fn twinflame_full_parse() {
+        use crate::types::ability::{Effect, MultiTargetSpec, TargetFilter};
+        use crate::types::keywords::Keyword;
+
+        let r = parse(
+            "Strive \u{2014} This spell costs {2}{R} more to cast for each target beyond the first.\nChoose any number of target creatures you control. For each of them, create a token that's a copy of that creature, except it has haste. Exile those tokens at the beginning of the next end step.",
+            "Twinflame",
+            &[],
+            &["Sorcery"],
+            &[],
+        );
+
+        // Strive cost extracted.
+        let strive = r.strive_cost.as_ref().expect("strive_cost set");
+        assert_eq!(strive.mana_value(), 3);
+
+        // One spell ability with multi_target.
+        assert_eq!(r.abilities.len(), 1, "expected single spell ability");
+        let ab = &r.abilities[0];
+        assert_eq!(
+            ab.multi_target,
+            Some(MultiTargetSpec { min: 0, max: None }),
+            "expected any-number multi_target"
+        );
+
+        // Walk the chain: TargetOnly(creature) → CopyTokenOf → CreateDelayedTrigger.
+        let copy = ab.sub_ability.as_ref().expect("CopyTokenOf sub-ability");
+        match &*copy.effect {
+            Effect::CopyTokenOf {
+                target,
+                extra_keywords,
+                ..
+            } => {
+                assert!(matches!(target, TargetFilter::ParentTarget));
+                assert_eq!(extra_keywords, &vec![Keyword::Haste]);
+            }
+            other => panic!("expected CopyTokenOf, got {other:?}"),
+        }
+
+        let delayed = copy
+            .sub_ability
+            .as_ref()
+            .expect("CreateDelayedTrigger sub-ability");
+        match &*delayed.effect {
+            Effect::CreateDelayedTrigger {
+                uses_tracked_set, ..
+            } => assert!(
+                *uses_tracked_set,
+                "'those tokens' must mark uses_tracked_set=true"
+            ),
+            other => panic!("expected CreateDelayedTrigger, got {other:?}"),
+        }
+    }
+
     // ── Mana spend restriction extensions ─────────────────────────────
 
     #[test]

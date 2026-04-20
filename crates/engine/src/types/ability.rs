@@ -3034,6 +3034,11 @@ pub enum Effect {
         /// Krothuss, Adrix and Nev doubling, etc.) and by populate-style multi-copy.
         #[serde(default = "default_quantity_one")]
         count: QuantityExpr,
+        /// CR 707.2 + CR 702: "except it has [keyword(s)]" — extra keywords granted
+        /// to each created copy token in addition to the copied characteristics.
+        /// Twinflame ("…except it has haste") is the canonical example.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        extra_keywords: Vec<crate::types::keywords::Keyword>,
     },
     /// CR 707.2 / CR 613.1a: Become a copy of target permanent.
     /// Sets copiable characteristics at Layer 1.

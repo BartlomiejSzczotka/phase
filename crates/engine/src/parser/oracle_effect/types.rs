@@ -520,6 +520,9 @@ pub(super) enum SearchCreationImperativeAst {
     },
     CopyTokenOf {
         target: TargetFilter,
+        /// CR 707.2 + CR 702: "except it has [keyword]" — extra keywords granted
+        /// to each created copy token. See `Effect::CopyTokenOf::extra_keywords`.
+        extra_keywords: Vec<crate::types::keywords::Keyword>,
     },
     Token {
         token: Box<TokenDescription>,

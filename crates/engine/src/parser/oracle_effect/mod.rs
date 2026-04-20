@@ -1262,6 +1262,21 @@ fn parse_effect_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
         return clause;
     }
 
+    // CR 115.1d + CR 601.2c: "for each of them, [imperative]" — rhetorical
+    // per-target distributor on a multi-target spell (Twinflame's strive
+    // chain: "Choose any number of target creatures you control. For each of
+    // them, create a token …"). The per-target iteration is intrinsic to how
+    // resolvers (CopyTokenOf, Pump, etc.) iterate `ability.targets`, so we
+    // strip the prefix and recurse on the inner clause. Anaphoric subjects
+    // inside the inner clause ("that creature") resolve to the per-target
+    // ParentTarget via `parse_target`.
+    if let Some(rest) = tp
+        .strip_prefix("for each of them, ")
+        .or_else(|| tp.strip_prefix("for each of them "))
+    {
+        return parse_effect_clause(rest.original, ctx);
+    }
+
     if let Some(clause) = try_parse_distinct_card_types_from_revealed(tp) {
         return clause;
     }
@@ -4646,6 +4661,7 @@ fn contains_explicit_tracked_set_pronoun(lower: &str) -> bool {
     scan_contains_phrase(lower, "those cards")
         || scan_contains_phrase(lower, "those permanents")
         || scan_contains_phrase(lower, "those creatures")
+        || scan_contains_phrase(lower, "those tokens")
         || scan_contains_phrase(lower, "the exiled card")
         || scan_contains_phrase(lower, "the exiled permanent")
         || scan_contains_phrase(lower, "the exiled creature")
@@ -5485,7 +5501,7 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
 
         // CR 603.7: Cross-clause pronoun → mark uses_tracked_set on delayed trigger
         if let Some(previous) = defs.last() {
-            if is_exile_effect(&previous.effect) {
+            if is_exile_effect(&previous.effect) || is_token_creating_effect(&previous.effect) {
                 let has_tracked_ref = contains_explicit_tracked_set_pronoun(&lower_check)
                     || contains_implicit_tracked_set_pronoun(&lower_check);
                 if has_tracked_ref {
@@ -5660,6 +5676,7 @@ fn rewrite_those_tokens_from_antecedent(cur: &mut Effect, antecedent: &Effect) {
             target,
             enters_attacking,
             tapped,
+            extra_keywords,
             ..
         } => Some(Effect::CopyTokenOf {
             target: target.clone(),
@@ -5668,6 +5685,7 @@ fn rewrite_those_tokens_from_antecedent(cur: &mut Effect, antecedent: &Effect) {
             count: QuantityExpr::Fixed {
                 value: count as i32,
             },
+            extra_keywords: extra_keywords.clone(),
         }),
         Effect::Token {
             name,

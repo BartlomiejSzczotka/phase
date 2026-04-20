@@ -44,6 +44,12 @@ pub(super) fn try_parse_token(_lower: &str, text: &str) -> Option<Effect> {
         } else {
             after_copy_tp.original
         };
+        // CR 707.2 + CR 702: "…copy of {target}, except it has [keyword list]" —
+        // strip the optional "except" tail before target parsing so the trailing
+        // keyword phrase doesn't pollute the target filter, and capture the
+        // additional keywords as `extra_keywords`. Twinflame ("…except it has
+        // haste") is the canonical case.
+        let (target_text, extra_keywords) = strip_except_it_has_keywords(target_text);
         let (mut target, _) = parse_target(target_text);
         if has_another {
             if let TargetFilter::Typed(ref mut typed) = target {
@@ -57,6 +63,7 @@ pub(super) fn try_parse_token(_lower: &str, text: &str) -> Option<Effect> {
             enters_attacking: false,
             tapped: false,
             count: QuantityExpr::Fixed { value: 1 },
+            extra_keywords,
         });
     }
 
@@ -81,6 +88,34 @@ pub(super) fn try_parse_token(_lower: &str, text: &str) -> Option<Effect> {
         static_abilities: token.static_abilities,
         enter_with_counters: vec![],
     })
+}
+
+/// CR 707.2 + CR 702: Split off a trailing ", except it has [keyword list]"
+/// clause from a copy-of-target phrase. Returns the truncated text and the
+/// parsed keyword list. If no "except it has " phrase is present, returns
+/// the original text and an empty vec. Uses the existing
+/// `split_token_keyword_list` + `map_token_keyword` building blocks.
+///
+/// Example: `"that creature, except it has haste"` →
+///   (`"that creature"`, `vec![Keyword::Haste]`)
+fn strip_except_it_has_keywords(text: &str) -> (&str, Vec<Keyword>) {
+    let lower = text.to_lowercase();
+    // structural: not dispatch — locate the ", except it has " clause on the
+    // lower'd copy to compute the cut byte index in the original-case text.
+    const NEEDLE: &str = ", except it has ";
+    let Some(pos) = lower.find(NEEDLE) else {
+        return (text, Vec::new());
+    };
+    let head = &text[..pos];
+    let tail = text[pos + NEEDLE.len()..]
+        .trim()
+        .trim_end_matches('.')
+        .trim_end_matches(',');
+    let keywords: Vec<Keyword> = split_token_keyword_list(tail)
+        .into_iter()
+        .filter_map(map_token_keyword)
+        .collect();
+    (head, keywords)
 }
 
 pub(super) fn parse_token_description(text: &str) -> Option<TokenDescription> {
