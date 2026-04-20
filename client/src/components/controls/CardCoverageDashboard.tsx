@@ -492,7 +492,7 @@ function DetailEmptyState({ coverage }: { coverage: CoverageSummary }) {
 // --- By Set View ---
 
 const MIN_SET_CARDS = 20;
-const MIN_SET_COVERAGE = 80;
+const MIN_SET_COVERAGE = 50;
 
 interface SetCoverage {
   set_code: string;
@@ -557,7 +557,9 @@ function BySetView() {
     return aggregated.sort((a, b) => {
       const aDate = setList?.[a.set_code]?.releaseDate ?? "";
       const bDate = setList?.[b.set_code]?.releaseDate ?? "";
-      return bDate.localeCompare(aDate);
+      const byDate = bDate.localeCompare(aDate);
+      if (byDate !== 0) return byDate;
+      return a.set_code.localeCompare(b.set_code);
     });
   }, [coverage, setList]);
 
