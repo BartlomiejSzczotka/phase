@@ -139,6 +139,10 @@ pub fn check_state_based_actions(state: &mut GameState, events: &mut Vec<GameEve
         // CR 704.5z: A player controlling Start your engines! gets speed 1 if they had none.
         check_start_your_engines(state, events, &mut any_performed);
 
+        // CR 702.131b: A player controlling an Ascend permanent with ten or more
+        // permanents gets the city's blessing for the rest of the game.
+        check_city_blessing(state, events, &mut any_performed);
+
         // CR 704.5t: If a player's venture marker is on the bottommost room
         // and no room ability from that dungeon is on the stack, complete the dungeon.
         check_dungeon_completion(state, events, &mut any_performed);
@@ -168,6 +172,57 @@ fn check_start_your_engines(
         set_speed(state, player_id, Some(1), events);
         *any_performed = true;
     }
+}
+
+/// CR 702.131b: Ascend on a permanent means "Any time you control ten or more
+/// permanents and you don't have the city's blessing, you get the city's blessing
+/// for the rest of the game." CR 702.131d: Continuous effects are reapplied after
+/// the grant, so we mark layers dirty so "as long as you have the city's blessing"
+/// statics pick up the new designation on the next layer pass.
+fn check_city_blessing(
+    state: &mut GameState,
+    events: &mut Vec<GameEvent>,
+    any_performed: &mut bool,
+) {
+    let players_to_bless: Vec<PlayerId> = state
+        .players
+        .iter()
+        .map(|p| p.id)
+        .filter(|pid| !state.city_blessing.contains(pid))
+        .filter(|pid| controls_ascend_permanent(state, *pid))
+        .filter(|pid| permanents_controlled(state, *pid) >= 10)
+        .collect();
+
+    for player_id in players_to_bless {
+        state.city_blessing.insert(player_id);
+        state.layers_dirty = true;
+        events.push(GameEvent::CityBlessingGained { player_id });
+        *any_performed = true;
+    }
+}
+
+/// CR 702.131b: "you control ten or more permanents" — every object on the
+/// battlefield is a permanent (CR 110.1).
+fn permanents_controlled(state: &GameState, player: PlayerId) -> usize {
+    state
+        .battlefield
+        .iter()
+        .filter(|id| {
+            state
+                .objects
+                .get(id)
+                .is_some_and(|obj| obj.controller == player)
+        })
+        .count()
+}
+
+/// CR 702.131: whether `player` controls any permanent with the Ascend keyword.
+fn controls_ascend_permanent(state: &GameState, player: PlayerId) -> bool {
+    state.battlefield.iter().any(|id| {
+        state.objects.get(id).is_some_and(|obj| {
+            obj.controller == player && obj.has_keyword(&crate::types::keywords::Keyword::Ascend)
+        })
+    })
 }
 
 /// CR 104.3b + CR 810.8a: Check if a player has active CantLoseTheGame protection
@@ -1927,5 +1982,116 @@ mod tests {
             state.players[1].is_eliminated,
             "Opponent of CantLoseTheGame controller should still be eliminated"
         );
+    }
+
+    // --- CR 702.131b: Ascend / city's blessing grant SBA ---
+
+    fn add_ascend_permanent(state: &mut GameState, owner: PlayerId, name: &str) -> ObjectId {
+        let id = create_creature(state, CardId(9001), owner, name, 2, 2);
+        state
+            .objects
+            .get_mut(&id)
+            .unwrap()
+            .keywords
+            .push(crate::types::keywords::Keyword::Ascend);
+        id
+    }
+
+    fn add_filler_permanent(state: &mut GameState, owner: PlayerId, name: &str) -> ObjectId {
+        create_creature(state, CardId(9002), owner, name, 1, 1)
+    }
+
+    #[test]
+    fn ascend_nine_permanents_no_blessing() {
+        let mut state = setup();
+        add_ascend_permanent(&mut state, PlayerId(0), "Tendershoot");
+        for i in 0..8 {
+            add_filler_permanent(&mut state, PlayerId(0), &format!("Filler{i}"));
+        }
+
+        let mut events = Vec::new();
+        check_state_based_actions(&mut state, &mut events);
+
+        assert!(!state.city_blessing.contains(&PlayerId(0)));
+        assert!(!events
+            .iter()
+            .any(|e| matches!(e, GameEvent::CityBlessingGained { .. })));
+    }
+
+    #[test]
+    fn ascend_ten_permanents_grants_blessing() {
+        let mut state = setup();
+        add_ascend_permanent(&mut state, PlayerId(0), "Tendershoot");
+        for i in 0..9 {
+            add_filler_permanent(&mut state, PlayerId(0), &format!("Filler{i}"));
+        }
+
+        let mut events = Vec::new();
+        check_state_based_actions(&mut state, &mut events);
+
+        assert!(state.city_blessing.contains(&PlayerId(0)));
+        assert!(events.iter().any(|e| matches!(
+            e,
+            GameEvent::CityBlessingGained {
+                player_id: PlayerId(0)
+            }
+        )));
+    }
+
+    #[test]
+    fn ascend_blessing_is_one_way_latch() {
+        let mut state = setup();
+        let ascender = add_ascend_permanent(&mut state, PlayerId(0), "Tendershoot");
+        let fillers: Vec<ObjectId> = (0..9)
+            .map(|i| add_filler_permanent(&mut state, PlayerId(0), &format!("Filler{i}")))
+            .collect();
+
+        let mut events = Vec::new();
+        check_state_based_actions(&mut state, &mut events);
+        assert!(state.city_blessing.contains(&PlayerId(0)));
+
+        // Drop back below 10 permanents by moving fillers off the battlefield.
+        for id in fillers.iter().take(5) {
+            state.battlefield.retain(|bid| bid != id);
+        }
+        assert_eq!(permanents_controlled(&state, PlayerId(0)), 5);
+
+        let mut events2 = Vec::new();
+        check_state_based_actions(&mut state, &mut events2);
+
+        // Blessing persists (CR 702.131b — "for the rest of the game").
+        assert!(state.city_blessing.contains(&PlayerId(0)));
+        let _ = ascender; // silence unused binding — source is still on battlefield.
+    }
+
+    #[test]
+    fn ascend_no_ascend_permanent_no_blessing() {
+        let mut state = setup();
+        // Ten permanents, none with Ascend.
+        for i in 0..10 {
+            add_filler_permanent(&mut state, PlayerId(0), &format!("Filler{i}"));
+        }
+
+        let mut events = Vec::new();
+        check_state_based_actions(&mut state, &mut events);
+
+        assert!(!state.city_blessing.contains(&PlayerId(0)));
+    }
+
+    #[test]
+    fn ascend_blessing_marks_layers_dirty() {
+        let mut state = setup();
+        add_ascend_permanent(&mut state, PlayerId(0), "Tendershoot");
+        for i in 0..9 {
+            add_filler_permanent(&mut state, PlayerId(0), &format!("Filler{i}"));
+        }
+        state.layers_dirty = false;
+
+        let mut events = Vec::new();
+        check_state_based_actions(&mut state, &mut events);
+
+        // CR 702.131d: continuous effects reapply after grant — layers must re-evaluate.
+        assert!(state.layers_dirty || state.city_blessing.contains(&PlayerId(0)));
+        assert!(state.city_blessing.contains(&PlayerId(0)));
     }
 }

@@ -166,6 +166,7 @@ fn categorize(event: &GameEvent) -> LogCategory {
         }
 
         GameEvent::MonarchChanged { .. }
+        | GameEvent::CityBlessingGained { .. }
         | GameEvent::DieRolled { .. }
         | GameEvent::CoinFlipped { .. }
         | GameEvent::RingTemptsYou { .. }
@@ -627,6 +628,13 @@ fn format_segments(event: &GameEvent, state: &GameState) -> Vec<LogSegment> {
 
         GameEvent::MonarchChanged { player_id } => {
             vec![player_seg(state, *player_id), text(" becomes the monarch")]
+        }
+
+        GameEvent::CityBlessingGained { player_id } => {
+            vec![
+                player_seg(state, *player_id),
+                text(" gets the city's blessing"),
+            ]
         }
 
         GameEvent::DieRolled {

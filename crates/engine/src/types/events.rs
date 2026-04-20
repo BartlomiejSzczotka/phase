@@ -327,6 +327,10 @@ pub enum GameEvent {
     MonarchChanged {
         player_id: PlayerId,
     },
+    /// CR 702.131b: A player gained the city's blessing (Ascend).
+    CityBlessingGained {
+        player_id: PlayerId,
+    },
     /// CR 706: A die was rolled.
     DieRolled {
         player_id: PlayerId,
