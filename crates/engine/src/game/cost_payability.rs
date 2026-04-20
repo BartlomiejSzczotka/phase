@@ -66,10 +66,14 @@ impl AbilityCost {
                 super::casting::find_eligible_sacrifice_targets(state, player, source, target).len()
                     >= *count as usize
             }
-            // CR 119.4 + CR 119.8: Life cost is payable iff life >= amount and
-            // "can't lose life" locks do not apply.
+            // CR 119.4 + CR 119.8 + CR 903.4: Life cost is payable iff life >= amount
+            // and "can't lose life" locks do not apply. `amount` is a QuantityExpr
+            // so dynamic refs (e.g. commander color identity count) resolve at
+            // activation time against the current game state.
             AbilityCost::PayLife { amount } => {
-                super::life_costs::can_pay_life_cost(state, player, *amount)
+                let resolved =
+                    super::quantity::resolve_quantity(state, amount, player, source).max(0) as u32;
+                super::life_costs::can_pay_life_cost(state, player, resolved)
             }
             // CR 601.2b: Discard requires a choice of card from hand.
             // For `self_ref`, the source card itself must still be in hand.
@@ -313,7 +317,7 @@ fn counter_on_object(
 mod tests {
     use super::*;
     use crate::game::scenario::GameScenario;
-    use crate::types::ability::TargetFilter;
+    use crate::types::ability::{QuantityExpr, TargetFilter};
     use crate::types::mana::ManaCost;
 
     const P0: PlayerId = PlayerId(0);
@@ -342,8 +346,14 @@ mod tests {
     fn pay_life_requires_sufficient_life() {
         let mut state = new_state();
         state.players[0].life = 5;
-        assert!(AbilityCost::PayLife { amount: 5 }.is_payable(&state, P0, ObjectId(0)));
-        assert!(!AbilityCost::PayLife { amount: 6 }.is_payable(&state, P0, ObjectId(0)));
+        assert!(AbilityCost::PayLife {
+            amount: QuantityExpr::Fixed { value: 5 }
+        }
+        .is_payable(&state, P0, ObjectId(0)));
+        assert!(!AbilityCost::PayLife {
+            amount: QuantityExpr::Fixed { value: 6 }
+        }
+        .is_payable(&state, P0, ObjectId(0)));
     }
 
     #[test]
@@ -429,11 +439,21 @@ mod tests {
         let mut state = new_state();
         state.players[0].life = 3;
         let payable = AbilityCost::Composite {
-            costs: vec![AbilityCost::Tap, AbilityCost::PayLife { amount: 3 }],
+            costs: vec![
+                AbilityCost::Tap,
+                AbilityCost::PayLife {
+                    amount: QuantityExpr::Fixed { value: 3 },
+                },
+            ],
         };
         assert!(payable.is_payable(&state, P0, ObjectId(0)));
         let unpayable = AbilityCost::Composite {
-            costs: vec![AbilityCost::Tap, AbilityCost::PayLife { amount: 10 }],
+            costs: vec![
+                AbilityCost::Tap,
+                AbilityCost::PayLife {
+                    amount: QuantityExpr::Fixed { value: 10 },
+                },
+            ],
         };
         assert!(!unpayable.is_payable(&state, P0, ObjectId(0)));
     }

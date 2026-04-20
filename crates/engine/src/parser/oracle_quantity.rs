@@ -599,6 +599,35 @@ pub(crate) fn parse_for_each_clause(clause: &str) -> Option<QuantityRef> {
         return Some(QuantityRef::SpellsCastThisTurn { filter });
     }
 
+    // CR 603.10a + CR 603.6e: "[Aura|Equipment] you controlled that was attached to it"
+    // — look-back count on a leaving object's attachment snapshot. Used by
+    // Hateful Eidolon's "draw a card for each Aura you controlled that was attached
+    // to it". Recognize only this specific non-compositional pattern; controller is
+    // "you" (the clause past-tense "controlled" with "you" — parallel to Oracle's
+    // convention that the dying enchanted creature's Auras are yours).
+    {
+        use crate::types::ability::{AttachmentKind, ControllerRef};
+        let lower_clause = clause.to_ascii_lowercase();
+        let attach_pairs: &[(&str, AttachmentKind)] = &[
+            (
+                "aura you controlled that was attached to it",
+                AttachmentKind::Aura,
+            ),
+            (
+                "equipment you controlled that was attached to it",
+                AttachmentKind::Equipment,
+            ),
+        ];
+        for (pat, kind) in attach_pairs {
+            if lower_clause == *pat {
+                return Some(QuantityRef::AttachmentsOnLeavingObject {
+                    kind: kind.clone(),
+                    controller: Some(ControllerRef::You),
+                });
+            }
+        }
+    }
+
     // "creature you control", "artifact you control", etc.
     // Use parse_type_phrase (not parse_target) to avoid generating spurious
     // target-fallback warnings for quantity text that isn't a target clause.

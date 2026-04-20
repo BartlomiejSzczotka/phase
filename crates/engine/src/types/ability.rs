@@ -601,6 +601,22 @@ pub enum ManaProduction {
         #[serde(default)]
         options: Vec<Vec<ManaColor>>,
     },
+    /// CR 903.4 + CR 903.4f + CR 106.5: Produce N mana of one color chosen
+    /// from the controller's commander(s)' combined color identity. Colors
+    /// are computed dynamically at resolution time via
+    /// `commander_color_identity`. If the color identity is empty (no
+    /// commander, or a colorless commander), CR 106.5 applies and the
+    /// ability produces no mana. Used by Path of Ancestry and Study Hall.
+    AnyInCommandersColorIdentity {
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
+        /// CR 605.1a: Whether this is base or additional mana.
+        #[serde(
+            default = "default_mana_contribution",
+            skip_serializing_if = "is_default_mana_contribution"
+        )]
+        contribution: ManaContribution,
+    },
 }
 
 /// CR 607.2a + CR 406.6 + CR 610.3: Which exile-link relation a mana ability reads
@@ -682,6 +698,12 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                         colorless_count: u32,
                         colors: Vec<ManaColor>,
                     },
+                    AnyInCommandersColorIdentity {
+                        #[serde(default = "default_quantity_one")]
+                        count: QuantityExpr,
+                        #[serde(default = "default_mana_contribution")]
+                        contribution: ManaContribution,
+                    },
                 }
                 let helper: ManaProductionHelper =
                     serde_json::from_value(value).map_err(serde::de::Error::custom)?;
@@ -734,6 +756,13 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                     } => ManaProduction::Mixed {
                         colorless_count,
                         colors,
+                    },
+                    ManaProductionHelper::AnyInCommandersColorIdentity {
+                        count,
+                        contribution,
+                    } => ManaProduction::AnyInCommandersColorIdentity {
+                        count,
+                        contribution,
                     },
                 })
             }
@@ -1059,6 +1088,17 @@ pub enum ControllerRef {
     TargetPlayer,
 }
 
+/// CR 301 / CR 303: Kinds of attachments to permanents.
+/// Used by `FilterProp::HasAttachment` and `QuantityRef::AttachmentsOnLeavingObject`
+/// to parameterize attachment-predicate checks.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum AttachmentKind {
+    /// CR 303.4: Aura — enchantment subtype that attaches via Enchant ability.
+    Aura,
+    /// CR 301.5: Equipment — artifact subtype that attaches via Equip ability.
+    Equipment,
+}
+
 /// CR 700.5: Qualities that can be shared across multi-target selections.
 /// Used by `FilterProp::SharesQuality` for group constraint validation at resolution time.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -1099,6 +1139,10 @@ pub enum FilterProp {
         counter_type: CounterType,
         count: QuantityExpr,
     },
+    /// CR 122.1: Matches objects with at least one counter of any type on them.
+    /// Used for "creature with one or more counters on it" phrases where the
+    /// counter type is unspecified (Nils, Discipline Enforcer's attack-tax class).
+    HasAnyCounter,
     /// Matches objects with converted mana cost >= N (for "mana value N or greater").
     /// CR 202.3: Uses QuantityExpr to support both fixed and dynamic comparisons.
     CmcGE {
@@ -1117,6 +1161,22 @@ pub enum FilterProp {
     },
     EnchantedBy,
     EquippedBy,
+    /// CR 303.4 + CR 301.5: Matches objects that have at least one attachment of the
+    /// given kind whose controller matches `controller`. Unlike `EnchantedBy`/`EquippedBy`
+    /// (which are source-relative — match when THIS source is attached to the object),
+    /// this predicate is non-source-relative: it matches any object with a qualifying
+    /// attachment. `controller = None` means "any controller".
+    ///
+    /// Covers:
+    /// - "enchanted creature" when the ability source is not the Aura itself
+    ///   (e.g. Hateful Eidolon's "Whenever an enchanted creature dies, ...").
+    /// - "creature enchanted by an Aura you control" (Killian, Decisive Mentor).
+    /// - "creature equipped by an Equipment you control" (future).
+    HasAttachment {
+        kind: AttachmentKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        controller: Option<ControllerRef>,
+    },
     /// Matches any object that is NOT the trigger source (for "another creature" triggers).
     Another,
     /// Matches objects with a specific color (for "white creature", "red spell", etc.).
@@ -1244,6 +1304,13 @@ pub enum FilterProp {
     CmcEQ {
         value: QuantityExpr,
     },
+    /// CR 107.3 + CR 202.1: Matches spells/objects whose printed mana cost contains
+    /// an `{X}` shard. Used for "spell with {X} in its mana cost" qualifier on
+    /// spell-cast triggers (Lattice Library, Nev the Practical Dean, Owlin
+    /// Spiralmancer, Brass Infiniscope, Elementalist's Palette).
+    /// Evaluated against `SpellCastRecord.has_x_in_cost` in the spell-history
+    /// filter path and against `cost_has_x(&obj.mana_cost)` for live objects.
+    HasXInManaCost,
     /// CR 201.2: Matches objects whose card name equals the given name.
     /// Used for "cards named [X]" and "named [X]" filter patterns.
     /// Name comparison is exact per CR 201.2a (case-insensitive at evaluation).
@@ -1498,6 +1565,11 @@ pub enum QuantityRef {
     /// Used for "for each [counter type] counter on that creature" anaphoric patterns.
     /// Semantically distinct from CountersOnSelf: counts counters on a *targeted* object.
     CountersOnTarget { counter_type: String },
+    /// CR 122.1: Total counters of any type on the previously targeted object.
+    /// Used for "the number of counters on that creature" where the counter type is
+    /// unspecified (e.g., Nils, Discipline Enforcer — per the Scryfall rulings, ALL
+    /// counters on the creature are considered, not just +1/+1 counters).
+    AnyCountersOnTarget,
     /// CR 122.1: Total counters across all objects matching a filter.
     /// Used for phrases like "the number of +1/+1 counters on lands you control"
     /// (`counter_type: Some("P1P1")`) and "counters among artifacts and creatures
@@ -1576,6 +1648,26 @@ pub enum QuantityRef {
     EventContextSourceToughness,
     /// CR 603.7c: Mana value of the source object from the triggering event.
     EventContextSourceManaValue,
+    /// CR 603.10a + CR 603.6e: Count of attachments of a given kind that were attached
+    /// to the leaving-battlefield object at the moment it left, optionally filtered by
+    /// attachment controller. Resolved via the triggering `ZoneChangeRecord`'s
+    /// `attachments` snapshot (look-back semantics).
+    ///
+    /// Used for Hateful Eidolon ("draw a card for each Aura you controlled that was
+    /// attached to it") — `kind: Aura`, `controller: Some(You)`.
+    AttachmentsOnLeavingObject {
+        kind: AttachmentKind,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        controller: Option<ControllerRef>,
+    },
+    /// CR 107.3a + CR 601.2b + CR 603.7c: The announced value of `{X}` for the
+    /// triggering spell. Reads `GameObject::cost_x_paid` on the spell object
+    /// referenced by `current_trigger_event` (populated during
+    /// `determine_total_cost` and persisted through stack → battlefield).
+    /// Used by triggers of the form "whenever you cast your first spell with
+    /// {X} in its mana cost each turn, [do something with X]" (e.g. Nev the
+    /// Practical Dean's "put X +1/+1 counters on Nev").
+    EventContextSourceCostX,
     /// CR 117.1: Number of spells cast this turn by a specific player,
     /// optionally filtered by spell characteristics. `None` = all spells.
     /// Resolved against the controller (or scope_player in per-player iteration).
@@ -1661,6 +1753,14 @@ pub enum QuantityRef {
     /// resolves against the entering object (via `QuantityContext::entering`);
     /// otherwise resolves against the static source.
     ColorsSpentOnSelf,
+    /// CR 903.4 + CR 903.4f: Number of distinct colors in the controller's
+    /// commander(s)' combined color identity. Color identity is the union of
+    /// every commander's mana-cost colors plus color indicator/CDA colors.
+    /// Resolves to 0 when the controller has no commander (CR 903.4f: "that
+    /// quality is undefined if that player doesn't have a commander"). Used
+    /// by War Room's "pay life equal to the number of colors in your
+    /// commanders' color identity" activation cost.
+    ColorsInCommandersColorIdentity,
 }
 
 /// CR 107.1a: Rounding direction for fractional Oracle-text expressions.
@@ -1813,6 +1913,18 @@ pub enum UnlessPayScaling {
         quantity: QuantityRef,
     },
     PerAffectedAndQuantityRef {
+        quantity: QuantityRef,
+    },
+    /// CR 118.12a + CR 202.3e: Per-affected-creature cost where the scaling quantity
+    /// is resolved against EACH affected creature independently (e.g., Nils, Discipline
+    /// Enforcer — "pays {X}, where X is the number of counters on that creature" —
+    /// each declared attacker pays base_cost × counters on itself).
+    ///
+    /// Distinct from `PerQuantityRef` (resolved once for all creatures) and
+    /// `PerAffectedAndQuantityRef` (resolved once, then multiplied per creature). The
+    /// quantity is resolved per-creature using that creature as the `TargetRef::Object`
+    /// during resolution.
+    PerAffectedWithRef {
         quantity: QuantityRef,
     },
 }
@@ -2235,8 +2347,13 @@ pub enum AbilityCost {
         #[serde(default = "default_one")]
         count: u32,
     },
+    /// CR 119.4: Pay life as an activation or additional cost. `amount` is a
+    /// `QuantityExpr` so dynamic references (e.g.
+    /// `QuantityRef::ColorsInCommandersColorIdentity` for War Room's "pay life
+    /// equal to the number of colors in your commanders' color identity")
+    /// resolve at activation time rather than forcing a static integer.
     PayLife {
-        amount: u32,
+        amount: QuantityExpr,
     },
     Discard {
         count: u32,
@@ -5231,6 +5348,12 @@ pub struct TriggerDefinition {
     pub valid_card: Option<TargetFilter>,
     #[serde(default)]
     pub origin: Option<Zone>,
+    /// CR 603.10a: Disjunctive source-zone filter for batched zone-change triggers
+    /// like "one or more cards are put into exile from your library and/or your graveyard".
+    /// When non-empty, the matcher requires `from_zone` to be in this set
+    /// (and `origin` is ignored). Leave empty for single-zone triggers that use `origin`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub origin_zones: Vec<Zone>,
     #[serde(default)]
     pub destination: Option<Zone>,
     #[serde(default)]
@@ -5281,6 +5404,7 @@ impl TriggerDefinition {
             execute: None,
             valid_card: None,
             origin: None,
+            origin_zones: vec![],
             destination: None,
             trigger_zones: vec![],
             phase: None,
@@ -6215,6 +6339,7 @@ mod tests {
             ))),
             valid_card: Some(TargetFilter::SelfRef),
             origin: Some(Zone::Battlefield),
+            origin_zones: vec![],
             destination: Some(Zone::Graveyard),
             trigger_zones: vec![Zone::Battlefield],
             phase: None,
@@ -6342,7 +6467,9 @@ mod tests {
             },
             AbilityCost::Tap,
             AbilityCost::Loyalty { amount: -2 },
-            AbilityCost::PayLife { amount: 2 },
+            AbilityCost::PayLife {
+                amount: QuantityExpr::Fixed { value: 2 },
+            },
             AbilityCost::Discard {
                 count: 1,
                 filter: None,
@@ -6757,7 +6884,10 @@ mod tests {
         #[test]
         fn pay_life() {
             assert_eq!(
-                AbilityCost::PayLife { amount: 2 }.categories(),
+                AbilityCost::PayLife {
+                    amount: QuantityExpr::Fixed { value: 2 },
+                }
+                .categories(),
                 vec![CostCategory::PaysLife]
             );
         }

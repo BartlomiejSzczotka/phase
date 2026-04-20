@@ -16,8 +16,8 @@ use super::oracle_quantity::capitalize_first;
 use super::oracle_static::split_keyword_list;
 use super::oracle_target::parse_type_phrase;
 use super::oracle_util::{
-    canonicalize_subtype_name, normalize_card_name_refs, parse_number, parse_ordinal, strip_after,
-    strip_reminder_text, TextPair,
+    canonicalize_subtype_name, normalize_card_name_refs, parse_count_expr, parse_number,
+    parse_ordinal, strip_after, strip_reminder_text, TextPair,
 };
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, ChoiceType, CombatDamageScope, Comparator,
@@ -906,6 +906,7 @@ fn parse_enters_tapped_unless(
     let condition = parse_fast_condition(norm_lower)
         .or_else(|| parse_check_condition(norm_lower))
         .or_else(|| parse_controls_typed_condition(norm_lower))
+        .or_else(|| parse_opponents_control_condition(norm_lower))
         .or_else(|| parse_player_life_condition(norm_lower))
         .or_else(|| parse_multiple_opponents_condition(norm_lower))
         .or_else(|| parse_your_turn_condition(norm_lower))
@@ -1006,7 +1007,7 @@ fn parse_controls_typed_condition(norm_lower: &str) -> Option<ReplacementConditi
         if !leftover.trim().trim_end_matches('.').is_empty() || filter == TargetFilter::Any {
             return None;
         }
-        let filter = inject_controller_you(filter);
+        let filter = inject_controller(filter, ControllerRef::You);
         return Some(ReplacementCondition::UnlessControlsCountMatching { minimum, filter });
     }
 
@@ -1026,9 +1027,27 @@ fn parse_controls_typed_condition(norm_lower: &str) -> Option<ReplacementConditi
 
     // Inject ControllerRef::You — "you control" is implicit in the Oracle text
     // CR 614.1d — consistent with fast land controller injection pattern
-    let filter = inject_controller_you(filter);
+    let filter = inject_controller(filter, ControllerRef::You);
 
     Some(ReplacementCondition::UnlessControlsMatching { filter })
+}
+
+/// Extract "unless your opponents control N or more [type]" condition.
+/// CR 614.1d — sibling of `parse_controls_typed_condition` keyed on the
+/// "your opponents control" prefix. Only the quantity-prefixed form is accepted
+/// (this phrasing always appears with a threshold in printed MTG text).
+/// Used by the Turbulent land cycle (SOC): "unless your opponents control eight or more lands".
+fn parse_opponents_control_condition(norm_lower: &str) -> Option<ReplacementCondition> {
+    let rest = strip_after(norm_lower, "unless your opponents control ")?;
+    let (minimum, type_text) = try_parse_quantity_prefix(rest)?;
+    let (filter, leftover) = parse_type_phrase(type_text);
+    if !leftover.trim().trim_end_matches('.').is_empty() || filter == TargetFilter::Any {
+        return None;
+    }
+    // CR 109.5: stamp ControllerRef::Opponent so the runtime filter counts
+    // only permanents controlled by opponents of the entering permanent's controller.
+    let filter = inject_controller(filter, ControllerRef::Opponent);
+    Some(ReplacementCondition::UnlessControlsCountMatching { minimum, filter })
 }
 
 /// Try to parse "N or more " quantity prefix before a type phrase.
@@ -1042,16 +1061,17 @@ fn try_parse_quantity_prefix(text: &str) -> Option<(u32, &str)> {
     Some((n, type_text))
 }
 
-/// Inject `ControllerRef::You` into a `TargetFilter`, handling both `Typed` and `Or` variants.
-fn inject_controller_you(filter: TargetFilter) -> TargetFilter {
+/// Inject a `ControllerRef` into a `TargetFilter`, handling both `Typed` and `Or` variants.
+/// CR 109.5 — ownership/control reference is attached to each leaf typed filter.
+fn inject_controller(filter: TargetFilter, controller: ControllerRef) -> TargetFilter {
     match filter {
-        TargetFilter::Typed(tf) => TargetFilter::Typed(tf.controller(ControllerRef::You)),
+        TargetFilter::Typed(tf) => TargetFilter::Typed(tf.controller(controller)),
         TargetFilter::Or { filters } => TargetFilter::Or {
             filters: filters
                 .into_iter()
                 .map(|f| match f {
                     TargetFilter::Typed(tf) => {
-                        TargetFilter::Typed(tf.controller(ControllerRef::You))
+                        TargetFilter::Typed(tf.controller(controller.clone()))
                     }
                     other => other,
                 })
@@ -1066,6 +1086,29 @@ fn extract_life_payment(text: &str) -> Option<i32> {
     let after_pay = strip_after(text, "pay ")?;
     let (_rem, value) = nom_primitives::parse_number.parse(after_pay).ok()?;
     Some(value as i32)
+}
+
+/// CR 107.3m: In the ETB-enters-with-counters context, bare "X" refers to the
+/// mana value paid for `{X}` on the cast. `parse_count_expr` emits
+/// `QuantityRef::Variable{name:"X"}` for bare X, which at runtime resolves via
+/// the current trigger event's source — a channel that is empty during ETB
+/// replacement application. Rewriting to `QuantityRef::CostXPaid` reads the
+/// entering object's own `cost_x_paid` field, which is populated by
+/// `finalize_cast` and survives the stack → battlefield move. Walks the
+/// expression tree so `Multiply { factor: 2, inner: Variable("X") }` (Primo)
+/// and `HalfRounded { inner: Variable("X"), .. }` also get the rewrite.
+fn rewrite_variable_x_to_cost_x_paid(expr: &mut QuantityExpr) {
+    match expr {
+        QuantityExpr::Ref { qty } => {
+            if matches!(qty, QuantityRef::Variable { name } if name == "X") {
+                *qty = QuantityRef::CostXPaid;
+            }
+        }
+        QuantityExpr::Fixed { .. } => {}
+        QuantityExpr::HalfRounded { inner, .. }
+        | QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::Multiply { inner, .. } => rewrite_variable_x_to_cost_x_paid(inner),
+    }
 }
 
 /// Parse "enters/escapes with N [type] counter(s)" patterns into a Moved replacement.
@@ -1102,16 +1145,17 @@ fn parse_enters_with_counters(
             Ok((rest, _)) => (Some(after_additional), rest),
             Err(_) => (None, after_additional),
         };
-    // CR 107.3m: Detect the X-cost case ("enters with X counters") before falling
-    // through to numeric parsing. The spell's paid X survives on the permanent as
-    // `cost_x_paid`; resolve via `QuantityRef::CostXPaid` so Astral Cornucopia,
-    // Walking Ballista, Hangarback Walker etc. enter with the actual paid amount.
-    let is_x_count = alt((tag::<_, _, VerboseError<&str>>("x "), tag("X ")))
-        .parse(after_prefix)
-        .is_ok();
-    // Uses oracle_util::parse_number (not nom directly) because it handles "X" → 0
-    // for X-cost cards like Endless One, Walking Ballista, Hangarback Walker, etc.
-    let (count, rest) = parse_number(after_prefix).unwrap_or((1, after_prefix));
+    // CR 107.3 + CR 107.3m + CR 107.1a: Parse the counter count as a full
+    // `QuantityExpr`, so "N", "X", "twice X", "three times X", and
+    // "half X, rounded up/down" all compose through the same typed arithmetic
+    // wrappers (`Multiply`, `HalfRounded`). `parse_count_expr` returns
+    // `Variable("X")` for bare X; the ETB-enters context requires the entering
+    // object's `cost_x_paid` (runtime `Variable("X")` only reads trigger-event
+    // sources, not the entering permanent), so rewrite X → `CostXPaid`
+    // recursively inside the expression.
+    let (mut count_expr, rest) =
+        parse_count_expr(after_prefix).unwrap_or((QuantityExpr::Fixed { value: 1 }, after_prefix));
+    rewrite_variable_x_to_cost_x_paid(&mut count_expr);
     // Next word(s) before "counter" are the counter type
     let (_, (counter_type_raw, _)) = nom_primitives::split_once_on(rest, "counter").ok()?;
     let counter_type_raw = counter_type_raw.trim();
@@ -1119,18 +1163,6 @@ fn parse_enters_with_counters(
         "+1/+1" => "P1P1".to_string(),
         "-1/-1" => "M1M1".to_string(),
         other => other.to_uppercase(),
-    };
-
-    // Initialize count with fixed fallback, then override for dynamic "equal to" pattern
-    let mut count_expr = if is_x_count {
-        // CR 107.3m: X resolves against the spell's paid X via CostXPaid.
-        QuantityExpr::Ref {
-            qty: crate::types::ability::QuantityRef::CostXPaid,
-        }
-    } else {
-        QuantityExpr::Fixed {
-            value: count as i32,
-        }
     };
     // CR 122.6: For "a number of counters equal to [quantity]", parse the dynamic expression
     if dynamic_remainder.is_some() {
@@ -3096,6 +3128,72 @@ mod tests {
     }
 
     #[test]
+    fn enters_with_twice_x_plus1_plus1_counters() {
+        // CR 107.3 + CR 107.3m: Primo, the Unbounded — "twice X" composes
+        // `Multiply { factor: 2, inner: CostXPaid }`.
+        let def = parse_replacement_line(
+            "Primo enters with twice X +1/+1 counters on it.",
+            "Primo, the Unbounded",
+        )
+        .unwrap();
+        match &*def.execute.as_ref().unwrap().effect {
+            Effect::PutCounter {
+                counter_type,
+                count,
+                ..
+            } => {
+                assert_eq!(counter_type, "P1P1");
+                match count {
+                    QuantityExpr::Multiply { factor, inner } => {
+                        assert_eq!(*factor, 2);
+                        assert!(matches!(
+                            inner.as_ref(),
+                            QuantityExpr::Ref {
+                                qty: QuantityRef::CostXPaid
+                            }
+                        ));
+                    }
+                    other => panic!("expected Multiply, got {other:?}"),
+                }
+            }
+            other => panic!("Expected PutCounter, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn enters_with_half_x_rounded_up_counters() {
+        // CR 107.1a + CR 107.3m: Hypothetical half-X fixture — "half X, rounded up"
+        // composes `HalfRounded { inner: CostXPaid, rounding: Up }`.
+        let def = parse_replacement_line(
+            "~ enters with half X, rounded up +1/+1 counters on it.",
+            "Hypothetical Half-X Creature",
+        )
+        .unwrap();
+        match &*def.execute.as_ref().unwrap().effect {
+            Effect::PutCounter {
+                counter_type,
+                count,
+                ..
+            } => {
+                assert_eq!(counter_type, "P1P1");
+                match count {
+                    QuantityExpr::HalfRounded { inner, rounding } => {
+                        assert!(matches!(
+                            inner.as_ref(),
+                            QuantityExpr::Ref {
+                                qty: QuantityRef::CostXPaid
+                            }
+                        ));
+                        assert!(matches!(rounding, crate::types::ability::RoundingMode::Up));
+                    }
+                    other => panic!("expected HalfRounded, got {other:?}"),
+                }
+            }
+            other => panic!("Expected PutCounter, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn enters_with_dynamic_counters_equal_to_quantity() {
         let def = parse_replacement_line(
             "Ulamog enters with a number of +1/+1 counters on it equal to the greatest mana value among cards in exile.",
@@ -3685,6 +3783,31 @@ mod tests {
             def.condition,
             Some(ReplacementCondition::UnlessControlsSubtype { .. })
         ));
+    }
+
+    /// CR 614.1d: "unless your opponents control N or more [type]" — Turbulent land cycle (SOC).
+    /// One parser test covers the class; all five Turbulent lands share this clause verbatim.
+    #[test]
+    fn unless_opponents_control_n_or_more_lands_turbulent_cycle() {
+        let def = parse_replacement_line(
+            "This land enters tapped unless your opponents control eight or more lands.",
+            "Turbulent Fen",
+        )
+        .unwrap();
+        assert_eq!(def.event, ReplacementEvent::Moved);
+        assert_eq!(def.valid_card, Some(TargetFilter::SelfRef));
+        assert!(matches!(def.mode, ReplacementMode::Mandatory));
+        match &def.condition {
+            Some(ReplacementCondition::UnlessControlsCountMatching { minimum, filter }) => {
+                assert_eq!(*minimum, 8);
+                let TargetFilter::Typed(tf) = filter else {
+                    panic!("Expected Typed filter, got {filter:?}");
+                };
+                assert!(tf.type_filters.contains(&TypeFilter::Land));
+                assert_eq!(tf.controller, Some(ControllerRef::Opponent));
+            }
+            other => panic!("Expected UnlessControlsCountMatching, got {other:?}"),
+        }
     }
 
     #[test]

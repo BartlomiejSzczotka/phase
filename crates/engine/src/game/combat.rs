@@ -879,6 +879,42 @@ pub fn compute_combat_tax(
                     );
                     base_cost.scaled(n.max(0) as u32)
                 }
+                UnlessPayScaling::PerAffectedWithRef { quantity } => {
+                    // CR 118.12a + CR 202.3e: Nils, Discipline Enforcer — "pays {X},
+                    // where X is the number of counters on that creature". The
+                    // scaling quantity is resolved per-affected-creature with that
+                    // creature as the target, so each attacker pays base_cost times
+                    // its own counter count. Attribute the resolved cost directly
+                    // to each affected creature and continue (skip the shared
+                    // per_match_cost distribution below).
+                    for aid in &affected_ids {
+                        let n = crate::game::quantity::resolve_quantity_with_targets_slice(
+                            state,
+                            &crate::types::ability::QuantityExpr::Ref {
+                                qty: quantity.clone(),
+                            },
+                            source_obj.controller,
+                            source_id,
+                            &[crate::types::ability::TargetRef::Object(*aid)],
+                        );
+                        // CR 107.1b + CR 202.3e: Concretize any `{X}` in base_cost by
+                        // substituting the resolved per-attacker quantity. This yields
+                        // a locked-in generic-mana amount; callers see a `mana_value()`
+                        // equal to N (or N × X-shard-count), matching what the player
+                        // actually owes at the decision point.
+                        let mut cost = base_cost.clone();
+                        cost.concretize_x(n.max(0) as u32);
+                        if cost.mana_value() == 0 {
+                            continue;
+                        }
+                        if let Some((_, slot)) = per_creature.iter_mut().find(|(cid, _)| cid == aid)
+                        {
+                            *slot = slot.plus(&cost);
+                            any_tax = true;
+                        }
+                    }
+                    continue;
+                }
             };
 
             for aid in &affected_ids {
@@ -2898,6 +2934,96 @@ mod tests {
         assert_eq!(total.mana_value(), 4);
         assert_eq!(per_creature.len(), 2);
         assert!(per_creature.iter().all(|(_, c)| c.mana_value() == 2));
+    }
+
+    /// CR 118.12a + CR 202.3e: Nils, Discipline Enforcer — per-attacker counter-scaled tax.
+    /// Builds a Nils-style static (`PerAffectedWithRef` + `AnyCountersOnTarget`) on defender,
+    /// gives two attackers different counter counts, and verifies each pays its own counter
+    /// count in mana. Uncountered creatures are excluded from the tax (filter guard).
+    #[test]
+    fn compute_attack_tax_nils_per_attacker_counter_scaling() {
+        use crate::types::ability::{
+            FilterProp, QuantityRef, StaticCondition, StaticDefinition, TargetFilter, TypeFilter,
+            TypedFilter, UnlessPayScaling,
+        };
+        use crate::types::counter::CounterType;
+        use crate::types::mana::ManaCost;
+        use crate::types::statics::StaticMode;
+
+        let mut state = setup();
+
+        // Defender (PlayerId(1)) controls Nils — counter-gated attack tax.
+        let next_card_id = CardId(state.next_object_id);
+        let nils = create_object(
+            &mut state,
+            next_card_id,
+            PlayerId(1),
+            "Nils, Discipline Enforcer".to_string(),
+            crate::types::zones::Zone::Battlefield,
+        );
+        let nils_obj = state.objects.get_mut(&nils).unwrap();
+        nils_obj.card_types.core_types.push(CoreType::Creature);
+        let mut def = StaticDefinition::new(StaticMode::CantAttack)
+            .affected(TargetFilter::Typed(TypedFilter {
+                type_filters: vec![TypeFilter::Creature],
+                controller: None,
+                properties: vec![FilterProp::HasAnyCounter],
+            }))
+            .description("Nils static".to_string());
+        def.condition = Some(StaticCondition::UnlessPay {
+            // CR 202.3e: "{X}" base cost — resolved per-attacker via scaling.
+            cost: ManaCost::Cost {
+                shards: vec![crate::types::mana::ManaCostShard::X],
+                generic: 0,
+            },
+            scaling: UnlessPayScaling::PerAffectedWithRef {
+                quantity: QuantityRef::AnyCountersOnTarget,
+            },
+        });
+        nils_obj.static_definitions.push(def);
+
+        // Active player: three creatures — two carrying counters, one bare.
+        let a1 = create_creature(&mut state, PlayerId(0), "A1", 2, 2);
+        let a2 = create_creature(&mut state, PlayerId(0), "A2", 2, 2);
+        let a3 = create_creature(&mut state, PlayerId(0), "A3 (no counters)", 2, 2);
+        state
+            .objects
+            .get_mut(&a1)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 3);
+        state
+            .objects
+            .get_mut(&a2)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("oil".to_string()), 2);
+
+        let attacks = vec![
+            (a1, AttackTarget::Player(PlayerId(1))),
+            (a2, AttackTarget::Player(PlayerId(1))),
+            (a3, AttackTarget::Player(PlayerId(1))),
+        ];
+        let (total, per_creature) = compute_attack_tax(&state, &attacks).expect("Nils tax applies");
+        // a1 pays {3} (three +1/+1 counters), a2 pays {2} (two oil counters),
+        // a3 pays {0} (no counters — filter excludes it). Total = {5}.
+        assert_eq!(total.mana_value(), 5, "total Nils tax should be {{5}}");
+        let a1_cost = per_creature
+            .iter()
+            .find(|(id, _)| *id == a1)
+            .map(|(_, c)| c.mana_value());
+        let a2_cost = per_creature
+            .iter()
+            .find(|(id, _)| *id == a2)
+            .map(|(_, c)| c.mana_value());
+        let a3_cost = per_creature
+            .iter()
+            .find(|(id, _)| *id == a3)
+            .map(|(_, c)| c.mana_value())
+            .unwrap_or(0);
+        assert_eq!(a1_cost, Some(3), "three +1/+1 counters → {{3}}");
+        assert_eq!(a2_cost, Some(2), "two oil counters → {{2}}");
+        assert_eq!(a3_cost, 0, "no counters → no tax");
     }
 
     #[test]

@@ -378,3 +378,134 @@ fn archelos_tapped_makes_other_lands_enter_tapped() {
         "Tapped Archelos should make other permanents enter tapped"
     );
 }
+
+// ── Turbulent land cycle integration tests (SOC) ──
+// "This land enters tapped unless your opponents control eight or more lands."
+
+/// Build the Turbulent land replacement matching CR 614.1d with
+/// `UnlessControlsCountMatching { minimum: 8 }` and `ControllerRef::Opponent`.
+fn turbulent_land_replacement(description: &str) -> ReplacementDefinition {
+    ReplacementDefinition::new(ReplacementEvent::Moved)
+        .execute(AbilityDefinition::new(
+            AbilityKind::Spell,
+            Effect::Tap {
+                target: TargetFilter::SelfRef,
+            },
+        ))
+        .valid_card(TargetFilter::SelfRef)
+        .destination_zone(Zone::Battlefield)
+        .description(description.to_string())
+        .condition(ReplacementCondition::UnlessControlsCountMatching {
+            minimum: 8,
+            filter: TargetFilter::Typed(
+                TypedFilter::new(engine::types::ability::TypeFilter::Land)
+                    .controller(ControllerRef::Opponent),
+            ),
+        })
+}
+
+/// CR 614.1d: Turbulent Fen with opponent controlling fewer than 8 lands → enters tapped.
+#[test]
+fn turbulent_land_opponent_under_threshold_enters_tapped() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    // Opponent controls 7 lands — threshold not met → replacement applies, land enters tapped.
+    for _ in 0..7 {
+        scenario.add_basic_land(P1, engine::types::mana::ManaColor::Green);
+    }
+
+    let mut builder = scenario.add_land_to_hand(P0, "Turbulent Fen");
+    builder.with_replacement_definition(turbulent_land_replacement(
+        "This land enters tapped unless your opponents control eight or more lands.",
+    ));
+    let land_id = builder.id();
+
+    let mut runner = scenario.build();
+    let card_id = runner.state().objects[&land_id].card_id;
+
+    runner
+        .act(GameAction::PlayLand {
+            object_id: land_id,
+            card_id,
+        })
+        .expect("play land should succeed");
+
+    let obj = &runner.state().objects[&land_id];
+    assert_eq!(obj.zone, Zone::Battlefield);
+    assert!(
+        obj.tapped,
+        "Turbulent Fen should enter tapped when opponents control only 7 lands"
+    );
+}
+
+/// CR 614.1d: Turbulent Fen with opponent controlling ≥8 lands → enters untapped.
+#[test]
+fn turbulent_land_opponent_meets_threshold_enters_untapped() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    // Opponent controls 8 lands — threshold met → replacement suppressed, land enters untapped.
+    for _ in 0..8 {
+        scenario.add_basic_land(P1, engine::types::mana::ManaColor::Green);
+    }
+
+    let mut builder = scenario.add_land_to_hand(P0, "Turbulent Fen");
+    builder.with_replacement_definition(turbulent_land_replacement(
+        "This land enters tapped unless your opponents control eight or more lands.",
+    ));
+    let land_id = builder.id();
+
+    let mut runner = scenario.build();
+    let card_id = runner.state().objects[&land_id].card_id;
+
+    runner
+        .act(GameAction::PlayLand {
+            object_id: land_id,
+            card_id,
+        })
+        .expect("play land should succeed");
+
+    let obj = &runner.state().objects[&land_id];
+    assert_eq!(obj.zone, Zone::Battlefield);
+    assert!(
+        !obj.tapped,
+        "Turbulent Fen should enter untapped when opponents control 8 lands"
+    );
+}
+
+/// CR 614.1d + CR 109.5: Lands controlled by the Turbulent land's controller must NOT
+/// count toward the "your opponents control" threshold.
+#[test]
+fn turbulent_land_own_lands_do_not_count() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+
+    // Controller has 8 lands, opponent has 0 — threshold must NOT be met.
+    for _ in 0..8 {
+        scenario.add_basic_land(P0, engine::types::mana::ManaColor::Green);
+    }
+
+    let mut builder = scenario.add_land_to_hand(P0, "Turbulent Fen");
+    builder.with_replacement_definition(turbulent_land_replacement(
+        "This land enters tapped unless your opponents control eight or more lands.",
+    ));
+    let land_id = builder.id();
+
+    let mut runner = scenario.build();
+    let card_id = runner.state().objects[&land_id].card_id;
+
+    runner
+        .act(GameAction::PlayLand {
+            object_id: land_id,
+            card_id,
+        })
+        .expect("play land should succeed");
+
+    let obj = &runner.state().objects[&land_id];
+    assert_eq!(obj.zone, Zone::Battlefield);
+    assert!(
+        obj.tapped,
+        "Turbulent Fen must not count controller's lands against the opponent threshold"
+    );
+}

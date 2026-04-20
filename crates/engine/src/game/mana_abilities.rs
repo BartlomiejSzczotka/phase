@@ -321,6 +321,21 @@ pub(crate) fn mana_choice_prompt(
                     .collect(),
             })
         }
+        // CR 903.4 + CR 903.4f + CR 106.5: Dynamically resolve the activator's
+        // commander color identity. If the identity contains 0 or 1 colors,
+        // the resolver handles it without a prompt (CR 106.5: undefined color
+        // produces no mana; single-color identity auto-picks).
+        ManaProduction::AnyInCommandersColorIdentity { .. } => {
+            let owner = state.objects.get(&source_id).map(|obj| obj.controller)?;
+            let identity = super::commander::commander_color_identity(state, owner);
+            if identity.len() > 1 {
+                Some(ManaChoicePrompt::SingleColor {
+                    options: identity.iter().map(mana_color_to_type).collect(),
+                })
+            } else {
+                None
+            }
+        }
         _ => None,
     }
 }
@@ -561,7 +576,13 @@ where
 {
     match cost {
         Some(AbilityCost::Tap) => tap_source(state, source_id, events)?,
-        Some(AbilityCost::PayLife { amount }) => pay_life_cost(state, player, *amount, events)?,
+        Some(AbilityCost::PayLife { amount }) => {
+            // CR 119.4 + CR 903.4: QuantityExpr resolves against the activator's
+            // current state (e.g. commander color identity count).
+            let resolved =
+                super::quantity::resolve_quantity(state, amount, player, source_id).max(0) as u32;
+            pay_life_cost(state, player, resolved, events)?
+        }
         Some(AbilityCost::TapCreatures { count, filter }) => {
             for _ in 0..*count {
                 let chosen_id = chosen_tappers.next().ok_or_else(|| {
@@ -588,7 +609,11 @@ where
                 match sub_cost {
                     AbilityCost::Tap => tap_source(state, source_id, events)?,
                     AbilityCost::PayLife { amount } => {
-                        pay_life_cost(state, player, *amount, events)?
+                        // CR 119.4 + CR 903.4: Resolve dynamic life amount at activation.
+                        let resolved =
+                            super::quantity::resolve_quantity(state, amount, player, source_id)
+                                .max(0) as u32;
+                        pay_life_cost(state, player, resolved, events)?
                     }
                     AbilityCost::TapCreatures { count, filter } => {
                         for _ in 0..*count {
@@ -1044,7 +1069,12 @@ mod tests {
             },
         )
         .cost(AbilityCost::Composite {
-            costs: vec![AbilityCost::Tap, AbilityCost::PayLife { amount: 1 }],
+            costs: vec![
+                AbilityCost::Tap,
+                AbilityCost::PayLife {
+                    amount: QuantityExpr::Fixed { value: 1 },
+                },
+            ],
         });
 
         let mut events = Vec::new();

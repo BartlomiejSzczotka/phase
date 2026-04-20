@@ -562,8 +562,15 @@ pub(super) fn match_changes_zone(
         record,
     } = event
     {
-        // Check origin zone using typed field
-        if let Some(origin) = &trigger.origin {
+        // CR 603.10a: Check origin zone(s). Disjunctive `origin_zones` takes
+        // precedence over single-zone `origin` when non-empty — this supports
+        // "put into exile from your library and/or your graveyard" where the
+        // source zone can be one of several zones.
+        if !trigger.origin_zones.is_empty() {
+            if !trigger.origin_zones.contains(from) {
+                return false;
+            }
+        } else if let Some(origin) = &trigger.origin {
             if origin != from {
                 return false;
             }
@@ -2427,6 +2434,73 @@ mod tests {
     }
 
     #[test]
+    fn changes_zone_origin_zones_matches_library_source() {
+        // CR 603.10a: Laelia-style — source can be library OR graveyard.
+        let state = setup();
+        let mut trigger = make_trigger(TriggerMode::ChangesZoneAll);
+        trigger.origin_zones = vec![Zone::Library, Zone::Graveyard];
+        trigger.destination = Some(Zone::Exile);
+
+        let event = zone_changed_event(
+            ObjectId(5),
+            Zone::Library,
+            Zone::Exile,
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(match_changes_zone(&event, &trigger, ObjectId(1), &state));
+    }
+
+    #[test]
+    fn changes_zone_origin_zones_matches_graveyard_source() {
+        let state = setup();
+        let mut trigger = make_trigger(TriggerMode::ChangesZoneAll);
+        trigger.origin_zones = vec![Zone::Library, Zone::Graveyard];
+        trigger.destination = Some(Zone::Exile);
+
+        let event = zone_changed_event(
+            ObjectId(5),
+            Zone::Graveyard,
+            Zone::Exile,
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(match_changes_zone(&event, &trigger, ObjectId(1), &state));
+    }
+
+    #[test]
+    fn changes_zone_origin_zones_rejects_unlisted_source() {
+        // Hand → Exile should NOT fire a "put into exile from library/graveyard" trigger.
+        let state = setup();
+        let mut trigger = make_trigger(TriggerMode::ChangesZoneAll);
+        trigger.origin_zones = vec![Zone::Library, Zone::Graveyard];
+        trigger.destination = Some(Zone::Exile);
+
+        let event =
+            zone_changed_event(ObjectId(5), Zone::Hand, Zone::Exile, Vec::new(), Vec::new());
+        assert!(!match_changes_zone(&event, &trigger, ObjectId(1), &state));
+    }
+
+    #[test]
+    fn changes_zone_origin_zones_takes_precedence_over_origin() {
+        // When origin_zones is non-empty, the single-zone `origin` field is ignored.
+        let state = setup();
+        let mut trigger = make_trigger(TriggerMode::ChangesZoneAll);
+        trigger.origin = Some(Zone::Battlefield); // would otherwise block this
+        trigger.origin_zones = vec![Zone::Library, Zone::Graveyard];
+        trigger.destination = Some(Zone::Exile);
+
+        let event = zone_changed_event(
+            ObjectId(5),
+            Zone::Library,
+            Zone::Exile,
+            Vec::new(),
+            Vec::new(),
+        );
+        assert!(match_changes_zone(&event, &trigger, ObjectId(1), &state));
+    }
+
+    #[test]
     fn changes_zone_uses_event_snapshot_for_subtype_filters() {
         let mut state = setup();
         let source_id = create_object(
@@ -4199,6 +4273,119 @@ mod tests {
             vaulter,
             &state
         ));
+    }
+
+    /// Stamp the given object with `CoreType::Creature` so that
+    /// `TypeFilter::Permanent` / `TypeFilter::Creature` match against it.
+    fn make_creature(state: &mut GameState, id: ObjectId) {
+        if let Some(obj) = state.objects.get_mut(&id) {
+            obj.card_types.core_types.push(CoreType::Creature);
+        }
+    }
+
+    #[test]
+    fn any_player_sacrifices_permanent_fires_for_controller_and_opponent() {
+        // CR 603 + CR 701.21: "Whenever a player sacrifices a permanent" fires when
+        // ANY player sacrifices a matching permanent — no controller restriction.
+        let mut state = setup();
+        let source_id = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Merchant of Venom".to_string(),
+            Zone::Battlefield,
+        );
+        make_creature(&mut state, source_id);
+        let trigger = parse_trigger_line(
+            "Whenever a player sacrifices a permanent, put a +1/+1 counter on this creature.",
+            "Merchant of Venom",
+        );
+        // Fires when controller (PlayerId(0)) sacrifices a permanent they own.
+        let sacrificed_by_you = create_object(
+            &mut state,
+            CardId(101),
+            PlayerId(0),
+            "Your Permanent".to_string(),
+            Zone::Battlefield,
+        );
+        make_creature(&mut state, sacrificed_by_you);
+        let event_you = GameEvent::PermanentSacrificed {
+            object_id: sacrificed_by_you,
+            player_id: PlayerId(0),
+        };
+        assert!(match_sacrificed(&event_you, &trigger, source_id, &state));
+
+        // Fires when opponent (PlayerId(1)) sacrifices their permanent.
+        let sacrificed_by_opp = create_object(
+            &mut state,
+            CardId(102),
+            PlayerId(1),
+            "Opponent Permanent".to_string(),
+            Zone::Battlefield,
+        );
+        make_creature(&mut state, sacrificed_by_opp);
+        let event_opp = GameEvent::PermanentSacrificed {
+            object_id: sacrificed_by_opp,
+            player_id: PlayerId(1),
+        };
+        assert!(match_sacrificed(&event_opp, &trigger, source_id, &state));
+    }
+
+    #[test]
+    fn any_player_sacrifices_another_permanent_excludes_source() {
+        // CR 109.1 + CR 603 + CR 701.21: Mazirek's "another permanent" carries
+        // FilterProp::Another, which excludes the source from firing its own trigger
+        // when the source itself is sacrificed.
+        let mut state = setup();
+        let source_id = create_object(
+            &mut state,
+            CardId(200),
+            PlayerId(0),
+            "Mazirek, Kraul Death Priest".to_string(),
+            Zone::Battlefield,
+        );
+        make_creature(&mut state, source_id);
+        let trigger = parse_trigger_line(
+            "Whenever a player sacrifices another permanent, put a +1/+1 counter on each creature you control.",
+            "Mazirek, Kraul Death Priest",
+        );
+
+        // A different permanent being sacrificed → fires.
+        let other_perm = create_object(
+            &mut state,
+            CardId(201),
+            PlayerId(0),
+            "Other Permanent".to_string(),
+            Zone::Battlefield,
+        );
+        make_creature(&mut state, other_perm);
+        let event_other = GameEvent::PermanentSacrificed {
+            object_id: other_perm,
+            player_id: PlayerId(0),
+        };
+        assert!(match_sacrificed(&event_other, &trigger, source_id, &state));
+
+        // Mazirek itself being sacrificed → does NOT fire (self-exclusion via Another).
+        let event_self = GameEvent::PermanentSacrificed {
+            object_id: source_id,
+            player_id: PlayerId(0),
+        };
+        assert!(!match_sacrificed(&event_self, &trigger, source_id, &state));
+
+        // Opponent sacrificing their own permanent also fires (any-player scope).
+        let opp_perm = create_object(
+            &mut state,
+            CardId(202),
+            PlayerId(1),
+            "Opponent Permanent".to_string(),
+            Zone::Battlefield,
+        );
+        make_creature(&mut state, opp_perm);
+        let event_opp = GameEvent::PermanentSacrificed {
+            object_id: opp_perm,
+            player_id: PlayerId(1),
+        };
+        assert!(match_sacrificed(&event_opp, &trigger, source_id, &state));
     }
 
     #[test]

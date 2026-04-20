@@ -11,6 +11,38 @@ use crate::types::zones::Zone;
 use super::game_object::GameObject;
 use super::printed_cards::{apply_back_face_to_object, snapshot_object_face};
 
+/// CR 603.10a + CR 603.6e: Capture a snapshot of every attachment on `obj` at the
+/// moment of the zone change. The snapshot records each attachment's current
+/// controller and kind (Aura/Equipment) so that look-back triggers of the form
+/// "for each Aura you controlled that was attached to it" (Hateful Eidolon)
+/// can resolve their quantity after SBA has already unattached the Auras.
+fn capture_attachment_snapshot(
+    state: &GameState,
+    obj: &GameObject,
+) -> Vec<crate::types::game_state::AttachmentSnapshot> {
+    use crate::types::ability::AttachmentKind;
+    obj.attachments
+        .iter()
+        .filter_map(|id| {
+            let att = state.objects.get(id)?;
+            let kind = if att.card_types.subtypes.iter().any(|s| s == "Aura") {
+                AttachmentKind::Aura
+            } else if att.card_types.subtypes.iter().any(|s| s == "Equipment") {
+                AttachmentKind::Equipment
+            } else {
+                // Fortifications and other attachment types — skip; only
+                // Aura/Equipment predicates are modeled.
+                return None;
+            };
+            Some(crate::types::game_state::AttachmentSnapshot {
+                object_id: *id,
+                controller: att.controller,
+                kind,
+            })
+        })
+        .collect()
+}
+
 /// CR 400.7: Snapshot LKI and apply all cleanup side effects when an object
 /// leaves its current zone. Shared by `move_to_zone` and `move_to_library_at_index`.
 ///
@@ -177,7 +209,9 @@ pub fn move_to_zone(
     let obj = state.objects.get(&object_id).expect("object exists");
     let from = obj.zone;
     let owner = obj.owner;
-    let zone_change_record = obj.snapshot_for_zone_change(object_id, from, to);
+    let mut zone_change_record = obj.snapshot_for_zone_change(object_id, from, to);
+    // CR 603.10a + CR 603.6e: Capture attachment snapshot before SBA can detach.
+    zone_change_record.attachments = capture_attachment_snapshot(state, obj);
 
     apply_zone_exit_cleanup(state, object_id, from);
 
@@ -282,7 +316,9 @@ pub fn move_to_library_at_index(
     let obj = state.objects.get(&object_id).expect("object exists");
     let from = obj.zone;
     let owner = obj.owner;
-    let zone_change_record = obj.snapshot_for_zone_change(object_id, from, Zone::Library);
+    let mut zone_change_record = obj.snapshot_for_zone_change(object_id, from, Zone::Library);
+    // CR 603.10a + CR 603.6e: Capture attachment snapshot before SBA can detach.
+    zone_change_record.attachments = capture_attachment_snapshot(state, obj);
 
     apply_zone_exit_cleanup(state, object_id, from);
 

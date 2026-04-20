@@ -151,6 +151,12 @@ pub struct SpellCastRecord {
     pub keywords: Vec<Keyword>,
     pub colors: Vec<ManaColor>,
     pub mana_value: u32,
+    /// CR 107.3 + CR 601.2b: Whether the spell's printed mana cost contains an `{X}`
+    /// shard. Captured at cast-time so later filtered counting (CR 117.1) can
+    /// match "spell with {X} in its mana cost" predicates without re-inspecting
+    /// the underlying object (which may have left the stack).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_x_in_cost: bool,
 }
 
 /// CR 601.2f: A pending one-shot cost reduction for the next spell a player casts.
@@ -219,6 +225,24 @@ pub struct ZoneChangeRecord {
     pub owner: PlayerId,
     pub from_zone: Zone,
     pub to_zone: Zone,
+    /// CR 603.10a + CR 603.6e: Snapshot of attachments on the object at the moment
+    /// of the zone change. Required by look-back triggers of the form
+    /// "for each Aura you controlled that was attached to it" (Hateful Eidolon),
+    /// since Aura attachments are cleared by SBA immediately after the creature
+    /// leaves the battlefield.
+    #[serde(default)]
+    pub attachments: Vec<AttachmentSnapshot>,
+}
+
+/// CR 603.10a: Snapshot of a single attachment on a leaving-battlefield object
+/// at the instant before the zone change. Controller/kind are captured so that
+/// post-LTB resolvers can filter ("each Aura you controlled") without chasing
+/// the attachment object, which may itself be in a different zone by then.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttachmentSnapshot {
+    pub object_id: ObjectId,
+    pub controller: PlayerId,
+    pub kind: crate::types::ability::AttachmentKind,
 }
 
 #[cfg(test)]
@@ -245,6 +269,7 @@ impl ZoneChangeRecord {
             owner: PlayerId(0),
             from_zone: from,
             to_zone: to,
+            attachments: Vec::new(),
         }
     }
 }

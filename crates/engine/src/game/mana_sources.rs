@@ -369,6 +369,14 @@ fn mana_options_from_production(
             }
             out
         }
+        // CR 903.4 + CR 903.4f: Compute colors dynamically from the
+        // activator's commander(s)' combined color identity.
+        ManaProduction::AnyInCommandersColorIdentity { .. } => {
+            super::commander::commander_color_identity(state, controller)
+                .iter()
+                .map(mana_color_to_type)
+                .collect()
+        }
     }
 }
 
@@ -797,7 +805,12 @@ mod tests {
                 },
             )
             .cost(AbilityCost::Composite {
-                costs: vec![AbilityCost::Tap, AbilityCost::PayLife { amount: 1 }],
+                costs: vec![
+                    AbilityCost::Tap,
+                    AbilityCost::PayLife {
+                        amount: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                    },
+                ],
             }),
         );
 

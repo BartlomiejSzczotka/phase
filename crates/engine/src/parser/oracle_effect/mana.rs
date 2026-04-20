@@ -110,6 +110,28 @@ pub(super) fn try_parse_add_mana_effect(text: &str) -> Option<Effect> {
                 ManaProduction::ChoiceAmongExiledColors {
                     source: LinkedExileScope::ThisObject,
                 }
+            } else if nom_on_lower(after_color.trim(), &after_lower, |i| {
+                // CR 903.4 + CR 903.4f: "any color in your commander('s/s')
+                // color identity" — Path of Ancestry, Study Hall. Colors
+                // resolve dynamically from the activator's commander(s)'
+                // combined color identity. The `alt()` covers both singular
+                // and plural possessive apostrophe placements.
+                value(
+                    (),
+                    alt((
+                        tag("in your commander's color identity"),
+                        tag("in your commanders' color identity"),
+                        tag("in your commanders color identity"),
+                    )),
+                )
+                .parse(i)
+            })
+            .is_some()
+            {
+                ManaProduction::AnyInCommandersColorIdentity {
+                    count,
+                    contribution,
+                }
             } else {
                 ManaProduction::AnyOneColor {
                     count,

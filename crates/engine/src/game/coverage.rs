@@ -290,6 +290,16 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
             FilterProp::Owned { controller } => parts.push(fmt_controller(controller)),
             FilterProp::EnchantedBy => parts.push("enchanted by self".into()),
             FilterProp::EquippedBy => parts.push("equipped by self".into()),
+            FilterProp::HasAttachment { kind, controller } => {
+                let kind_s = match kind {
+                    crate::types::ability::AttachmentKind::Aura => "aura",
+                    crate::types::ability::AttachmentKind::Equipment => "equipment",
+                };
+                match controller {
+                    None => parts.push(format!("attached by {kind_s}")),
+                    Some(c) => parts.push(format!("attached by {kind_s} ({})", fmt_controller(c))),
+                }
+            }
             FilterProp::Another => parts.push("another".into()),
             FilterProp::HasColor { color } => parts.push(format!("{color:?}").to_lowercase()),
             FilterProp::PowerLE { value } => parts.push(format!("power ≤{}", fmt_quantity(value))),
@@ -351,6 +361,8 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
                 let inner_tf = TypedFilter::default().properties(props.clone());
                 parts.push(format!("any of ({})", fmt_typed_filter(&inner_tf)));
             }
+            FilterProp::HasXInManaCost => parts.push("with {X} in cost".into()),
+            FilterProp::HasAnyCounter => parts.push("with one or more counters".into()),
         }
     }
     if let Some(ctrl) = &tf.controller {
@@ -513,6 +525,7 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         QuantityRef::CountersOnTarget { counter_type } => {
             format!("{counter_type} counters on target")
         }
+        QuantityRef::AnyCountersOnTarget => "counters on target (any type)".into(),
         QuantityRef::CountersOnObjects {
             counter_type,
             filter,
@@ -617,6 +630,20 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
         QuantityRef::ManaSpentOnTriggeringSpell => "mana spent on triggering spell".into(),
         QuantityRef::ManaSpentOnSelf => "mana spent on self".into(),
         QuantityRef::ColorsSpentOnSelf => "colors of mana spent on self".into(),
+        QuantityRef::EventContextSourceCostX => "X of triggering spell".into(),
+        QuantityRef::ColorsInCommandersColorIdentity => {
+            "# of colors in commander's color identity".into()
+        }
+        QuantityRef::AttachmentsOnLeavingObject { kind, controller } => {
+            let kind_s = match kind {
+                crate::types::ability::AttachmentKind::Aura => "auras",
+                crate::types::ability::AttachmentKind::Equipment => "equipment",
+            };
+            match controller {
+                None => format!("# of {kind_s} attached at ltb"),
+                Some(c) => format!("# of {kind_s} ({}) attached at ltb", fmt_controller(c)),
+            }
+        }
     }
 }
 
@@ -716,6 +743,9 @@ fn fmt_mana_production(mp: &ManaProduction) -> String {
                 .map(|c| format!("{{{}}}", fmt_mana_color_short(c)))
                 .collect();
             format!("{colorless}{colored}")
+        }
+        ManaProduction::AnyInCommandersColorIdentity { count, .. } => {
+            format!("1 of commander's color identity x{}", fmt_quantity(count))
         }
     }
 }
@@ -3862,6 +3892,7 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
         QuantityRef::PlayerCount { .. } => ("PlayerCount", Handled),
         QuantityRef::CountersOnSelf { .. } => ("CountersOnSelf", Handled),
         QuantityRef::CountersOnTarget { .. } => ("CountersOnTarget", Handled),
+        QuantityRef::AnyCountersOnTarget => ("AnyCountersOnTarget", Handled),
         QuantityRef::CountersOnObjects { .. } => ("CountersOnObjects", Handled),
         QuantityRef::Variable { .. } => ("Variable", Handled),
         QuantityRef::SelfPower => ("SelfPower", Handled),
@@ -3910,6 +3941,11 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
         QuantityRef::ManaSpentOnTriggeringSpell => ("ManaSpentOnTriggeringSpell", Handled),
         QuantityRef::ManaSpentOnSelf => ("ManaSpentOnSelf", Handled),
         QuantityRef::ColorsSpentOnSelf => ("ColorsSpentOnSelf", Handled),
+        QuantityRef::EventContextSourceCostX => ("EventContextSourceCostX", Handled),
+        QuantityRef::ColorsInCommandersColorIdentity => {
+            ("ColorsInCommandersColorIdentity", Handled)
+        }
+        QuantityRef::AttachmentsOnLeavingObject { .. } => ("AttachmentsOnLeavingObject", Handled),
     }
 }
 
@@ -7342,7 +7378,9 @@ mod tests {
     #[test]
     fn additional_cost_emits_parsed_item_for_supported_cost() {
         let mut face = make_face();
-        face.additional_cost = Some(AdditionalCost::Required(AbilityCost::PayLife { amount: 0 }));
+        face.additional_cost = Some(AdditionalCost::Required(AbilityCost::PayLife {
+            amount: QuantityExpr::Fixed { value: 0 },
+        }));
         face.abilities.push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::DealDamage {

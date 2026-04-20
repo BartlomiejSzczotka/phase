@@ -775,6 +775,7 @@ pub fn spell_object_matches_filter_from(
         keywords: spell_obj.keywords.clone(),
         colors: spell_obj.color.clone(),
         mana_value: spell_obj.mana_cost.mana_value(),
+        has_x_in_cost: crate::game::casting_costs::cost_has_x(&spell_obj.mana_cost),
     };
     spell_object_matches_filter_inner(&record, origin_zone, caster, filter, source_controller)
 }
@@ -920,6 +921,9 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
                 false
             }
         },
+        // CR 107.3 + CR 202.1: The snapshot captured whether the printed mana
+        // cost contained an `{X}` shard at cast time.
+        FilterProp::HasXInManaCost => record.has_x_in_cost,
         // Disjunctive composite: recurse into inner props under the same snapshot.
         FilterProp::AnyOf { props } => props
             .iter()
@@ -933,10 +937,12 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         | FilterProp::Tapped
         | FilterProp::Untapped
         | FilterProp::CountersGE { .. }
+        | FilterProp::HasAnyCounter
         | FilterProp::InZone { .. }
         | FilterProp::Owned { .. }
         | FilterProp::EnchantedBy
         | FilterProp::EquippedBy
+        | FilterProp::HasAttachment { .. }
         | FilterProp::Another
         | FilterProp::PowerLE { .. }
         | FilterProp::PowerGE { .. }
@@ -1081,6 +1087,10 @@ fn matches_filter_prop(
             let actual = obj.counters.get(counter_type).copied().unwrap_or(0) as i32;
             actual >= resolve_filter_threshold(state, count, source)
         }
+        // CR 122.1: Matches any object with at least one counter of any type
+        // ("creature with one or more counters on it"). Counter types are keyed
+        // by CounterType; a non-zero value for ANY type satisfies the predicate.
+        FilterProp::HasAnyCounter => obj.counters.values().any(|&n| n > 0),
         // CR 202.3: Mana value threshold comparisons. Dynamic thresholds
         // (`QuantityRef::Variable { "X" }`) resolve against the ability's
         // `chosen_x` when a `ResolvedAbility` is in scope via `FilterContext::from_ability`.
@@ -1096,6 +1106,10 @@ fn matches_filter_prop(
             let cmc = obj.mana_cost.mana_value() as i32;
             cmc == resolve_filter_threshold(state, value, source)
         }
+        // CR 107.3 + CR 202.1: "spell with {X} in its mana cost" — inspects the
+        // printed mana cost for an `{X}` shard. Applies to spells on the stack
+        // and to any live-object evaluation path (e.g. static-ability filters).
+        FilterProp::HasXInManaCost => crate::game::casting_costs::cost_has_x(&obj.mana_cost),
         // CR 201.2: Name matching is exact (case-insensitive comparison).
         FilterProp::Named { name } => obj.name.eq_ignore_ascii_case(name),
         // SameName: matches objects with the same name as the tracked card from context.
@@ -1131,8 +1145,74 @@ fn matches_filter_prop(
                 })
                 .is_some_and(|pid| pid == obj.owner),
         },
-        FilterProp::EnchantedBy => source.attached_to == Some(object_id),
-        FilterProp::EquippedBy => source.attached_to == Some(object_id),
+        // CR 303.4: `EnchantedBy` is source-relative when the source is an Aura
+        // ("enchanted creature gets +1/+1" on Gift of Estates). When the source is
+        // NOT an Aura (e.g. Hateful Eidolon's "whenever an enchanted creature
+        // dies"), `source.attached_to` is None and the same `FilterProp` is
+        // understood as "has at least one Aura attached" — the common Oracle-text
+        // use of "enchanted creature" on a non-Aura trigger source.
+        FilterProp::EnchantedBy => {
+            if source.attached_to.is_some() {
+                source.attached_to == Some(object_id)
+            } else {
+                obj.attachments.iter().any(|att_id| {
+                    state
+                        .objects
+                        .get(att_id)
+                        .is_some_and(|att| att.card_types.subtypes.iter().any(|s| s == "Aura"))
+                })
+            }
+        }
+        // CR 301.5: Same reasoning as `EnchantedBy` — source-relative for Equipment
+        // sources (which always set `attached_to` when attached), falling back to
+        // "has at least one Equipment attached" for non-Equipment trigger sources.
+        FilterProp::EquippedBy => {
+            if source.attached_to.is_some() {
+                source.attached_to == Some(object_id)
+            } else {
+                obj.attachments.iter().any(|att_id| {
+                    state
+                        .objects
+                        .get(att_id)
+                        .is_some_and(|att| att.card_types.subtypes.iter().any(|s| s == "Equipment"))
+                })
+            }
+        }
+        // CR 303.4 + CR 301.5: Non-source-relative attachment predicate.
+        // Matches objects that have at least one attachment of the given kind whose
+        // controller satisfies the optional `ControllerRef`.
+        FilterProp::HasAttachment { kind, controller } => obj.attachments.iter().any(|att_id| {
+            let Some(att) = state.objects.get(att_id) else {
+                return false;
+            };
+            let kind_matches = match kind {
+                crate::types::ability::AttachmentKind::Aura => {
+                    att.card_types.subtypes.iter().any(|s| s == "Aura")
+                }
+                crate::types::ability::AttachmentKind::Equipment => {
+                    att.card_types.subtypes.iter().any(|s| s == "Equipment")
+                }
+            };
+            if !kind_matches {
+                return false;
+            }
+            match controller {
+                None => true,
+                Some(ControllerRef::You) => source.controller == Some(att.controller),
+                Some(ControllerRef::Opponent) => {
+                    source.controller.is_some_and(|c| c != att.controller)
+                }
+                Some(ControllerRef::TargetPlayer) => source
+                    .ability
+                    .and_then(|a| {
+                        a.targets.iter().find_map(|t| match t {
+                            crate::types::ability::TargetRef::Player(pid) => Some(*pid),
+                            crate::types::ability::TargetRef::Object(_) => None,
+                        })
+                    })
+                    .is_some_and(|pid| pid == att.controller),
+            }
+        }),
         FilterProp::Another => object_id != source.id,
         FilterProp::HasColor { color } => obj.color.contains(color),
         // CR 208.1: Power comparison against a dynamic threshold. Dynamic thresholds
@@ -1383,8 +1463,10 @@ fn zone_change_record_matches_property(
         | FilterProp::AttackedOrBlockedThisTurn
         | FilterProp::EnchantedBy
         | FilterProp::EquippedBy
+        | FilterProp::HasAttachment { .. }
         | FilterProp::FaceDown
         | FilterProp::CountersGE { .. }
+        | FilterProp::HasAnyCounter
         | FilterProp::Token => false,
 
         // Disjunctive composite: recurse into inner props under the same record.
@@ -1407,6 +1489,10 @@ fn zone_change_record_matches_property(
         | FilterProp::EnteredThisTurn
         | FilterProp::TargetsOnly { .. }
         | FilterProp::Targets { .. }
+        // CR 107.3 + CR 202.1: X-in-cost is a spell-cast-time predicate; it has no
+        // meaning for a zone-change record (the object has already left the stack
+        // or never was a spell). Fail closed — the snapshot carries no such info.
+        | FilterProp::HasXInManaCost
         | FilterProp::Other { .. } => false,
     }
 }
@@ -1761,6 +1847,7 @@ mod tests {
             keywords: vec![Keyword::Flying],
             colors: vec![ManaColor::Blue],
             mana_value: 3,
+            has_x_in_cost: false,
         };
         let filter = TargetFilter::Typed(
             TypedFilter::creature()
@@ -1778,6 +1865,38 @@ mod tests {
                 ]),
         );
         assert!(spell_record_matches_filter(&record, &filter, PlayerId(0)));
+    }
+
+    /// CR 107.3 + CR 202.1: `FilterProp::HasXInManaCost` reads
+    /// `SpellCastRecord::has_x_in_cost` — matches only when the recorded spell's
+    /// printed mana cost contained an `{X}` shard. Parallel record without
+    /// `has_x_in_cost` must NOT match.
+    #[test]
+    fn spell_record_has_x_in_cost_filter() {
+        let x_record = SpellCastRecord {
+            core_types: vec![CoreType::Creature],
+            supertypes: vec![],
+            subtypes: vec![],
+            keywords: vec![],
+            colors: vec![],
+            mana_value: 3,
+            has_x_in_cost: true,
+        };
+        let non_x_record = SpellCastRecord {
+            has_x_in_cost: false,
+            ..x_record.clone()
+        };
+        let filter = TargetFilter::Typed(
+            TypedFilter::default().properties(vec![FilterProp::HasXInManaCost]),
+        );
+        assert!(
+            spell_record_matches_filter(&x_record, &filter, PlayerId(0)),
+            "record with X in cost must match HasXInManaCost filter"
+        );
+        assert!(
+            !spell_record_matches_filter(&non_x_record, &filter, PlayerId(0)),
+            "record without X in cost must NOT match HasXInManaCost filter"
+        );
     }
 
     #[test]
@@ -2604,5 +2723,214 @@ mod tests {
         let json = serde_json::to_string(&search).unwrap();
         let restored: Effect = serde_json::from_str(&json).unwrap();
         assert_eq!(search, restored);
+    }
+
+    // CR 303.4: `FilterProp::HasAttachment { Aura, Some(You) }` matches only
+    // creatures with at least one Aura whose controller matches the source
+    // controller. Killian's "creatures that are enchanted by an Aura you control".
+    #[test]
+    fn has_attachment_aura_you_matches_only_creatures_with_your_aura() {
+        use crate::types::ability::{AttachmentKind, TypeFilter, TypedFilter};
+        let mut state = GameState::new_two_player(42);
+
+        // Source (Killian) — controlled by P0.
+        let source = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Killian".into(),
+            Zone::Battlefield,
+        );
+
+        // Creature A: has an Aura controlled by P0 → should match.
+        let cre_a = create_object(
+            &mut state,
+            CardId(200),
+            PlayerId(0),
+            "Bear".into(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&cre_a)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let aura_a = create_object(
+            &mut state,
+            CardId(201),
+            PlayerId(0),
+            "Your Aura".into(),
+            Zone::Battlefield,
+        );
+        {
+            let a = state.objects.get_mut(&aura_a).unwrap();
+            a.card_types.core_types.push(CoreType::Enchantment);
+            a.card_types.subtypes.push("Aura".into());
+            a.attached_to = Some(cre_a);
+        }
+        state
+            .objects
+            .get_mut(&cre_a)
+            .unwrap()
+            .attachments
+            .push(aura_a);
+
+        // Creature B: has an Aura controlled by P1 → should NOT match.
+        let cre_b = create_object(
+            &mut state,
+            CardId(300),
+            PlayerId(0),
+            "Ox".into(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&cre_b)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let aura_b = create_object(
+            &mut state,
+            CardId(301),
+            PlayerId(1),
+            "Their Aura".into(),
+            Zone::Battlefield,
+        );
+        {
+            let a = state.objects.get_mut(&aura_b).unwrap();
+            a.card_types.core_types.push(CoreType::Enchantment);
+            a.card_types.subtypes.push("Aura".into());
+            a.attached_to = Some(cre_b);
+        }
+        state
+            .objects
+            .get_mut(&cre_b)
+            .unwrap()
+            .attachments
+            .push(aura_b);
+
+        // Creature C: no Aura → should NOT match.
+        let cre_c = create_object(
+            &mut state,
+            CardId(400),
+            PlayerId(0),
+            "Wolf".into(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&cre_c)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let filter = TargetFilter::Typed(TypedFilter::new(TypeFilter::Creature).properties(vec![
+            FilterProp::HasAttachment {
+                kind: AttachmentKind::Aura,
+                controller: Some(ControllerRef::You),
+            },
+        ]));
+        assert!(
+            matches_target_filter(&state, cre_a, &filter, source),
+            "creature with your aura should match"
+        );
+        assert!(
+            !matches_target_filter(&state, cre_b, &filter, source),
+            "creature with opponent's aura should NOT match"
+        );
+        assert!(
+            !matches_target_filter(&state, cre_c, &filter, source),
+            "creature without any aura should NOT match"
+        );
+    }
+
+    // CR 303.4: `FilterProp::EnchantedBy` degrades to "has any Aura attached"
+    // when the source is not itself an Aura (Hateful Eidolon).
+    #[test]
+    fn enchanted_by_on_non_aura_source_matches_any_enchanted_creature() {
+        use crate::types::ability::TypedFilter;
+        let mut state = GameState::new_two_player(42);
+
+        // Source is a non-Aura creature (Hateful Eidolon — attached_to = None).
+        let source = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Hateful Eidolon".into(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        // Enchanted creature.
+        let cre_enchanted = create_object(
+            &mut state,
+            CardId(200),
+            PlayerId(0),
+            "Enchanted".into(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&cre_enchanted)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let aura = create_object(
+            &mut state,
+            CardId(201),
+            PlayerId(1),
+            "Any Aura".into(),
+            Zone::Battlefield,
+        );
+        {
+            let a = state.objects.get_mut(&aura).unwrap();
+            a.card_types.core_types.push(CoreType::Enchantment);
+            a.card_types.subtypes.push("Aura".into());
+            a.attached_to = Some(cre_enchanted);
+        }
+        state
+            .objects
+            .get_mut(&cre_enchanted)
+            .unwrap()
+            .attachments
+            .push(aura);
+
+        // Non-enchanted creature.
+        let cre_plain = create_object(
+            &mut state,
+            CardId(300),
+            PlayerId(0),
+            "Plain".into(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&cre_plain)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let filter =
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::EnchantedBy]));
+        assert!(
+            matches_target_filter(&state, cre_enchanted, &filter, source),
+            "enchanted creature should match on non-Aura source"
+        );
+        assert!(
+            !matches_target_filter(&state, cre_plain, &filter, source),
+            "non-enchanted creature should not match"
+        );
     }
 }

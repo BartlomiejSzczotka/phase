@@ -282,11 +282,76 @@ fn try_parse_whenever_this_turn(tp: TextPair) -> Option<ParsedEffectClause> {
     })
 }
 
-/// CR 603.7: Parse "when you next cast a [type] spell this turn, [effect]" delayed triggers.
-/// Creates a one-shot delayed trigger that fires once on the next matching SpellCast event.
+/// Decompose the spell qualifier from `"when you next cast a <payload> this turn, ..."`
+/// into a combined `TargetFilter`.
+///
+/// The payload must contain the word "spell". Text before " spell" is parsed as a type
+/// phrase (`parse_type_phrase`); text after " spell" is parsed by
+/// `oracle_trigger::parse_post_spell_modifier` (CR 107.3 + CR 202.1 — "with {X} in its
+/// mana cost"). When both shapes contribute a filter, the result is an `And` composition.
+///
+/// Returns `None` when the payload contains unrecognized text or has no "spell" boundary.
+fn extract_when_next_spell_filter(payload: &str) -> Option<TargetFilter> {
+    let payload = payload.trim();
+    // Bare "spell" — any spell. (Kept for completeness; this shape is not
+    // common in printed card text.)
+    if payload == "spell" {
+        return Some(TargetFilter::Any);
+    }
+    // The payload is one of three shapes:
+    //   (a) "<type-phrase> spell"                 — type only
+    //   (b) "spell <post-modifier>"               — post-modifier only (Brass Infiniscope)
+    //   (c) "<type-phrase> spell <post-modifier>" — both
+    let (pre, post) = if let Some(rest) = payload.strip_prefix("spell ") {
+        ("", rest.trim())
+    } else {
+        // Split on " spell" to isolate pre-spell type phrase from post-spell modifier.
+        match crate::parser::oracle_nom::primitives::split_once_on(payload, " spell") {
+            Ok((_, (pre, post))) => (pre.trim(), post.trim()),
+            Err(_) => return None,
+        }
+    };
+
+    let type_filter = if pre.is_empty() {
+        None
+    } else {
+        let (filter, remainder) = super::oracle_target::parse_type_phrase(pre);
+        if !remainder.trim().is_empty() {
+            return None;
+        }
+        if matches!(filter, TargetFilter::Any) {
+            None
+        } else {
+            Some(filter)
+        }
+    };
+
+    let post_filter = if post.is_empty() {
+        None
+    } else {
+        // Unknown post-spell modifier → reject the whole pattern rather than
+        // silently dropping it. The caller falls through to other parsers.
+        Some(crate::parser::oracle_trigger::parse_post_spell_modifier(
+            post,
+        )?)
+    };
+
+    Some(match (type_filter, post_filter) {
+        (None, None) => TargetFilter::Any,
+        (Some(f), None) | (None, Some(f)) => f,
+        (Some(a), Some(b)) => TargetFilter::And {
+            filters: vec![a, b],
+        },
+    })
+}
+
+/// CR 603.7: Parse "when you next cast a [type] spell [post-spell modifier] this turn, [effect]"
+/// delayed triggers. Creates a one-shot delayed trigger that fires once on the next matching
+/// SpellCast event.
 /// Examples:
 /// - "When you next cast a creature spell this turn, that creature enters with an additional +1/+1 counter on it."
 /// - "When you next cast a creature spell this turn, search your library for a creature card..."
+/// - "When you next cast a spell with {X} in its mana cost this turn, you draw a card and gain half X life, rounded down." (Brass Infiniscope)
 fn try_parse_when_next_event(tp: TextPair) -> Option<ParsedEffectClause> {
     use crate::types::triggers::TriggerMode;
 
@@ -298,18 +363,17 @@ fn try_parse_when_next_event(tp: TextPair) -> Option<ParsedEffectClause> {
     // Must contain "this turn, " to delimit condition from effect
     let (before_this_turn, after) = tp.rsplit_around(" this turn, ")?;
 
-    // Extract the spell type from between "when you next cast a " and " spell"
+    // Extract the spell qualifier payload from between "when you next cast a " and the timing
+    // tail (" this turn,"). The payload is of the shape
+    //   [type-phrase]? "spell" [post-spell modifier]?
+    // — e.g. "creature spell" (type only), "spell with {x} in its mana cost" (post only),
+    // or "creature spell with {x} in its mana cost" (both).
     let condition_fragment = &before_this_turn.lower["when you next cast a ".len()..];
-    // Verify " spell" suffix and parse type via parse_type_phrase building block
-    let spell_suffix = condition_fragment.strip_suffix(" spell")?;
-    let (type_filter, remainder) = super::oracle_target::parse_type_phrase(spell_suffix);
-    if !remainder.trim().is_empty() {
-        return None;
-    }
+    let combined_filter = extract_when_next_spell_filter(condition_fragment)?;
 
-    // Build a SpellCast trigger definition with the parsed type filter
+    // Build a SpellCast trigger definition with the combined filter
     let mut trigger_def = crate::types::ability::TriggerDefinition::new(TriggerMode::SpellCast);
-    trigger_def.valid_card = Some(type_filter);
+    trigger_def.valid_card = Some(combined_filter);
     // "when YOU next cast" — scope to the source's controller.
     trigger_def.valid_target = Some(TargetFilter::Controller);
 
@@ -9636,6 +9700,41 @@ mod tests {
     }
 
     #[test]
+    fn effect_add_mana_any_color_in_commanders_color_identity() {
+        // CR 903.4 + CR 903.4f: Path of Ancestry — "Add one mana of any color
+        // in your commander's color identity" resolves to
+        // `AnyInCommandersColorIdentity` so the color options are computed
+        // dynamically at activation time from the activator's commander CI.
+        let e = parse_effect("Add one mana of any color in your commander's color identity");
+        assert_eq!(
+            e,
+            Effect::Mana {
+                produced: ManaProduction::AnyInCommandersColorIdentity {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    contribution: ManaContribution::Base,
+                },
+                restrictions: vec![],
+                grants: vec![],
+                expiry: None,
+            }
+        );
+        // Plural possessive variant (partner commanders).
+        let e = parse_effect("Add one mana of any color in your commanders' color identity");
+        assert_eq!(
+            e,
+            Effect::Mana {
+                produced: ManaProduction::AnyInCommandersColorIdentity {
+                    count: QuantityExpr::Fixed { value: 1 },
+                    contribution: ManaContribution::Base,
+                },
+                restrictions: vec![],
+                grants: vec![],
+                expiry: None,
+            }
+        );
+    }
+
+    #[test]
     fn put_counter_this_creature_is_self_ref() {
         let e = parse_effect("put a +1/+1 counter on this creature");
         assert!(
@@ -14673,5 +14772,44 @@ mod tests {
             TargetFilter::Typed(tf)
                 if tf.controller == Some(ControllerRef::Opponent)
         ));
+    }
+
+    /// CR 603.7 + CR 107.3 + CR 202.1: "When you next cast a spell with {X} in
+    /// its mana cost this turn, ..." — delayed triggered ability. The embedded
+    /// `SpellCast` trigger must carry a `HasXInManaCost` filter on
+    /// `valid_card`. Target card: Brass Infiniscope.
+    #[test]
+    fn when_next_cast_spell_with_x_in_cost_parses() {
+        use crate::types::ability::{DelayedTriggerCondition, FilterProp, TypedFilter};
+        let def = parse_effect_chain(
+            "When you next cast a spell with {X} in its mana cost this turn, draw a card.",
+            AbilityKind::Activated,
+        );
+        let Effect::CreateDelayedTrigger {
+            condition, effect, ..
+        } = &*def.effect
+        else {
+            panic!("expected CreateDelayedTrigger, got {:?}", def.effect);
+        };
+        let DelayedTriggerCondition::WhenNextEvent { trigger } = condition else {
+            panic!("expected WhenNextEvent, got {:?}", condition);
+        };
+        assert_eq!(
+            trigger.mode,
+            crate::types::triggers::TriggerMode::SpellCast,
+            "delayed trigger mode must be SpellCast"
+        );
+        let expected = TargetFilter::Typed(
+            TypedFilter::default().properties(vec![FilterProp::HasXInManaCost]),
+        );
+        assert_eq!(
+            trigger.valid_card.as_ref(),
+            Some(&expected),
+            "valid_card must carry HasXInManaCost filter"
+        );
+        // Scoped to the source's controller — "when YOU next cast".
+        assert_eq!(trigger.valid_target, Some(TargetFilter::Controller));
+        // Inner effect should parse as a draw.
+        assert!(matches!(&*effect.effect, Effect::Draw { .. }));
     }
 }

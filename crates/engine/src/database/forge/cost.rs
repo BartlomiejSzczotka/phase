@@ -1,4 +1,4 @@
-use crate::types::ability::{AbilityCost, TargetFilter};
+use crate::types::ability::{AbilityCost, QuantityExpr, TargetFilter};
 use crate::types::mana::{ManaCost, ManaCostShard};
 
 use super::filter::translate_filter;
@@ -47,7 +47,11 @@ pub(crate) fn translate_cost(cost_str: &str) -> Result<AbilityCost, ForgeTransla
                 let amount: u32 = inner
                     .parse()
                     .map_err(|_| ForgeTranslateError::UnparsableCost(token.to_string()))?;
-                costs.push(AbilityCost::PayLife { amount });
+                costs.push(AbilityCost::PayLife {
+                    amount: QuantityExpr::Fixed {
+                        value: amount as i32,
+                    },
+                });
             }
 
             // Discard: Discard<N/Filter>
@@ -243,7 +247,9 @@ mod tests {
     #[test]
     fn test_pay_life_cost() {
         match translate_cost("PayLife<3>").unwrap() {
-            AbilityCost::PayLife { amount } => assert_eq!(amount, 3),
+            AbilityCost::PayLife { amount } => {
+                assert_eq!(amount, QuantityExpr::Fixed { value: 3 })
+            }
             other => panic!("expected PayLife, got {other:?}"),
         }
     }

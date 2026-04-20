@@ -21,9 +21,9 @@ use super::oracle_util::{
 };
 use crate::parser::oracle_warnings::{push_warning, take_warnings};
 use crate::types::ability::{
-    AbilityKind, CastVariantPaid, Comparator, ControllerRef, DamageKindFilter, FilterProp,
-    QuantityExpr, QuantityRef, StaticCondition, TargetFilter, TriggerCondition, TriggerConstraint,
-    TriggerDefinition, TypeFilter, TypedFilter, UnlessCost, UnlessPayModifier,
+    AbilityKind, AttachmentKind, CastVariantPaid, Comparator, ControllerRef, DamageKindFilter,
+    FilterProp, QuantityExpr, QuantityRef, StaticCondition, TargetFilter, TriggerCondition,
+    TriggerConstraint, TriggerDefinition, TypeFilter, TypedFilter, UnlessCost, UnlessPayModifier,
 };
 use crate::types::card_type::CoreType;
 use crate::types::events::PlayerActionKind;
@@ -2301,6 +2301,10 @@ fn try_parse_special_trigger_pattern(lower: &str) -> Option<(TriggerMode, Trigge
         return Some(result);
     }
 
+    if let Some(result) = try_parse_one_or_more_put_into_exile_from(lower) {
+        return Some(result);
+    }
+
     if let Some(result) = try_parse_one_or_more_put_into_graveyard(lower) {
         return Some(result);
     }
@@ -2409,6 +2413,69 @@ fn try_parse_special_trigger_pattern(lower: &str) -> Option<(TriggerMode, Trigge
     None
 }
 
+/// CR 303.4 + CR 301.5: Detect a trailing "that are enchanted/equipped by an
+/// <attachment-type> you control" relative clause in a subject phrase and
+/// return the subject minus the clause plus the corresponding `FilterProp`.
+/// Returns `(subject_without_clause, Some(prop))` when the clause is present,
+/// else `(original_subject, None)`.
+///
+/// Covers:
+/// - "creatures that are enchanted by an Aura you control" (Killian).
+/// - Future "creatures that are equipped by an Equipment you control" patterns.
+fn strip_attachment_relative_clause(subject: &str) -> (&str, Option<FilterProp>) {
+    // Enumerated suffix alternatives — equivalent to `alt(tag(...))` over a lowercase
+    // tail. Kept as `strip_suffix` for dual-string safety; patterns are static.
+    // structural: not dispatch
+    let alts: &[(&str, FilterProp)] = &[
+        (
+            " that are enchanted by an aura you control",
+            FilterProp::HasAttachment {
+                kind: AttachmentKind::Aura,
+                controller: Some(ControllerRef::You),
+            },
+        ),
+        (
+            " that is enchanted by an aura you control",
+            FilterProp::HasAttachment {
+                kind: AttachmentKind::Aura,
+                controller: Some(ControllerRef::You),
+            },
+        ),
+        (
+            " that are equipped by an equipment you control",
+            FilterProp::HasAttachment {
+                kind: AttachmentKind::Equipment,
+                controller: Some(ControllerRef::You),
+            },
+        ),
+        (
+            " that is equipped by an equipment you control",
+            FilterProp::HasAttachment {
+                kind: AttachmentKind::Equipment,
+                controller: Some(ControllerRef::You),
+            },
+        ),
+    ];
+    for (suffix, prop) in alts {
+        if let Some(stripped) = subject.strip_suffix(suffix) {
+            return (stripped, Some(prop.clone()));
+        }
+    }
+    (subject, None)
+}
+
+/// Append `attachment_prop` to a `TargetFilter::Typed`'s properties if present,
+/// else return the filter unchanged. Non-Typed filters are returned as-is.
+fn apply_attachment_prop(filter: TargetFilter, prop: Option<FilterProp>) -> TargetFilter {
+    match (filter, prop) {
+        (TargetFilter::Typed(mut tf), Some(p)) => {
+            tf.properties.push(p);
+            TargetFilter::Typed(tf)
+        }
+        (other, _) => other,
+    }
+}
+
 /// Parse "whenever N or more creatures [you control] attack [a player]" patterns.
 /// CR 508.1a: Handles both "one or more" and "two or more" quantifiers.
 fn try_parse_n_or_more_attacks(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
@@ -2433,10 +2500,16 @@ fn try_parse_n_or_more_attacks(lower: &str) -> Option<(TriggerMode, TriggerDefin
                 continue;
             };
 
-        let (filter, remainder) = parse_type_phrase(subject_text);
+        // CR 303.4: Strip optional "that are enchanted/equipped by an <X> you control"
+        // relative clause and capture it as a non-source-relative attachment filter.
+        let (subject_core, attachment_prop) = strip_attachment_relative_clause(subject_text);
+
+        let (filter, remainder) = parse_type_phrase(subject_core);
         if !remainder.trim().is_empty() {
             continue;
         }
+
+        let filter = apply_attachment_prop(filter, attachment_prop);
 
         let mut def = make_base();
         def.mode = TriggerMode::YouAttack;
@@ -2449,6 +2522,11 @@ fn try_parse_n_or_more_attacks(lower: &str) -> Option<(TriggerMode, TriggerDefin
                 minimum: min_count - 1,
             });
         }
+        // CR 603.10c: "One or more creatures ... attack" fires once per batch of
+        // simultaneous attackers (not once per attacker). Killian's trigger relies
+        // on this to yield exactly one draw when multiple enchanted creatures
+        // attack together.
+        def.batched = true;
         return Some((TriggerMode::YouAttack, def));
     }
 
@@ -2553,6 +2631,75 @@ fn try_parse_one_or_more_leave_graveyard(lower: &str) -> Option<(TriggerMode, Tr
         if during_your_turn {
             def.constraint = Some(TriggerConstraint::OnlyDuringYourTurn);
         }
+        return Some((TriggerMode::ChangesZoneAll, def));
+    }
+
+    None
+}
+
+/// Parse a single zone token: "your library" → Zone::Library, "your graveyard" → Zone::Graveyard.
+/// Returns the typed zone and the remaining input. Used by the disjunctive
+/// source-zone combinator below.
+fn parse_your_zone_token(input: &str) -> nom::IResult<&str, Zone, VerboseError<&str>> {
+    alt((
+        value(Zone::Library, tag("your library")),
+        value(Zone::Graveyard, tag("your graveyard")),
+    ))
+    .parse(input)
+}
+
+/// Parse a zone-set phrase such as "your library", "your graveyard",
+/// or "your library and/or your graveyard" / "your graveyard and/or your library".
+/// Returns the list of source zones in reading order.
+///
+/// Composable: one `parse_your_zone_token` invocation per alternative, joined
+/// by an optional "and/or" / "or" / "and" disjunction combinator.
+fn parse_disjunctive_zone_set(input: &str) -> nom::IResult<&str, Vec<Zone>, VerboseError<&str>> {
+    let (input, first) = parse_your_zone_token(input)?;
+    // Optional second zone joined by "and/or" (canonical), "or", or "and".
+    let rest_parser = |i| -> nom::IResult<&str, Zone, VerboseError<&str>> {
+        let (i, _) = alt((tag(" and/or "), tag(" or "), tag(" and "))).parse(i)?;
+        parse_your_zone_token(i)
+    };
+    match rest_parser(input) {
+        Ok((rest, second)) => Ok((rest, vec![first, second])),
+        Err(_) => Ok((input, vec![first])),
+    }
+}
+
+/// Parse "whenever one or more cards are put into exile from <zone-set>" — a batched
+/// zone-change trigger with disjunctive source zones and fixed destination = Exile.
+/// CR 603.2c + CR 603.10a: "One or more" triggers fire once per batch of
+/// simultaneous zone-change events.
+fn try_parse_one_or_more_put_into_exile_from(
+    lower: &str,
+) -> Option<(TriggerMode, TriggerDefinition)> {
+    for prefix in [
+        "whenever one or more cards are put into exile from ",
+        "when one or more cards are put into exile from ",
+    ] {
+        let Ok((rest, ())) = value((), tag::<_, _, VerboseError<&str>>(prefix)).parse(lower) else {
+            continue;
+        };
+        let Ok((after_zones, zones)) = parse_disjunctive_zone_set(rest) else {
+            continue;
+        };
+        // Trailing text (after the optional zone-set) may be empty or a
+        // constraint clause we don't handle here. Any non-empty trailing text
+        // means this isn't a clean match — bail so another parser can try.
+        if !after_zones.is_empty() {
+            continue;
+        }
+
+        let mut def = make_base();
+        def.mode = TriggerMode::ChangesZoneAll;
+        def.origin_zones = zones;
+        def.destination = Some(Zone::Exile);
+        def.batched = true;
+        // Source can fire from any public zone context since cards move from
+        // library/graveyard — trigger source (e.g. Laelia) is on the battlefield,
+        // but keeping these zones mirrors the leave-graveyard precedent.
+        def.trigger_zones = vec![Zone::Battlefield, Zone::Graveyard, Zone::Exile];
         return Some((TriggerMode::ChangesZoneAll, def));
     }
 
@@ -2967,30 +3114,11 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
         return Some(discard_result);
     }
 
-    if matches!(
-        lower,
-        "whenever you sacrifice another permanent" | "when you sacrifice another permanent"
-    ) {
-        let mut def = make_base();
-        def.mode = TriggerMode::Sacrificed;
-        def.valid_card = Some(TargetFilter::Typed(
-            TypedFilter::new(TypeFilter::Permanent)
-                .controller(ControllerRef::You)
-                .properties(vec![FilterProp::Another]),
-        ));
-        return Some((TriggerMode::Sacrificed, def));
-    }
-
-    if matches!(
-        lower,
-        "whenever you sacrifice a permanent" | "when you sacrifice a permanent"
-    ) {
-        let mut def = make_base();
-        def.mode = TriggerMode::Sacrificed;
-        def.valid_card = Some(TargetFilter::Typed(
-            TypedFilter::new(TypeFilter::Permanent).controller(ControllerRef::You),
-        ));
-        return Some((TriggerMode::Sacrificed, def));
+    // CR 603 + CR 701.21: Player-actor sacrifice triggers. Handles "you sacrifice",
+    // "an opponent sacrifices", "a player sacrifices", "each player sacrifices"
+    // with any subject filter (permanent, creature, another permanent, ...).
+    if let Some(sac_result) = try_parse_sacrifice_trigger(lower, &make_base) {
+        return Some(sac_result);
     }
 
     if matches!(
@@ -3130,22 +3258,9 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
         return Some((TriggerMode::LifeLost, def));
     }
 
-    for prefix in ["whenever you sacrifice ", "when you sacrifice "] {
-        let Ok((rest, ())) = value((), tag::<_, _, VerboseError<&str>>(prefix)).parse(lower) else {
-            continue;
-        };
-        let (filter, remainder) = parse_trigger_subject(rest);
-        if !remainder.trim().is_empty() {
-            continue;
-        }
-
-        let mut def = make_base();
-        def.mode = TriggerMode::Sacrificed;
-        def.valid_card = Some(add_controller(filter, ControllerRef::You));
-        return Some((TriggerMode::Sacrificed, def));
-    }
-
-    // CR 601.2: "Whenever you cast a/an [type] spell" — extract the spell type filter.
+    // CR 601.2: "Whenever you cast a/an [type] spell [post-spell modifier]" — extract
+    // the spell filter. Handles pre-spell type qualifier, post-spell modifier
+    // (e.g. "with {X} in its mana cost", CR 107.3 + CR 202.1), or both.
     for prefix in ["you cast an ", "you cast a "] {
         if let Some(after) = strip_after(lower, prefix) {
             let mut def = make_base();
@@ -3153,7 +3268,20 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
             // "you" = trigger's controller
             def.valid_target = Some(TargetFilter::Controller);
 
-            // Parse the type phrase to extract a filter (e.g. "Aura spell", "creature spell").
+            // Truncate at ", " so any effect clause doesn't leak into the type parser.
+            let payload = nom_primitives::split_once_on(after, ", ")
+                .map(|(_, (before, _))| before)
+                .unwrap_or(after)
+                .trim();
+
+            // First, try the post-spell-modifier-aware decomposition for shapes
+            // that include "with {X} in its mana cost" etc.
+            if let Some(filter) = parse_spell_qualifier_payload(payload) {
+                def.valid_card = Some(filter);
+                return Some((TriggerMode::SpellCast, def));
+            }
+
+            // Fall back to the classic type-phrase parser for bare type filters.
             // TypeFilter::Card alone means "spell" with no type restriction — skip it.
             let (filter, _rest) = parse_type_phrase(after);
             let is_meaningful = match &filter {
@@ -3415,75 +3543,75 @@ fn try_parse_nth_spell_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefin
     None
 }
 
-/// "you cast your <ordinal> [qualifier] spell each turn"
+/// Timing-clause kind for nth-spell triggers.
+/// CR 601.2 + CR 603.4: The trailing "each turn" / "in a turn" (unrestricted
+/// timing) vs "during each opponent's turn" (restricted to opponent's turn).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NthSpellTimingKind {
+    EachTurn,
+    DuringOpponentsTurn,
+}
+
+/// Inspect the text after the ordinal to determine the timing clause kind.
+/// Returns `None` when the text does not end with a recognized timing tail
+/// (so the caller can reject the pattern). Uses `str::strip_suffix` —
+/// structural suffix removal of fixed literals, not parser dispatch.
+fn classify_nth_spell_timing(rest: &str) -> Option<NthSpellTimingKind> {
+    let trimmed = rest.trim();
+    if trimmed.strip_suffix(" each turn").is_some() || trimmed.strip_suffix(" in a turn").is_some()
+    {
+        Some(NthSpellTimingKind::EachTurn)
+    } else if trimmed
+        .strip_suffix(" during each opponent's turn")
+        .or_else(|| trimmed.strip_suffix(" during each opponent\u{2019}s turn"))
+        .is_some()
+    {
+        Some(NthSpellTimingKind::DuringOpponentsTurn)
+    } else {
+        None
+    }
+}
+
+/// "you cast your <ordinal> [qualifier] spell [post-spell modifier] each turn"
 /// Also handles "during each opponent's turn" variant (CR 601.2).
 fn try_parse_nth_spell_you(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
     let prefix = "you cast your ";
     let after = strip_after(lower, prefix)?;
     let (n, rest) = parse_ordinal(after)?;
+    let timing = classify_nth_spell_timing(rest)?;
     let filter = extract_spell_type_filter(rest);
-    let after_qualifier = skip_to_word(rest, "spell");
-    // CR 601.2: Standard "each turn" / "in a turn" patterns
-    if alt((
-        value((), tag::<_, _, VerboseError<&str>>("spell each turn")),
-        value((), tag("spell in a turn")),
-    ))
-    .parse(after_qualifier)
-    .is_ok()
-    {
-        let mut def = make_base();
-        def.mode = TriggerMode::SpellCast;
-        def.constraint = Some(TriggerConstraint::NthSpellThisTurn { n, filter });
-        return Some((TriggerMode::SpellCast, def));
-    }
-    // CR 601.2: "during each opponent's turn" — same nth-spell tracking but only
-    // during opponents' turns.
-    if alt((
-        value(
-            (),
-            tag::<_, _, VerboseError<&str>>("spell during each opponent's turn"),
-        ),
-        value((), tag("spell during each opponent\u{2019}s turn")),
-    ))
-    .parse(after_qualifier)
-    .is_ok()
-    {
-        let mut def = make_base();
-        def.mode = TriggerMode::SpellCast;
-        def.constraint = Some(TriggerConstraint::NthSpellThisTurn { n, filter });
-        // Layer on the opponent's-turn constraint
+    let mut def = make_base();
+    def.mode = TriggerMode::SpellCast;
+    def.constraint = Some(TriggerConstraint::NthSpellThisTurn { n, filter });
+    if timing == NthSpellTimingKind::DuringOpponentsTurn {
         def.condition = Some(TriggerCondition::DuringOpponentsTurn);
-        return Some((TriggerMode::SpellCast, def));
     }
-    None
+    Some((TriggerMode::SpellCast, def))
 }
 
-/// "an opponent casts their <ordinal> [qualifier] spell each turn"
+/// "an opponent casts their <ordinal> [qualifier] spell [post-spell modifier] each turn"
 fn try_parse_nth_spell_opponent(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
     let prefix = "an opponent casts their ";
     let after = strip_after(lower, prefix)?;
     let (n, rest) = parse_ordinal(after)?;
-    let filter = extract_spell_type_filter(rest);
-    let after_qualifier = skip_to_word(rest, "spell");
-    if alt((
-        value((), tag::<_, _, VerboseError<&str>>("spell each turn")),
-        value((), tag("spell in a turn")),
-    ))
-    .parse(after_qualifier)
-    .is_ok()
-    {
-        let mut def = make_base();
-        def.mode = TriggerMode::SpellCast;
-        def.valid_target = Some(TargetFilter::Typed(
-            TypedFilter::default().controller(ControllerRef::Opponent),
-        ));
-        def.constraint = Some(TriggerConstraint::NthSpellThisTurn { n, filter });
-        return Some((TriggerMode::SpellCast, def));
+    // Opponents-path does not support "during each opponent's turn" (redundant wording).
+    if !matches!(
+        classify_nth_spell_timing(rest),
+        Some(NthSpellTimingKind::EachTurn)
+    ) {
+        return None;
     }
-    None
+    let filter = extract_spell_type_filter(rest);
+    let mut def = make_base();
+    def.mode = TriggerMode::SpellCast;
+    def.valid_target = Some(TargetFilter::Typed(
+        TypedFilter::default().controller(ControllerRef::Opponent),
+    ));
+    def.constraint = Some(TriggerConstraint::NthSpellThisTurn { n, filter });
+    Some((TriggerMode::SpellCast, def))
 }
 
-/// "a player casts their <ordinal> [qualifier] spell each turn"
+/// "a player casts their <ordinal> [qualifier] spell [post-spell modifier] each turn"
 /// CR 603.2: No valid_target filter — fires for any player's spell.
 /// NthSpellThisTurn constraint extracts caster from the SpellCast event
 /// and checks per-player counts via spells_cast_this_turn_by_player.
@@ -3491,42 +3619,135 @@ fn try_parse_nth_spell_any_player(lower: &str) -> Option<(TriggerMode, TriggerDe
     let prefix = "a player casts their ";
     let after = strip_after(lower, prefix)?;
     let (n, rest) = parse_ordinal(after)?;
-    let filter = extract_spell_type_filter(rest);
-    let after_qualifier = skip_to_word(rest, "spell");
-    if alt((
-        value((), tag::<_, _, VerboseError<&str>>("spell each turn")),
-        value((), tag("spell in a turn")),
-    ))
-    .parse(after_qualifier)
-    .is_ok()
-    {
-        let mut def = make_base();
-        def.mode = TriggerMode::SpellCast;
-        def.constraint = Some(TriggerConstraint::NthSpellThisTurn { n, filter });
-        return Some((TriggerMode::SpellCast, def));
+    if !matches!(
+        classify_nth_spell_timing(rest),
+        Some(NthSpellTimingKind::EachTurn)
+    ) {
+        return None;
     }
-    None
+    let filter = extract_spell_type_filter(rest);
+    let mut def = make_base();
+    def.mode = TriggerMode::SpellCast;
+    def.constraint = Some(TriggerConstraint::NthSpellThisTurn { n, filter });
+    Some((TriggerMode::SpellCast, def))
 }
 
-/// Extract a spell filter from the qualifier between ordinal and "spell".
+/// Extract a spell filter from the qualifier between ordinal and the trailing
+/// "each turn" / "in a turn" / "during each opponent's turn" clause.
+///
+/// Handles three qualifier shapes, which may combine:
+/// 1. Pre-spell type qualifier: `"noncreature spell each turn"` → `TypeFilter::Non(Creature)`.
+/// 2. Post-spell X-in-cost qualifier: `"spell with {x} in its mana cost each turn"`
+///    → `FilterProp::HasXInManaCost` (CR 107.3 + CR 202.1).
+/// 3. Both combined: `"creature spell with {x} in its mana cost each turn"`.
+///
+/// Returns `None` when no meaningful qualifier is present — the caller treats
+/// that as an unrestricted spell filter.
 fn extract_spell_type_filter(after_ordinal: &str) -> Option<TargetFilter> {
     let trimmed = after_ordinal.trim();
-    if let Some(before_spell) = trimmed
-        .strip_suffix("spell each turn")
-        .or_else(|| trimmed.strip_suffix("spell in a turn"))
-        .or_else(|| trimmed.strip_suffix("spell during each opponent's turn"))
-        .or_else(|| trimmed.strip_suffix("spell during each opponent\u{2019}s turn"))
-    {
-        let qualifier = before_spell.trim();
-        if qualifier.is_empty() {
-            return None;
-        }
-        let (filter, remainder) = parse_type_phrase(qualifier);
-        if remainder.trim().is_empty() && !matches!(filter, TargetFilter::Any) {
-            return Some(filter);
-        }
+    // Strip the trailing timing clause to isolate the qualifier payload (the words
+    // between the ordinal and the timing tail). Uses `str::strip_suffix` on literal
+    // timing tails — not parser dispatch, structural suffix removal.
+    let qualifier = trimmed
+        .strip_suffix(" each turn")
+        .or_else(|| trimmed.strip_suffix(" in a turn"))
+        .or_else(|| trimmed.strip_suffix(" during each opponent's turn"))
+        .or_else(|| trimmed.strip_suffix(" during each opponent\u{2019}s turn"))?;
+    parse_spell_qualifier_payload(qualifier.trim())
+}
+
+/// Parse the qualifier payload between the ordinal and the timing clause.
+/// The payload must contain the word "spell" at some position; text before
+/// "spell" is the type phrase, text after "spell" is a post-spell modifier.
+fn parse_spell_qualifier_payload(qualifier: &str) -> Option<TargetFilter> {
+    // Bare "spell" with no pre- or post-modifier means "no filter" (any spell).
+    if qualifier == "spell" {
+        return None;
     }
-    None
+    // The payload is one of three shapes:
+    //   (a) "<type-phrase> spell"                 — type only
+    //   (b) "spell <post-modifier>"               — post-modifier only
+    //   (c) "<type-phrase> spell <post-modifier>" — both
+    // Detect shape (b) by a leading "spell " literal before attempting the
+    // " spell" word-boundary split (which only separates shape (a)/(c)).
+    let (pre_spell, post_spell) = if let Some(rest) = qualifier.strip_prefix("spell ") {
+        ("", rest.trim())
+    } else {
+        // Split on " spell" (word-boundary) to separate type phrase from post-spell modifier.
+        // Delegates to nom_primitives::split_once_on for word-boundary-safe splitting.
+        match crate::parser::oracle_nom::primitives::split_once_on(qualifier, " spell") {
+            Ok((_, (pre, post))) => (pre.trim(), post.trim()),
+            Err(_) => {
+                // No " spell" split — treat as a type-only qualifier.
+                return type_only_filter(qualifier);
+            }
+        }
+    };
+
+    let type_filter = if pre_spell.is_empty() {
+        None
+    } else {
+        type_only_filter(pre_spell)
+    };
+    let post_filter = if post_spell.is_empty() {
+        None
+    } else {
+        // Non-empty post-spell text that does NOT match a recognized modifier
+        // (e.g. "that targets only ~" — handled by the legacy `parse_type_phrase`
+        // pathway). `?` propagates None so the caller can fall back.
+        Some(parse_post_spell_modifier(post_spell)?)
+    };
+
+    match (type_filter, post_filter) {
+        (None, None) => None,
+        (Some(f), None) | (None, Some(f)) => Some(f),
+        (Some(a), Some(b)) => Some(TargetFilter::And {
+            filters: vec![a, b],
+        }),
+    }
+}
+
+/// Parse a bare type phrase (e.g. "noncreature", "creature") as a `TargetFilter`.
+/// Returns `None` if `parse_type_phrase` reports `TargetFilter::Any` or leaves
+/// residual text — both indicate the phrase was not a pure type qualifier.
+fn type_only_filter(qualifier: &str) -> Option<TargetFilter> {
+    let (filter, remainder) = parse_type_phrase(qualifier);
+    if remainder.trim().is_empty() && !matches!(filter, TargetFilter::Any) {
+        Some(filter)
+    } else {
+        None
+    }
+}
+
+/// Parse a post-spell modifier phrase (text between "spell" and the timing tail).
+///
+/// Currently supports:
+/// - "with {x} in its mana cost" — CR 107.3 + CR 202.1. Produces a `TargetFilter`
+///   containing `FilterProp::HasXInManaCost`.
+///
+/// Extend by adding more combinator branches as additional post-spell modifiers
+/// (e.g. "with converted mana cost N", "that targets you") become supported.
+///
+/// Shared with `oracle_effect::try_parse_when_next_event` (delayed-trigger variant
+/// of the same filter shape) — exposed as `pub(crate)` to keep the combinator
+/// definition in a single place.
+pub(crate) fn parse_post_spell_modifier(modifier: &str) -> Option<TargetFilter> {
+    use crate::types::ability::{FilterProp, TypedFilter};
+    let (rest, ()) = alt((
+        value(
+            (),
+            tag::<_, _, VerboseError<&str>>("with {x} in its mana cost"),
+        ),
+        value((), tag("with an {x} in its mana cost")),
+    ))
+    .parse(modifier)
+    .ok()?;
+    if !rest.trim().is_empty() {
+        return None;
+    }
+    Some(TargetFilter::Typed(
+        TypedFilter::default().properties(vec![FilterProp::HasXInManaCost]),
+    ))
 }
 
 /// Parse "whenever [subject] draw(s) [possessive] Nth card each turn" into a Drawn trigger
@@ -3607,19 +3828,6 @@ fn try_parse_nth_draw_any_player(lower: &str) -> Option<(TriggerMode, TriggerDef
         return Some((TriggerMode::Drawn, def));
     }
     None
-}
-
-/// Skip past words before a target word, returning the text from that word onward.
-/// If the target word is not found, returns the original text.
-/// Uses `scan_split_at_phrase` for word-boundary-aware matching.
-fn skip_to_word<'a>(text: &'a str, word: &'a str) -> &'a str {
-    if let Some((_, matched_start)) =
-        scan_split_at_phrase(text, |i| tag::<_, _, VerboseError<&str>>(word).parse(i))
-    {
-        matched_start
-    } else {
-        text
-    }
 }
 
 /// Parse counter-placement triggers from Oracle text.
@@ -3955,6 +4163,61 @@ fn try_parse_discard_trigger(
     let _ = after_verb; // remainder available for future type-filter parsing
 
     Some((TriggerMode::Discarded, def))
+}
+
+/// CR 603 + CR 701.21: Parse player-actor sacrifice trigger patterns.
+/// Handles "whenever you sacrifice ...", "whenever an opponent sacrifices ...",
+/// "whenever a player sacrifices ...", "whenever each player sacrifices ..."
+/// with any subject filter produced by `parse_trigger_subject`
+/// (covers "a permanent", "another permanent", "a creature", "a land you control", etc.).
+///
+/// The actor dispatch sets the `ControllerRef` on the resulting filter:
+///   - `Some(You)` → only the trigger controller's sacrifices fire it.
+///   - `Some(Opponent)` → only an opponent's sacrifices fire it.
+///   - `None` → any player's sacrifice matching the filter fires it.
+///
+/// "Another" self-exclusion (e.g., Mazirek's "another permanent") is carried by
+/// `FilterProp::Another` from `parse_trigger_subject`; the runtime matcher enforces
+/// it via `FilterProp::Another` → `object_id != source.id` in `filter.rs`.
+fn try_parse_sacrifice_trigger(
+    lower: &str,
+    make_base: &dyn Fn() -> TriggerDefinition,
+) -> Option<(TriggerMode, TriggerDefinition)> {
+    // Strip "whenever " / "when " prefix.
+    let (event, ()) = alt((
+        value((), tag::<_, _, VerboseError<&str>>("whenever ")),
+        value((), tag("when ")),
+    ))
+    .parse(lower)
+    .ok()?;
+
+    // Actor dispatch. `None` means "any player" (no controller constraint on filter).
+    fn parse_sacrifice_actor(input: &str) -> OracleResult<'_, Option<ControllerRef>> {
+        alt((
+            value(Some(ControllerRef::You), tag("you sacrifice ")),
+            value(
+                Some(ControllerRef::Opponent),
+                tag("an opponent sacrifices "),
+            ),
+            value(None, tag("a player sacrifices ")),
+            value(None, tag("each player sacrifices ")),
+        ))
+        .parse(input)
+    }
+    let (after_verb, actor) = parse_sacrifice_actor.parse(event).ok()?;
+
+    let (filter, remainder) = parse_trigger_subject(after_verb);
+    if !remainder.trim().is_empty() {
+        return None;
+    }
+
+    let mut def = make_base();
+    def.mode = TriggerMode::Sacrificed;
+    def.valid_card = Some(match actor {
+        Some(cr) => add_controller(filter, cr),
+        None => filter,
+    });
+    Some((TriggerMode::Sacrificed, def))
 }
 
 // ---------------------------------------------------------------------------
@@ -5504,6 +5767,55 @@ mod tests {
         assert_eq!(def.valid_card, Some(TargetFilter::AttachedTo));
     }
 
+    // CR 303.4 + CR 603.10a: "Whenever an enchanted creature dies" with the
+    // indefinite article is NON-source-relative (the source isn't the Aura).
+    // The subject filter must be a typed creature with `EnchantedBy` so runtime
+    // interprets it as "has any Aura attached" (Hateful Eidolon).
+    #[test]
+    fn trigger_an_enchanted_creature_dies_hateful_eidolon() {
+        let def = parse_trigger_line(
+            "Whenever an enchanted creature dies, draw a card for each Aura you controlled that was attached to it.",
+            "Hateful Eidolon",
+        );
+        assert_eq!(def.mode, TriggerMode::ChangesZone);
+        assert_eq!(def.origin, Some(Zone::Battlefield));
+        assert_eq!(def.destination, Some(Zone::Graveyard));
+        let expected =
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::EnchantedBy]));
+        assert_eq!(def.valid_card, Some(expected));
+    }
+
+    // CR 303.4: "Creatures that are enchanted by an Aura you control" subject filter.
+    #[test]
+    fn trigger_one_or_more_enchanted_creatures_attack_killian() {
+        let def = parse_trigger_line(
+            "Whenever one or more creatures that are enchanted by an Aura you control attack, draw a card.",
+            "Killian, Decisive Mentor",
+        );
+        assert_eq!(def.mode, TriggerMode::YouAttack);
+        let filter = def.valid_card.as_ref().expect("valid_card set");
+        match filter {
+            TargetFilter::Typed(tf) => {
+                assert!(tf.type_filters.contains(&TypeFilter::Creature));
+                let has_attachment = tf.properties.iter().any(|p| {
+                    matches!(
+                        p,
+                        FilterProp::HasAttachment {
+                            kind: AttachmentKind::Aura,
+                            controller: Some(ControllerRef::You),
+                        }
+                    )
+                });
+                assert!(
+                    has_attachment,
+                    "expected HasAttachment(Aura, You); got {:?}",
+                    tf.properties
+                );
+            }
+            other => panic!("expected Typed filter, got {other:?}"),
+        }
+    }
+
     #[test]
     fn trigger_cycle_this_card() {
         let def = parse_trigger_line(
@@ -5643,6 +5955,53 @@ mod tests {
             def.valid_card,
             Some(TargetFilter::Typed(
                 TypedFilter::creature().controller(ControllerRef::You)
+            ))
+        );
+    }
+
+    #[test]
+    fn trigger_a_player_sacrifices_a_permanent() {
+        // CR 603 + CR 701.21: "a player sacrifices" → any-player scope (no controller filter).
+        let def = parse_trigger_line(
+            "Whenever a player sacrifices a permanent, put a +1/+1 counter on this creature.",
+            "Merchant of Venom",
+        );
+        assert_eq!(def.mode, TriggerMode::Sacrificed);
+        assert_eq!(
+            def.valid_card,
+            Some(TargetFilter::Typed(TypedFilter::new(TypeFilter::Permanent)))
+        );
+    }
+
+    #[test]
+    fn trigger_a_player_sacrifices_another_permanent() {
+        // CR 603 + CR 701.21: Mazirek — "another permanent" carries FilterProp::Another,
+        // which excludes the trigger source from matching its own sacrifice.
+        let def = parse_trigger_line(
+            "Whenever a player sacrifices another permanent, put a +1/+1 counter on each creature you control.",
+            "Mazirek, Kraul Death Priest",
+        );
+        assert_eq!(def.mode, TriggerMode::Sacrificed);
+        assert_eq!(
+            def.valid_card,
+            Some(TargetFilter::Typed(
+                TypedFilter::new(TypeFilter::Permanent).properties(vec![FilterProp::Another])
+            ))
+        );
+    }
+
+    #[test]
+    fn trigger_an_opponent_sacrifices_a_creature() {
+        // CR 603 + CR 701.21: opponent-actor sacrifice dispatch.
+        let def = parse_trigger_line(
+            "Whenever an opponent sacrifices a creature, you gain 1 life.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::Sacrificed);
+        assert_eq!(
+            def.valid_card,
+            Some(TargetFilter::Typed(
+                TypedFilter::creature().controller(ControllerRef::Opponent)
             ))
         );
     }
@@ -6388,6 +6747,33 @@ mod tests {
     }
 
     #[test]
+    fn trigger_one_or_more_cards_put_into_exile_from_library_or_graveyard() {
+        // CR 603.2c + CR 603.10a: Laelia, the Blade Reforged — batched
+        // zone-change trigger with disjunctive source zones.
+        let def = parse_trigger_line(
+            "Whenever one or more cards are put into exile from your library and/or your graveyard, put a +1/+1 counter on Laelia.",
+            "Laelia, the Blade Reforged",
+        );
+        assert_eq!(def.mode, TriggerMode::ChangesZoneAll);
+        assert_eq!(def.destination, Some(Zone::Exile));
+        assert_eq!(def.origin_zones, vec![Zone::Library, Zone::Graveyard]);
+        assert!(def.batched);
+    }
+
+    #[test]
+    fn trigger_one_or_more_cards_put_into_exile_from_library_only() {
+        // Single-zone source variant should still parse.
+        let def = parse_trigger_line(
+            "Whenever one or more cards are put into exile from your library, put a +1/+1 counter on this creature.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::ChangesZoneAll);
+        assert_eq!(def.destination, Some(Zone::Exile));
+        assert_eq!(def.origin_zones, vec![Zone::Library]);
+        assert!(def.batched);
+    }
+
+    #[test]
     fn trigger_one_or_more_artifact_or_creature_cards_leave_graveyard() {
         let def = parse_trigger_line(
             "Whenever one or more artifact and/or creature cards leave your graveyard, put a +1/+1 counter on this creature.",
@@ -7127,6 +7513,88 @@ mod tests {
             Some(TriggerConstraint::NthSpellThisTurn { n: 1, filter: None })
         );
         assert_eq!(def.condition, Some(TriggerCondition::DuringOpponentsTurn));
+    }
+
+    /// CR 107.3 + CR 202.1: "whenever you cast your first spell with {X} in its
+    /// mana cost each turn" — the "with {X}" qualifier lives AFTER "spell"
+    /// (post-spell modifier), not before. Verifies `HasXInManaCost` filter
+    /// emission on the per-turn SpellCast trigger. Target cards: Lattice
+    /// Library, Nev the Practical Dean, Owlin Spiralmancer, Zimone Infinite
+    /// Analyst.
+    #[test]
+    fn trigger_first_spell_with_x_in_cost() {
+        use crate::types::ability::{FilterProp, TypedFilter};
+        let def = parse_trigger_line(
+            "Whenever you cast your first spell with {X} in its mana cost each turn, draw a card.",
+            "Nev, the Practical Dean",
+        );
+        assert_eq!(def.mode, TriggerMode::SpellCast);
+        let expected_filter = TargetFilter::Typed(
+            TypedFilter::default().properties(vec![FilterProp::HasXInManaCost]),
+        );
+        assert_eq!(
+            def.constraint,
+            Some(TriggerConstraint::NthSpellThisTurn {
+                n: 1,
+                filter: Some(expected_filter),
+            }),
+            "first-spell-with-X trigger must carry HasXInManaCost filter"
+        );
+        assert!(def.execute.is_some());
+    }
+
+    /// CR 107.3 + CR 202.1: Combined type phrase + X-in-cost qualifier.
+    /// "your first creature spell with {X} in its mana cost each turn" should
+    /// produce an And-composed filter of (Creature) AND (HasXInManaCost).
+    #[test]
+    fn trigger_first_creature_spell_with_x_in_cost() {
+        use crate::types::ability::{FilterProp, TypeFilter, TypedFilter};
+        let def = parse_trigger_line(
+            "Whenever you cast your first creature spell with {X} in its mana cost each turn, draw a card.",
+            "Hypothetical",
+        );
+        assert_eq!(def.mode, TriggerMode::SpellCast);
+        let TriggerConstraint::NthSpellThisTurn { n, ref filter } = def.constraint.unwrap() else {
+            panic!("expected NthSpellThisTurn");
+        };
+        assert_eq!(n, 1);
+        let filter = filter.as_ref().expect("filter must be set");
+        // Shape: And { filters: [Creature typed, HasXInManaCost typed] }
+        match filter {
+            TargetFilter::And { filters } => {
+                assert_eq!(filters.len(), 2, "expected 2-part AND filter");
+                assert!(
+                    filters
+                        .iter()
+                        .any(|f| matches!(f, TargetFilter::Typed(tf) if tf.type_filters.contains(&TypeFilter::Creature))),
+                    "must include Creature type filter: {filters:?}"
+                );
+                assert!(
+                    filters.iter().any(|f| matches!(
+                        f,
+                        TargetFilter::Typed(TypedFilter { properties, .. })
+                            if properties.contains(&FilterProp::HasXInManaCost)
+                    )),
+                    "must include HasXInManaCost filter: {filters:?}"
+                );
+            }
+            other => panic!("expected AND filter, got {other:?}"),
+        }
+    }
+
+    /// Ensure the existing "first spell each turn" behavior (no qualifier) is
+    /// preserved by the refactor — filter remains `None`.
+    #[test]
+    fn trigger_first_spell_no_qualifier_remains_none() {
+        let def = parse_trigger_line(
+            "Whenever you cast your first spell each turn, draw a card.",
+            "Archmage Emeritus",
+        );
+        assert_eq!(def.mode, TriggerMode::SpellCast);
+        assert_eq!(
+            def.constraint,
+            Some(TriggerConstraint::NthSpellThisTurn { n: 1, filter: None })
+        );
     }
 
     #[test]

@@ -418,6 +418,7 @@ impl GameObject {
             owner: self.owner,
             from_zone: from,
             to_zone: to,
+            attachments: Vec::new(),
         }
     }
 

@@ -2131,7 +2131,7 @@ fn parse_assign_damage_as_though_unblocked(lower: &str, text: &str) -> Option<St
     let clean = lower.trim_end_matches('.');
     let result = preceded(
         tag::<_, _, VE<'_>>("you may have "),
-        alt((tag("this creature"), tag("it"))),
+        alt((tag("this creature"), tag("~"), tag("it"))),
     )
     .parse(clean)
     .ok()?;
@@ -2177,12 +2177,9 @@ fn parse_attached_creature_assign_damage_as_though_unblocked(
         )
     };
 
-    let (_, _) = alt((
-        tag::<_, _, VE<'_>>(
-            "'s controller may have it assign its combat damage as though it weren't blocked",
-        ),
-        tag("’s controller may have it assign its combat damage as though it weren't blocked"),
-    ))
+    let (_, _) = tag::<_, _, VE<'_>>(
+        "'s controller may have it assign its combat damage as though it weren't blocked",
+    )
     .parse(rest.lower)
     .ok()?;
 
@@ -2738,6 +2735,11 @@ enum CombatTaxSubject {
     Creatures,
     /// "Enchanted creature [can't attack]" — aura attached-to creature form (Brainwash).
     EnchantedCreature,
+    /// CR 122.1: "Each creature with one or more counters on it [can't attack you]"
+    /// — counter-gated subject form (Nils, Discipline Enforcer). Applies to every
+    /// creature on the battlefield carrying at least one counter; pairs naturally
+    /// with per-affected cost scaling driven by the attacker's counter count.
+    EachCreatureWithCounters,
 }
 
 /// Nom 8.0 parser for the combat-tax body.
@@ -2754,10 +2756,22 @@ fn parse_combat_tax_body(input: &str) -> OracleResult<'_, CombatTaxParse> {
     use crate::types::ability::UnlessPayScaling;
     use nom_language::error::VerboseError;
 
-    // Subject: either "Creatures " (opponents' creatures — the prison family) or
-    // "Enchanted creature " (aura form — Brainwash). Each subject type drives the
-    // affected-filter shape independently.
+    // Subject: either "Creatures " (opponents' creatures — the prison family),
+    // "Enchanted creature " (aura form — Brainwash), or "Each creature with one
+    // or more counters on it " (counter-gated form — Nils, Discipline Enforcer).
+    // Each subject type drives the affected-filter shape independently.
+    //
+    // Order matters: the counter-gated form must be tried before the bare
+    // "creatures " tag because the counter phrasing starts with "each" rather
+    // than "creatures" and so does not conflict with the primary alt branch;
+    // it is listed first for clarity of grammar.
     let (input, subject) = alt((
+        value(
+            CombatTaxSubject::EachCreatureWithCounters,
+            tag_no_case::<_, _, VerboseError<&str>>(
+                "each creature with one or more counters on it ",
+            ),
+        ),
         value(
             CombatTaxSubject::Creatures,
             tag_no_case::<_, _, VerboseError<&str>>("creatures "),
@@ -2832,6 +2846,11 @@ fn parse_combat_tax_body(input: &str) -> OracleResult<'_, CombatTaxParse> {
     //     resolves against the static's controller (the player benefiting from the tax).
     //   - `EnchantedCreature` (Brainwash): the attached-to creature — property `EnchantedBy`
     //     matches the aura's enchant target at runtime.
+    //   - `EachCreatureWithCounters` (Nils): any creature carrying one or more counters of
+    //     any type (CR 122.1). Note that the Nils static applies to creatures controlled by
+    //     any player, not just opponents — the official ruling confirms "Your opponents can
+    //     choose not to pay..." implying the static targets opponents in practice, but the
+    //     rules text is controller-agnostic ("Each creature with one or more counters...").
     let affected = match subject {
         CombatTaxSubject::Creatures => TargetFilter::Typed(TypedFilter {
             type_filters: vec![TypeFilter::Creature],
@@ -2843,9 +2862,23 @@ fn parse_combat_tax_body(input: &str) -> OracleResult<'_, CombatTaxParse> {
             controller: None,
             properties: vec![FilterProp::EnchantedBy],
         }),
+        CombatTaxSubject::EachCreatureWithCounters => TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            controller: None,
+            properties: vec![FilterProp::HasAnyCounter],
+        }),
     };
 
+    // CR 118.12a: Scaling selection.
+    //   - `PerAffectedWithRef`: dynamic quantity (currently only `AnyCountersOnTarget`)
+    //     that must be resolved PER affected creature using that creature as the target
+    //     (Nils, Discipline Enforcer — "pays {X}, where X is the number of counters on
+    //     that creature"). Detected by the typed QuantityRef.
+    //   - Otherwise falls through to the canonical (per_affected, dynamic_qty) lattice.
     let scaling = match (per_affected.is_some(), dynamic_qty) {
+        (_, Some(QuantityRef::AnyCountersOnTarget)) => UnlessPayScaling::PerAffectedWithRef {
+            quantity: QuantityRef::AnyCountersOnTarget,
+        },
         (true, Some(qty)) => UnlessPayScaling::PerAffectedAndQuantityRef { quantity: qty },
         (true, None) => UnlessPayScaling::PerAffectedCreature,
         (false, Some(qty)) => UnlessPayScaling::PerQuantityRef { quantity: qty },
@@ -2866,10 +2899,29 @@ fn parse_combat_tax_body(input: &str) -> OracleResult<'_, CombatTaxParse> {
 /// Parse ", where X is the number of <filter>" → `QuantityRef::ObjectCount {...}`.
 /// Used by Sphere of Safety. Delegates to the shared `parse_quantity_ref`
 /// which handles "the number of <filter>" as a single alternative.
+///
+/// CR 122.1: Also recognizes the untyped-counter anaphoric phrasing ", where X
+/// is the number of counters on that creature" → `QuantityRef::AnyCountersOnTarget`.
+/// The shared `parse_quantity_ref` rejects this because it requires a non-empty
+/// counter-type prefix; Nils, Discipline Enforcer's text omits the counter type,
+/// so the dedicated branch is tried first.
 fn parse_dynamic_x_clause(input: &str) -> OracleResult<'_, QuantityRef> {
     use nom_language::error::VerboseError;
 
     let (input, _) = tag_no_case::<_, _, VerboseError<&str>>(", where x is ").parse(input)?;
+
+    // CR 122.1: Untyped counter anaphor — consume the rest of the clause and
+    // emit `AnyCountersOnTarget`. Accepted variants mirror the counter-on-target
+    // anaphor family (no type prefix).
+    if let Ok((_, _)) = alt((
+        tag_no_case::<_, _, VerboseError<&str>>("the number of counters on that creature"),
+        tag_no_case::<_, _, VerboseError<&str>>("the number of counters on that permanent"),
+    ))
+    .parse(input)
+    {
+        return Ok(("", QuantityRef::AnyCountersOnTarget));
+    }
+
     // Delegate to the shared quantity-ref combinator which is case-sensitive on
     // lowercase patterns ("the number of"). Normalize to lowercase for the
     // remaining phrase so the upstream combinators match.
@@ -3340,9 +3392,9 @@ fn add_property(filter: TargetFilter, prop: FilterProp) -> TargetFilter {
 fn strip_rule_static_subject<'a>(text: &'a str, lower: &str) -> Option<(TargetFilter, &'a str)> {
     for marker in [
         " doesn't untap during ",
-        " doesn’t untap during ",
+        " doesn't untap during ",
         " don't untap during ",
-        " don’t untap during ",
+        " don't untap during ",
         " must attack each combat if able",
         " must attack if able",
         " attacks each combat if able",
@@ -11777,5 +11829,105 @@ mod tests {
             "modifications should include AddKeyword(Warp), got {:?}",
             def.modifications,
         );
+    }
+
+    // ---------------------------------------------------------------------
+    // Combat-tax static family — class-level parser coverage.
+    // CR 508.1d + CR 508.1h + CR 118.12a: "[subject] can't attack/block unless
+    // [controller] pays [cost] [per-creature qualifier]" produces a typed
+    // `StaticCondition::UnlessPay` with the correct `UnlessPayScaling` variant.
+    // ---------------------------------------------------------------------
+
+    use crate::types::ability::UnlessPayScaling;
+
+    /// Helper: extract the `UnlessPay { cost, scaling }` from a parsed combat-tax static.
+    fn extract_unless_pay(def: &StaticDefinition) -> (ManaCost, UnlessPayScaling) {
+        match def
+            .condition
+            .as_ref()
+            .expect("combat-tax static must carry a condition")
+        {
+            StaticCondition::UnlessPay { cost, scaling } => (cost.clone(), scaling.clone()),
+            other => panic!("expected UnlessPay, got {other:?}"),
+        }
+    }
+
+    /// CR 508.1h: Ghostly Prison / Propaganda — fixed per-attacker mana.
+    /// Parses to `CantAttack` + opponents'-creature filter + `PerAffectedCreature` scaling.
+    #[test]
+    fn combat_tax_ghostly_prison_per_affected_creature() {
+        let def = parse_static_line(
+            "Creatures can't attack you unless their controller pays {2} for each creature they control that's attacking you.",
+        )
+        .expect("Ghostly Prison should parse");
+        assert_eq!(def.mode, StaticMode::CantAttack);
+        let (cost, scaling) = extract_unless_pay(&def);
+        assert_eq!(cost.mana_value(), 2);
+        assert!(matches!(scaling, UnlessPayScaling::PerAffectedCreature));
+    }
+
+    /// CR 508.1h + CR 202.3e: Sphere of Safety — dynamic {X} per attacker where X
+    /// is a battlefield count. Parses to `PerAffectedAndQuantityRef`.
+    #[test]
+    fn combat_tax_sphere_of_safety_per_affected_and_ref() {
+        let def = parse_static_line(
+            "Creatures can't attack you or planeswalkers you control unless their controller pays {X} for each of those creatures, where X is the number of enchantments you control.",
+        )
+        .expect("Sphere of Safety should parse");
+        assert_eq!(def.mode, StaticMode::CantAttack);
+        let (_cost, scaling) = extract_unless_pay(&def);
+        assert!(matches!(
+            scaling,
+            UnlessPayScaling::PerAffectedAndQuantityRef { .. }
+        ));
+    }
+
+    /// CR 118.12a + CR 202.3e: Nils, Discipline Enforcer — counter-gated subject
+    /// ("Each creature with one or more counters on it") with per-attacker-resolved
+    /// scaling ({X} = counters on THAT creature). Parses to `PerAffectedWithRef`
+    /// with `QuantityRef::AnyCountersOnTarget`, using a creature filter with
+    /// `FilterProp::HasAnyCounter`.
+    #[test]
+    fn combat_tax_nils_per_affected_with_ref() {
+        let def = parse_static_line(
+            "Each creature with one or more counters on it can't attack you or planeswalkers you control unless its controller pays {X}, where X is the number of counters on that creature.",
+        )
+        .expect("Nils, Discipline Enforcer should parse");
+        assert_eq!(def.mode, StaticMode::CantAttack);
+
+        // Affected filter gates on counter presence.
+        let affected = def.affected.as_ref().expect("affected filter must be set");
+        let TargetFilter::Typed(tf) = affected else {
+            panic!("expected TypedFilter, got {affected:?}");
+        };
+        assert!(tf.type_filters.contains(&TypeFilter::Creature));
+        assert!(tf.properties.contains(&FilterProp::HasAnyCounter));
+
+        let (_cost, scaling) = extract_unless_pay(&def);
+        match scaling {
+            UnlessPayScaling::PerAffectedWithRef { quantity } => {
+                assert!(matches!(quantity, QuantityRef::AnyCountersOnTarget));
+            }
+            other => panic!("expected PerAffectedWithRef, got {other:?}"),
+        }
+    }
+
+    /// CR 508.1d: Brainwash-class aura form — "Enchanted creature can't attack
+    /// unless its controller pays {3}." Verifies the aura subject branch emits
+    /// `FilterProp::EnchantedBy` and flat scaling.
+    #[test]
+    fn combat_tax_brainwash_flat_aura() {
+        let def =
+            parse_static_line("Enchanted creature can't attack unless its controller pays {3}.")
+                .expect("Brainwash-style aura should parse");
+        assert_eq!(def.mode, StaticMode::CantAttack);
+        let (cost, scaling) = extract_unless_pay(&def);
+        assert_eq!(cost.mana_value(), 3);
+        assert!(matches!(scaling, UnlessPayScaling::Flat));
+        let affected = def.affected.as_ref().expect("affected filter");
+        let TargetFilter::Typed(tf) = affected else {
+            panic!("expected TypedFilter");
+        };
+        assert!(tf.properties.contains(&FilterProp::EnchantedBy));
     }
 }

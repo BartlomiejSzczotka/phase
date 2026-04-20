@@ -3112,6 +3112,7 @@ pub mod tests {
                     keywords: vec![],
                     colors: vec![ManaColor::Blue],
                     mana_value: 1,
+                    has_x_in_cost: false,
                 },
                 SpellCastRecord {
                     core_types: vec![CoreType::Creature],
@@ -3120,6 +3121,7 @@ pub mod tests {
                     keywords: vec![Keyword::Flying],
                     colors: vec![ManaColor::Blue],
                     mana_value: 3,
+                    has_x_in_cost: false,
                 },
             ],
         );
@@ -4867,6 +4869,146 @@ pub mod tests {
         assert!(
             !check_trigger_condition(&state, &condition, PlayerId(0), Some(source), Some(&event)),
             "Topiary Lecturer: 1 mana spent must not exceed power (1) or toughness (2)"
+        );
+    }
+
+    /// CR 107.3 + CR 202.1 + CR 603.2c: "Whenever you cast your first spell with
+    /// {X} in its mana cost each turn" — constraint check must:
+    /// - fire on the first qualifying spell in `spells_cast_this_turn_by_player`
+    ///   (count == 1 where the filter matches)
+    /// - NOT fire when the current cast is a non-qualifying spell (filter
+    ///   mismatches), even if it's the first spell overall
+    /// - NOT fire on the second qualifying cast this turn.
+    #[test]
+    fn first_spell_with_x_constraint_fires_once_per_turn() {
+        use crate::types::ability::{FilterProp, TriggerConstraint, TypedFilter};
+
+        let mut state = setup();
+        let source = create_object(
+            &mut state,
+            CardId(99),
+            PlayerId(0),
+            "Nev".to_string(),
+            Zone::Battlefield,
+        );
+        let trig_def = {
+            let mut d = make_trigger(TriggerMode::SpellCast);
+            d.constraint = Some(TriggerConstraint::NthSpellThisTurn {
+                n: 1,
+                filter: Some(TargetFilter::Typed(
+                    TypedFilter::default().properties(vec![FilterProp::HasXInManaCost]),
+                )),
+            });
+            d
+        };
+
+        let spell_event = GameEvent::SpellCast {
+            card_id: CardId(1),
+            controller: PlayerId(0),
+            object_id: ObjectId(1000),
+        };
+
+        // Case A: first qualifying spell — record has exactly one X-cost cast.
+        state.spells_cast_this_turn_by_player.insert(
+            PlayerId(0),
+            vec![SpellCastRecord {
+                core_types: vec![CoreType::Sorcery],
+                supertypes: vec![],
+                subtypes: vec![],
+                keywords: vec![],
+                colors: vec![],
+                mana_value: 3,
+                has_x_in_cost: true,
+            }],
+        );
+        assert!(
+            check_trigger_constraint(&state, &trig_def, source, 0, PlayerId(0), &spell_event),
+            "first qualifying X-spell must fire"
+        );
+
+        // Case B: first cast is non-qualifying (no X in cost). Constraint must NOT fire.
+        state.spells_cast_this_turn_by_player.insert(
+            PlayerId(0),
+            vec![SpellCastRecord {
+                core_types: vec![CoreType::Instant],
+                supertypes: vec![],
+                subtypes: vec![],
+                keywords: vec![],
+                colors: vec![],
+                mana_value: 1,
+                has_x_in_cost: false,
+            }],
+        );
+        assert!(
+            !check_trigger_constraint(&state, &trig_def, source, 0, PlayerId(0), &spell_event),
+            "non-qualifying spell (no X) must NOT match the first-X-spell constraint"
+        );
+
+        // Case C: second qualifying spell (filter count == 2). Must NOT fire.
+        state.spells_cast_this_turn_by_player.insert(
+            PlayerId(0),
+            vec![
+                SpellCastRecord {
+                    core_types: vec![CoreType::Sorcery],
+                    supertypes: vec![],
+                    subtypes: vec![],
+                    keywords: vec![],
+                    colors: vec![],
+                    mana_value: 2,
+                    has_x_in_cost: true,
+                },
+                SpellCastRecord {
+                    core_types: vec![CoreType::Sorcery],
+                    supertypes: vec![],
+                    subtypes: vec![],
+                    keywords: vec![],
+                    colors: vec![],
+                    mana_value: 4,
+                    has_x_in_cost: true,
+                },
+            ],
+        );
+        assert!(
+            !check_trigger_constraint(&state, &trig_def, source, 0, PlayerId(0), &spell_event),
+            "second X-spell this turn must NOT fire the first-X-spell trigger"
+        );
+
+        // Case D: intervening non-X spell does NOT reset the count — second X-spell still fails.
+        state.spells_cast_this_turn_by_player.insert(
+            PlayerId(0),
+            vec![
+                SpellCastRecord {
+                    core_types: vec![CoreType::Sorcery],
+                    supertypes: vec![],
+                    subtypes: vec![],
+                    keywords: vec![],
+                    colors: vec![],
+                    mana_value: 2,
+                    has_x_in_cost: true,
+                },
+                SpellCastRecord {
+                    core_types: vec![CoreType::Instant],
+                    supertypes: vec![],
+                    subtypes: vec![],
+                    keywords: vec![],
+                    colors: vec![],
+                    mana_value: 1,
+                    has_x_in_cost: false,
+                },
+                SpellCastRecord {
+                    core_types: vec![CoreType::Sorcery],
+                    supertypes: vec![],
+                    subtypes: vec![],
+                    keywords: vec![],
+                    colors: vec![],
+                    mana_value: 4,
+                    has_x_in_cost: true,
+                },
+            ],
+        );
+        assert!(
+            !check_trigger_constraint(&state, &trig_def, source, 0, PlayerId(0), &spell_event),
+            "intervening non-X spell must not reset qualifying count"
         );
     }
 }

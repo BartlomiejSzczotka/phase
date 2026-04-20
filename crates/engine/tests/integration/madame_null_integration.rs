@@ -88,6 +88,7 @@ fn set_etb_event(state: &mut GameState, entering: ObjectId) {
             owner: PlayerId(0),
             from_zone: Zone::Hand,
             to_zone: Zone::Battlefield,
+            attachments: Vec::new(),
         }),
     });
 }

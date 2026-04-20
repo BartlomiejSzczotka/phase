@@ -812,6 +812,31 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
         pos += lower[pos..].len() - rest.len();
     }
 
+    // CR 303.4 + CR 301.5: "enchanted" / "equipped" attachment adjective prefix.
+    // Attach the property; runtime evaluation degrades "EnchantedBy" to
+    // "has any Aura attached" when the trigger source itself is not the Aura
+    // (Hateful Eidolon). Source-relative sources (Auras, Equipment) retain the
+    // CR 702.5a semantics via the same FilterProp.
+    if let Ok((rest, prop)) = alt((
+        value(
+            FilterProp::EnchantedBy,
+            tag::<_, _, nom_language::error::VerboseError<&str>>("enchanted "),
+        ),
+        value(
+            FilterProp::EquippedBy,
+            tag::<_, _, nom_language::error::VerboseError<&str>>("equipped "),
+        ),
+    ))
+    .parse(&lower[pos..])
+    {
+        // Only consume if a type word follows (so "enchanted forest" also works,
+        // as does "enchanted creature", but bare "enchanted" alone does not).
+        if starts_with_type_phrase_lead(rest) {
+            properties.push(prop);
+            pos += lower[pos..].len() - rest.len();
+        }
+    }
+
     // Handle color prefix: "white creature", "red spell", etc.
     let color_prop = parse_color_prefix(&lower[pos..]);
     if let Some((ref prop, color_len)) = color_prop {

@@ -1209,9 +1209,16 @@ pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
     };
 
     // Comma-based legendary short name: "Haliya, Guided by Light" → "Haliya"
+    // CR 201.3a: A legendary creature's name is the full name printed on the card;
+    // the comma-separated first element (typically a proper noun like "Haliya", "Ao",
+    // or "MJ") is used in Oracle text as a self-reference. The comma-form is
+    // strict enough that 2-char proper nouns ("Ao, the Dawn Sky",
+    // "Me, the Immortal", "MJ, Rising Star") are legitimate self-references —
+    // common two-letter English words are never legendary card names with this
+    // structure, so `>= 2` is safe.
     if let Some(comma_pos) = effective_name.find(", ") {
         let short_name = &effective_name[..comma_pos];
-        if short_name.len() >= 3 && !result.contains('~') {
+        if short_name.len() >= 2 && !result.contains('~') {
             result = replace_all_words(&result, short_name, "~");
         }
     }

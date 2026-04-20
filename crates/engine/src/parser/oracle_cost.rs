@@ -140,12 +140,23 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
         };
     }
 
-    // "Pay N life" / "N life"
+    // "Pay N life" / "Pay life equal to <dynamic quantity>" / "N life"
     if let Some(((), rest)) = nom_on_lower(text, &lower, |i| value((), tag("pay ")).parse(i)) {
         let rest_lower = rest.to_lowercase();
+        // CR 119.4 + CR 903.4 + CR 903.4f: "Pay life equal to the number of
+        // colors in your commander(s)' color identity" — War Room. Parse via
+        // dedicated combinator so the class covers both "commander's" and
+        // "commanders'" apostrophe variants.
+        if let Some(qty) = parse_life_equal_to_quantity(&rest_lower) {
+            return AbilityCost::PayLife {
+                amount: QuantityExpr::Ref { qty },
+            };
+        }
         if scan_contains(&rest_lower, "life") {
             if let Some((n, _)) = parse_number(&rest_lower) {
-                return AbilityCost::PayLife { amount: n };
+                return AbilityCost::PayLife {
+                    amount: QuantityExpr::Fixed { value: n as i32 },
+                };
             }
         }
         // Pay speed: "pay x speed" / "pay N speed"
@@ -171,7 +182,9 @@ pub fn parse_single_cost(text: &str) -> AbilityCost {
         }
     } else if lower.ends_with(" life") {
         if let Some((n, _)) = parse_number(&lower) {
-            return AbilityCost::PayLife { amount: n };
+            return AbilityCost::PayLife {
+                amount: QuantityExpr::Fixed { value: n as i32 },
+            };
         }
     }
 
@@ -706,6 +719,37 @@ fn extract_filter_zone(filter: &TargetFilter) -> Option<Zone> {
     }
 }
 
+/// CR 119.4 + CR 903.4: Parse "life equal to <dynamic quantity>" after the
+/// leading "pay " token has been consumed. Returns the resolved
+/// `QuantityRef`, or `None` if the tail doesn't match a supported dynamic
+/// life-amount phrase.
+///
+/// Composed with nom combinators as prefix + possessive + suffix so the class
+/// covers both singular "commander's" and plural "commanders'" apostrophe
+/// placements. Additional dynamic life-cost quantities slot in by extending
+/// the outer `alt()`.
+fn parse_life_equal_to_quantity(rest_lower: &str) -> Option<QuantityRef> {
+    let (_, qty) = parse_life_equal_to_quantity_nom(rest_lower).ok()?;
+    Some(qty)
+}
+
+fn parse_life_equal_to_quantity_nom(
+    i: &str,
+) -> super::oracle_nom::error::OracleResult<'_, QuantityRef> {
+    let (i, _) = value((), tag("life equal to the number of colors in ")).parse(i)?;
+    let (i, _) = value(
+        (),
+        alt((
+            tag("your commander's "),
+            tag("your commanders' "),
+            tag("your commanders "),
+        )),
+    )
+    .parse(i)?;
+    let (i, _) = tag("color identity").parse(i)?;
+    Ok((i, QuantityRef::ColorsInCommandersColorIdentity))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -800,7 +844,36 @@ mod tests {
     fn cost_pay_life() {
         assert_eq!(
             parse_oracle_cost("Pay 3 life"),
-            AbilityCost::PayLife { amount: 3 }
+            AbilityCost::PayLife {
+                amount: QuantityExpr::Fixed { value: 3 }
+            }
+        );
+    }
+
+    #[test]
+    fn cost_pay_life_equal_to_commanders_color_identity() {
+        // CR 903.4: War Room — "Pay life equal to the number of colors in your
+        // commanders' color identity".
+        assert_eq!(
+            parse_oracle_cost(
+                "Pay life equal to the number of colors in your commanders' color identity"
+            ),
+            AbilityCost::PayLife {
+                amount: QuantityExpr::Ref {
+                    qty: QuantityRef::ColorsInCommandersColorIdentity
+                }
+            }
+        );
+        // Singular possessive variant.
+        assert_eq!(
+            parse_oracle_cost(
+                "Pay life equal to the number of colors in your commander's color identity"
+            ),
+            AbilityCost::PayLife {
+                amount: QuantityExpr::Ref {
+                    qty: QuantityRef::ColorsInCommandersColorIdentity
+                }
+            }
         );
     }
 
@@ -868,7 +941,12 @@ mod tests {
         match parse_oracle_cost("Pay 1 life and exile a blue card from your hand") {
             AbilityCost::Composite { costs } => {
                 assert_eq!(costs.len(), 2);
-                assert_eq!(costs[0], AbilityCost::PayLife { amount: 1 });
+                assert_eq!(
+                    costs[0],
+                    AbilityCost::PayLife {
+                        amount: QuantityExpr::Fixed { value: 1 }
+                    }
+                );
                 assert!(matches!(costs[1], AbilityCost::Exile { .. }));
             }
             other => panic!("Expected Composite, got {:?}", other),

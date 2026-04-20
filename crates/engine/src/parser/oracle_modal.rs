@@ -340,8 +340,67 @@ fn build_modal_choice(header: &ModalHeaderAst, modes: &[ModeAst]) -> ModalChoice
 fn lower_mode_abilities(modes: &[ModeAst], kind: AbilityKind) -> Vec<AbilityDefinition> {
     modes
         .iter()
-        .map(|mode| parse_effect_chain(&mode.body, kind))
+        .map(|mode| {
+            let parsed = parse_effect_chain(&mode.body, kind);
+            guard_unsupported_mode_qualifiers(&mode.body, parsed, kind)
+        })
         .collect()
+}
+
+/// Replace a parsed mode ability with `Effect::Unimplemented` when the mode body
+/// contains a filter qualifier that the current parser silently drops, which
+/// would otherwise produce a rules-incorrect (overly-permissive) effect at
+/// resolution time.
+///
+/// CR 700.2 (modal): A mode's effect must faithfully represent the printed
+/// text. If the parser consumes a filter core but discards a restrictive
+/// qualifier (e.g. "with total mana value 4 or less", "that's a creature or
+/// Vehicle"), the resulting effect would execute against a broader class of
+/// objects than the card allows. Marking such modes as Unimplemented is the
+/// rules-safe fallback — the trigger/modal structure is preserved for the
+/// coverage report, but the unsupported mode body does not execute.
+///
+/// The guard is intentionally conservative: it fires only on phrases that the
+/// `parse_target` / `parse_dig_from_among` pipelines do not currently lower
+/// into a typed constraint. When the relevant selection primitives
+/// (e.g. `TotalManaValueAtMost`) or filter extensions (core-type + subtype
+/// disjunction in `that's a X or Y`) are introduced, this guard will be
+/// tightened to only fire on the residual unsupported forms.
+fn guard_unsupported_mode_qualifiers(
+    body: &str,
+    parsed: AbilityDefinition,
+    kind: AbilityKind,
+) -> AbilityDefinition {
+    let lower = body.to_lowercase();
+
+    // Budgeted-selection qualifier on Dig-class modes — currently unsupported.
+    // Example (Ao, the Dawn Sky): "Put any number of nonland permanent cards
+    // with total mana value 4 or less from among them onto the battlefield."
+    // Presence check only (word-boundary scan); not a parsing-dispatch `contains`.
+    let dig_with_total_mv = matches!(&*parsed.effect, Effect::Dig { .. })
+        && nom_primitives::scan_contains(&lower, "with total mana value");
+
+    // "that's a X or Y" relative-clause narrowing on PutCounterAll/PutCounter
+    // targets — parser drops the clause, producing an overly-permissive filter.
+    // Example (Ao mode 2): "Put two +1/+1 counters on each permanent you control
+    // that's a creature or Vehicle."
+    let put_counter_with_thats_a = matches!(
+        &*parsed.effect,
+        Effect::PutCounterAll { .. } | Effect::PutCounter { .. }
+    ) && nom_primitives::scan_contains(&lower, "that's a ");
+
+    if dig_with_total_mv || put_counter_with_thats_a {
+        return AbilityDefinition::new(
+            kind,
+            Effect::Unimplemented {
+                name: "modal_mode_unsupported_qualifier".into(),
+                description: Some(body.to_string()),
+            },
+        )
+        .description(body.to_string());
+    }
+
+    parsed
 }
 
 /// Parse the "choose N" count from the modal header line.
@@ -695,5 +754,77 @@ mod tests {
         ];
         let modes = collect_mode_asts(&lines, 1);
         assert!(modes.is_empty());
+    }
+
+    // ---- Ao, the Dawn Sky (SOC) — modal dies trigger integration ----
+
+    use crate::parser::oracle::parse_oracle_text;
+    use crate::types::ability::{Effect, TargetFilter};
+    use crate::types::triggers::TriggerMode;
+    use crate::types::zones::Zone;
+
+    const AO_ORACLE: &str = "Flying, vigilance\nWhen Ao dies, choose one —\n\
+• Look at the top seven cards of your library. Put any number of nonland permanent cards with total mana value 4 or less from among them onto the battlefield. Put the rest on the bottom of your library in a random order.\n\
+• Put two +1/+1 counters on each permanent you control that's a creature or Vehicle.";
+
+    #[test]
+    fn ao_dies_trigger_parses_as_changeszone_graveyard() {
+        // CR 700.4: "dies" == "is put into a graveyard from the battlefield".
+        // CR 603.6c + CR 603.10a: dies triggers look back to before-death state.
+        // Verifies the self-ref fix for 2-char comma-form legendary names
+        // ("Ao" in "Ao, the Dawn Sky").
+        let parsed = parse_oracle_text(AO_ORACLE, "Ao, the Dawn Sky", &[], &[], &[]);
+        assert_eq!(parsed.triggers.len(), 1, "expected a single dies trigger");
+        let trigger = &parsed.triggers[0];
+        assert_eq!(trigger.mode, TriggerMode::ChangesZone);
+        assert_eq!(trigger.origin, Some(Zone::Battlefield));
+        assert_eq!(trigger.destination, Some(Zone::Graveyard));
+        assert!(matches!(trigger.valid_card, Some(TargetFilter::SelfRef)));
+        assert_eq!(trigger.trigger_zones, vec![Zone::Graveyard]);
+    }
+
+    #[test]
+    fn ao_dies_trigger_wraps_modal_with_two_modes() {
+        // CR 700.2: modal triggered ability — the "choose one —" header binds
+        // to the dies trigger and produces a ModalChoice with two modes.
+        let parsed = parse_oracle_text(AO_ORACLE, "Ao, the Dawn Sky", &[], &[], &[]);
+        let trigger = parsed.triggers.first().expect("expected a dies trigger");
+        let execute = trigger
+            .execute
+            .as_deref()
+            .expect("trigger should have an execute body");
+        let modal = execute
+            .modal
+            .as_ref()
+            .expect("execute should carry modal metadata");
+        assert_eq!(modal.min_choices, 1);
+        assert_eq!(modal.max_choices, 1);
+        assert_eq!(modal.mode_count, 2);
+        assert_eq!(execute.mode_abilities.len(), 2);
+    }
+
+    #[test]
+    fn ao_mode_bodies_guarded_as_unimplemented() {
+        // Both modes carry filter qualifiers the parser silently drops:
+        //   - mode 1: "with total mana value 4 or less" (no budgeted-selection
+        //     primitive yet; Dig would otherwise admit unlimited-MV cards).
+        //   - mode 2: "that's a creature or Vehicle" (relative clause dropped;
+        //     PutCounterAll would otherwise apply to every permanent you
+        //     control, not just creatures/Vehicles).
+        // CR 700.2 requires the mode effect to faithfully match printed text;
+        // the guard replaces each mode with Effect::Unimplemented preserving
+        // the original body for coverage reporting.
+        let parsed = parse_oracle_text(AO_ORACLE, "Ao, the Dawn Sky", &[], &[], &[]);
+        let execute = parsed.triggers[0]
+            .execute
+            .as_deref()
+            .expect("trigger execute");
+        for mode in &execute.mode_abilities {
+            assert!(
+                matches!(*mode.effect, Effect::Unimplemented { .. }),
+                "mode should be guarded as Unimplemented: {:?}",
+                mode.effect
+            );
+        }
     }
 }

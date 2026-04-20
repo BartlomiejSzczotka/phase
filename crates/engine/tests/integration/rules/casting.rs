@@ -852,7 +852,9 @@ fn choice_cost_falls_through_when_preferred_unpayable() {
         })
         .with_additional_cost(AdditionalCost::Choice(
             AbilityCost::Blight { count: 1 },
-            AbilityCost::PayLife { amount: 2 },
+            AbilityCost::PayLife {
+                amount: QuantityExpr::Fixed { value: 2 },
+            },
         ))
         .id();
 

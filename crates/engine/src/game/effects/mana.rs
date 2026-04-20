@@ -247,6 +247,21 @@ fn resolve_mana_types_impl(
             mana.extend(colors.iter().map(mana_color_to_type));
             mana
         }
+        // CR 903.4 + CR 903.4f + CR 106.5: Produce mana of one color from the
+        // activator's commander color identity. Without a color_override
+        // (auto-tap, or no choice needed) this picks the first listed color,
+        // mirroring the `ChoiceAmongExiledColors` / `AnyOneColor` precedent.
+        // The color-choice prompt is driven by `mana_choice_prompt` when
+        // identity.len() > 1. If the identity is empty — no commander or an
+        // undefined identity per CR 903.4f — the ability produces no mana.
+        ManaProduction::AnyInCommandersColorIdentity { count, .. } => {
+            let amount = resolve_count(count, state, ability, controller, source_id);
+            let identity = super::super::commander::commander_color_identity(state, controller);
+            let Some(first) = identity.first() else {
+                return Vec::new();
+            };
+            vec![mana_color_to_type(first); amount]
+        }
     }
 }
 

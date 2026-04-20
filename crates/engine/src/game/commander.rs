@@ -45,6 +45,41 @@ pub fn should_redirect_to_command_zone(
     matches!(destination, Zone::Graveyard | Zone::Exile)
 }
 
+/// CR 903.4: Compute the combined color identity of `player`'s commander(s).
+///
+/// Color identity is the union of every commander's color (indicator/CDA)
+/// plus every color symbol in its mana cost (derived via
+/// `derive_colors_from_mana_cost`). Rules-text mana symbols are not yet
+/// parsed into structured data — same limitation as
+/// [`can_cast_in_color_identity`].
+///
+/// Returns an empty vector if the player has no commander. Callers must
+/// interpret that per CR 903.4f: "If an ability refers to the colors or
+/// number of colors in a commander's color identity, that quality is
+/// undefined if that player doesn't have a commander."
+pub fn commander_color_identity(state: &GameState, player: PlayerId) -> Vec<ManaColor> {
+    use super::printed_cards::derive_colors_from_mana_cost;
+
+    let mut identity: Vec<ManaColor> = Vec::new();
+    for obj in state
+        .objects
+        .values()
+        .filter(|obj| obj.is_commander && obj.owner == player)
+    {
+        for &c in &obj.color {
+            if !identity.contains(&c) {
+                identity.push(c);
+            }
+        }
+        for c in derive_colors_from_mana_cost(&obj.mana_cost) {
+            if !identity.contains(&c) {
+                identity.push(c);
+            }
+        }
+    }
+    identity
+}
+
 /// CR 903.4: Each card must be within the commander's color identity.
 ///
 /// Color identity includes colors from mana cost symbols (CR 903.4) plus the card's
@@ -62,23 +97,7 @@ pub fn can_cast_in_color_identity(
     use super::printed_cards::derive_colors_from_mana_cost;
 
     // CR 903.4: Commander's color identity = color + mana cost colors.
-    let mut commander_identity: Vec<ManaColor> = Vec::new();
-    for obj in state
-        .objects
-        .values()
-        .filter(|obj| obj.is_commander && obj.owner == player)
-    {
-        for &c in &obj.color {
-            if !commander_identity.contains(&c) {
-                commander_identity.push(c);
-            }
-        }
-        for c in derive_colors_from_mana_cost(&obj.mana_cost) {
-            if !commander_identity.contains(&c) {
-                commander_identity.push(c);
-            }
-        }
-    }
+    let commander_identity = commander_color_identity(state, player);
 
     // If no commander found (non-Commander format), allow everything
     if commander_identity.is_empty() {
@@ -342,6 +361,60 @@ mod tests {
             &ManaCost::NoCost,
             PlayerId(0)
         ));
+    }
+
+    // --- Commander Color Identity Helper Tests ---
+
+    #[test]
+    fn commander_color_identity_empty_without_commander() {
+        // CR 903.4f: No commander → empty identity (quality undefined).
+        let state = setup_commander_game();
+        assert!(commander_color_identity(&state, PlayerId(0)).is_empty());
+    }
+
+    #[test]
+    fn commander_color_identity_unions_color_and_mana_cost() {
+        // CR 903.4: Identity = commander color + mana-cost colors. A two-color
+        // commander with a mono-color mana cost reports exactly those colors.
+        let mut state = setup_commander_game();
+        let cmd_id = create_commander_in_command_zone(
+            &mut state,
+            PlayerId(0),
+            "Niv-Mizzet",
+            vec![ManaColor::Blue, ManaColor::Red],
+        );
+        state.objects.get_mut(&cmd_id).unwrap().mana_cost = ManaCost::Cost {
+            shards: vec![ManaCostShard::Blue, ManaCostShard::Red],
+            generic: 1,
+        };
+
+        let identity = commander_color_identity(&state, PlayerId(0));
+        assert_eq!(identity.len(), 2);
+        assert!(identity.contains(&ManaColor::Blue));
+        assert!(identity.contains(&ManaColor::Red));
+    }
+
+    #[test]
+    fn commander_color_identity_merges_partner_commanders() {
+        // CR 903.4: Two commanders union their identities.
+        let mut state = setup_commander_game();
+        create_commander_in_command_zone(
+            &mut state,
+            PlayerId(0),
+            "Partner A",
+            vec![ManaColor::White],
+        );
+        create_commander_in_command_zone(
+            &mut state,
+            PlayerId(0),
+            "Partner B",
+            vec![ManaColor::Black],
+        );
+
+        let identity = commander_color_identity(&state, PlayerId(0));
+        assert_eq!(identity.len(), 2);
+        assert!(identity.contains(&ManaColor::White));
+        assert!(identity.contains(&ManaColor::Black));
     }
 
     #[test]

@@ -719,8 +719,20 @@ pub(crate) fn deterministic_choice(
             engine::types::ability::AdditionalCost::Optional(
                 engine::types::ability::AbilityCost::PayLife { amount },
             ) => {
+                // CR 119.4 + CR 903.4: PayLife carries a QuantityExpr; resolve
+                // against the activator/source so dynamic costs (e.g. commander
+                // color identity) are costed correctly. Source = 0 falls back
+                // to Fixed variants; QuantityRef variants that need a source
+                // won't appear on optional additional costs today.
+                let resolved = engine::game::quantity::resolve_quantity(
+                    state,
+                    amount,
+                    *player,
+                    engine::types::identifiers::ObjectId(0),
+                )
+                .max(0);
                 let life = state.players[player.0 as usize].life;
-                life > (*amount as i32) * 3
+                life > resolved * 3
             }
             engine::types::ability::AdditionalCost::Optional(_) => true,
             engine::types::ability::AdditionalCost::Choice(_, _) => true,

@@ -880,7 +880,12 @@ fn pay_additional_cost(
         AbilityCost::PayLife { amount } => {
             // CR 118.3 + CR 119.4 + CR 119.8: Pay life as an additional cost via
             // the single-authority helper. Unpayable = spell cannot be cast.
-            match pay_life_as_cost(state, player, amount, events) {
+            // CR 119.4 + CR 903.4: `amount` is a QuantityExpr so dynamic refs
+            // (e.g. commander color identity count) resolve at cast time.
+            let resolved =
+                super::quantity::resolve_quantity(state, &amount, player, pending.object_id).max(0)
+                    as u32;
+            match pay_life_as_cost(state, player, resolved, events) {
                 PayLifeCostResult::Paid { .. } => {}
                 PayLifeCostResult::InsufficientLife | PayLifeCostResult::LockedCantLoseLife => {
                     return Err(EngineError::ActionNotAllowed(
@@ -2579,7 +2584,12 @@ mod tests {
                 },
             )
             .cost(AbilityCost::Composite {
-                costs: vec![AbilityCost::Tap, AbilityCost::PayLife { amount: 1 }],
+                costs: vec![
+                    AbilityCost::Tap,
+                    AbilityCost::PayLife {
+                        amount: QuantityExpr::Fixed { value: 1 },
+                    },
+                ],
             }),
         );
         town

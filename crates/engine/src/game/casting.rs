@@ -2241,7 +2241,7 @@ pub fn can_cast_object_now(state: &GameState, player: PlayerId, object_id: Objec
         if let Some(FlashbackCost::NonMana(ref cost)) =
             super::keywords::effective_flashback_cost(state, prepared.object_id)
         {
-            if let Some(amount) = find_pay_life_cost(cost) {
+            if let Some(amount) = find_pay_life_cost(cost, state, player, prepared.object_id) {
                 if !super::life_costs::can_pay_life_cost(state, player, amount) {
                     return false;
                 }
@@ -2260,7 +2260,7 @@ pub fn can_cast_object_now(state: &GameState, player: PlayerId, object_id: Objec
         .get(&prepared.object_id)
         .and_then(|o| o.additional_cost.as_ref())
     {
-        if let Some(amount) = find_pay_life_cost(cost) {
+        if let Some(amount) = find_pay_life_cost(cost, state, player, prepared.object_id) {
             if !super::life_costs::can_pay_life_cost(state, player, amount) {
                 return false;
             }
@@ -2696,13 +2696,29 @@ fn find_non_self_sacrifice(cost: &AbilityCost) -> Option<&TargetFilter> {
     }
 }
 
-/// Walk a cost tree and return the first `PayLife` amount found, if any.
-/// Used to pre-validate pay-life affordability before simulation, since
-/// `pay_ability_cost` treats `AbilityCost::PayLife` as a no-op.
-fn find_pay_life_cost(cost: &AbilityCost) -> Option<u32> {
+/// Walk a cost tree and return the first `PayLife` amount found, resolved
+/// against the given state/player/source context. Used to pre-validate
+/// pay-life affordability before simulation, since `pay_ability_cost`
+/// treats `AbilityCost::PayLife` as a no-op.
+///
+/// `QuantityExpr` resolves dynamically (e.g. War Room's
+/// `QuantityRef::ColorsInCommandersColorIdentity`), so this helper must be
+/// evaluated at activation time against the current game state.
+fn find_pay_life_cost(
+    cost: &AbilityCost,
+    state: &GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+) -> Option<u32> {
     match cost {
-        AbilityCost::PayLife { amount } => Some(*amount),
-        AbilityCost::Composite { costs } => costs.iter().find_map(find_pay_life_cost),
+        AbilityCost::PayLife { amount } => {
+            let resolved =
+                super::quantity::resolve_quantity(state, amount, player, source_id).max(0) as u32;
+            Some(resolved)
+        }
+        AbilityCost::Composite { costs } => costs
+            .iter()
+            .find_map(|c| find_pay_life_cost(c, state, player, source_id)),
         _ => None,
     }
 }
@@ -2771,7 +2787,7 @@ fn can_pay_ability_cost_now(
     // the effect resolver); `pay_ability_cost`'s `PayLife` arm is a no-op.
     // Pre-check both insufficient-life and CantLoseLife so locked or underfunded
     // activated abilities never appear as legal actions.
-    if let Some(amount) = find_pay_life_cost(cost) {
+    if let Some(amount) = find_pay_life_cost(cost, state, player, source_id) {
         if !super::life_costs::can_pay_life_cost(state, player, amount) {
             return false;
         }
@@ -3459,6 +3475,7 @@ fn cant_cast_filter_matches(
                 keywords: spell_obj.keywords.clone(),
                 colors: spell_obj.color.clone(),
                 mana_value: spell_obj.mana_cost.mana_value(),
+                has_x_in_cost: super::casting_costs::cost_has_x(&spell_obj.mana_cost),
             };
             super::filter::spell_record_matches_filter(&record, filter, source_obj.controller)
         }
@@ -3502,6 +3519,7 @@ fn is_blocked_by_per_turn_cast_limit(
                     keywords: spell_obj.keywords.clone(),
                     colors: spell_obj.color.clone(),
                     mana_value: spell_obj.mana_cost.mana_value(),
+                    has_x_in_cost: super::casting_costs::cost_has_x(&spell_obj.mana_cost),
                 };
                 if !super::filter::spell_record_matches_filter(
                     &current_record,
@@ -3767,7 +3785,12 @@ mod tests {
                 },
             )
             .cost(AbilityCost::Composite {
-                costs: vec![AbilityCost::Tap, AbilityCost::PayLife { amount: 1 }],
+                costs: vec![
+                    AbilityCost::Tap,
+                    AbilityCost::PayLife {
+                        amount: QuantityExpr::Fixed { value: 1 },
+                    },
+                ],
             }),
         );
         obj_id
@@ -7408,6 +7431,7 @@ mod tests {
                 keywords: vec![Keyword::Flying],
                 colors: vec![],
                 mana_value: 1,
+                has_x_in_cost: false,
             }],
         );
 
@@ -7867,7 +7891,7 @@ mod tests {
                     .affected(TargetFilter::SpecificObject { id: obj_id })
                     .modifications(vec![ContinuousModification::AddKeyword {
                         keyword: Keyword::Flashback(FlashbackCost::NonMana(AbilityCost::PayLife {
-                            amount: 2,
+                            amount: QuantityExpr::Fixed { value: 2 },
                         })),
                     }]),
             );
@@ -7906,7 +7930,9 @@ mod tests {
         obj.keywords.clear();
         obj.base_keywords
             .push(Keyword::Flashback(FlashbackCost::NonMana(
-                AbilityCost::PayLife { amount: 2 },
+                AbilityCost::PayLife {
+                    amount: QuantityExpr::Fixed { value: 2 },
+                },
             )));
         obj.keywords = obj.base_keywords.clone();
 
@@ -8658,7 +8684,9 @@ mod tests {
                     count: QuantityExpr::Fixed { value: 1 },
                 },
             )
-            .cost(AbilityCost::PayLife { amount: 2 }),
+            .cost(AbilityCost::PayLife {
+                amount: QuantityExpr::Fixed { value: 2 },
+            }),
         );
         id
     }

@@ -436,7 +436,7 @@ fn scan_timing_restrictions(text: &str) -> Vec<CastingRestriction> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ability::{ParsedCondition, TargetFilter};
+    use crate::types::ability::{ParsedCondition, QuantityExpr, TargetFilter};
     use crate::types::mana::ManaCost;
 
     #[test]
@@ -659,7 +659,9 @@ mod tests {
                     random: false,
                     ..
                 },
-                AbilityCost::PayLife { amount: 3 },
+                AbilityCost::PayLife {
+                    amount: QuantityExpr::Fixed { value: 3 },
+                },
             )) => {}
             other => panic!("Expected Choice(Discard, PayLife), got {:?}", other),
         }
@@ -727,7 +729,9 @@ mod tests {
         let result = parse_additional_cost_line(lower, raw);
         assert_eq!(
             result,
-            Some(AdditionalCost::Required(AbilityCost::PayLife { amount: 3 }))
+            Some(AdditionalCost::Required(AbilityCost::PayLife {
+                amount: QuantityExpr::Fixed { value: 3 }
+            }))
         );
     }
 

@@ -11,8 +11,8 @@ use crate::game::filter::{
 };
 use crate::game::speed::effective_speed;
 use crate::types::ability::{
-    AggregateFunction, CountScope, ObjectProperty, PlayerFilter, QuantityExpr, QuantityRef,
-    ResolvedAbility, RoundingMode, TargetRef, TypeFilter, ZoneRef,
+    AggregateFunction, ControllerRef, CountScope, ObjectProperty, PlayerFilter, QuantityExpr,
+    QuantityRef, ResolvedAbility, RoundingMode, TargetRef, TypeFilter, ZoneRef,
 };
 use crate::types::card_type::CoreType;
 use crate::types::counter::parse_counter_type;
@@ -175,6 +175,48 @@ pub fn resolve_quantity_with_targets(
     }
 }
 
+/// Resolve a QuantityExpr with an explicit target slice but no full
+/// `ResolvedAbility`. Used by the combat-tax pipeline (CR 118.12a +
+/// CR 202.3e) to resolve per-attacker `CountersOnTarget`-style scaling
+/// (Nils, Discipline Enforcer) where each declared attacker is supplied
+/// as the `TargetRef::Object` for a single resolution.
+pub fn resolve_quantity_with_targets_slice(
+    state: &GameState,
+    expr: &QuantityExpr,
+    controller: PlayerId,
+    source_id: ObjectId,
+    targets: &[TargetRef],
+) -> i32 {
+    match expr {
+        QuantityExpr::Fixed { value } => *value,
+        QuantityExpr::Ref { qty } => resolve_ref(
+            state,
+            qty,
+            controller,
+            QuantityContext {
+                entering: None,
+                source: source_id,
+            },
+            targets,
+            None,
+            None,
+        ),
+        QuantityExpr::HalfRounded { inner, rounding } => {
+            let base =
+                resolve_quantity_with_targets_slice(state, inner, controller, source_id, targets);
+            half_rounded(base, *rounding)
+        }
+        QuantityExpr::Offset { inner, offset } => {
+            resolve_quantity_with_targets_slice(state, inner, controller, source_id, targets)
+                + offset
+        }
+        QuantityExpr::Multiply { factor, inner } => {
+            factor
+                * resolve_quantity_with_targets_slice(state, inner, controller, source_id, targets)
+        }
+    }
+}
+
 /// Resolve a QuantityExpr scoped to a specific player.
 ///
 /// Used by `DamageEachPlayer` to evaluate per-player quantities like
@@ -278,18 +320,34 @@ fn resolve_ref(
                 obj.counters.get(&ct).copied().unwrap_or(0) as i32
             })
             .unwrap_or(0),
-        // CR 107.3a + CR 601.2b + CR 107.3i: "X" resolves exclusively to the value
-        // chosen at cast time, carried on the resolving ability's `chosen_x`
+        // CR 107.3a + CR 601.2b + CR 107.3i: "X" resolves to the value chosen at
+        // cast time, carried on the resolving ability's `chosen_x`
         // (CR 601.2b announcement; CR 107.3i makes all instances share the value).
-        // Any path that reaches this branch without `chosen_x` set indicates a
-        // bug (missed propagation, non-ability-context resolver, or a casting
-        // flow that bypassed `ChooseXValue`) — returning 0 surfaces it visibly
-        // rather than masking via `last_named_choice`.
+        //
+        // CR 107.3e + CR 107.3m + CR 603.7c: When the trigger source itself has
+        // no `chosen_x` (SpellCast triggers and similar event triggers do not
+        // have their own cost), fall back to the triggering spell's
+        // `cost_x_paid`. This covers "whenever you cast your first spell with
+        // {X} in its mana cost each turn, put X +1/+1 counters on ~" — the X
+        // there is the triggering spell's X, not this trigger's X (which
+        // doesn't exist). CR 107.3e explicitly permits an ability to refer to
+        // X of another object's cost.
         //
         // Other named variables (set by `NamedChoice` handlers for things like
         // "chosen number") keep their single-responsibility path through
         // `last_named_choice`.
-        QuantityRef::Variable { name } if name == "X" => chosen_x.map(|x| x as i32).unwrap_or(0),
+        QuantityRef::Variable { name } if name == "X" => chosen_x
+            .map(|x| x as i32)
+            .or_else(|| {
+                state
+                    .current_trigger_event
+                    .as_ref()
+                    .and_then(crate::game::targeting::extract_source_from_event)
+                    .and_then(|id| state.objects.get(&id))
+                    .and_then(|obj| obj.cost_x_paid)
+                    .map(|x| x as i32)
+            })
+            .unwrap_or(0),
         QuantityRef::Variable { .. } => state
             .last_named_choice
             .as_ref()
@@ -362,6 +420,20 @@ fn resolve_ref(
                 .map(|obj| obj.counters.get(&ct).copied().unwrap_or(0) as i32)
                 .unwrap_or(0)
         }
+        // CR 122.1: Sum counters of every type on the first targeted object.
+        // Used by Nils-class attack-tax scaling — per the official ruling, ALL
+        // counters on the attacker (not just +1/+1 counters) count toward X.
+        QuantityRef::AnyCountersOnTarget => targets
+            .iter()
+            .find_map(|t| {
+                if let TargetRef::Object(id) = t {
+                    state.objects.get(id)
+                } else {
+                    None
+                }
+            })
+            .map(|obj| obj.counters.values().copied().sum::<u32>() as i32)
+            .unwrap_or(0),
         QuantityRef::CountersOnObjects {
             counter_type,
             filter,
@@ -607,6 +679,21 @@ fn resolve_ref(
                     .or_else(|| state.lki_cache.get(&id).map(|lki| lki.mana_value as i32))
             })
             .unwrap_or(0),
+        // CR 107.3a + CR 601.2b + CR 603.7c: The announced value of X for the
+        // triggering spell. Reads `GameObject::cost_x_paid` — populated during
+        // cost determination and persisted through the stack → battlefield
+        // transition. Triggers resolve on the stack, so the spell object is
+        // still present in `state.objects`. Falls back to 0 when no event is
+        // in scope or the event-source object is gone (LKI mana_value does
+        // not store X, so no fallback is meaningful).
+        QuantityRef::EventContextSourceCostX => state
+            .current_trigger_event
+            .as_ref()
+            .and_then(crate::game::targeting::extract_source_from_event)
+            .and_then(|id| state.objects.get(&id))
+            .and_then(|obj| obj.cost_x_paid)
+            .map(|x| x as i32)
+            .unwrap_or(0),
         // CR 601.2h + CR 603.4: Total mana actually spent to cast the triggering
         // spell. Reads `GameObject::mana_spent_to_cast_amount` on the spell
         // object referenced by `current_trigger_event`. Distinct from
@@ -641,6 +728,15 @@ fn resolve_ref(
             .get(&ctx.self_object())
             .map(|obj| obj.colors_spent_to_cast.distinct_colors() as i32)
             .unwrap_or(0),
+        // CR 903.4 + CR 903.4f: Number of distinct colors in the controller's
+        // commander(s)' combined color identity. Returns 0 when the controller
+        // has no commander (per CR 903.4f: "that quality is undefined if that
+        // player doesn't have a commander"). War Room's pay-life cost reads
+        // this; an undefined identity pays 0 life (and per Scryfall ruling,
+        // the ability is still activatable).
+        QuantityRef::ColorsInCommandersColorIdentity => {
+            super::commander::commander_color_identity(state, controller).len() as i32
+        }
         // CR 305.6: Count distinct basic land types among lands the controller controls.
         QuantityRef::BasicLandTypeCount => {
             let basic_subtypes = ["Plains", "Island", "Swamp", "Mountain", "Forest"];
@@ -794,6 +890,40 @@ fn resolve_ref(
             .map(|x| x as i32)
             .or_else(|| chosen_x.map(|x| x as i32))
             .unwrap_or(0),
+        // CR 603.10a + CR 603.6e: Count attachments present on the leaving object
+        // at zone-change time (look-back). Reads the `attachments` snapshot on
+        // the `ZoneChanged` event in `current_trigger_event`, filtered by kind
+        // and optional controller.
+        QuantityRef::AttachmentsOnLeavingObject {
+            kind,
+            controller: ctrl,
+        } => {
+            use crate::types::events::GameEvent;
+            let Some(ev) = state.current_trigger_event.as_ref() else {
+                return 0;
+            };
+            let GameEvent::ZoneChanged { record, .. } = ev else {
+                return 0;
+            };
+            record
+                .attachments
+                .iter()
+                .filter(|snap| snap.kind == *kind)
+                .filter(|snap| match ctrl {
+                    None => true,
+                    Some(ControllerRef::You) => snap.controller == controller,
+                    Some(ControllerRef::Opponent) => snap.controller != controller,
+                    Some(ControllerRef::TargetPlayer) => ability
+                        .and_then(|a| {
+                            a.targets.iter().find_map(|t| match t {
+                                crate::types::ability::TargetRef::Player(pid) => Some(*pid),
+                                crate::types::ability::TargetRef::Object(_) => None,
+                            })
+                        })
+                        .is_some_and(|pid| pid == snap.controller),
+                })
+                .count() as i32
+        }
     }
 }
 
@@ -884,10 +1014,172 @@ mod tests {
     use crate::types::SpellCastRecord;
 
     #[test]
+    fn resolve_quantity_colors_in_commanders_color_identity() {
+        // CR 903.4 + CR 903.4f: When no commander exists the quality is
+        // undefined and resolves to 0. When commanders exist the resolver
+        // returns the size of the combined color identity.
+        use crate::types::format::FormatConfig;
+        use crate::types::mana::ManaCost;
+
+        let mut state = GameState::new(FormatConfig::commander(), 4, 42);
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::ColorsInCommandersColorIdentity,
+        };
+        // No commander yet → 0.
+        assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), ObjectId(0)), 0);
+
+        // Build a 3-color commander (W/U/B) and verify the resolver returns 3.
+        let cmd_id = create_object(
+            &mut state,
+            CardId(101),
+            PlayerId(0),
+            "Kaalia".to_string(),
+            Zone::Command,
+        );
+        {
+            let obj = state.objects.get_mut(&cmd_id).unwrap();
+            obj.is_commander = true;
+            obj.color = vec![ManaColor::White, ManaColor::Blue, ManaColor::Black];
+            obj.mana_cost = ManaCost::NoCost;
+        }
+        assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), ObjectId(0)), 3);
+
+        // Other player (no commander of their own) still reports 0.
+        assert_eq!(resolve_quantity(&state, &expr, PlayerId(1), ObjectId(0)), 0);
+    }
+
+    #[test]
     fn resolve_quantity_fixed_returns_value() {
         let state = GameState::new_two_player(42);
         let expr = QuantityExpr::Fixed { value: 3 };
         assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), ObjectId(1)), 3);
+    }
+
+    /// CR 107.3m + CR 107.3: Primordial Hydra cast for {X}{G}{G} with X=3 enters
+    /// with 3 counters; Primo cast for {X}{G}{U} with X=4 enters with
+    /// `Multiply(2, CostXPaid)` = 8 counters. The ETB-counters resolution path
+    /// reads the entering permanent's own `cost_x_paid`, so the tree walk
+    /// through `Multiply` applies the factor verbatim.
+    #[test]
+    fn resolve_quantity_cost_x_paid_composes_with_multiply() {
+        let mut state = GameState::new_two_player(42);
+        let obj_id = create_object(
+            &mut state,
+            CardId(999),
+            PlayerId(0),
+            "Primo".to_string(),
+            Zone::Battlefield,
+        );
+        state.objects.get_mut(&obj_id).unwrap().cost_x_paid = Some(4);
+
+        let bare = QuantityExpr::Ref {
+            qty: QuantityRef::CostXPaid,
+        };
+        assert_eq!(resolve_quantity(&state, &bare, PlayerId(0), obj_id), 4);
+
+        let twice = QuantityExpr::Multiply {
+            factor: 2,
+            inner: Box::new(QuantityExpr::Ref {
+                qty: QuantityRef::CostXPaid,
+            }),
+        };
+        assert_eq!(resolve_quantity(&state, &twice, PlayerId(0), obj_id), 8);
+
+        let half_up = QuantityExpr::HalfRounded {
+            inner: Box::new(QuantityExpr::Ref {
+                qty: QuantityRef::CostXPaid,
+            }),
+            rounding: crate::types::ability::RoundingMode::Up,
+        };
+        // half of 4 = 2 (exact).
+        assert_eq!(resolve_quantity(&state, &half_up, PlayerId(0), obj_id), 2);
+
+        // X=5 → half rounded up = 3.
+        state.objects.get_mut(&obj_id).unwrap().cost_x_paid = Some(5);
+        assert_eq!(resolve_quantity(&state, &half_up, PlayerId(0), obj_id), 3);
+    }
+
+    // CR 603.10a + CR 603.6e: Hateful Eidolon's "for each Aura you controlled that
+    // was attached to it" resolves against the ZoneChangeRecord's attachment
+    // snapshot. Three auras attached (two controlled by P0, one by P1); P0's
+    // resolver sees 2, P1's sees 1.
+    #[test]
+    fn resolve_quantity_attachments_on_leaving_object_filters_by_controller() {
+        use crate::types::ability::AttachmentKind;
+        use crate::types::events::GameEvent;
+        use crate::types::game_state::{AttachmentSnapshot, ZoneChangeRecord};
+
+        let mut state = GameState::new_two_player(42);
+        let dying_id = ObjectId(200);
+        let record = ZoneChangeRecord {
+            attachments: vec![
+                AttachmentSnapshot {
+                    object_id: ObjectId(301),
+                    controller: PlayerId(0),
+                    kind: AttachmentKind::Aura,
+                },
+                AttachmentSnapshot {
+                    object_id: ObjectId(302),
+                    controller: PlayerId(0),
+                    kind: AttachmentKind::Aura,
+                },
+                AttachmentSnapshot {
+                    object_id: ObjectId(303),
+                    controller: PlayerId(1),
+                    kind: AttachmentKind::Aura,
+                },
+            ],
+            ..ZoneChangeRecord::test_minimal(dying_id, Zone::Battlefield, Zone::Graveyard)
+        };
+        state.current_trigger_event = Some(GameEvent::ZoneChanged {
+            object_id: dying_id,
+            from: Zone::Battlefield,
+            to: Zone::Graveyard,
+            record: Box::new(record),
+        });
+
+        let expr_you = QuantityExpr::Ref {
+            qty: QuantityRef::AttachmentsOnLeavingObject {
+                kind: AttachmentKind::Aura,
+                controller: Some(ControllerRef::You),
+            },
+        };
+        let expr_any = QuantityExpr::Ref {
+            qty: QuantityRef::AttachmentsOnLeavingObject {
+                kind: AttachmentKind::Aura,
+                controller: None,
+            },
+        };
+        // "You" = P0 → 2 aura snapshots.
+        assert_eq!(
+            resolve_quantity(&state, &expr_you, PlayerId(0), ObjectId(1)),
+            2
+        );
+        // P1's vantage → "you" = P1 → 1 aura snapshot.
+        assert_eq!(
+            resolve_quantity(&state, &expr_you, PlayerId(1), ObjectId(1)),
+            1
+        );
+        // Unfiltered → all 3.
+        assert_eq!(
+            resolve_quantity(&state, &expr_any, PlayerId(0), ObjectId(1)),
+            3
+        );
+    }
+
+    // CR 603.10a: When no zone-change event is in scope, the quantity resolves to 0
+    // (graceful fallback — cannot count what we don't have a snapshot of).
+    #[test]
+    fn resolve_quantity_attachments_on_leaving_object_without_event_returns_zero() {
+        use crate::types::ability::AttachmentKind;
+        let state = GameState::new_two_player(42);
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::AttachmentsOnLeavingObject {
+                kind: AttachmentKind::Aura,
+                controller: None,
+            },
+        };
+        assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), ObjectId(1)), 0);
     }
 
     #[test]
@@ -1369,6 +1661,7 @@ mod tests {
                     keywords: vec![Keyword::Flying],
                     colors: vec![ManaColor::Blue],
                     mana_value: 3,
+                    has_x_in_cost: false,
                 },
                 SpellCastRecord {
                     core_types: vec![CoreType::Artifact],
@@ -1377,6 +1670,7 @@ mod tests {
                     keywords: vec![],
                     colors: vec![],
                     mana_value: 1,
+                    has_x_in_cost: false,
                 },
             ],
         );
