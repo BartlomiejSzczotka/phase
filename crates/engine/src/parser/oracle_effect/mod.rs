@@ -3102,6 +3102,25 @@ fn try_split_targeted_compound(text: &str, ctx: &ParseContext) -> Option<ParsedE
         }
     }
 
+    // CR 608.2c: Top-of-library carry-forward for compound actions.
+    // "Exile target nonland permanent and the top card of your library"
+    // (Suspend Aggression) splits on " and " into sub-text "the top card of
+    // your library" which lacks a verb. Prepend the primary verb so it
+    // becomes "exile the top card of your library" — parsed as ExileTop.
+    if matches!(sub_clause.effect, Effect::Unimplemented { .. })
+        && tag::<_, _, VerboseError<&str>>("the top ")
+            .parse(sub_lower.as_str())
+            .is_ok()
+    {
+        if let Some(verb) = extract_effect_verb(&primary_effect) {
+            let reparsed_text = format!("{verb} {sub_text}");
+            let reparsed = parse_imperative_effect(&reparsed_text, &continuation_ctx);
+            if !matches!(reparsed.effect, Effect::Unimplemented { .. }) {
+                sub_clause = reparsed;
+            }
+        }
+    }
+
     // If the remainder contains anaphoric references ("it", "that creature", "them"),
     // replace the sub_effect's target with ParentTarget so it inherits the parent's targets.
     if uses_parent_target_reference {
