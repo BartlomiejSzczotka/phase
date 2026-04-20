@@ -20,6 +20,7 @@ fn fast_land_replacement(description: &str) -> ReplacementDefinition {
             },
         ))
         .valid_card(TargetFilter::SelfRef)
+        .destination_zone(Zone::Battlefield)
         .description(description.to_string())
         .condition(ReplacementCondition::UnlessControlsOtherLeq {
             count: 2,

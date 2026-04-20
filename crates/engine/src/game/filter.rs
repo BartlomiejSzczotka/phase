@@ -430,6 +430,13 @@ fn filter_inner_for_object(
     }
 }
 
+/// Build a synthetic `GameObject` from a `TokenSpec` for filter evaluation
+/// against `CreateToken` events (tokens that don't yet exist in `state.objects`).
+///
+/// Uses sentinel `ObjectId(u64::MAX)` — safe for type/color/keyword filters but
+/// NOT for relational filters that look up the object in `state.objects`
+/// (e.g., `FilterProp::Another` will always return `false` because the sentinel
+/// ID is never in the object map).
 fn build_battlefield_entry_token_object(
     owner: PlayerId,
     spec: &TokenSpec,

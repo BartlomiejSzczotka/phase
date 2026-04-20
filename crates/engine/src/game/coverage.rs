@@ -5070,6 +5070,9 @@ fn audit_card_lines(oracle_text: &str, face: &CardFace) -> Vec<SemanticFinding> 
                     && effective_lower.contains("counter"))
                     || (effective_lower.contains("would") && effective_lower.contains("instead"))
                     || (effective_lower.contains("enters tapped"))
+                    || (effective_lower.contains("enters untapped"))
+                    || (effective_lower.contains("enter untapped"))
+                    || (effective_lower.contains("enter tapped"))
             }
             ReplacementEvent::Discard => {
                 effective_lower.contains("discard") && effective_lower.contains("instead")

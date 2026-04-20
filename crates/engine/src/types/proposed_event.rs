@@ -36,9 +36,13 @@ impl EtbTapState {
         }
     }
 
-    pub fn resolve(self, seeded_tapped: bool) -> bool {
+    /// Resolve to a concrete tapped state. `fallback` is used only when no
+    /// replacement has set an explicit tap-state (`Unspecified`). For
+    /// `ZoneChange` events pass `false`; for `CreateToken` pass
+    /// `spec.tapped` (the token spec's authored default).
+    pub fn resolve(self, fallback: bool) -> bool {
         match self {
-            Self::Unspecified => seeded_tapped,
+            Self::Unspecified => fallback,
             Self::Tapped => true,
             Self::Untapped => false,
         }

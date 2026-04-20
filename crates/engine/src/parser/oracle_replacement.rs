@@ -1190,11 +1190,24 @@ fn parse_enters_with_counters(
         Some(TargetFilter::SelfRef)
     };
 
-    let mut def = ReplacementDefinition::new(ReplacementEvent::Moved)
+    // CR 614.12: External ETB counter placements (non-SelfRef) use ChangeZone
+    // so tokens also receive counters (e.g., Grumgully + creature tokens).
+    // Self-ETB (SelfRef) stays on Moved — tokens don't carry parser-generated
+    // replacement definitions, so ChangeZone matching would be wasted work.
+    let is_external = !matches!(valid_card, Some(TargetFilter::SelfRef) | None);
+    let event = if is_external {
+        ReplacementEvent::ChangeZone
+    } else {
+        ReplacementEvent::Moved
+    };
+    let mut def = ReplacementDefinition::new(event)
         .execute(put_counter)
         .description(original_text.to_string());
     if let Some(filter) = valid_card {
         def = def.valid_card(filter);
+    }
+    if is_external {
+        def = def.destination_zone(Zone::Battlefield);
     }
 
     // Apply condition: escape or kicker
@@ -1332,8 +1345,10 @@ fn parse_whenever_you_cast_enters_with(
         },
     );
 
+    // CR 614.12: External ETB counter placement — use ChangeZone so tokens
+    // entering the battlefield also receive counters (Metallic Mimic + creature tokens).
     Some(
-        ReplacementDefinition::new(ReplacementEvent::Moved)
+        ReplacementDefinition::new(ReplacementEvent::ChangeZone)
             .execute(put_counter)
             .valid_card(TargetFilter::Typed(spell_typed))
             .destination_zone(Zone::Battlefield)
@@ -3116,7 +3131,8 @@ mod tests {
             "Metallic Mimic",
         )
         .unwrap();
-        assert_eq!(def.event, ReplacementEvent::Moved);
+        assert_eq!(def.event, ReplacementEvent::ChangeZone);
+        assert_eq!(def.destination_zone, Some(Zone::Battlefield));
         assert!(matches!(
             *def.execute.as_ref().unwrap().effect,
             Effect::PutCounter {
@@ -3145,7 +3161,8 @@ mod tests {
             "Grumgully, the Generous",
         )
         .unwrap();
-        assert_eq!(def.event, ReplacementEvent::Moved);
+        assert_eq!(def.event, ReplacementEvent::ChangeZone);
+        assert_eq!(def.destination_zone, Some(Zone::Battlefield));
         assert!(matches!(
             *def.execute.as_ref().unwrap().effect,
             Effect::PutCounter {
@@ -4558,14 +4575,14 @@ mod tests {
     /// CR 614.1c + CR 601.2h + CR 202.2: Wildgrowth Archaic's replacement line
     /// ("Whenever you cast a creature spell, that creature enters with X
     /// additional +1/+1 counters on it, where X is the number of colors of
-    /// mana spent to cast it.") parses into a `Moved` replacement on the
+    /// mana spent to cast it.") parses into a `ChangeZone` replacement on the
     /// entering creature with `PutCounter { count: Ref(ColorsSpentOnSelf) }`.
     #[test]
     fn parses_wildgrowth_archaic_replacement() {
         let text = "Whenever you cast a creature spell, that creature enters with X additional +1/+1 counters on it, where X is the number of colors of mana spent to cast it.";
         let def = parse_replacement_line(text, "Wildgrowth Archaic")
             .expect("Wildgrowth line should parse as a replacement");
-        assert_eq!(def.event, ReplacementEvent::Moved);
+        assert_eq!(def.event, ReplacementEvent::ChangeZone);
         assert_eq!(def.destination_zone, Some(Zone::Battlefield));
 
         // valid_card: creature controlled by the Archaic's controller.
