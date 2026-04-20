@@ -169,6 +169,11 @@ pub struct CoverageSummary {
     pub keyword_count: usize,
     #[serde(default)]
     pub coverage_by_format: BTreeMap<String, FormatCoverageSummary>,
+    /// Per-set coverage rollup. Each card counts toward every set it was
+    /// printed in (via `CardCoverageResult::printings`). Consumers that
+    /// want to hide small/low-coverage sets apply their own thresholds.
+    #[serde(default)]
+    pub coverage_by_set: BTreeMap<String, SetCoverageSummary>,
     pub cards: Vec<CardCoverageResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub top_gaps: Vec<GapFrequency>,
@@ -179,6 +184,15 @@ pub struct CoverageSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct FormatCoverageSummary {
+    pub total_cards: usize,
+    pub supported_cards: usize,
+    pub coverage_pct: f64,
+}
+
+/// Per-set coverage totals. Mirrors `FormatCoverageSummary` so consumers
+/// can treat format- and set-level rollups uniformly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SetCoverageSummary {
     pub total_cards: usize,
     pub supported_cards: usize,
     pub coverage_pct: f64,
@@ -2523,12 +2537,45 @@ pub fn analyze_coverage(card_db: &CardDatabase) -> CoverageSummary {
         })
         .collect();
 
+    // Per-set rollup: one entry per set code appearing in any card's
+    // `printings`. A card with N printings contributes to N sets, matching
+    // how the dashboard historically aggregated this client-side.
+    let mut set_acc: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+    for card in &cards {
+        for code in &card.printings {
+            let entry = set_acc.entry(code.clone()).or_default();
+            entry.0 += 1;
+            if card.supported {
+                entry.1 += 1;
+            }
+        }
+    }
+    let coverage_by_set = set_acc
+        .into_iter()
+        .map(|(set_code, (total_cards, supported_cards))| {
+            let coverage_pct = if total_cards > 0 {
+                (supported_cards as f64 / total_cards as f64) * 100.0
+            } else {
+                0.0
+            };
+            (
+                set_code,
+                SetCoverageSummary {
+                    total_cards,
+                    supported_cards,
+                    coverage_pct,
+                },
+            )
+        })
+        .collect();
+
     CoverageSummary {
         total_cards,
         supported_cards,
         coverage_pct,
         keyword_count,
         coverage_by_format,
+        coverage_by_set,
         cards,
         top_gaps,
         gap_bundles,
@@ -6778,6 +6825,79 @@ mod tests {
         assert!(!beta.supported);
         assert_eq!(beta.gap_count, 1);
         assert_eq!(beta.gap_details[0].handler, "Effect:beta_gap");
+    }
+
+    #[test]
+    fn analyze_coverage_rolls_up_by_set() {
+        // Two cards, overlapping sets: Alpha is supported and printed in
+        // SET_A + SET_B; Beta is unsupported and printed in SET_B + SET_C.
+        // Expected: SET_A = 1/1, SET_B = 1/2, SET_C = 0/1.
+        let export = serde_json::json!({
+            "alpha": {
+                "name": "Alpha",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": { "supertypes": [], "core_types": [], "subtypes": [] },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [], "abilities": [], "triggers": [],
+                "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": legalities_to_export_map(&HashMap::from([
+                    (LegalityFormat::Standard, LegalityStatus::Legal),
+                ])),
+                "printings": ["SET_A", "SET_B"],
+            },
+            "beta": {
+                "name": "Beta",
+                "mana_cost": { "type": "NoCost" },
+                "card_type": { "supertypes": [], "core_types": [], "subtypes": [] },
+                "power": null, "toughness": null, "loyalty": null, "defense": null,
+                "oracle_text": null, "non_ability_text": null, "flavor_name": null,
+                "keywords": [],
+                "abilities": [{
+                    "kind": "Spell",
+                    "effect": { "type": "Unimplemented", "name": "beta_gap", "description": null },
+                    "cost": null, "sub_ability": null, "duration": null, "description": null,
+                    "target_prompt": null, "sorcery_speed": false, "condition": null,
+                    "optional_targeting": false
+                }],
+                "triggers": [], "static_abilities": [], "replacements": [],
+                "color_override": null, "scryfall_oracle_id": null,
+                "legalities": legalities_to_export_map(&HashMap::from([
+                    (LegalityFormat::Standard, LegalityStatus::Legal),
+                ])),
+                "printings": ["SET_B", "SET_C"],
+            }
+        })
+        .to_string();
+
+        let db = CardDatabase::from_json_str(&export).expect("test export should deserialize");
+        let summary = analyze_coverage(&db);
+
+        assert_eq!(
+            summary.coverage_by_set.get("SET_A"),
+            Some(&SetCoverageSummary {
+                total_cards: 1,
+                supported_cards: 1,
+                coverage_pct: 100.0,
+            })
+        );
+        assert_eq!(
+            summary.coverage_by_set.get("SET_B"),
+            Some(&SetCoverageSummary {
+                total_cards: 2,
+                supported_cards: 1,
+                coverage_pct: 50.0,
+            })
+        );
+        assert_eq!(
+            summary.coverage_by_set.get("SET_C"),
+            Some(&SetCoverageSummary {
+                total_cards: 1,
+                supported_cards: 0,
+                coverage_pct: 0.0,
+            })
+        );
     }
 
     // -----------------------------------------------------------------------

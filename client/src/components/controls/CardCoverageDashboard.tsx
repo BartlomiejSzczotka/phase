@@ -70,12 +70,20 @@ interface CoverageSummary {
   supported_cards: number;
   coverage_pct: number;
   coverage_by_format?: Record<string, FormatCoverageSummary>;
+  /** Per-set rollup produced by the engine. Keyed by MTGJSON set code. */
+  coverage_by_set?: Record<string, SetCoverageSummary>;
   cards: CardCoverageResult[];
   top_gaps?: GapFrequency[];
   gap_bundles?: GapBundle[];
 }
 
 interface FormatCoverageSummary {
+  total_cards: number;
+  supported_cards: number;
+  coverage_pct: number;
+}
+
+interface SetCoverageSummary {
   total_cards: number;
   supported_cards: number;
   coverage_pct: number;
@@ -494,32 +502,33 @@ interface SetCoverage {
   gap_cards: CardCoverageResult[];
 }
 
-/** Aggregate cards by set code. A card counts toward every set it was printed in. */
-function aggregateBySet(cards: CardCoverageResult[]): SetCoverage[] {
-  const totals = new Map<string, { total: number; supported: number; gaps: CardCoverageResult[] }>();
-  for (const card of cards) {
-    const printings = card.printings ?? [];
-    for (const code of printings) {
-      let entry = totals.get(code);
-      if (!entry) {
-        entry = { total: 0, supported: 0, gaps: [] };
-        totals.set(code, entry);
+/**
+ * Join the engine's per-set totals (`coverage_by_set`) with the per-card list
+ * to build the drill-down rows. Totals are engine-authoritative; the gap_cards
+ * list is a display-time filter over the same card data the dashboard already
+ * holds, so rendering only.
+ */
+function buildSetRows(coverage: CoverageSummary): SetCoverage[] {
+  const byCode = coverage.coverage_by_set ?? {};
+  const gapsByCode = new Map<string, CardCoverageResult[]>();
+  for (const card of coverage.cards) {
+    if (card.supported) continue;
+    for (const code of card.printings ?? []) {
+      let list = gapsByCode.get(code);
+      if (!list) {
+        list = [];
+        gapsByCode.set(code, list);
       }
-      entry.total += 1;
-      if (card.supported) {
-        entry.supported += 1;
-      } else {
-        entry.gaps.push(card);
-      }
+      list.push(card);
     }
   }
-  return [...totals.entries()]
+  return Object.entries(byCode)
     .map(([set_code, v]) => ({
       set_code,
-      total: v.total,
-      supported: v.supported,
-      pct: v.total > 0 ? (100 * v.supported) / v.total : 0,
-      gap_cards: v.gaps,
+      total: v.total_cards,
+      supported: v.supported_cards,
+      pct: v.coverage_pct,
+      gap_cards: gapsByCode.get(set_code) ?? [],
     }))
     .filter((s) => s.total >= MIN_SET_CARDS && s.pct >= MIN_SET_COVERAGE);
 }
@@ -544,7 +553,7 @@ function BySetView() {
   const setList = useSetList();
   const sets = useMemo(() => {
     if (!coverage) return [];
-    const aggregated = aggregateBySet(coverage.cards);
+    const aggregated = buildSetRows(coverage);
     return aggregated.sort((a, b) => {
       const aDate = setList?.[a.set_code]?.releaseDate ?? "";
       const bDate = setList?.[b.set_code]?.releaseDate ?? "";
@@ -1301,6 +1310,28 @@ function CardParseDetail({ card, onBack }: { card: CardCoverageResult; onBack?: 
           </div>
         </div>
       </div>
+
+      {/* Card-level gaps (e.g. parse warnings). These are reported by the
+          coverage pipeline but may not correspond to any unsupported node in
+          the parse tree — surface them explicitly so unsupported cards never
+          look mysteriously blank. */}
+      {!card.supported && (card.gap_details?.length ?? 0) > 0 && (
+        <div className="mb-5 rounded-md border border-rose-400/25 bg-rose-500/5 px-3 py-2.5">
+          <div className="mb-1.5 text-[0.68rem] font-semibold uppercase tracking-[0.18em] text-rose-300/90">
+            Unresolved Gaps ({card.gap_details!.length})
+          </div>
+          <ul className="space-y-1 text-xs text-slate-300">
+            {card.gap_details!.map((gap, i) => (
+              <li key={i} className="flex flex-col gap-0.5">
+                <span className="font-mono text-[11px] text-rose-200">{gap.handler}</span>
+                {gap.source_text && (
+                  <span className="text-[11px] text-slate-400">{gap.source_text}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Oracle-centric unified view */}
       {lineData.length > 0 ? (

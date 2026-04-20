@@ -6471,6 +6471,14 @@ mod tests {
     use crate::types::ability::{CountScope, TypeFilter, ZoneRef};
 
     #[test]
+    fn static_merfolk_lord() {
+        let def = parse_static_line("Other Merfolk you control get +1/+1.").unwrap();
+        assert!(def
+            .modifications
+            .contains(&ContinuousModification::AddPower { value: 1 }));
+    }
+
+    #[test]
     fn static_bonesplitter() {
         let def = parse_static_line("Equipped creature gets +2/+0.").unwrap();
         assert_eq!(def.mode, StaticMode::Continuous);

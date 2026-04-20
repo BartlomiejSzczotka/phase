@@ -1304,6 +1304,11 @@ pub fn normalize_card_name_refs(text: &str, card_name: &str) -> String {
                         || replaced.contains("~ permanents")
                         || replaced.contains("~ permanent")
                         || replaced.contains("non-~")
+                        // Lord-effect guard: "~ you control" means the first word of the
+                        // card name is a subtype used in a lord ability, not a self-reference.
+                        // E.g. "Merfolk Mistbinder" → "Other Merfolk you control get +1/+1."
+                        // would become "Other ~ you control..." without this guard.
+                        || replaced.contains("~ you control")
                     {
                         continue;
                     }
