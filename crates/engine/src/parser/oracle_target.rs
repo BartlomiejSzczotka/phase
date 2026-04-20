@@ -837,6 +837,22 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
         }
     }
 
+    // CR 700.4 + CR 700.9: "modified" adjective prefix. A permanent is modified
+    // if it has counters on it, is equipped, or is enchanted by an Aura its
+    // controller controls. Emits FilterProp::Modified (a first-class typed
+    // predicate — see `FilterProp::Modified` in types/ability.rs). Mirrors the
+    // "enchanted " / "equipped " adjective handling above: only consume when a
+    // type word follows, so bare "modified" alone doesn't hijack other
+    // contexts.
+    if let Ok((rest, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("modified ").parse(&lower[pos..])
+    {
+        if starts_with_type_phrase_lead(rest) {
+            properties.push(FilterProp::Modified);
+            pos += lower[pos..].len() - rest.len();
+        }
+    }
+
     // Handle color prefix: "white creature", "red spell", etc.
     let color_prop = parse_color_prefix(&lower[pos..]);
     if let Some((ref prop, color_len)) = color_prop {
@@ -1314,6 +1330,17 @@ pub(crate) fn starts_with_type_word(text: &str) -> bool {
             }
         }
     }
+    // CR 700.4 + CR 700.9: "modified <type>" adjective phrase leads a type
+    // phrase (e.g., "modified creatures you control"). Consume the adjective
+    // and verify a type word follows so the comma/and-list recursion can
+    // continue across the "modified" leg.
+    if let Ok((after_modified, _)) =
+        tag::<_, _, nom_language::error::VerboseError<&str>>("modified ").parse(text)
+    {
+        if starts_with_type_phrase_lead(after_modified) {
+            return true;
+        }
+    }
     false
 }
 
@@ -1364,26 +1391,73 @@ fn distribute_shared_properties(filter: TargetFilter, shared_props: &[FilterProp
     }
 }
 
+/// Returns true when the given property is leg-local (produced by an adjective
+/// prefix during `parse_type_phrase` scanning) and must NOT distribute back
+/// across earlier legs of a comma-OR list. Every other property is assumed to
+/// originate from a trailing-suffix parser and is eligible for distribution —
+/// e.g., "artifacts and creatures with mana value 2 or less" distributes
+/// `CmcLE` back onto the artifact leg, while "Auras, Equipment, and modified
+/// creatures you control" must NOT propagate `FilterProp::Modified` to the
+/// Aura/Equipment legs.
+fn is_adjective_prefix_prop(prop: &FilterProp) -> bool {
+    matches!(
+        prop,
+        // CR 700.4 + CR 700.9: "modified [type]" adjective prefix.
+        FilterProp::Modified
+            // CR 303.4 + CR 301.5: "enchanted [type]" / "equipped [type]".
+            | FilterProp::EnchantedBy
+            | FilterProp::EquippedBy
+            // CR 115.10a: "another [type]" / "other [type]".
+            | FilterProp::Another
+            // CR 110.5: "tapped [type]" / "untapped [type]".
+            | FilterProp::Tapped
+            | FilterProp::Untapped
+            // CR 509.1h: combat-status prefixes "attacking/blocking/unblocked".
+            | FilterProp::Attacking
+            | FilterProp::Blocking
+            | FilterProp::Unblocked
+            // CR 105.1 + CR 205.2: color / supertype adjectives.
+            | FilterProp::HasColor { .. }
+            | FilterProp::NotColor { .. }
+            | FilterProp::HasSupertype { .. }
+            | FilterProp::NotSupertype { .. }
+            // Token qualifier ("creature tokens").
+            | FilterProp::Token
+    )
+}
+
 /// Distribute trailing filter properties (CmcLE, CmcGE, PowerLE, PowerGE, etc.)
 /// from the last `Typed` element in an `Or` filter to all preceding `Typed`
 /// elements that lack a property of the same kind.
 /// Handles "artifacts and creatures with mana value 2 or less" where only the
 /// final type parses the "with mana value N or less/greater" suffix.
+///
+/// CR 700.4: Only distributes props produced by trailing-suffix parsers. Props
+/// produced by adjective prefixes (e.g. FilterProp::Modified from "modified
+/// creatures", FilterProp::EnchantedBy from "enchanted creature") are
+/// leg-local and retained only on their originating leg. See
+/// `is_trailing_suffix_prop`.
 fn distribute_properties_to_or(filter: TargetFilter) -> TargetFilter {
     let TargetFilter::Or { mut filters } = filter else {
         return filter;
     };
 
-    // Collect properties from the last Typed element
+    // Collect trailing-suffix properties from the last Typed element. Filter
+    // out adjective-prefix props (CR 700.4, etc.) that are leg-local.
     let trailing_props: Vec<FilterProp> = filters
         .iter()
         .rev()
         .find_map(|f| {
             if let TargetFilter::Typed(TypedFilter { properties, .. }) = f {
-                if properties.is_empty() {
+                let suffix_props: Vec<FilterProp> = properties
+                    .iter()
+                    .filter(|p| !is_adjective_prefix_prop(p))
+                    .cloned()
+                    .collect();
+                if suffix_props.is_empty() {
                     None
                 } else {
-                    Some(properties.clone())
+                    Some(suffix_props)
                 }
             } else {
                 None
@@ -3943,6 +4017,66 @@ mod tests {
                 );
             }
             other => panic!("Expected Or filter, got {:?}", other),
+        }
+        assert_eq!(rest.trim(), "");
+    }
+
+    #[test]
+    fn modified_adjective_creates_filter_prop() {
+        // CR 700.4 + CR 700.9: "modified creature" is a first-class adjective
+        // attaching FilterProp::Modified to a typed creature filter.
+        let (f, rest) = parse_type_phrase("modified creature you control");
+        assert_eq!(
+            f,
+            TargetFilter::Typed(
+                TypedFilter::creature()
+                    .controller(ControllerRef::You)
+                    .properties(vec![FilterProp::Modified])
+            )
+        );
+        assert_eq!(rest.trim(), "");
+    }
+
+    #[test]
+    fn modified_adjective_in_comma_list_silkguard() {
+        // CR 700.4 + CR 700.9: Silkguard — "Auras, Equipment, and modified
+        // creatures you control gain hexproof". The subject is a three-way OR
+        // of Aura (subtype), Equipment (subtype), and creature-with-Modified.
+        // The trailing "you control" controller scope distributes across all
+        // three legs via `distribute_controller_to_or`.
+        let (f, rest) = parse_type_phrase("auras, equipment, and modified creatures you control");
+        match f {
+            TargetFilter::Or { ref filters } => {
+                assert_eq!(filters.len(), 3, "expected 3-way OR, got {filters:#?}");
+                assert_eq!(
+                    filters[0],
+                    TargetFilter::Typed(
+                        TypedFilter::default()
+                            .subtype("Aura".to_string())
+                            .controller(ControllerRef::You)
+                    ),
+                    "leg 0 = Auras you control"
+                );
+                assert_eq!(
+                    filters[1],
+                    TargetFilter::Typed(
+                        TypedFilter::default()
+                            .subtype("Equipment".to_string())
+                            .controller(ControllerRef::You)
+                    ),
+                    "leg 1 = Equipment you control"
+                );
+                assert_eq!(
+                    filters[2],
+                    TargetFilter::Typed(
+                        TypedFilter::creature()
+                            .controller(ControllerRef::You)
+                            .properties(vec![FilterProp::Modified])
+                    ),
+                    "leg 2 = modified creatures you control"
+                );
+            }
+            other => panic!("Expected Or filter, got {other:?}"),
         }
         assert_eq!(rest.trim(), "");
     }

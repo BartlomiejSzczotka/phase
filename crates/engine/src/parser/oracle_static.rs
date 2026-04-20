@@ -3310,6 +3310,10 @@ fn parse_modified_creature_subject_filter(subject: &str) -> Option<TargetFilter>
         ("tapped creatures you control", FilterProp::Tapped),
         ("attacking creatures you control", FilterProp::Attacking),
         ("equipped creatures you control", FilterProp::EquippedBy),
+        // CR 700.9: "modified creatures you control" — permanents with
+        // counters, equipped, or enchanted by own-controlled Aura.
+        ("modified creatures you control", FilterProp::Modified),
+        ("modified creature you control", FilterProp::Modified),
     ];
 
     for (pattern, property) in controlled_patterns {
@@ -3326,6 +3330,38 @@ fn parse_modified_creature_subject_filter(subject: &str) -> Option<TargetFilter>
         return Some(TargetFilter::Typed(
             TypedFilter::creature().properties(vec![FilterProp::Attacking]),
         ));
+    }
+
+    // CR 700.9 + CR 700.4: "modified creature(s)" and "other modified
+    // creature(s) [you control]" — includes "Another" variant for triggers
+    // that exclude the source (Ondu Knotmaster, Golden-Tail Trainer).
+    let controller_suffix_patterns: [(&str, Option<ControllerRef>); 3] = [
+        (" you control", Some(ControllerRef::You)),
+        (" your opponents control", Some(ControllerRef::Opponent)),
+        ("", None),
+    ];
+    for (suffix, controller) in controller_suffix_patterns {
+        let Some(core) = tp.lower.strip_suffix(suffix) else {
+            continue;
+        };
+        for (phrase, has_other) in [
+            ("other modified creatures", true),
+            ("other modified creature", true),
+            ("modified creatures", false),
+            ("modified creature", false),
+        ] {
+            if core == phrase {
+                let mut props = vec![FilterProp::Modified];
+                if has_other {
+                    props.push(FilterProp::Another);
+                }
+                let mut typed = TypedFilter::creature().properties(props);
+                if let Some(c) = controller {
+                    typed = typed.controller(c);
+                }
+                return Some(TargetFilter::Typed(typed));
+            }
+        }
     }
 
     None
@@ -7416,13 +7452,32 @@ mod tests {
 
     #[test]
     fn static_can_attack_despite_defender_modified_creatures_they() {
-        // Subtype-filter subject + "they" pronoun (Guardians of Oboro pattern).
+        // CR 700.9 + CR 702.3b: "modified creatures you control" subject
+        // (Guardians of Oboro). Previously misparsed as Subtype("Modified");
+        // now correctly maps to FilterProp::Modified.
         let def = parse_static_line(
             "Modified creatures you control can attack as though they didn't have defender.",
         )
         .unwrap();
         assert_eq!(def.mode, StaticMode::CanAttackWithDefender);
-        assert!(matches!(def.affected, Some(TargetFilter::Typed(_))));
+        match def.affected {
+            Some(TargetFilter::Typed(ref tf)) => {
+                assert_eq!(tf.controller, Some(ControllerRef::You));
+                assert!(
+                    tf.properties.contains(&FilterProp::Modified),
+                    "expected FilterProp::Modified in {:?}",
+                    tf.properties
+                );
+                assert!(
+                    !tf.type_filters.iter().any(|t| matches!(
+                        t,
+                        TypeFilter::Subtype(s) if s.eq_ignore_ascii_case("modified")
+                    )),
+                    "must not emit Subtype(\"Modified\") (CR 205.3m — not a subtype)"
+                );
+            }
+            _ => panic!("expected TargetFilter::Typed"),
+        }
     }
 
     #[test]
@@ -12168,5 +12223,58 @@ mod tests {
             0,
             "literal SetPower/SetToughness must not be emitted for X/X"
         );
+    }
+
+    // CR 700.9: "Modified creatures you control have <keyword>" class.
+    // Previously misparsed as Subtype("Modified") (see commit body).
+    #[test]
+    fn static_modified_creatures_you_control_have_menace() {
+        let def = parse_static_line("Modified creatures you control have menace.").unwrap();
+        assert_eq!(def.mode, StaticMode::Continuous);
+        match def.affected {
+            Some(TargetFilter::Typed(ref tf)) => {
+                assert_eq!(tf.controller, Some(ControllerRef::You));
+                assert!(tf.properties.contains(&FilterProp::Modified));
+                assert!(
+                    !tf.type_filters.iter().any(|t| matches!(
+                        t,
+                        TypeFilter::Subtype(s) if s.eq_ignore_ascii_case("modified")
+                    )),
+                    "Modified must not be emitted as a subtype"
+                );
+                assert!(tf.type_filters.contains(&TypeFilter::Creature));
+            }
+            _ => panic!("expected TargetFilter::Typed"),
+        }
+    }
+
+    // CR 700.9: Ondu Knotmaster-style "other modified creature you control".
+    #[test]
+    fn parse_modified_creature_subject_other_variant() {
+        let filter = parse_modified_creature_subject_filter("other modified creature you control")
+            .expect("other modified creature you control must parse");
+        match filter {
+            TargetFilter::Typed(tf) => {
+                assert_eq!(tf.controller, Some(ControllerRef::You));
+                assert!(tf.properties.contains(&FilterProp::Modified));
+                assert!(tf.properties.contains(&FilterProp::Another));
+            }
+            _ => panic!("expected TargetFilter::Typed"),
+        }
+    }
+
+    // CR 700.9: Bare "modified creature" with no controller scope.
+    #[test]
+    fn parse_modified_creature_subject_unscoped() {
+        let filter = parse_modified_creature_subject_filter("modified creature")
+            .expect("modified creature must parse");
+        match filter {
+            TargetFilter::Typed(tf) => {
+                assert_eq!(tf.controller, None);
+                assert!(tf.properties.contains(&FilterProp::Modified));
+                assert!(!tf.properties.contains(&FilterProp::Another));
+            }
+            _ => panic!("expected TargetFilter::Typed"),
+        }
     }
 }

@@ -954,6 +954,9 @@ fn spell_record_matches_property(record: &SpellCastRecord, prop: &FilterProp) ->
         | FilterProp::IsChosenCardType
         | FilterProp::HasSingleTarget
         | FilterProp::Suspected
+        // CR 700.9: Modified requires on-battlefield attachments/counters,
+        // unavailable from a stack-snapshot record.
+        | FilterProp::Modified
         | FilterProp::ToughnessGTPower
         | FilterProp::DifferentNameFrom { .. }
         | FilterProp::InAnyZone { .. }
@@ -1282,6 +1285,29 @@ fn matches_filter_prop(
             .is_some_and(|chosen| obj.card_types.core_types.contains(chosen)),
         // CR 701.60b: Match creatures with the suspected designation.
         FilterProp::Suspected => obj.is_suspected,
+        // CR 700.9: A permanent is modified if it has one or more counters on
+        // it (CR 122), is equipped (CR 301.5), or is enchanted by an Aura
+        // controlled by its controller (CR 303.4).
+        FilterProp::Modified => {
+            let has_counter = obj.counters.values().any(|&n| n > 0);
+            let has_qualifying_attachment = obj.attachments.iter().any(|att_id| {
+                let Some(att) = state.objects.get(att_id) else {
+                    return false;
+                };
+                let is_equipment = att.card_types.subtypes.iter().any(|s| s == "Equipment");
+                if is_equipment {
+                    // CR 301.5: Equipment attachment alone is sufficient — no
+                    // controller constraint (a creature equipped by anyone's
+                    // Equipment is modified).
+                    return true;
+                }
+                let is_aura = att.card_types.subtypes.iter().any(|s| s == "Aura");
+                // CR 303.4: Aura counts only if controlled by the permanent's
+                // controller.
+                is_aura && att.controller == obj.controller
+            });
+            has_counter || has_qualifying_attachment
+        }
         // CR 510.1c: Match creatures whose toughness exceeds their power.
         FilterProp::ToughnessGTPower => {
             let power = obj.power.unwrap_or(0);
@@ -1482,6 +1508,9 @@ fn zone_change_record_matches_property(
         | FilterProp::IsChosenCardType
         | FilterProp::HasSingleTarget
         | FilterProp::Suspected
+        // CR 700.9: Modified is a live-battlefield predicate (counters +
+        // attachments) — a zone-change snapshot cannot represent it.
+        | FilterProp::Modified
         | FilterProp::DifferentNameFrom { .. }
         | FilterProp::InAnyZone { .. }
         | FilterProp::SharesQuality { .. }
@@ -2932,5 +2961,219 @@ mod tests {
             !matches_target_filter(&state, cre_plain, &filter, source),
             "non-enchanted creature should not match"
         );
+    }
+
+    // CR 700.9: A permanent is modified if it has one or more counters on it
+    // (CR 122), is equipped (CR 301.5), or is enchanted by an Aura controlled
+    // by its controller (CR 303.4).
+    #[test]
+    fn modified_matches_creature_with_counter() {
+        use crate::types::ability::TypedFilter;
+        use crate::types::counter::CounterType;
+        let mut state = GameState::new_two_player(42);
+
+        let source = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Source".into(),
+            Zone::Battlefield,
+        );
+
+        let cre = create_object(
+            &mut state,
+            CardId(200),
+            PlayerId(0),
+            "Bear".into(),
+            Zone::Battlefield,
+        );
+        {
+            let o = state.objects.get_mut(&cre).unwrap();
+            o.card_types.core_types.push(CoreType::Creature);
+            o.counters.insert(CounterType::Plus1Plus1, 1);
+        }
+
+        let filter =
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Modified]));
+        assert!(matches_target_filter(&state, cre, &filter, source));
+    }
+
+    // CR 301.5: Equipped creatures are modified regardless of Equipment controller.
+    #[test]
+    fn modified_matches_creature_with_equipment_any_controller() {
+        use crate::types::ability::TypedFilter;
+        let mut state = GameState::new_two_player(42);
+
+        let source = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Source".into(),
+            Zone::Battlefield,
+        );
+
+        // Creature controlled by P0, Equipment controlled by P1 — still modified.
+        let cre = create_object(
+            &mut state,
+            CardId(200),
+            PlayerId(0),
+            "Bear".into(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&cre)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let eq = create_object(
+            &mut state,
+            CardId(201),
+            PlayerId(1),
+            "Opp Sword".into(),
+            Zone::Battlefield,
+        );
+        {
+            let a = state.objects.get_mut(&eq).unwrap();
+            a.card_types.core_types.push(CoreType::Artifact);
+            a.card_types.subtypes.push("Equipment".into());
+            a.attached_to = Some(cre);
+        }
+        state.objects.get_mut(&cre).unwrap().attachments.push(eq);
+
+        let filter =
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Modified]));
+        assert!(matches_target_filter(&state, cre, &filter, source));
+    }
+
+    // CR 303.4: Aura makes a permanent modified only if controlled by the
+    // permanent's controller.
+    #[test]
+    fn modified_aura_requires_same_controller_as_permanent() {
+        use crate::types::ability::TypedFilter;
+        let mut state = GameState::new_two_player(42);
+
+        let source = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Source".into(),
+            Zone::Battlefield,
+        );
+
+        // Creature A: P0 creature with P0 Aura → modified.
+        let cre_a = create_object(
+            &mut state,
+            CardId(200),
+            PlayerId(0),
+            "Bear".into(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&cre_a)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let aura_a = create_object(
+            &mut state,
+            CardId(201),
+            PlayerId(0),
+            "Own Aura".into(),
+            Zone::Battlefield,
+        );
+        {
+            let a = state.objects.get_mut(&aura_a).unwrap();
+            a.card_types.core_types.push(CoreType::Enchantment);
+            a.card_types.subtypes.push("Aura".into());
+            a.attached_to = Some(cre_a);
+        }
+        state
+            .objects
+            .get_mut(&cre_a)
+            .unwrap()
+            .attachments
+            .push(aura_a);
+
+        // Creature B: P0 creature with P1 Aura → NOT modified.
+        let cre_b = create_object(
+            &mut state,
+            CardId(300),
+            PlayerId(0),
+            "Ox".into(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&cre_b)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+        let aura_b = create_object(
+            &mut state,
+            CardId(301),
+            PlayerId(1),
+            "Opp Aura".into(),
+            Zone::Battlefield,
+        );
+        {
+            let a = state.objects.get_mut(&aura_b).unwrap();
+            a.card_types.core_types.push(CoreType::Enchantment);
+            a.card_types.subtypes.push("Aura".into());
+            a.attached_to = Some(cre_b);
+        }
+        state
+            .objects
+            .get_mut(&cre_b)
+            .unwrap()
+            .attachments
+            .push(aura_b);
+
+        let filter =
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Modified]));
+        assert!(
+            matches_target_filter(&state, cre_a, &filter, source),
+            "own-controller aura makes creature modified"
+        );
+        assert!(
+            !matches_target_filter(&state, cre_b, &filter, source),
+            "opposing-controller aura does not make creature modified"
+        );
+    }
+
+    // CR 700.9: Vanilla creature (no counters, no attachments) is not modified.
+    #[test]
+    fn modified_does_not_match_vanilla_creature() {
+        use crate::types::ability::TypedFilter;
+        let mut state = GameState::new_two_player(42);
+
+        let source = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Source".into(),
+            Zone::Battlefield,
+        );
+        let cre = create_object(
+            &mut state,
+            CardId(200),
+            PlayerId(0),
+            "Bear".into(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&cre)
+            .unwrap()
+            .card_types
+            .core_types
+            .push(CoreType::Creature);
+
+        let filter =
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Modified]));
+        assert!(!matches_target_filter(&state, cre, &filter, source));
     }
 }

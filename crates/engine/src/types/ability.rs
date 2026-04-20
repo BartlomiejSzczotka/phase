@@ -1251,6 +1251,16 @@ pub enum FilterProp {
     AnyOf {
         props: Vec<FilterProp>,
     },
+    /// CR 700.9: A permanent is modified if it has one or more counters on it
+    /// (CR 122), if it is equipped (CR 301.5), or if it is enchanted by an Aura
+    /// that is controlled by that permanent's controller (CR 303.4).
+    ///
+    /// Modeled as a first-class typed predicate rather than an `AnyOf`
+    /// composite because CR 700.9 names "modified" as a distinct concept and
+    /// the three legs share a single runtime match arm. Parser dispatch emits
+    /// `FilterProp::Modified` for "modified creature(s)" subjects, analogous
+    /// to how `FilterProp::Suspected` models CR 701.60b's "suspected" status.
+    Modified,
     /// Matches objects whose name differs from all objects matching the inner filter
     /// that the evaluating controller controls on the battlefield.
     /// Used for "with a different name than each [type] you control" (e.g. Light-Paws).

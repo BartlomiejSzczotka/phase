@@ -317,6 +317,8 @@ fn fmt_typed_filter(tf: &TypedFilter) -> String {
                 parts.push(format!("non-{}", format!("{value}").to_lowercase()));
             }
             FilterProp::Suspected => parts.push("suspected".into()),
+            // CR 700.9
+            FilterProp::Modified => parts.push("modified".into()),
             FilterProp::ToughnessGTPower => parts.push("toughness > power".into()),
             FilterProp::DifferentNameFrom { .. } => parts.push("different name".into()),
             FilterProp::Other { value } => parts.push(value.clone()),

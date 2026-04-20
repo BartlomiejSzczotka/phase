@@ -9621,6 +9621,82 @@ mod tests {
     }
 
     #[test]
+    fn effect_silkguard_disjunctive_modified_hexproof_grant() {
+        // CR 700.4 + CR 700.9: Silkguard — "Auras, Equipment, and modified
+        // creatures you control gain hexproof until end of turn". The subject
+        // is a three-way OR of Aura subtype, Equipment subtype, and
+        // creature-with-Modified, scoped to `you control`. Produces a
+        // continuous hexproof-grant effect whose `affected` is the full Or
+        // filter. Leg-local FilterProp::Modified must not propagate to the
+        // Aura/Equipment legs.
+        let def = parse_effect_chain(
+            "Auras, Equipment, and modified creatures you control gain hexproof until end of turn",
+            AbilityKind::Spell,
+        );
+        let Effect::GenericEffect {
+            static_abilities, ..
+        } = &*def.effect
+        else {
+            panic!("expected GenericEffect, got {:?}", def.effect);
+        };
+        let static_ab = static_abilities
+            .iter()
+            .find(|s| {
+                s.modifications
+                    .contains(&ContinuousModification::AddKeyword {
+                        keyword: crate::types::keywords::Keyword::Hexproof,
+                    })
+            })
+            .expect("expected AddKeyword(Hexproof) modification");
+        let Some(TargetFilter::Or { filters }) = &static_ab.affected else {
+            panic!(
+                "expected Or filter in affected, got {:?}",
+                static_ab.affected
+            );
+        };
+        assert_eq!(filters.len(), 3, "expected 3-leg Or, got {filters:#?}");
+        let legs: Vec<&TypedFilter> = filters
+            .iter()
+            .map(|f| match f {
+                TargetFilter::Typed(tf) => tf,
+                other => panic!("expected Typed leg, got {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            legs[0].get_subtype(),
+            Some("Aura"),
+            "leg 0 must be Aura subtype"
+        );
+        assert_eq!(
+            legs[1].get_subtype(),
+            Some("Equipment"),
+            "leg 1 must be Equipment subtype"
+        );
+        assert!(
+            legs[2].type_filters.contains(&TypeFilter::Creature),
+            "leg 2 must be Creature"
+        );
+        assert!(
+            legs[2].properties.contains(&FilterProp::Modified),
+            "leg 2 must carry FilterProp::Modified"
+        );
+        // Leg-local Modified must NOT propagate to Aura/Equipment legs.
+        assert!(
+            !legs[0].properties.contains(&FilterProp::Modified),
+            "Aura leg must not carry FilterProp::Modified"
+        );
+        assert!(
+            !legs[1].properties.contains(&FilterProp::Modified),
+            "Equipment leg must not carry FilterProp::Modified"
+        );
+        // All three legs scoped to `you control`.
+        assert_eq!(legs[0].controller, Some(ControllerRef::You));
+        assert_eq!(legs[1].controller, Some(ControllerRef::You));
+        assert_eq!(legs[2].controller, Some(ControllerRef::You));
+        assert_eq!(def.duration, Some(Duration::UntilEndOfTurn));
+    }
+
+    #[test]
     fn effect_target_graveyard_spell_gains_flashback_until_end_of_turn() {
         let def = parse_effect_chain(
             "target instant or sorcery card in your graveyard gains flashback until end of turn. The flashback cost is equal to its mana cost.",
