@@ -279,6 +279,12 @@ const REPLACEMENT_CONTAINS_PATTERNS: &[&str] = &[
     "enters tapped",
     "enters untapped",
     "enter as a copy of",
+    // CR 614.1c: "As ~ enters, you may have it become a copy of …" (Cursed Mirror
+    // class). Shares parser/runtime with the "enter as a copy of" class but uses
+    // a different verb; classify as replacement so the line routes through
+    // `parse_replacement_line` even when its suffix carries a static keyword
+    // pattern like "has haste" that would otherwise classify it as static.
+    "become a copy of",
 ];
 
 pub(crate) fn is_replacement_pattern(lower: &str) -> bool {

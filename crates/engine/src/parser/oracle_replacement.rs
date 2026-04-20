@@ -11,6 +11,7 @@ use super::oracle_effect::{parse_effect_chain, try_parse_named_choice};
 use super::oracle_keyword::parse_keyword_from_oracle;
 use super::oracle_nom::bridge::nom_on_lower;
 use super::oracle_nom::condition::parse_inner_condition;
+use super::oracle_nom::duration::parse_duration;
 use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_quantity::capitalize_first;
 use super::oracle_static::split_keyword_list;
@@ -22,9 +23,9 @@ use super::oracle_util::{
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, ChoiceType, CombatDamageScope, Comparator,
     ContinuousModification, ControllerRef, CopyManaValueLimit, DamageModification,
-    DamageTargetFilter, Effect, FilterProp, ManaModification, PreventionAmount, QuantityExpr,
-    QuantityRef, ReplacementCondition, ReplacementDefinition, ReplacementMode, StaticCondition,
-    TargetFilter, TypeFilter, TypedFilter,
+    DamageTargetFilter, Duration, Effect, FilterProp, ManaModification, PreventionAmount,
+    QuantityExpr, QuantityRef, ReplacementCondition, ReplacementDefinition, ReplacementMode,
+    StaticCondition, TargetFilter, TypeFilter, TypedFilter,
 };
 use crate::types::card_type::CoreType;
 use crate::types::mana::{ManaColor, ManaType};
@@ -392,16 +393,23 @@ fn parse_clone_replacement(
     original_text: &str,
     card_name: &str,
 ) -> Option<ReplacementDefinition> {
-    // Must contain "enter as a copy of" (after self-ref normalization)
-    let (before_copy, copy_match) = nom_primitives::scan_split_at_phrase(norm_lower, |i| {
-        tag::<_, _, VerboseError<&str>>("enter as a copy of ").parse(i)
-    })?;
-    // Must be preceded by "you may have" for the optional framing
+    // CR 614.1c: Two grammatical framings of the same ETB-copy replacement class:
+    //   (a) "you may have ~ enter as a copy of ..."     (Phantasmal Image class)
+    //   (b) "as ~ enters, you may have it become a copy of ..." (Cursed Mirror class)
+    // Both converge on "… a copy of <filter> on the battlefield [<suffix>]". The
+    // verb phrase is the only grammatical difference, so we split on it via alt()
+    // and share every downstream step (filter, zone, duration, except-clause).
+    let (before_copy, after_copy) = find_copy_verb(norm_lower)?;
+
+    // Must be preceded by "you may have" for the optional framing (CR 614.1c).
+    // Both framings share this prefix — Phantasmal Image: "You may have ~ enter…",
+    // Cursed Mirror: "As ~ enters, you may have it become…". The guard prevents
+    // accidental matches on ability text containing "become a copy of" outside
+    // an ETB framing (none known today but defensive against future prints).
     if !nom_primitives::scan_contains(before_copy, "you may have") {
         return None;
     }
 
-    let after_copy = &copy_match["enter as a copy of ".len()..];
     // CR 400.1: Match any supported source zone. Battlefield is the existing
     // Clone/Phantasmal Image class; graveyard (Superior Spider-Man) extends the
     // same building block. The zone flows onto the filter's `FilterProp::InZone`
@@ -442,16 +450,19 @@ fn parse_clone_replacement(
     //
     // The suffix may also carry a trailing "When you do, ..." reflexive trigger
     // clause past the sentence boundary — parsed separately into a sub_ability.
-    let (mana_value_limit, additional_modifications, post_period) =
+    let (mana_value_limit, duration, additional_modifications, post_period) =
         parse_clone_suffix(suffix.trim(), card_name);
 
     // CR 707.9a: The copy effect uses the chosen object's copiable values.
     // This is NOT targeting (hexproof/shroud don't apply).
+    // CR 611.3 + CR 613.1a: When the suffix carries a duration phrase
+    // ("until end of turn"), the copy effect is a continuous effect that ends
+    // when the duration expires (Cursed Mirror class). Permanent otherwise.
     let mut copy_effect = AbilityDefinition::new(
         AbilityKind::Spell,
         Effect::BecomeCopy {
             target: filter,
-            duration: None,
+            duration,
             mana_value_limit,
             additional_modifications,
         },
@@ -474,6 +485,34 @@ fn parse_clone_replacement(
             .valid_card(TargetFilter::SelfRef)
             .description(original_text.to_string()),
     )
+}
+
+/// Locate the clone-verb phrase in a normalised Oracle line and return
+/// `(before_verb, after_verb)` around it.
+///
+/// Recognises both grammatical framings of the ETB-copy replacement class:
+/// - `"enter as a copy of "` (Phantasmal Image / Phyrexian Metamorph / …)
+/// - `"become a copy of "` (Cursed Mirror / future ETB-copy prints using
+///   the "as this enters, …, become a copy of" shape)
+///
+/// The verbs are leaf alternatives with no shared prefix, so each is scanned
+/// independently and the earliest match wins — this mirrors the earliest-match
+/// discipline used by `split_on_clone_source_zone` / `split_on_first_of`.
+fn find_copy_verb(norm_lower: &str) -> Option<(&str, &str)> {
+    let candidates: &[&str] = &["enter as a copy of ", "become a copy of "];
+    let mut best: Option<(usize, usize)> = None;
+    for phrase in candidates {
+        if let Some((before, _)) = nom_primitives::scan_split_at_phrase(norm_lower, |i| {
+            tag::<_, _, VerboseError<&str>>(*phrase).parse(i)
+        }) {
+            let pos = before.len();
+            if best.is_none_or(|(bp, _)| pos < bp) {
+                best = Some((pos, phrase.len()));
+            }
+        }
+    }
+    let (pos, len) = best?;
+    Some((&norm_lower[..pos], &norm_lower[pos + len..]))
 }
 
 /// Split the post-"enter as a copy of " remainder into (type_text, suffix, source_zone).
@@ -585,15 +624,33 @@ fn parse_clone_suffix<'a>(
     card_name: &str,
 ) -> (
     Option<CopyManaValueLimit>,
+    Option<Duration>,
     Vec<ContinuousModification>,
     &'a str,
 ) {
     let (remaining, mana_value_limit) =
         parse_mana_value_limit_clause(suffix).unwrap_or((suffix, None));
+    // CR 611.3 + CR 613.1a: "until end of turn" (and other duration phrases from
+    // `oracle_nom::duration::parse_duration`) qualify the copy effect to expire
+    // at cleanup. Appears between the zone clause and the except clause on
+    // Cursed Mirror; absent on Phantasmal Image / Clever Impersonator (permanent).
+    let (remaining, duration) = parse_leading_duration(remaining);
     let (post_except, modifications) =
         parse_except_clause(remaining, card_name).unwrap_or((remaining, Vec::new()));
 
-    (mana_value_limit, modifications, post_except)
+    (mana_value_limit, duration, modifications, post_except)
+}
+
+/// Parse an optional leading duration phrase off the clone-replacement suffix.
+/// The caller may have already trimmed leading whitespace, so this consumes an
+/// optional leading space before delegating to the shared `parse_duration` nom
+/// combinator. Fail-soft: returns `(input, None)` when no duration is present.
+fn parse_leading_duration(suffix: &str) -> (&str, Option<Duration>) {
+    let body = suffix.strip_prefix(' ').unwrap_or(suffix);
+    match parse_duration(body) {
+        Ok((rest, d)) => (rest, Some(d)),
+        Err(_) => (suffix, None),
+    }
 }
 
 /// CR 614.1c: " with mana value less than or equal to the amount of mana spent to cast {self_ref}".
@@ -4189,11 +4246,79 @@ mod tests {
     }
 
     #[test]
+    fn cursed_mirror_as_enters_become_copy_until_end_of_turn_with_haste() {
+        // CR 614.1c + CR 707.9a + CR 611.3:
+        // "As this artifact enters, you may have it become a copy of any
+        // creature on the battlefield until end of turn, except it has haste."
+        // Must produce an Optional Moved replacement with:
+        //   - target: any creature on the battlefield
+        //   - duration: Some(UntilEndOfTurn)
+        //   - additional_modifications: [AddKeyword { Haste }]
+        let def = parse_replacement_line(
+            "As this artifact enters, you may have it become a copy of any creature on the battlefield until end of turn, except it has haste.",
+            "Cursed Mirror",
+        )
+        .unwrap();
+        assert_eq!(def.event, ReplacementEvent::Moved);
+        assert!(matches!(
+            def.mode,
+            ReplacementMode::Optional { decline: None }
+        ));
+        let execute = def.execute.as_ref().unwrap();
+        match &*execute.effect {
+            Effect::BecomeCopy {
+                target,
+                duration,
+                mana_value_limit,
+                additional_modifications,
+            } => {
+                // Creature filter on the battlefield (default zone — no InZone).
+                match target {
+                    TargetFilter::Typed(tf) => {
+                        assert!(tf.type_filters.contains(&TypeFilter::Creature));
+                    }
+                    other => panic!("Expected Typed creature filter, got {other:?}"),
+                }
+                // CR 611.3 + CR 613.1a: until-EOT duration.
+                assert_eq!(*duration, Some(Duration::UntilEndOfTurn));
+                assert_eq!(*mana_value_limit, None);
+                // CR 707.9a: "except it has haste" → AddKeyword(Haste).
+                assert!(
+                    additional_modifications.contains(&ContinuousModification::AddKeyword {
+                        keyword: Keyword::Haste,
+                    }),
+                    "expected AddKeyword(Haste), got {additional_modifications:?}"
+                );
+            }
+            other => panic!("Expected BecomeCopy, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn phantasmal_image_clone_has_no_duration() {
+        // Regression: the Phantasmal Image class uses "enter as a copy of" and
+        // must continue producing a permanent copy (duration: None) after the
+        // verb split was generalised to also accept "become a copy of".
+        let def = parse_replacement_line(
+            "You may have this creature enter as a copy of any creature on the battlefield.",
+            "Clone",
+        )
+        .unwrap();
+        let execute = def.execute.as_ref().unwrap();
+        match &*execute.effect {
+            Effect::BecomeCopy { duration, .. } => {
+                assert_eq!(*duration, None, "Clone must produce a permanent copy");
+            }
+            other => panic!("Expected BecomeCopy, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn clone_suffix_multiple_keywords_produce_multiple_add_keyword() {
         // Hypothetical clone: "except it's a Spirit in addition to its other
         // types and it has flying, trample, and lifelink." Each keyword must
         // become an `AddKeyword` modification.
-        let (mana_value_limit, modifications, _post) = parse_clone_suffix(
+        let (mana_value_limit, _duration, modifications, _post) = parse_clone_suffix(
             "with mana value less than or equal to the amount of mana spent to cast ~, except it's a spirit in addition to its other types and it has flying, trample, and lifelink.",
             "Hypothetical Clone",
         );
