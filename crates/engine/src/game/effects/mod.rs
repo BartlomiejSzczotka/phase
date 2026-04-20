@@ -1361,6 +1361,10 @@ pub fn resolve_ability_chain(
         {
             // CR 309.4c + CR 607.1: Forward exiled card IDs to sub-ability
             // (linked ability pair — second refers to cards exiled by the first).
+            // Skipped when the sub explicitly references the chain-unified
+            // tracked set via `TargetFilter::TrackedSet` (compound-exile grants
+            // like Suspend Aggression must iterate the full set, not just the
+            // ExileTop results).
             let mut sub_with_targets = sub.as_ref().clone();
             sub_with_targets.targets = state
                 .last_zone_changed_ids
