@@ -5011,4 +5011,158 @@ pub mod tests {
             "intervening non-X spell must not reset qualifying count"
         );
     }
+
+    // SOC Tier 2.6: "Whenever you create one or more creature tokens" —
+    // batched token-creation trigger (CR 111.1 + CR 603.2c / 603.10c).
+    // Build a Staff-like source, emit 2 TokenCreated events for creature
+    // tokens controlled by P0, and verify the trigger fires exactly once.
+    fn make_token_created_trigger(
+        type_filter: Option<TargetFilter>,
+        controller_scope: Option<TargetFilter>,
+    ) -> TriggerDefinition {
+        let mut def = TriggerDefinition::new(TriggerMode::TokenCreated)
+            .trigger_zones(vec![Zone::Battlefield])
+            .execute(AbilityDefinition::new(
+                AbilityKind::Database,
+                Effect::Draw {
+                    count: QuantityExpr::Fixed { value: 1 },
+                },
+            ));
+        def.valid_card = type_filter;
+        def.valid_target = controller_scope;
+        def.batched = true;
+        def
+    }
+
+    fn add_token_on_battlefield(
+        state: &mut GameState,
+        controller: PlayerId,
+        core_types: Vec<CoreType>,
+    ) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(500),
+            controller,
+            "Spirit Token".to_string(),
+            Zone::Battlefield,
+        );
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.controller = controller;
+        obj.card_types.core_types = core_types;
+        obj.entered_battlefield_turn = Some(1);
+        id
+    }
+
+    #[test]
+    fn tokens_created_trigger_fires_once_for_two_creature_tokens() {
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Staff of the Storyteller".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.entered_battlefield_turn = Some(1);
+            obj.trigger_definitions.push(make_token_created_trigger(
+                Some(TargetFilter::Typed(
+                    TypedFilter::default().with_type(TypeFilter::Creature),
+                )),
+                Some(TargetFilter::Controller),
+            ));
+        }
+
+        let tok1 = add_token_on_battlefield(&mut state, PlayerId(0), vec![CoreType::Creature]);
+        let tok2 = add_token_on_battlefield(&mut state, PlayerId(0), vec![CoreType::Creature]);
+
+        let events = vec![
+            GameEvent::TokenCreated {
+                object_id: tok1,
+                name: "Spirit".to_string(),
+            },
+            GameEvent::TokenCreated {
+                object_id: tok2,
+                name: "Spirit".to_string(),
+            },
+        ];
+
+        process_triggers(&mut state, &events);
+        assert_eq!(
+            state.stack.len(),
+            1,
+            "batched trigger must fire once per pass even with 2 token-creation events"
+        );
+    }
+
+    #[test]
+    fn tokens_created_trigger_rejects_noncreature_token() {
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Staff of the Storyteller".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.entered_battlefield_turn = Some(1);
+            obj.trigger_definitions.push(make_token_created_trigger(
+                Some(TargetFilter::Typed(
+                    TypedFilter::default().with_type(TypeFilter::Creature),
+                )),
+                Some(TargetFilter::Controller),
+            ));
+        }
+
+        // Artifact token only — "creature tokens" filter must reject.
+        let tok = add_token_on_battlefield(&mut state, PlayerId(0), vec![CoreType::Artifact]);
+        let events = vec![GameEvent::TokenCreated {
+            object_id: tok,
+            name: "Treasure".to_string(),
+        }];
+
+        process_triggers(&mut state, &events);
+        assert_eq!(state.stack.len(), 0);
+    }
+
+    #[test]
+    fn tokens_created_trigger_rejects_opponent_creator() {
+        let mut state = setup();
+        state.active_player = PlayerId(0);
+
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Staff of the Storyteller".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&source).unwrap();
+            obj.entered_battlefield_turn = Some(1);
+            obj.trigger_definitions.push(make_token_created_trigger(
+                Some(TargetFilter::Typed(
+                    TypedFilter::default().with_type(TypeFilter::Creature),
+                )),
+                Some(TargetFilter::Controller),
+            ));
+        }
+
+        // Opponent-controlled creature token — Controller-scope must reject.
+        let tok = add_token_on_battlefield(&mut state, PlayerId(1), vec![CoreType::Creature]);
+        let events = vec![GameEvent::TokenCreated {
+            object_id: tok,
+            name: "Zombie".to_string(),
+        }];
+
+        process_triggers(&mut state, &events);
+        assert_eq!(state.stack.len(), 0);
+    }
 }

@@ -1150,13 +1150,30 @@ pub(super) fn match_destroyed(
     }
 }
 
+// CR 111.1 + CR 603.2: TokenCreated triggers fire on token-creation events.
+// The token is already on the battlefield when the event is emitted (CR 111.7),
+// so `state.objects[object_id]` carries the token's real controller and card
+// types — used to evaluate the trigger's `valid_card` (type filter) and
+// `valid_target` (controller-scope filter, e.g., `ControllerRef::You`).
 pub(super) fn match_token_created(
     event: &GameEvent,
-    _trigger: &TriggerDefinition,
-    _source_id: ObjectId,
-    _state: &GameState,
+    trigger: &TriggerDefinition,
+    source_id: ObjectId,
+    state: &GameState,
 ) -> bool {
-    matches!(event, GameEvent::TokenCreated { .. })
+    let GameEvent::TokenCreated { object_id, .. } = event else {
+        return false;
+    };
+    if !valid_card_matches(trigger, state, *object_id, source_id) {
+        return false;
+    }
+    // CR 111.10: The token's controller is the player who created it.
+    if let Some(token_controller) = state.objects.get(object_id).map(|o| o.controller) {
+        if !valid_player_matches(trigger, state, token_controller, source_id) {
+            return false;
+        }
+    }
+    true
 }
 
 pub(super) fn match_turn_begin(

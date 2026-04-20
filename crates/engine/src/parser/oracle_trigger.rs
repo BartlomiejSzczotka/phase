@@ -2297,6 +2297,10 @@ fn try_parse_special_trigger_pattern(lower: &str) -> Option<(TriggerMode, Trigge
         return Some(result);
     }
 
+    if let Some(result) = try_parse_one_or_more_tokens_created(lower) {
+        return Some(result);
+    }
+
     if let Some(result) = try_parse_one_or_more_leave_graveyard(lower) {
         return Some(result);
     }
@@ -2562,6 +2566,62 @@ fn try_parse_one_or_more_die(lower: &str) -> Option<(TriggerMode, TriggerDefinit
     }
 
     None
+}
+
+/// Parse "whenever you create one or more [type-phrase] tokens" patterns.
+/// CR 111.1 + CR 603.10c: Token creation is its own event (tokens come into
+/// existence directly on the battlefield); "one or more" triggers fire once
+/// per batch of simultaneous token-creation events.
+///
+/// Supported shapes:
+/// - "whenever you create one or more creature tokens"
+/// - "whenever you create one or more tokens"
+/// - "whenever you create one or more artifact tokens"
+///
+/// The type-phrase (e.g., "creature") is parsed into a `TargetFilter` stored
+/// on `valid_card`; controller ("you") is stored on `valid_target` via the
+/// shared Controller scope pattern. The matcher evaluates both against the
+/// `TokenCreated` event's `object_id`.
+fn try_parse_one_or_more_tokens_created(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+    let (_, rest) = alt((
+        value(
+            (),
+            tag::<_, _, VerboseError<&str>>("whenever you create one or more "),
+        ),
+        value(
+            (),
+            tag::<_, _, VerboseError<&str>>("when you create one or more "),
+        ),
+    ))
+    .parse(lower)
+    .map(|(r, _)| ((), r))
+    .ok()?;
+
+    // Accept bare "tokens"/"token" (no type phrase) as well as "[type] tokens".
+    let subject_text = if rest == "tokens" || rest == "token" {
+        ""
+    } else {
+        rest.strip_suffix(" tokens")
+            .or_else(|| rest.strip_suffix(" token"))?
+    };
+
+    // Bare "tokens" (no type phrase) → match any token.
+    let valid_card = if subject_text.trim().is_empty() {
+        None
+    } else {
+        let (filter, remainder) = parse_type_phrase(subject_text);
+        if !remainder.trim().is_empty() {
+            return None;
+        }
+        Some(filter)
+    };
+
+    let mut def = make_base();
+    def.mode = TriggerMode::TokenCreated;
+    def.valid_card = valid_card;
+    def.valid_target = Some(TargetFilter::Controller);
+    def.batched = true;
+    Some((TriggerMode::TokenCreated, def))
 }
 
 /// Parse "whenever one or more [subject] cards leave your graveyard" patterns.
@@ -8983,5 +9043,46 @@ mod tests {
             "Stensia, Condemner's Keep",
         );
         assert_eq!(def.constraint, Some(TriggerConstraint::OncePerTurn));
+    }
+
+    // SOC Tier 2.6: "Whenever you create one or more creature tokens" —
+    // batched token-creation trigger with type + controller filters.
+    #[test]
+    fn trigger_one_or_more_creature_tokens_created() {
+        let def = parse_trigger_line(
+            "Whenever you create one or more creature tokens, put a story counter on this artifact.",
+            "Staff of the Storyteller",
+        );
+        assert_eq!(def.mode, TriggerMode::TokenCreated);
+        assert!(def.batched);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+        assert!(
+            def.valid_card.is_some(),
+            "creature-type filter should be captured on valid_card"
+        );
+        assert!(def.execute.is_some());
+    }
+
+    #[test]
+    fn trigger_one_or_more_tokens_created_bare() {
+        let def = parse_trigger_line(
+            "Whenever you create one or more tokens, draw a card.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::TokenCreated);
+        assert!(def.batched);
+        assert_eq!(def.valid_card, None);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+    }
+
+    #[test]
+    fn trigger_one_or_more_artifact_tokens_created() {
+        let def = parse_trigger_line(
+            "Whenever you create one or more artifact tokens, you gain 1 life.",
+            "Test Card",
+        );
+        assert_eq!(def.mode, TriggerMode::TokenCreated);
+        assert!(def.batched);
+        assert!(def.valid_card.is_some());
     }
 }
