@@ -119,46 +119,9 @@ fn matches_player_scope(
     player: PlayerId,
     scope: &PlayerFilter,
     controller: PlayerId,
+    source_id: ObjectId,
 ) -> bool {
-    state
-        .players
-        .iter()
-        .find(|p| p.id == player)
-        .is_some_and(|p| {
-            !p.is_eliminated
-                && match scope {
-                    PlayerFilter::Controller => p.id == controller,
-                    PlayerFilter::All => true,
-                    PlayerFilter::Opponent => p.id != controller,
-                    PlayerFilter::OpponentLostLife => {
-                        p.id != controller && p.life_lost_this_turn > 0
-                    }
-                    PlayerFilter::OpponentGainedLife => {
-                        p.id != controller && p.life_gained_this_turn > 0
-                    }
-                    PlayerFilter::HighestSpeed => {
-                        let highest_speed = state
-                            .players
-                            .iter()
-                            .filter(|player| !player.is_eliminated)
-                            .map(|player| player.speed.unwrap_or(0))
-                            .max()
-                            .unwrap_or(0);
-                        p.speed.unwrap_or(0) == highest_speed
-                    }
-                    PlayerFilter::ZoneChangedThisWay => state
-                        .last_zone_changed_ids
-                        .iter()
-                        .any(|id| state.objects.get(id).is_some_and(|obj| obj.owner == p.id)),
-                    // CR 603.7c: Match only the triggering player extracted from
-                    // `state.current_trigger_event`.
-                    PlayerFilter::TriggeringPlayer => state
-                        .current_trigger_event
-                        .as_ref()
-                        .and_then(|e| crate::game::targeting::extract_player_from_event(e, state))
-                        .is_some_and(|pid| pid == p.id),
-                }
-        })
+    crate::game::players::matches_scope_filter(state, player, scope, controller, source_id)
 }
 
 /// Record the outer effect's `EffectKind` on the current `pending_continuation`
@@ -794,7 +757,7 @@ pub fn resolve_ability_chain(
         let controller = ability.controller;
         let matching_players: Vec<PlayerId> = crate::game::players::apnap_order(state)
             .into_iter()
-            .filter(|pid| matches_player_scope(state, *pid, scope, controller))
+            .filter(|pid| matches_player_scope(state, *pid, scope, controller, ability.source_id))
             .collect();
 
         let initial_waiting_for = state.waiting_for.clone();
@@ -1789,10 +1752,13 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        AbilityDefinition, AbilityKind, CastingPermission, DelayedTriggerCondition, Duration,
-        PlayerFilter, QuantityExpr, SpellContext, TargetFilter, TargetRef,
+        AbilityDefinition, AbilityKind, CastingPermission, ControllerRef, DelayedTriggerCondition,
+        Duration, FilterProp, PlayerFilter, PtValue, QuantityExpr, QuantityRef, SpellContext,
+        TargetFilter, TargetRef, TypedFilter,
     };
+    use crate::types::game_state::{ExileLink, ExileLinkKind};
     use crate::types::identifiers::{CardId, ObjectId, TrackedSetId};
+    use crate::types::mana::ManaColor;
     use crate::types::mana::ManaCost;
     use crate::types::phase::Phase;
     use crate::types::player::PlayerId;
@@ -2882,6 +2848,107 @@ mod tests {
         // Both players owned zone-changed objects, so both draw
         assert_eq!(state.players[0].hand.len(), 1, "player 0 should have drawn");
         assert_eq!(state.players[1].hand.len(), 1, "player 1 should have drawn");
+    }
+
+    #[test]
+    fn player_scope_owners_of_cards_exiled_by_source_creates_owner_sized_tokens() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Skyclave Apparition".to_string(),
+            Zone::Battlefield,
+        );
+
+        for (card_id, owner, mv) in [(101, PlayerId(0), 2u32), (102, PlayerId(0), 3), (103, PlayerId(1), 4)] {
+            let exiled = create_object(
+                &mut state,
+                CardId(card_id),
+                owner,
+                format!("Exiled {card_id}"),
+                Zone::Exile,
+            );
+            state.objects.get_mut(&exiled).unwrap().mana_cost = ManaCost::generic(mv);
+            state.exile_links.push(ExileLink {
+                source_id: source,
+                exiled_id: exiled,
+                kind: ExileLinkKind::TrackedBySource,
+            });
+        }
+
+        let mut ability = ResolvedAbility::new(
+            Effect::Token {
+                name: "Illusion".to_string(),
+                power: PtValue::Quantity(QuantityExpr::Ref {
+                    qty: QuantityRef::Aggregate {
+                        function: crate::types::ability::AggregateFunction::Sum,
+                        property: crate::types::ability::ObjectProperty::ManaValue,
+                        filter: TargetFilter::And {
+                            filters: vec![
+                                TargetFilter::ExiledBySource,
+                                TargetFilter::Typed(TypedFilter::default().properties(vec![
+                                    FilterProp::Owned {
+                                        controller: ControllerRef::You,
+                                    },
+                                ])),
+                            ],
+                        },
+                    },
+                }),
+                toughness: PtValue::Quantity(QuantityExpr::Ref {
+                    qty: QuantityRef::Aggregate {
+                        function: crate::types::ability::AggregateFunction::Sum,
+                        property: crate::types::ability::ObjectProperty::ManaValue,
+                        filter: TargetFilter::And {
+                            filters: vec![
+                                TargetFilter::ExiledBySource,
+                                TargetFilter::Typed(TypedFilter::default().properties(vec![
+                                    FilterProp::Owned {
+                                        controller: ControllerRef::You,
+                                    },
+                                ])),
+                            ],
+                        },
+                    },
+                }),
+                types: vec!["Creature".to_string(), "Illusion".to_string()],
+                colors: vec![ManaColor::Blue],
+                keywords: vec![],
+                tapped: false,
+                count: QuantityExpr::Fixed { value: 1 },
+                owner: TargetFilter::Controller,
+                attach_to: None,
+                enters_attacking: false,
+                supertypes: vec![],
+                static_abilities: vec![],
+                enter_with_counters: vec![],
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.player_scope = Some(PlayerFilter::OwnersOfCardsExiledBySource);
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        let mut created: Vec<_> = state
+            .battlefield
+            .iter()
+            .filter_map(|id| state.objects.get(id))
+            .filter(|object| object.is_token)
+            .map(|object| (object.owner, object.controller, object.power, object.toughness))
+            .collect();
+        created.sort_by_key(|entry| entry.0);
+
+        assert_eq!(
+            created,
+            vec![
+                (PlayerId(0), PlayerId(0), Some(5), Some(5)),
+                (PlayerId(1), PlayerId(1), Some(4), Some(4)),
+            ]
+        );
     }
 
     #[test]

@@ -19,8 +19,8 @@ use crate::parser::oracle_effect::counter::normalize_counter_type;
 use crate::parser::oracle_target::parse_type_phrase;
 use crate::parser::oracle_util::parse_number;
 use crate::types::ability::{
-    AggregateFunction, CountScope, ObjectProperty, PlayerFilter, QuantityExpr, QuantityRef,
-    TargetFilter, ZoneRef,
+    AggregateFunction, ControllerRef, CountScope, FilterProp, ObjectProperty, PlayerFilter,
+    QuantityExpr, QuantityRef, TargetFilter, TypedFilter, ZoneRef,
 };
 use crate::types::mana::ManaColor;
 
@@ -199,6 +199,45 @@ pub(crate) fn capitalize_first(s: &str) -> String {
     }
 }
 
+fn linked_exile_owned_by_controller_filter() -> TargetFilter {
+    TargetFilter::And {
+        filters: vec![
+            TargetFilter::ExiledBySource,
+            TargetFilter::Typed(TypedFilter::default().properties(vec![FilterProp::Owned {
+                controller: ControllerRef::You,
+            }])),
+        ],
+    }
+}
+
+fn parse_linked_exile_mana_value_quantity(text: &str) -> Option<QuantityExpr> {
+    let lower = text.to_lowercase();
+    let matched = alt((
+        value(
+            (),
+            tag::<_, _, VerboseError<&str>>("the mana value of the exiled card"),
+        ),
+        value((), tag("the converted mana cost of the exiled card")),
+        value((), tag("the exiled card's mana value")),
+        value((), tag("the exiled card's converted mana cost")),
+    ))
+    .parse(lower.as_str())
+    .ok()
+    .is_some_and(|(rest, _)| rest.is_empty());
+
+    if !matched {
+        return None;
+    }
+
+    Some(QuantityExpr::Ref {
+        qty: QuantityRef::Aggregate {
+            function: AggregateFunction::Sum,
+            property: ObjectProperty::ManaValue,
+            filter: linked_exile_owned_by_controller_filter(),
+        },
+    })
+}
+
 /// Parse a CDA quantity phrase into a `QuantityExpr`.
 /// Handles patterns like:
 /// - "the number of creatures you control"
@@ -210,6 +249,10 @@ pub(crate) fn capitalize_first(s: &str) -> String {
 /// - "N plus the number of X"
 pub(crate) fn parse_cda_quantity(text: &str) -> Option<QuantityExpr> {
     let text = text.trim().trim_end_matches('.');
+
+    if let Some(qty) = parse_linked_exile_mana_value_quantity(text) {
+        return Some(qty);
+    }
 
     // "twice [inner]" or "three times [inner]" → Multiply { factor, inner }
     if let Ok((rest, factor)) = alt((
@@ -905,6 +948,37 @@ mod tests {
                 }
             }
         ));
+    }
+
+    #[test]
+    fn cda_quantity_mana_value_of_the_exiled_card_uses_linked_exile_aggregate() {
+        let qty = parse_cda_quantity("the mana value of the exiled card").unwrap();
+        match qty {
+            QuantityExpr::Ref {
+                qty:
+                    QuantityRef::Aggregate {
+                        function: AggregateFunction::Sum,
+                        property: ObjectProperty::ManaValue,
+                        filter: TargetFilter::And { filters },
+                    },
+            } => {
+                assert!(
+                    filters.iter().any(|filter| matches!(filter, TargetFilter::ExiledBySource)),
+                    "expected ExiledBySource filter, got {filters:?}"
+                );
+                assert!(filters.iter().any(|filter| matches!(
+                    filter,
+                    TargetFilter::Typed(typed)
+                        if typed.properties
+                            == vec![FilterProp::Owned {
+                                controller: ControllerRef::You,
+                            }]
+                )));
+            }
+            other => panic!(
+                "expected Aggregate(Sum, ManaValue) for linked-exile owner quantity, got {other:?}"
+            ),
+        }
     }
 
     #[test]

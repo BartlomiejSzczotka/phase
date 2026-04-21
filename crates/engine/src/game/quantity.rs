@@ -311,7 +311,9 @@ fn resolve_ref(
                 .filter(|&&id| matches_target_filter(state, id, filter, &filter_ctx))
                 .count() as i32
         }
-        QuantityRef::PlayerCount { filter } => resolve_player_count(state, filter, controller),
+        QuantityRef::PlayerCount { filter } => {
+            resolve_player_count(state, filter, controller, source_id)
+        }
         QuantityRef::CountersOnSelf { counter_type } => state
             .objects
             .get(&source_id)
@@ -975,41 +977,19 @@ pub(crate) fn resolve_player_count(
     state: &GameState,
     filter: &PlayerFilter,
     controller: PlayerId,
+    source_id: ObjectId,
 ) -> i32 {
     state
         .players
         .iter()
         .filter(|p| {
-            !p.is_eliminated
-                && match filter {
-                    PlayerFilter::Controller => p.id == controller,
-                    PlayerFilter::Opponent => p.id != controller,
-                    PlayerFilter::OpponentLostLife => {
-                        p.id != controller && p.life_lost_this_turn > 0
-                    }
-                    PlayerFilter::OpponentGainedLife => {
-                        p.id != controller && p.life_gained_this_turn > 0
-                    }
-                    PlayerFilter::All => true,
-                    PlayerFilter::HighestSpeed => {
-                        let highest_speed = state
-                            .players
-                            .iter()
-                            .map(|player| effective_speed(state, player.id))
-                            .max()
-                            .unwrap_or(0);
-                        effective_speed(state, p.id) == highest_speed
-                    }
-                    PlayerFilter::ZoneChangedThisWay => state
-                        .last_zone_changed_ids
-                        .iter()
-                        .any(|id| state.objects.get(id).is_some_and(|obj| obj.owner == p.id)),
-                    PlayerFilter::TriggeringPlayer => state
-                        .current_trigger_event
-                        .as_ref()
-                        .and_then(|e| crate::game::targeting::extract_player_from_event(e, state))
-                        .is_some_and(|pid| pid == p.id),
-                }
+            crate::game::players::matches_scope_filter(
+                state,
+                p.id,
+                filter,
+                controller,
+                source_id,
+            )
         })
         .count() as i32
 }
@@ -1021,7 +1001,8 @@ mod tests {
     use super::*;
     use crate::game::zones::create_object;
     use crate::types::ability::{
-        ControllerRef, Effect, FilterProp, TargetFilter, TypeFilter, TypedFilter,
+        AggregateFunction, ControllerRef, Effect, FilterProp, ObjectProperty, TargetFilter,
+        TypeFilter, TypedFilter,
     };
     use crate::types::card_type::{CoreType, Supertype};
     use crate::types::counter::CounterType;
@@ -1966,6 +1947,55 @@ mod tests {
             },
         };
         assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), source), 7);
+    }
+
+    #[test]
+    fn resolve_aggregate_sum_mana_value_of_owned_cards_exiled_by_source() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(30),
+            PlayerId(0),
+            "Source".to_string(),
+            Zone::Battlefield,
+        );
+
+        for (card_id, owner, mv) in [(31, PlayerId(0), 2u32), (32, PlayerId(0), 3), (33, PlayerId(1), 4)] {
+            let exiled = create_object(
+                &mut state,
+                CardId(card_id),
+                owner,
+                format!("Exiled {card_id}"),
+                Zone::Exile,
+            );
+            state.objects.get_mut(&exiled).unwrap().mana_cost =
+                crate::types::mana::ManaCost::generic(mv);
+            state.exile_links.push(ExileLink {
+                source_id: source,
+                exiled_id: exiled,
+                kind: ExileLinkKind::TrackedBySource,
+            });
+        }
+
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::Aggregate {
+                function: AggregateFunction::Sum,
+                property: ObjectProperty::ManaValue,
+                filter: TargetFilter::And {
+                    filters: vec![
+                        TargetFilter::ExiledBySource,
+                        TargetFilter::Typed(TypedFilter::default().properties(vec![
+                            FilterProp::Owned {
+                                controller: ControllerRef::You,
+                            },
+                        ])),
+                    ],
+                },
+            },
+        };
+
+        assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), source), 5);
+        assert_eq!(resolve_quantity(&state, &expr, PlayerId(1), source), 4);
     }
 
     #[test]

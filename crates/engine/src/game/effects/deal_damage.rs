@@ -576,7 +576,7 @@ pub fn resolve_all(
     // CR 120.3: Collect matching player IDs when the effect also targets players.
     // The player set is part of the same damage event as the object set.
     let matching_players: Vec<PlayerId> = match player_filter {
-        Some(pf) => collect_matching_players(state, pf, ability.controller),
+        Some(pf) => collect_matching_players(state, pf, ability.controller, ability.source_id),
         None => Vec::new(),
     };
 
@@ -627,42 +627,19 @@ fn collect_matching_players(
     state: &GameState,
     player_filter: PlayerFilter,
     source_controller: PlayerId,
+    source_id: crate::types::identifiers::ObjectId,
 ) -> Vec<PlayerId> {
     state
         .players
         .iter()
         .filter(|p| {
-            !p.is_eliminated
-                && match player_filter {
-                    PlayerFilter::Controller => p.id == source_controller,
-                    PlayerFilter::All => true,
-                    PlayerFilter::Opponent => p.id != source_controller,
-                    PlayerFilter::OpponentLostLife => {
-                        p.id != source_controller && p.life_lost_this_turn > 0
-                    }
-                    PlayerFilter::OpponentGainedLife => {
-                        p.id != source_controller && p.life_gained_this_turn > 0
-                    }
-                    PlayerFilter::HighestSpeed => {
-                        let highest_speed = state
-                            .players
-                            .iter()
-                            .filter(|player| !player.is_eliminated)
-                            .map(|player| player.speed.unwrap_or(0))
-                            .max()
-                            .unwrap_or(0);
-                        p.speed.unwrap_or(0) == highest_speed
-                    }
-                    PlayerFilter::ZoneChangedThisWay => state
-                        .last_zone_changed_ids
-                        .iter()
-                        .any(|id| state.objects.get(id).is_some_and(|obj| obj.owner == p.id)),
-                    PlayerFilter::TriggeringPlayer => state
-                        .current_trigger_event
-                        .as_ref()
-                        .and_then(|e| crate::game::targeting::extract_player_from_event(e, state))
-                        .is_some_and(|pid| pid == p.id),
-                }
+            crate::game::players::matches_scope_filter(
+                state,
+                p.id,
+                &player_filter,
+                source_controller,
+                source_id,
+            )
         })
         .map(|p| p.id)
         .collect()
@@ -696,37 +673,13 @@ pub fn resolve_each_player(
         .players
         .iter()
         .filter(|p| {
-            !p.is_eliminated
-                && match &player_filter {
-                    PlayerFilter::Controller => p.id == ability.controller,
-                    PlayerFilter::All => true,
-                    PlayerFilter::Opponent => p.id != ability.controller,
-                    PlayerFilter::OpponentLostLife => {
-                        p.id != ability.controller && p.life_lost_this_turn > 0
-                    }
-                    PlayerFilter::OpponentGainedLife => {
-                        p.id != ability.controller && p.life_gained_this_turn > 0
-                    }
-                    PlayerFilter::HighestSpeed => {
-                        let highest_speed = state
-                            .players
-                            .iter()
-                            .filter(|player| !player.is_eliminated)
-                            .map(|player| player.speed.unwrap_or(0))
-                            .max()
-                            .unwrap_or(0);
-                        p.speed.unwrap_or(0) == highest_speed
-                    }
-                    PlayerFilter::ZoneChangedThisWay => state
-                        .last_zone_changed_ids
-                        .iter()
-                        .any(|id| state.objects.get(id).is_some_and(|obj| obj.owner == p.id)),
-                    PlayerFilter::TriggeringPlayer => state
-                        .current_trigger_event
-                        .as_ref()
-                        .and_then(|e| crate::game::targeting::extract_player_from_event(e, state))
-                        .is_some_and(|pid| pid == p.id),
-                }
+            crate::game::players::matches_scope_filter(
+                state,
+                p.id,
+                &player_filter,
+                ability.controller,
+                ability.source_id,
+            )
         })
         .map(|p| p.id)
         .collect();
