@@ -696,10 +696,16 @@ fn create_token_applier(
             // appended batch as a fresh CreateToken event.
             let mut applied_on_extra = HashSet::new();
             applied_on_extra.insert(rid);
+            // CR 614.1c: The appended batch is a separate event — it does not
+            // inherit an `enter_tapped` override applied to the primary batch.
+            // The appended spec's own `tapped` field (from the parser) governs
+            // its entry state; further replacements (shock-land-style ETB-tap
+            // replacements on the appended batch itself) still compose via
+            // the recursive `replace_event` call below.
             let extra_proposed = ProposedEvent::CreateToken {
                 owner,
                 spec: extra,
-                enter_tapped,
+                enter_tapped: EtbTapState::Unspecified,
                 count: new_count,
                 applied: applied_on_extra,
             };
