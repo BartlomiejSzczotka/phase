@@ -9,7 +9,8 @@ import {
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import { AnimatePresence, motion } from "framer-motion";
 
-import type { GameFormat, MatchConfig } from "../adapter/types";
+import type { DeckCardCount, GameFormat, MatchConfig } from "../adapter/types";
+import { BetweenGamesSideboardModal } from "../components/multiplayer/BetweenGamesSideboardModal.tsx";
 import { audioManager } from "../audio/AudioManager.ts";
 import { useAudioContext } from "../audio/useAudioContext.ts";
 import { AnimationOverlay } from "../components/animation/AnimationOverlay.tsx";
@@ -771,34 +772,15 @@ function GamePageContent({
     [dispatch],
   );
 
-  const handleSubmitSideboard = useCallback(() => {
-    if (!deckPools) return;
-    const pool = deckPools.find(
-      (deckPool) => deckPool.player === playerId,
-    );
-    if (!pool) return;
-    const toSortedCounts = (
-      entries: Array<{ card: { name: string }; count: number }>,
-    ) => {
-      const counts = new Map<string, number>();
-      for (const entry of entries) {
-        counts.set(
-          entry.card.name,
-          (counts.get(entry.card.name) ?? 0) + entry.count,
-        );
-      }
-      return [...counts.entries()]
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([name, count]) => ({ name, count }));
-    };
-    dispatch({
-      type: "SubmitSideboard",
-      data: {
-        main: toSortedCounts(pool.current_main),
-        sideboard: toSortedCounts(pool.current_sideboard),
-      },
-    });
-  }, [deckPools, dispatch, playerId]);
+  const handleSubmitSideboard = useCallback(
+    (main: DeckCardCount[], sideboard: DeckCardCount[]) => {
+      dispatch({
+        type: "SubmitSideboard",
+        data: { main, sideboard },
+      });
+    },
+    [dispatch],
+  );
 
   const handleChoosePlayDraw = useCallback(
     (playFirst: boolean) => {
@@ -1211,13 +1193,19 @@ function GamePageContent({
         )}
 
       {waitingFor?.type === "BetweenGamesSideboard" &&
-        waitingFor.data.player === playerId && (
-          <BetweenGamesSideboardPrompt
-            gameNumber={waitingFor.data.game_number}
-            score={waitingFor.data.score}
-            onSubmit={handleSubmitSideboard}
-          />
-        )}
+        waitingFor.data.player === playerId &&
+        (() => {
+          const pool = deckPools?.find((p) => p.player === playerId);
+          if (!pool) return null;
+          return (
+            <BetweenGamesSideboardModal
+              pool={pool}
+              gameNumber={waitingFor.data.game_number}
+              score={waitingFor.data.score}
+              onSubmit={handleSubmitSideboard}
+            />
+          );
+        })()}
 
       {waitingFor?.type === "BetweenGamesChoosePlayDraw" &&
         waitingFor.data.player === playerId && (
@@ -1288,31 +1276,6 @@ interface MulliganBottomCardsPromptProps {
   playerId: number;
   count: number;
   onChoose: (id: string) => void;
-}
-
-function BetweenGamesSideboardPrompt({
-  gameNumber,
-  score,
-  onSubmit,
-}: {
-  gameNumber: number;
-  score: { p0_wins: number; p1_wins: number; draws: number };
-  onSubmit: () => void;
-}) {
-  return (
-    <ChoiceModal
-      title={`Game ${gameNumber}: Sideboarding`}
-      subtitle={`Match score ${score.p0_wins}-${score.p1_wins}${score.draws > 0 ? ` (${score.draws} draw)` : ""}`}
-      options={[
-        {
-          id: "submit",
-          label: "Submit Deck",
-          description: "Keep current main/sideboard configuration",
-        },
-      ]}
-      onChoose={() => onSubmit()}
-    />
-  );
 }
 
 interface MulliganDecisionPromptProps {
