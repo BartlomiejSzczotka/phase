@@ -1,5 +1,5 @@
 import type { Feed, FeedDeck, FeedSubscription } from "../types/feed";
-import type { ParsedDeck } from "./deckParser";
+import { repairParsedDeck, type ParsedDeck } from "./deckParser";
 import { FEED_REGISTRY } from "../data/feedRegistry";
 import {
   ACTIVE_DECK_KEY,
@@ -83,20 +83,25 @@ function normalizeFeed(feed: Feed): Feed {
   return {
     ...feed,
     decks: feed.decks.map((deck) => {
-      if (deck.commander && deck.commander.length > 0) return deck;
       if (!deck.main.some((entry) => entry.name === deck.name)) return deck;
-      return { ...deck, commander: [deck.name] };
+      const parsed = repairParsedDeck({
+        main: deck.main,
+        sideboard: deck.sideboard,
+        commander: deck.commander?.length ? deck.commander : [deck.name],
+        companion: deck.companion,
+      });
+      return { ...deck, ...parsed };
     }),
   };
 }
 
 export function feedDeckToParsedDeck(deck: FeedDeck): ParsedDeck {
-  return {
+  return repairParsedDeck({
     main: deck.main,
     sideboard: deck.sideboard,
-    commander: deck.commander,
+    commander: deck.commander ?? undefined,
     companion: deck.companion,
-  };
+  });
 }
 
 function syncFeedDecksToStorage(feed: Feed): void {

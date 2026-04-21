@@ -2,7 +2,7 @@ import { useState, useCallback, useEffect, useMemo } from "react";
 import { useNavigate } from "react-router";
 import type { ScryfallCard } from "../../services/scryfall";
 import type { ParsedDeck } from "../../services/deckParser";
-import { deduplicateEntries } from "../../services/deckParser";
+import { deduplicateEntries, resolveCommander } from "../../services/deckParser";
 import { evaluateDeckCompatibility, type DeckCompatibilityResult } from "../../services/deckCompatibility";
 import { STORAGE_KEY_PREFIX, loadSavedDeck, stampDeckMeta } from "../../constants/storage";
 import { useDeckCardData } from "../../hooks/useDeckCardData";
@@ -75,28 +75,38 @@ export function DeckBuilder({
   ]);
 
   const [compatibility, setCompatibility] = useState<DeckCompatibilityResult | null>(null);
+  const currentDeck = useMemo<ParsedDeck>(() => ({
+    ...deck,
+    commander: commanders.length > 0 ? commanders : undefined,
+  }), [deck, commanders]);
 
   // Stable key for deck contents to debounce compatibility evaluation
   const deckKey = useMemo(
-    () => [...deck.main.map((e) => `${e.count}x${e.name}`), "//", ...deck.sideboard.map((e) => `${e.count}x${e.name}`)].join("|"),
-    [deck],
+    () => [
+      ...deck.main.map((e) => `${e.count}x${e.name}`),
+      "//",
+      ...deck.sideboard.map((e) => `${e.count}x${e.name}`),
+      "//",
+      ...commanders,
+    ].join("|"),
+    [deck, commanders],
   );
 
   useEffect(() => {
-    if (deck.main.length === 0 && deck.sideboard.length === 0) {
+    if (currentDeck.main.length === 0 && currentDeck.sideboard.length === 0) {
       setCompatibility(null);
       return;
     }
     let cancelled = false;
     const timer = setTimeout(() => {
-      evaluateDeckCompatibility(deck).then((result) => {
+      evaluateDeckCompatibility(currentDeck).then((result) => {
         if (!cancelled) setCompatibility(result);
       }).catch(() => {
         // WASM may not be loaded yet; silently ignore
       });
     }, 300);
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [deckKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [currentDeck, deckKey]);
 
   const isCommander = format === "commander";
   const maxCopies = isCommander ? 1 : 4;
@@ -210,37 +220,63 @@ export function DeckBuilder({
     [maxCopies],
   );
 
+  const applyDeckToEditor = useCallback((next: ParsedDeck) => {
+    setDeck({
+      main: deduplicateEntries(next.main ?? []),
+      sideboard: deduplicateEntries(next.sideboard ?? []),
+      companion: next.companion,
+    });
+    setCommanders(next.commander ?? []);
+    if (next.commander?.length) onFormatChange("commander");
+  }, [onFormatChange]);
+
   const handleImport = useCallback((imported: ParsedDeck) => {
-    setDeck(imported);
-    // Auto-detect commanders from sideboard in commander format
-    if (imported.commander) {
-      setCommanders(imported.commander);
-    }
-  }, []);
+    applyDeckToEditor(imported);
+  }, [applyDeckToEditor]);
 
   const handleSave = () => {
     if (!deckName.trim()) return;
-    const data = JSON.stringify({ ...deck, commander: commanders, format });
+    const data = JSON.stringify({ ...currentDeck, format });
     localStorage.setItem(STORAGE_KEY_PREFIX + deckName.trim(), data);
     stampDeckMeta(deckName.trim());
     setSavedDecks(listSavedDecks());
   };
 
-  const handleLoad = useCallback((name: string) => {
+  const handleLoad = useCallback(async (name: string) => {
     const parsed = loadSavedDeck(name);
     const data = localStorage.getItem(STORAGE_KEY_PREFIX + name);
     if (!parsed || !data) return;
     const persisted = JSON.parse(data) as ParsedDeck & { format?: DeckFormat };
-    setDeck({ main: deduplicateEntries(parsed.main ?? []), sideboard: deduplicateEntries(parsed.sideboard ?? []) });
-    setCommanders(parsed.commander ?? []);
-    if (persisted.format) onFormatChange(persisted.format);
+    const resolved = await resolveCommander(parsed);
+    applyDeckToEditor(resolved);
+    if (persisted.format) {
+      onFormatChange(persisted.format);
+    } else if (resolved.commander?.length) {
+      onFormatChange("commander");
+    }
     setDeckName(name);
-  }, [onFormatChange]);
+  }, [applyDeckToEditor, onFormatChange]);
 
   useEffect(() => {
     if (!initialDeckName) return;
-    handleLoad(initialDeckName);
+    void handleLoad(initialDeckName);
   }, [initialDeckName, handleLoad]);
+
+  useEffect(() => {
+    if (!isCommander || commanders.length > 0) return;
+    let cancelled = false;
+    resolveCommander(deck)
+      .then((resolved) => {
+        if (cancelled || !resolved.commander?.length) return;
+        applyDeckToEditor(resolved);
+      })
+      .catch(() => {
+        // WASM may not be loaded yet; leave the deck unchanged.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyDeckToEditor, commanders.length, deck, isCommander]);
 
   const handleSetCommander = useCallback(
     (cardName: string) => {
@@ -428,7 +464,7 @@ export function DeckBuilder({
               </div>
             )}
             <DeckList
-              deck={deck}
+              deck={currentDeck}
               onRemoveCard={handleRemoveCard}
               onMoveCard={handleMoveCard}
               onImport={handleImport}

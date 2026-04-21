@@ -100,6 +100,35 @@ function looksCommanderSingleton(entries: DeckEntry[]): boolean {
   return entries.every((entry) => entry.count === 1 || BASIC_LANDS.has(entry.name));
 }
 
+function removeOneCopy(entries: DeckEntry[], name: string): DeckEntry[] {
+  let removed = false;
+  const next: DeckEntry[] = [];
+
+  for (const entry of entries) {
+    if (!removed && entry.name.toLowerCase() === name.toLowerCase()) {
+      removed = true;
+      if (entry.count > 1) {
+        next.push({ ...entry, count: entry.count - 1 });
+      }
+      continue;
+    }
+    next.push(entry);
+  }
+
+  return next;
+}
+
+function removeCommandersFromMain(deck: ParsedDeck): ParsedDeck {
+  if (!deck.commander?.length) return deck;
+
+  let main = deck.main;
+  for (const commander of deck.commander) {
+    main = removeOneCopy(main, commander);
+  }
+
+  return { ...deck, main };
+}
+
 function normalizeParsedDeck(
   deck: ParsedDeck,
   options: { explicitCommander: boolean; explicitSideboard: boolean },
@@ -117,24 +146,26 @@ function normalizeParsedDeck(
     normalized.companion = normalizeCardName(deck.companion);
   }
 
-  if (options.explicitCommander || options.explicitSideboard || normalized.commander?.length) {
-    return normalized;
+  const canonical = removeCommandersFromMain(normalized);
+
+  if (options.explicitCommander || options.explicitSideboard || canonical.commander?.length) {
+    return canonical;
   }
 
-  const mainCount = totalCards(normalized.main);
-  const sideboardCount = totalCards(normalized.sideboard);
+  const mainCount = totalCards(canonical.main);
+  const sideboardCount = totalCards(canonical.sideboard);
   if (
     sideboardCount >= 1
     && sideboardCount <= 2
     && mainCount + sideboardCount === 100
-    && looksCommanderSingleton(normalized.main)
-    && normalized.sideboard.every((entry) => entry.count === 1)
+    && looksCommanderSingleton(canonical.main)
+    && canonical.sideboard.every((entry) => entry.count === 1)
   ) {
-    normalized.commander = normalized.sideboard.map((entry) => entry.name);
-    normalized.sideboard = [];
+    canonical.commander = canonical.sideboard.map((entry) => entry.name);
+    canonical.sideboard = [];
   }
 
-  return normalized;
+  return removeCommandersFromMain(canonical);
 }
 
 export function repairParsedDeck(deck: ParsedDeck): ParsedDeck {
@@ -391,22 +422,29 @@ export function exportDeck(deck: ParsedDeck, format: ExportFormat): string {
  *
  * This step:
  *   4. 100-card singleton deck with no commander identified, where the first
- *      card is commander-eligible per CR 903.3 (legendary creature, legendary
- *      background, or "can be your commander"). Promotes the first card.
+ *      commander-eligible card per CR 903.3 (legendary creature, legendary
+ *      background, or "can be your commander") is promoted.
  *
  * The eligibility check is delegated to the engine via WASM — the frontend
  * never replicates rules logic.
  */
 export async function resolveCommander(deck: ParsedDeck): Promise<ParsedDeck> {
-  if (deck.commander?.length) return deck;
-  if (deck.sideboard.length > 0) return deck;
-  if (deck.main.length === 0) return deck;
-  if (totalCards(deck.main) !== 100) return deck;
-  if (!looksCommanderSingleton(deck.main)) return deck;
-  if (deck.main[0].count !== 1) return deck;
+  const normalized = repairParsedDeck(deck);
+  if (normalized.commander?.length) return normalized;
+  if (normalized.sideboard.length > 0) return normalized;
+  if (normalized.main.length === 0) return normalized;
+  if (totalCards(normalized.main) !== 100) return normalized;
+  if (!looksCommanderSingleton(normalized.main)) return normalized;
 
-  if (!(await isCardCommanderEligible(deck.main[0].name))) return deck;
+  for (const entry of normalized.main) {
+    if (entry.count !== 1) continue;
+    if (!(await isCardCommanderEligible(entry.name))) continue;
 
-  const [first, ...rest] = deck.main;
-  return { ...deck, main: rest, commander: [first.name] };
+    return removeCommandersFromMain({
+      ...normalized,
+      commander: [entry.name],
+    });
+  }
+
+  return normalized;
 }

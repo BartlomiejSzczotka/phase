@@ -4,6 +4,7 @@ import {
   exportDeckFile,
   parseMtgaDeck,
   detectAndParseDeck,
+  repairParsedDeck,
   resolveCommander,
 } from '../deckParser';
 
@@ -343,24 +344,53 @@ Deck
     expect(result.commander).toEqual(['Zimone, Infinite Analyst']);
     expect(result.main).toEqual([{ count: 1, name: 'Sol Ring' }]);
   });
+
+  it('removes one matching main-deck copy when a commander is explicit', () => {
+    const content = `Commander
+1 Zimone, Infinite Analyst
+Deck
+1 Zimone, Infinite Analyst
+1 Sol Ring`;
+    const result = detectAndParseDeck(content);
+    expect(result.commander).toEqual(['Zimone, Infinite Analyst']);
+    expect(result.main).toEqual([{ count: 1, name: 'Sol Ring' }]);
+  });
+
+  it('repairs saved decks that still have the commander in the main deck', () => {
+    const result = repairParsedDeck({
+      commander: ['Zimone, Infinite Analyst'],
+      main: [
+        { count: 1, name: 'Zimone, Infinite Analyst' },
+        { count: 1, name: 'Sol Ring' },
+      ],
+      sideboard: [],
+    });
+    expect(result.commander).toEqual(['Zimone, Infinite Analyst']);
+    expect(result.main).toEqual([{ count: 1, name: 'Sol Ring' }]);
+  });
 });
 
 describe('resolveCommander waterfall', () => {
-  it('promotes the first card when the deck is 100 singletons and that card is commander-eligible', async () => {
+  it('promotes the first eligible card when the deck is 100 singletons', async () => {
     const { isCardCommanderEligible } = await import('../engineRuntime');
-    vi.mocked(isCardCommanderEligible).mockResolvedValue(true);
+    vi.mocked(isCardCommanderEligible).mockImplementation((name) =>
+      Promise.resolve(name === 'Zimone, Infinite Analyst')
+    );
 
     const main = [
+      { count: 1, name: 'Sol Ring' },
       { count: 1, name: 'Zimone, Infinite Analyst' },
       ...Array.from({ length: 86 }, (_, i) => ({ count: 1, name: `Card ${i}` })),
       { count: 7, name: 'Island' },
-      { count: 6, name: 'Forest' },
+      { count: 5, name: 'Forest' },
     ];
     const resolved = await resolveCommander({ main, sideboard: [] });
 
     expect(resolved.commander).toEqual(['Zimone, Infinite Analyst']);
-    expect(resolved.main[0].name).toBe('Card 0');
-    expect(resolved.main).toHaveLength(86 + 2);
+    expect(resolved.main[0].name).toBe('Sol Ring');
+    expect(resolved.main).not.toContainEqual({ count: 1, name: 'Zimone, Infinite Analyst' });
+    expect(resolved.main).toHaveLength(87 + 2);
+    expect(isCardCommanderEligible).toHaveBeenCalledWith('Sol Ring');
     expect(isCardCommanderEligible).toHaveBeenCalledWith('Zimone, Infinite Analyst');
   });
 

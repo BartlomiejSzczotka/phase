@@ -29,6 +29,7 @@ import {
   getDeckFeedOrigin,
   refreshFeed,
   adoptFeedDeck,
+  feedDeckToParsedDeck,
   listSubscriptions,
   getCachedFeed,
   getFeedDecksByFeed,
@@ -168,6 +169,24 @@ describe("validateFeed", () => {
   });
 });
 
+describe("feedDeckToParsedDeck", () => {
+  it("removes the commander from main when the feed already identifies it", () => {
+    const deck = feedDeckToParsedDeck({
+      name: "Zimone, Infinite Analyst",
+      colors: ["G", "U"],
+      commander: ["Zimone, Infinite Analyst"],
+      main: [
+        { count: 1, name: "Zimone, Infinite Analyst" },
+        { count: 1, name: "Sol Ring" },
+      ],
+      sideboard: [],
+    });
+
+    expect(deck.commander).toEqual(["Zimone, Infinite Analyst"]);
+    expect(deck.main).toEqual([{ count: 1, name: "Sol Ring" }]);
+  });
+});
+
 function mockFetchByUrl(feedMap: Record<string, unknown>) {
   global.fetch = vi.fn().mockImplementation((url: string) => {
     const data = Object.entries(feedMap).find(([pattern]) => url.includes(pattern))?.[1];
@@ -229,6 +248,34 @@ describe("initializeFeeds", () => {
 });
 
 describe("subscribe", () => {
+  it("normalizes MTGGoldfish commander feeds by moving deck-name commander out of main", async () => {
+    mockFetch({
+      id: "mtggoldfish-commander",
+      name: "MTGGoldfish Commander",
+      format: "commander",
+      version: 1,
+      updated: "2026-03-20T00:00:00Z",
+      decks: [
+        {
+          name: "Zimone, Infinite Analyst",
+          colors: ["G", "U"],
+          main: [
+            { count: 1, name: "Zimone, Infinite Analyst" },
+            { count: 1, name: "Sol Ring" },
+          ],
+          sideboard: [],
+        },
+      ],
+    });
+
+    await subscribe("https://example.com/mtggoldfish-commander.json");
+
+    const raw = localStorage.getItem(STORAGE_KEY_PREFIX + "Zimone, Infinite Analyst")!;
+    const deck = JSON.parse(raw);
+    expect(deck.commander).toEqual(["Zimone, Infinite Analyst"]);
+    expect(deck.main).toEqual([{ count: 1, name: "Sol Ring" }]);
+  });
+
   it("fetches, caches, and seeds decks for a remote URL", async () => {
     mockFetch(VALID_FEED);
 

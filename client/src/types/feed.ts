@@ -8,7 +8,7 @@ export interface FeedDeck {
   tags?: string[];
   main: DeckEntry[];
   sideboard: DeckEntry[];
-  commander?: string[];
+  commander?: string[] | null;
   companion?: string;
 }
 
