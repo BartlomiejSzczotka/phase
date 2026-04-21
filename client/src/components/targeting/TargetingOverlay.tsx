@@ -4,6 +4,7 @@ import { useCallback, useEffect } from "react";
 import { useCanActForWaitingState } from "../../hooks/usePlayerId.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
+import { renderDescription } from "../../utils/description.ts";
 
 export function TargetingOverlay() {
   const canActForWaitingState = useCanActForWaitingState();
@@ -36,8 +37,8 @@ export function TargetingOverlay() {
         ? waitingFor.data.pending_cast?.object_id
       : undefined;
   const sourceName = sourceId != null ? objects?.[sourceId]?.name : undefined;
-  const triggerDescription = waitingFor?.type === "TriggerTargetSelection"
-    ? waitingFor.data.description
+  const triggerDescription = waitingFor?.type === "TriggerTargetSelection" && waitingFor.data.description
+    ? renderDescription(waitingFor.data.description, sourceName ?? "this")
     : undefined;
 
   const handleCancel = useCallback(() => {

@@ -1,9 +1,10 @@
 use std::str::FromStr;
 
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::combinator::value;
+use nom::bytes::complete::{tag, take_until};
+use nom::combinator::{rest, value};
 use nom::Parser;
+use nom_language::error::VerboseError;
 
 use crate::parser::oracle_nom::error::OracleResult;
 use crate::types::ability::{Effect, FilterProp, PtValue, QuantityExpr, QuantityRef, TargetFilter};
@@ -518,11 +519,17 @@ fn extract_token_where_x_expression(text: &str) -> Option<String> {
     // The X-expression is a single sentence terminated by the next period.
     // `trim_end_matches('.')` only strips the tail period, which lets trailing
     // sentences ("It gains haste until end of turn.") leak into the extracted
-    // expression and poison downstream quantity parsing. Split at the first
-    // period instead so multi-sentence suffixes terminate cleanly.
+    // expression and poison downstream quantity parsing. Terminate at the
+    // first period via `take_until(".")`, falling back to `rest` when the
+    // expression has no trailing period.
     let after = tp.strip_after("where x is ")?.original.trim();
-    let end = after.find('.').unwrap_or(after.len());
-    Some(after[..end].trim().to_string())
+    let (_, x_expr) = alt((
+        take_until::<_, _, VerboseError<&str>>("."),
+        rest::<_, VerboseError<&str>>,
+    ))
+    .parse(after)
+    .ok()?;
+    Some(x_expr.trim().to_string())
 }
 
 fn extract_token_count_expression(text: &str) -> Option<String> {

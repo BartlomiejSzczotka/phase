@@ -1,3 +1,7 @@
+use nom::bytes::complete::tag;
+use nom::Parser;
+use nom_language::error::VerboseError;
+
 use crate::types::ability::{
     AbilityDefinition, AbilityKind, ActivationRestriction, Effect, StaticCondition,
     StaticDefinition, TargetFilter, TriggerCondition, TriggerConstraint, TriggerDefinition,
@@ -237,10 +241,21 @@ pub(crate) fn parse_class_oracle_text(
 /// The `this class` / card-name fallbacks remain for callers that bypass the
 /// parser entry point (e.g. direct tests passing pre-normalization text).
 pub(crate) fn is_class_level_trigger(lower: &str, card_name: &str) -> bool {
+    // Prefix: CR 603 trigger phrase "when ".
+    let Ok((rest, _)) = tag::<_, _, VerboseError<&str>>("when ").parse(lower) else {
+        return false;
+    };
+    // Required body phrase "becomes level ".
+    if !nom_primitives::scan_contains(rest, "becomes level ") {
+        return false;
+    }
+    // Subject must be `~`, `this class`, or the (non-empty) card name.
+    // Guard against empty card_name — `str::contains("")` is universally true
+    // and would make the third branch match every line.
     let card_lower = card_name.to_lowercase();
-    lower.starts_with("when ")
-        && lower.contains("becomes level ")
-        && (lower.contains('~') || lower.contains("this class") || lower.contains(&card_lower))
+    nom_primitives::scan_contains(rest, "~")
+        || nom_primitives::scan_contains(rest, "this class")
+        || (!card_lower.is_empty() && nom_primitives::scan_contains(rest, &card_lower))
 }
 
 /// Parse a "When this Class becomes level N, {effect}" trigger.

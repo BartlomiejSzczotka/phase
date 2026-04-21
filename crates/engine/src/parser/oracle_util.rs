@@ -1618,6 +1618,146 @@ mod tests {
         );
     }
 
+    // --- strategy-5 vocabulary-guard tests ---
+    //
+    // `normalize_card_name_refs` strategy 5 (single-word prefix fallback) must
+    // defer to the existing parser vocabularies so that single-word prefixes
+    // matching a keyword / subtype / supertype / core type / non-subtype
+    // subject are NOT replaced with `~`. The five predicate functions below
+    // back the strategy-5 guard chain; these tests lock that contract in.
+
+    #[test]
+    fn is_core_type_name_matches_cr_205_2() {
+        // CR 205.2: core types the parser recognizes as subject phrases.
+        for t in [
+            "creature",
+            "artifact",
+            "enchantment",
+            "land",
+            "planeswalker",
+            "spell",
+            "card",
+            "permanent",
+        ] {
+            assert!(is_core_type_name(t), "{t} should be a core type name");
+        }
+        // Not a core type.
+        assert!(!is_core_type_name("player"));
+        assert!(!is_core_type_name("sliver"));
+    }
+
+    #[test]
+    fn is_non_subtype_subject_name_covers_object_references() {
+        for t in [
+            "ability",
+            "card",
+            "commander",
+            "opponent",
+            "permanent",
+            "player",
+            "source",
+            "spell",
+            "token",
+        ] {
+            assert!(is_non_subtype_subject_name(t), "{t} is a subject noun");
+        }
+        assert!(!is_non_subtype_subject_name("sliver")); // subtype, not an object-ref noun
+    }
+
+    #[test]
+    fn is_subtype_word_recognizes_registered_subtypes() {
+        // Subtypes from the SUBTYPES registry — used by strategy-5 to guard
+        // cards whose first name-word is a subtype (e.g. "Cleric Class",
+        // "Druid Arcanist", "Coward").
+        assert!(is_subtype_word("cleric"));
+        assert!(is_subtype_word("druid"));
+        assert!(is_subtype_word("coward"));
+        assert!(is_subtype_word("sliver"));
+        assert!(is_subtype_word("merfolk"));
+        // Not a subtype.
+        assert!(!is_subtype_word("sharuum"));
+        assert!(!is_subtype_word("flying")); // that's a keyword, not a subtype
+    }
+
+    #[test]
+    fn is_supertype_word_matches_cr_205_4() {
+        // CR 205.4: supertypes recognized for Oracle text. `tribal` and
+        // `ongoing` are included for historical / scheme coverage.
+        for t in ["basic", "legendary", "snow", "world", "tribal", "ongoing"] {
+            assert!(is_supertype_word(t), "{t} should be a supertype");
+        }
+        assert!(!is_supertype_word("creature"));
+    }
+
+    #[test]
+    fn is_keyword_word_recognizes_single_word_keywords() {
+        // Single-word keywords from the KEYWORDS registry.
+        assert!(super::super::oracle_nom::primitives::is_keyword_word(
+            "flying"
+        ));
+        assert!(super::super::oracle_nom::primitives::is_keyword_word(
+            "changeling"
+        ));
+        assert!(super::super::oracle_nom::primitives::is_keyword_word(
+            "deathtouch"
+        ));
+        assert!(super::super::oracle_nom::primitives::is_keyword_word(
+            "prowess"
+        ));
+        // Not a keyword.
+        assert!(!super::super::oracle_nom::primitives::is_keyword_word(
+            "first"
+        ));
+        // Multi-word keyword entries never match a single-word candidate —
+        // `all_consuming(parse_keyword_name)` requires the full input to be
+        // consumed by a KEYWORDS row, which "first" alone cannot be.
+        assert!(!super::super::oracle_nom::primitives::is_keyword_word(
+            "strike"
+        ));
+    }
+
+    #[test]
+    fn normalize_changeling_card_preserves_keyword() {
+        // Regression: the strategy-5 naive lift collided with Changeling —
+        // card "Changeling Berserker" would replace the `changeling` keyword
+        // in its own Oracle text with `~`, corrupting keyword recognition.
+        // (The `This creature` phrase inside the reminder text still folds to
+        // `~` via SELF_REF_TYPE_PHRASES — that's correct behavior; the
+        // assertion is specifically that the leading keyword stays intact.)
+        let out = normalize_card_name_refs(
+            "Changeling (This creature is every creature type.)",
+            "Changeling Berserker",
+        );
+        assert!(
+            out.starts_with("Changeling "), // allow-noncombinator: test assertion, not parsing dispatch
+            "keyword must not be replaced: got {out:?}"
+        );
+    }
+
+    #[test]
+    fn normalize_cleric_class_preserves_subtype() {
+        // Regression: card "Cleric Class" must not replace the bare subtype
+        // word `Cleric` in its own Oracle text.
+        assert_eq!(
+            normalize_card_name_refs(
+                "Cleric spells you cast cost {1} less to cast.",
+                "Cleric Class",
+            ),
+            "Cleric spells you cast cost {1} less to cast."
+        );
+    }
+
+    #[test]
+    fn normalize_coward_card_preserves_subtype() {
+        // Regression: card "Coward Conjurer" (hypothetical — real cards with
+        // this pattern exist among subtype-named Classes/tokens). The bare
+        // subtype word `Coward` in Oracle text must not be replaced.
+        assert_eq!(
+            normalize_card_name_refs("Coward creatures you control get +1/+1.", "Coward Conjurer",),
+            "Coward creatures you control get +1/+1."
+        );
+    }
+
     // --- replace_all_words tests ---
 
     #[test]

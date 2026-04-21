@@ -1,6 +1,7 @@
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::combinator::{all_consuming, value};
+use nom::bytes::complete::{tag, take_till};
+use nom::combinator::{all_consuming, value, verify};
+use nom::sequence::preceded;
 use nom::Parser;
 use nom_language::error::VerboseError;
 
@@ -1558,28 +1559,34 @@ pub(super) fn try_parse_targeted_controller_gain_life(text: &str) -> Option<Pars
     }))
 }
 
+/// Parse `~ <predicate-verb>` at the start of input, succeeding only when the
+/// first word after `~ ` deconjugates to a registered [`PREDICATE_VERBS`]
+/// entry. Used as the single authority for validating the tilde-subject form
+/// from both `starts_with_subject_prefix` (dispatch guard) and
+/// `strip_subject_clause` (the same check is subsumed by `starts_with_*`).
+///
+/// CR 201.4b: after `parse_oracle_text` normalizes self-references, lines
+/// like `~ phases out` / `~ gains haste` reach subject-stripping with `~` as
+/// the subject token. Without the predicate-verb guard, `find_predicate_start`
+/// would scan past non-predicate tokens (e.g. `~ enters with a token copy of
+/// Pacifism attached to it.`) and match a later PREDICATE_VERB, stripping the
+/// wrong clause.
+fn parse_tilde_subject_with_predicate(input: &str) -> nom::IResult<&str, (), VerboseError<&str>> {
+    verify(
+        preceded(tag("~ "), take_till(|c: char| c == ' ')),
+        |first_word: &str| {
+            let normalized = super::normalize_verb_token(first_word);
+            PREDICATE_VERBS.contains(&normalized.as_str())
+        },
+    )
+    .parse(input)
+    .map(|(rest, _)| (rest, ()))
+}
+
 fn strip_subject_clause(text: &str) -> Option<String> {
     let lower = text.to_lowercase();
     if !starts_with_subject_prefix(&lower) {
         return None;
-    }
-
-    // Narrow predicate check for the single-token `~` subject (CR 201.4b).
-    // `~ <verb>` is a legitimate subject-predicate only when the immediate
-    // next word is a recognized predicate verb (e.g. `~ phases out`,
-    // `~ gains haste`). Without this guard, `find_predicate_start` scans
-    // forward past non-predicate tokens and matches a later PREDICATE_VERB —
-    // e.g. "~ enters with a token copy of Pacifism attached to it." stripping
-    // to "copy of Pacifism attached to it." and mis-matching CopySpell.
-    // Multi-word subject tags (`each `, `an opponent `, `target `) still rely
-    // on forward scanning because their subject phrases extend beyond the tag.
-    if let Some(after_tilde) = lower.strip_prefix("~ ") {
-        let first_word_end = after_tilde.find(' ').unwrap_or(after_tilde.len());
-        let first_word = &after_tilde[..first_word_end];
-        let normalized = super::normalize_verb_token(first_word);
-        if !PREDICATE_VERBS.contains(&normalized.as_str()) {
-            return None;
-        }
     }
 
     let verb_start = find_predicate_start(text)?;
@@ -1636,10 +1643,12 @@ pub(crate) fn starts_with_subject_prefix(lower: &str) -> bool {
             value((), tag("she ")),
             // CR 201.4b: After `parse_oracle_text` normalizes self-references
             // to `~`, predicates like "~ phases out" / "~ gains haste" reach
-            // here with `~` as the subject token. Dispatch the same way as
-            // "this creature ..." / "he ..." so imperative parsing sees only
-            // the verb tail.
-            value((), tag("~ ")),
+            // here with `~` as the subject token. Only dispatch as a subject
+            // prefix when the next word is a recognized predicate verb —
+            // otherwise lines like "~ enters with a token copy of Pacifism..."
+            // would be falsely subject-stripped, scanning forward to an
+            // unrelated verb and mis-matching the clause.
+            parse_tilde_subject_with_predicate,
         )),
     ))
     .parse(lower)

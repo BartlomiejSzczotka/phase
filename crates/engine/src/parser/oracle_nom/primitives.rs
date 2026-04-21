@@ -3,7 +3,7 @@
 use nom::branch::alt;
 use nom::bytes::complete::{tag, take_until, take_while_m_n};
 use nom::character::complete::{char, digit1, space0};
-use nom::combinator::{map, map_res, not, opt, peek, recognize, value};
+use nom::combinator::{all_consuming, map, map_res, not, opt, peek, recognize, value};
 use nom::multi::{many0, many1};
 use nom::sequence::{delimited, preceded};
 use nom::Parser;
@@ -464,8 +464,15 @@ pub(crate) const KEYWORDS: &[&str] = &[
 /// keyword name. Used by `normalize_card_name_refs` strategy-5 guard to reject
 /// card-name first-word replacements that would corrupt keyword recognition
 /// (e.g. `Changeling Berserker` must not replace `changeling` in its own text).
+///
+/// Uses `all_consuming(parse_keyword_name)` so only keyword entries that fully
+/// match the candidate return true. Multi-word entries like "first strike"
+/// cannot fully-consume a single token, so this predicate is semantically
+/// restricted to single-word keywords by construction.
 pub(crate) fn is_keyword_word(candidate_lower: &str) -> bool {
-    KEYWORDS.contains(&candidate_lower)
+    all_consuming(parse_keyword_name)
+        .parse(candidate_lower)
+        .is_ok()
 }
 
 /// Parse an evergreen keyword name from Oracle text.

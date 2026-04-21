@@ -8,6 +8,7 @@ import { usePlayerId } from "../../hooks/usePlayerId.ts";
 import { dispatchAction } from "../../game/dispatch.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { useUiStore } from "../../stores/uiStore.ts";
+import { renderDescription } from "../../utils/description.ts";
 import { ManaCostPips } from "../mana/ManaCostPips.tsx";
 import type { StackEntry as StackEntryType } from "../../adapter/types.ts";
 
@@ -42,7 +43,9 @@ export function StackEntry({ entry, index, isTop, isPending, cardSize, style, on
   const abilityLabel =
     entry.kind.type === "ActivatedAbility" ? "Activated" : "Triggered";
   const triggerDescription =
-    entry.kind.type === "TriggeredAbility" ? entry.kind.data.description : undefined;
+    entry.kind.type === "TriggeredAbility"
+      ? entry.kind.data.description && renderDescription(entry.kind.data.description, sourceName)
+      : undefined;
   const controllerLabel = entry.controller === playerId ? "You" : "Opp";
 
   // Targeting: check if this stack entry is a valid target for the current selection
