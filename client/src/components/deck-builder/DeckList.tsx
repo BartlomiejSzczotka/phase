@@ -1,10 +1,39 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ParsedDeck, DeckEntry } from "../../services/deckParser";
 import { detectAndParseDeck, exportDeck, resolveCommander } from "../../services/deckParser";
 import type { ExportFormat } from "../../services/deckParser";
 import type { DeckCompatibilityResult, UnsupportedCard } from "../../services/deckCompatibility";
+import {
+  sideboardPolicyForFormat,
+  type SideboardFormat,
+  type SideboardPolicy,
+} from "../../services/engineRuntime";
 
 import { MoveList } from "./MoveList";
+
+/**
+ * Map the client-side `DeckFormat` union to the engine's `GameFormat` when
+ * a direct mapping exists. Modern/Legacy/Vintage are constructed formats not
+ * yet represented in `GameFormat`; callers should treat them as standard
+ * constructed (Limited(15)) until the engine gains explicit variants.
+ */
+function mapToEngineFormat(format: string | undefined): SideboardFormat | null {
+  switch (format) {
+    case "standard":
+      return "Standard";
+    case "commander":
+      return "Commander";
+    case "pioneer":
+      return "Pioneer";
+    case "pauper":
+      return "Pauper";
+    default:
+      return null;
+  }
+}
+
+/** Fallback policy for client-only formats the engine doesn't yet recognize. */
+const FALLBACK_CONSTRUCTED_POLICY: SideboardPolicy = { type: "Limited", data: 15 };
 
 interface DeckListProps {
   deck: ParsedDeck;
@@ -65,7 +94,7 @@ export function DeckList({
   onImport,
   onCardHover,
   warnings = [],
-  format: _format,
+  format,
   compatibility,
 }: DeckListProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -77,6 +106,53 @@ export function DeckList({
   const mainTotal = totalCards(deck.main);
   const sideTotal = totalCards(deck.sideboard);
   const mainGroups = groupByType(deck.main);
+
+  // CR 100.4a: Ask the engine for the format's sideboard policy rather than
+  // hardcoding 15. The engine is the single authority for format rules; the
+  // frontend only renders what the engine tells it.
+  const [sideboardPolicy, setSideboardPolicy] = useState<SideboardPolicy>(
+    FALLBACK_CONSTRUCTED_POLICY,
+  );
+  useEffect(() => {
+    const engineFormat = mapToEngineFormat(format);
+    if (!engineFormat) {
+      setSideboardPolicy(FALLBACK_CONSTRUCTED_POLICY);
+      return;
+    }
+    let cancelled = false;
+    sideboardPolicyForFormat(engineFormat)
+      .then((policy) => {
+        if (!cancelled) setSideboardPolicy(policy);
+      })
+      .catch(() => {
+        if (!cancelled) setSideboardPolicy(FALLBACK_CONSTRUCTED_POLICY);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [format]);
+
+  const { sideboardTitle, sideboardWarning, hideSideboard } = useMemo(() => {
+    switch (sideboardPolicy.type) {
+      case "Forbidden":
+        return { sideboardTitle: "", sideboardWarning: undefined, hideSideboard: true };
+      case "Unlimited":
+        return {
+          sideboardTitle: `Sideboard (${sideTotal})`,
+          sideboardWarning: undefined,
+          hideSideboard: false,
+        };
+      case "Limited": {
+        const max = sideboardPolicy.data;
+        return {
+          sideboardTitle: `Sideboard (${sideTotal}/${max})`,
+          sideboardWarning:
+            sideTotal > max ? `Sideboard exceeds ${max}-card limit` : undefined,
+          hideSideboard: false,
+        };
+      }
+    }
+  }, [sideboardPolicy, sideTotal]);
 
   const unsupportedMap = useMemo(() => {
     const map = new Map<string, UnsupportedCard>();
@@ -238,20 +314,26 @@ export function DeckList({
           />
         ))}
 
-        {/* Sideboard — always visible so users can discover and target it */}
-        <div className="mt-3 border-t border-white/8 pt-2">
-          <MoveList
-            title={`Sideboard (${sideTotal})`}
-            entries={deck.sideboard}
-            section="sideboard"
-            onRemove={onRemoveCard}
-            onMove={onMoveCard}
-            onCardHover={onCardHover}
-            unsupportedMap={unsupportedMap}
-            alwaysShow
-            emptyHint="Hover a main-deck card and click → to move it here."
-          />
-        </div>
+        {/* Sideboard — always visible when the format permits one, so users
+            can discover and target it. Hidden entirely for Commander/Brawl
+            (SideboardPolicy::Forbidden) since those formats don't have a
+            sideboard concept. */}
+        {!hideSideboard && (
+          <div className="mt-3 border-t border-white/8 pt-2">
+            <MoveList
+              title={sideboardTitle}
+              entries={deck.sideboard}
+              section="sideboard"
+              onRemove={onRemoveCard}
+              onMove={onMoveCard}
+              onCardHover={onCardHover}
+              unsupportedMap={unsupportedMap}
+              alwaysShow
+              emptyHint="Hover a main-deck card and click → to move it here."
+              warning={sideboardWarning}
+            />
+          </div>
+        )}
       </div>
 
       {/* Paste import modal */}

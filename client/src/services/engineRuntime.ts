@@ -92,3 +92,39 @@ export async function isCardCommanderEligible(name: string): Promise<boolean> {
   const engine = await loadEngineModule();
   return engine.is_card_commander_eligible(name);
 }
+
+/**
+ * CR 100.4a: Per-format sideboard policy as a discriminated union.
+ *
+ * `Forbidden` and `Unlimited` are unit variants and do not carry a `data`
+ * field — always exhaustive-switch on `type`, never destructure `data`
+ * unconditionally.
+ */
+export type SideboardPolicy =
+  | { type: "Forbidden" }
+  | { type: "Limited"; data: number }
+  | { type: "Unlimited" };
+
+export type SideboardFormat =
+  | "Standard"
+  | "Commander"
+  | "Pioneer"
+  | "Historic"
+  | "Pauper"
+  | "Brawl"
+  | "HistoricBrawl"
+  | "FreeForAll"
+  | "TwoHeadedGiant";
+
+/**
+ * Query the engine for the sideboard policy of a given format. The engine is
+ * the single authority for these rules — the frontend never hardcodes 15
+ * or any other cap.
+ */
+export async function sideboardPolicyForFormat(
+  format: SideboardFormat,
+): Promise<SideboardPolicy> {
+  await ensureWasmInit();
+  const engine = await loadEngineModule();
+  return engine.sideboardPolicyForFormat(format) as SideboardPolicy;
+}
