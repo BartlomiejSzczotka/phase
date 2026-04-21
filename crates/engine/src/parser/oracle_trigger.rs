@@ -2085,6 +2085,13 @@ fn try_parse_event(
         return Some(result);
     }
 
+    // CR 400.3 + CR 603.10: "is put into your hand from your graveyard" — dredge-style
+    // reanimate triggers (Golgari Brownscale). Fires from the graveyard zone, so
+    // trigger_zones must extend beyond the battlefield default.
+    if let Some(result) = try_parse_put_into_hand_from(subject, rest) {
+        return Some(result);
+    }
+
     // CR 701.13a: "is exiled" / "are exiled" — exile trigger
     if alt((
         value((), tag::<_, _, VerboseError<&str>>("is exiled")),
@@ -2401,6 +2408,10 @@ fn try_parse_special_trigger_pattern(lower: &str) -> Option<(TriggerMode, Trigge
     }
 
     if let Some(result) = try_parse_one_or_more_put_into_graveyard(lower) {
+        return Some(result);
+    }
+
+    if let Some(result) = try_parse_one_or_more_put_into_library(lower) {
         return Some(result);
     }
 
@@ -4297,6 +4308,84 @@ fn try_parse_put_into_graveyard(
     Some((TriggerMode::ChangesZone, def))
 }
 
+/// Parse "[subject] is/are put into [possessive] hand from [zone]" — dredge-style
+/// zone-change triggers that fire when a card moves from graveyard (or library) to
+/// its owner's hand. Mirrors `try_parse_put_into_graveyard` with hand as the
+/// destination. Example: Golgari Brownscale — "When this card is put into your
+/// hand from your graveyard, you gain 2 life."
+///
+/// CR 400.3 + CR 603.10: The trigger event is a zone change ending in hand; the
+/// ability fires from the origin zone context (graveyard), so `trigger_zones`
+/// includes Graveyard + Battlefield + Exile.
+fn try_parse_put_into_hand_from(
+    subject: &TargetFilter,
+    rest: &str,
+) -> Option<(TriggerMode, TriggerDefinition)> {
+    let (after_verb, ()) = alt((
+        value((), tag::<_, _, VerboseError<&str>>("is put into ")),
+        value((), tag("are put into ")),
+    ))
+    .parse(rest)
+    .ok()?;
+
+    fn parse_hand_possessive(input: &str) -> OracleResult<'_, Option<TargetFilter>> {
+        alt((
+            value(
+                Some(TargetFilter::Typed(
+                    TypedFilter::default().controller(ControllerRef::You),
+                )),
+                tag("your hand"),
+            ),
+            value(
+                Some(TargetFilter::Typed(
+                    TypedFilter::default().controller(ControllerRef::Opponent),
+                )),
+                tag("an opponent's hand"),
+            ),
+            value(None, tag("a hand")),
+        ))
+        .parse(input)
+    }
+    let (after_hand, valid_target) = parse_hand_possessive.parse(after_verb).ok()?;
+
+    let after_hand = after_hand.trim_start();
+    let origin = if let Ok((after_from, ())) =
+        value((), tag::<_, _, VerboseError<&str>>("from ")).parse(after_hand)
+    {
+        let after_from = after_from.trim_start();
+        fn parse_origin_zone(input: &str) -> OracleResult<'_, Option<Zone>> {
+            alt((
+                value(Some(Zone::Graveyard), tag("your graveyard")),
+                value(Some(Zone::Library), tag("your library")),
+                value(Some(Zone::Battlefield), tag("the battlefield")),
+                value(None, tag("anywhere")),
+            ))
+            .parse(input)
+        }
+        parse_origin_zone
+            .parse(after_from)
+            .ok()
+            .map(|(_, z)| z)
+            .unwrap_or(None)
+    } else {
+        None
+    };
+
+    let mut def = make_base();
+    def.mode = TriggerMode::ChangesZone;
+    def.destination = Some(Zone::Hand);
+    def.origin = origin;
+    def.valid_card = Some(subject.clone());
+    def.valid_target = valid_target;
+    // The trigger source is in graveyard (or library) at resolution time, so the
+    // ability must be able to fire from beyond the battlefield. Matches the
+    // self-referential LTB pattern above.
+    if filter_references_self(subject) {
+        def.trigger_zones = vec![Zone::Battlefield, Zone::Graveyard, Zone::Exile];
+    }
+    Some((TriggerMode::ChangesZone, def))
+}
+
 /// Parse "whenever one or more [type] cards are put into [your] graveyard from [your library]".
 /// CR 603.2c: "One or more" triggers fire once per batch of simultaneous events.
 fn try_parse_one_or_more_put_into_graveyard(
@@ -4384,6 +4473,80 @@ fn try_parse_one_or_more_put_into_graveyard(
         def.destination = Some(Zone::Graveyard);
         def.origin = origin;
         def.valid_card = filter;
+        def.valid_target = valid_target;
+        def.batched = true;
+        return Some((TriggerMode::ChangesZoneAll, def));
+    }
+
+    None
+}
+
+/// Parse "whenever one or more cards are put into [a|your|an opponent's] library
+/// [from <zone>]" — batched zone-change triggers with library destination.
+/// CR 603.2c + CR 603.10a: "One or more" triggers fire once per batch of
+/// simultaneous zone-change events. Example: Wan Shi Tong, All-Knowing —
+/// "Whenever one or more cards are put into a library from anywhere, create..."
+fn try_parse_one_or_more_put_into_library(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+    for prefix in [
+        "whenever one or more cards are put into ",
+        "when one or more cards are put into ",
+    ] {
+        let Ok((rest, ())) = value((), tag::<_, _, VerboseError<&str>>(prefix)).parse(lower) else {
+            continue;
+        };
+
+        fn parse_library_possessive(input: &str) -> OracleResult<'_, Option<TargetFilter>> {
+            alt((
+                value(None, tag("a library")),
+                value(
+                    Some(TargetFilter::Typed(
+                        TypedFilter::default().controller(ControllerRef::You),
+                    )),
+                    tag("your library"),
+                ),
+                value(
+                    Some(TargetFilter::Typed(
+                        TypedFilter::default().controller(ControllerRef::Opponent),
+                    )),
+                    tag("an opponent's library"),
+                ),
+            ))
+            .parse(input)
+        }
+        let Ok((after_lib, valid_target)) = parse_library_possessive.parse(rest) else {
+            continue;
+        };
+
+        let after_lib = after_lib.trim_start();
+        let origin = if let Ok((after_from, ())) =
+            value((), tag::<_, _, VerboseError<&str>>("from ")).parse(after_lib)
+        {
+            let after_from = after_from.trim_start();
+            fn parse_origin_zone(input: &str) -> OracleResult<'_, Option<Zone>> {
+                alt((
+                    value(None, tag("anywhere")),
+                    value(Some(Zone::Battlefield), tag("the battlefield")),
+                    value(Some(Zone::Hand), tag("your hand")),
+                    value(Some(Zone::Graveyard), tag("your graveyard")),
+                ))
+                .parse(input)
+            }
+            parse_origin_zone
+                .parse(after_from)
+                .ok()
+                .map(|(_, z)| z)
+                .unwrap_or(None)
+        } else if after_lib.is_empty() {
+            None
+        } else {
+            // Unknown trailing text — bail rather than silently truncate.
+            continue;
+        };
+
+        let mut def = make_base();
+        def.mode = TriggerMode::ChangesZoneAll;
+        def.destination = Some(Zone::Library);
+        def.origin = origin;
         def.valid_target = valid_target;
         def.batched = true;
         return Some((TriggerMode::ChangesZoneAll, def));
