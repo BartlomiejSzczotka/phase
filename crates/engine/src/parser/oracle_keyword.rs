@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::combinator::value;
+use nom::bytes::complete::{tag, take_until};
+use nom::combinator::{opt, value};
 use nom::Parser;
 use nom_language::error::VerboseError;
 
@@ -268,12 +268,12 @@ fn split_outside_braces(text: &str) -> Vec<&str> {
 /// non-mana sub-costs through `pay_additional_cost`.
 fn parse_flashback_cost(cost_text: &str) -> Option<FlashbackCost> {
     let trimmed = cost_text.trim().trim_end_matches('.').trim_end_matches(')');
-    // Strip reminder text in parentheses (structural punctuation, not parser dispatch).
-    let clean = if let Some(paren_idx) = trimmed.find(" (") {
-        trimmed[..paren_idx].trim()
-    } else {
-        trimmed
-    };
+    // Strip reminder text in parentheses: take everything before the first " (".
+    let clean = opt(take_until::<_, _, VerboseError<&str>>(" ("))
+        .parse(trimmed)
+        .map(|(_, before)| before.unwrap_or(trimmed))
+        .unwrap_or(trimmed)
+        .trim();
     if clean.is_empty() {
         return None;
     }
@@ -296,12 +296,12 @@ fn parse_flashback_cost(cost_text: &str) -> Option<FlashbackCost> {
 /// alongside the mandatory "discard this card" sub-cost.
 fn parse_cycling_cost(cost_text: &str) -> Option<CyclingCost> {
     let trimmed = cost_text.trim().trim_end_matches('.').trim_end_matches(')');
-    // Strip reminder text in parentheses (structural punctuation, not parser dispatch).
-    let clean = if let Some(paren_idx) = trimmed.find(" (") {
-        trimmed[..paren_idx].trim()
-    } else {
-        trimmed
-    };
+    // Strip reminder text in parentheses: take everything before the first " (".
+    let clean = opt(take_until::<_, _, VerboseError<&str>>(" ("))
+        .parse(trimmed)
+        .map(|(_, before)| before.unwrap_or(trimmed))
+        .unwrap_or(trimmed)
+        .trim();
     if clean.is_empty() {
         return None;
     }
