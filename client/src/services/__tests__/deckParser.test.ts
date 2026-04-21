@@ -292,6 +292,23 @@ Sideboard
     expect(result.main).toEqual([{ count: 1, name: 'Three Visits' }]);
   });
 
+  it('strips nonnumeric collector-number suffixes from MTGA-style lines', () => {
+    const content = [
+      '1 Arcane Signet () 1F★',
+      '1 Arcane Denial () 22a',
+      '1 Mental Misstep () 2023-1',
+      '1 Narset, Parter of Veils (WAR) 61★',
+    ].join('\n');
+
+    const result = detectAndParseDeck(content);
+    expect(result.main).toEqual([
+      { count: 1, name: 'Arcane Signet' },
+      { count: 1, name: 'Arcane Denial' },
+      { count: 1, name: 'Mental Misstep' },
+      { count: 1, name: 'Narset, Parter of Veils' },
+    ]);
+  });
+
   it('routes inline [Commander] annotations to the commander slot', () => {
     const content = `1 Zimone, Infinite Analyst (SOC) 10 [Commander {top}]
 1 Sol Ring (SOC) 128`;

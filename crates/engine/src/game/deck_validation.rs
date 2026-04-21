@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::database::legality::{LegalityFormat, LegalityStatus};
 use crate::database::CardDatabase;
+use crate::parser::oracle::oracle_text_allows_commander;
 use crate::types::card::CardFace;
 use crate::types::card_type::{CoreType, Supertype};
 use crate::types::format::{GameFormat, SideboardPolicy};
@@ -424,7 +425,7 @@ fn is_brawl_commander_eligible(face: &CardFace) -> bool {
     let explicitly_allowed = face
         .oracle_text
         .as_ref()
-        .is_some_and(|text| text.to_ascii_lowercase().contains("can be your commander"));
+        .is_some_and(|text| oracle_text_allows_commander(text, &face.name));
 
     (is_legendary && (is_creature || is_planeswalker)) || explicitly_allowed
 }
@@ -919,7 +920,7 @@ pub fn is_commander_eligible(face: &CardFace) -> bool {
     let explicitly_allowed = face
         .oracle_text
         .as_ref()
-        .is_some_and(|text| text.to_ascii_lowercase().contains("can be your commander"));
+        .is_some_and(|text| oracle_text_allows_commander(text, &face.name));
     // CR 702.124: Background enchantments are eligible as commanders
     // (pairing validation is handled separately by are_valid_partners)
     let is_background = face
@@ -1793,6 +1794,22 @@ mod tests {
         // Non-Background enchantment is not a valid partner
         bg.card_type.subtypes = vec!["Aura".to_string()];
         assert!(!are_valid_partners(&commander, &bg));
+    }
+
+    #[test]
+    fn commander_eligibility_uses_parsed_permission_text() {
+        let mut face = CardFace {
+            name: "Teferi, Temporal Archmage".to_string(),
+            oracle_text: Some("Teferi, Temporal Archmage can be your commander.".to_string()),
+            ..CardFace::default()
+        };
+        face.card_type.supertypes.push(Supertype::Legendary);
+        face.card_type.core_types.push(CoreType::Planeswalker);
+
+        assert!(is_commander_eligible(&face));
+
+        face.oracle_text = Some("Teferi, Temporal Archmage can't be your commander.".to_string());
+        assert!(!is_commander_eligible(&face));
     }
 
     #[test]

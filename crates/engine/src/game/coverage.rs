@@ -3,6 +3,7 @@ use crate::database::CardDatabase;
 use crate::game::game_object::GameObject;
 use crate::game::static_abilities::{build_static_registry, StaticAbilityHandler};
 use crate::game::triggers::build_trigger_registry;
+use crate::parser::oracle::is_commander_permission_sentence;
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, ActivationRestriction,
     AdditionalCost, AggregateFunction, ChoiceType, ContinuousModification, ControllerRef,
@@ -3123,6 +3124,9 @@ fn count_effective_oracle_lines(oracle_text: &str) -> usize {
         }
 
         let lower = stripped.to_lowercase();
+        if is_commander_permission_sentence(&lower) {
+            continue;
+        }
 
         // Check if this line contains a modal header ("choose one —", "choose two.", etc.)
         // Handles standalone headers, triggered modals ("when enters, choose one —"),
@@ -3334,6 +3338,9 @@ fn find_missing_lines(oracle_text: &str, parse_details: &[ParsedItem]) -> Vec<St
             let stripped = strip_parenthesized_reminder(&lower);
             let stripped = stripped.trim();
             if stripped.is_empty() {
+                return false;
+            }
+            if is_commander_permission_sentence(stripped) {
                 return false;
             }
             // A line is "missing" if no source_text contains it or is contained by it
@@ -7454,6 +7461,23 @@ mod tests {
                     \u{2022} Return target nonland permanent card from your graveyard to the battlefield.";
         // 1 modal header; both bullets fold into the header.
         assert_eq!(count_effective_oracle_lines(text), 1);
+    }
+
+    #[test]
+    fn commander_permission_text_does_not_count_as_runtime_gap() {
+        let parse_details = Vec::new();
+        let mut missing = Vec::new();
+        check_silent_drops(
+            &Some("Teferi, Temporal Archmage can be your commander.".to_string()),
+            &parse_details,
+            &mut missing,
+        );
+
+        assert!(missing.is_empty());
+        assert_eq!(
+            count_effective_oracle_lines("Teferi, Temporal Archmage can be your commander."),
+            0
+        );
     }
 
     /// Regression: `AbilityCondition::IsYourTurn` is handled at runtime by

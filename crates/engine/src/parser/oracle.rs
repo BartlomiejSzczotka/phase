@@ -1,6 +1,6 @@
 use nom::branch::alt;
-use nom::bytes::complete::tag;
-use nom::combinator::value;
+use nom::bytes::complete::{tag, take_until};
+use nom::combinator::{all_consuming, opt, value};
 use nom::Parser;
 use nom_language::error::VerboseError;
 use serde::{Deserialize, Serialize};
@@ -116,6 +116,39 @@ fn definition_grants_flashback(def: &AbilityDefinition) -> bool {
             .sub_ability
             .as_deref()
             .is_some_and(definition_grants_flashback)
+}
+
+fn parse_commander_permission_sentence(input: &str) -> nom::IResult<&str, (), VerboseError<&str>> {
+    let (input, subject) = take_until(" can be your commander").parse(input)?;
+    if subject.trim().is_empty() {
+        return Err(nom::Err::Error(VerboseError {
+            errors: vec![(
+                input,
+                nom_language::error::VerboseErrorKind::Nom(nom::error::ErrorKind::TakeUntil),
+            )],
+        }));
+    }
+    let (input, _) = tag(" can be your commander").parse(input)?;
+    let (input, _) = opt(tag(".")).parse(input)?;
+    Ok((input, ()))
+}
+
+/// Deck-construction permission text has no runtime ability to resolve.
+pub(crate) fn is_commander_permission_sentence(line: &str) -> bool {
+    let lower = line.trim().to_ascii_lowercase();
+    let parsed = all_consuming(parse_commander_permission_sentence)
+        .parse(lower.as_str())
+        .is_ok();
+    parsed
+}
+
+/// Whether Oracle text explicitly permits this card to be a commander.
+pub fn oracle_text_allows_commander(oracle_text: &str, card_name: &str) -> bool {
+    let normalized = normalize_card_name_refs(oracle_text, card_name);
+    normalized
+        .lines()
+        .any(|line| is_commander_permission_sentence(line))
+        || scan_contains(&oracle_text.to_ascii_lowercase(), "can be your commander")
 }
 
 fn parsed_result_recently_granted_flashback(result: &ParsedAbilities) -> bool {
@@ -795,6 +828,11 @@ pub fn parse_oracle_text(
 
         // Priority 2: "Enchant {filter}" — skip (handled externally)
         if lower_starts_with(&lower, "enchant ") && !lower_starts_with(&lower, "enchanted ") {
+            i += 1;
+            continue;
+        }
+
+        if is_commander_permission_sentence(&line) {
             i += 1;
             continue;
         }
@@ -2526,6 +2564,38 @@ mod tests {
         // Enchant line skipped (priority 2)
         assert_eq!(r.statics.len(), 1);
         assert_eq!(r.triggers.len(), 1);
+    }
+
+    #[test]
+    fn commander_permission_line_is_deck_construction_text() {
+        let r = parse(
+            "Teferi, Temporal Archmage can be your commander.",
+            "Teferi, Temporal Archmage",
+            &[],
+            &["Planeswalker"],
+            &["Teferi"],
+        );
+
+        assert!(r.abilities.is_empty());
+        assert!(r.triggers.is_empty());
+        assert!(r.statics.is_empty());
+        assert!(r.replacements.is_empty());
+    }
+
+    #[test]
+    fn oracle_text_allows_commander_uses_commander_permission_parser() {
+        assert!(oracle_text_allows_commander(
+            "Teferi, Temporal Archmage can be your commander.",
+            "Teferi, Temporal Archmage",
+        ));
+        assert!(oracle_text_allows_commander(
+            "Spell commander (This card can be your commander. In Limited, it can partner like other monocolored legends.)",
+            "Clear, the Mind",
+        ));
+        assert!(!oracle_text_allows_commander(
+            "Teferi, Temporal Archmage can't be your commander.",
+            "Teferi, Temporal Archmage",
+        ));
     }
 
     #[test]

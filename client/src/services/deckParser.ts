@@ -54,7 +54,7 @@ function parseDeckEntryLine(line: string): LineParseResult | null {
     annotation = "companion";
   }
 
-  const mtgaMatch = remainder.match(/^(\d+)\s+(.+?)\s+\([A-Z0-9]*\)\s+\d+$/);
+  const mtgaMatch = remainder.match(/^(\d+)\s+(.+?)\s+\([A-Z0-9]*\)\s+\S+$/);
   if (mtgaMatch) {
     return {
       entry: { count: parseInt(mtgaMatch[1], 10), name: mtgaMatch[2].trim() },
@@ -210,7 +210,7 @@ export function parseDeckFile(content: string): ParsedDeck {
 
 // MTGA format detection: count + name + (set) + collector#, with optional
 // trailing Archidekt category annotation (e.g. "[Commander {top}]").
-const MTGA_LINE_PATTERN = /^\d+\s+.+\s+\([A-Z0-9]*\)\s+\d+(\s+\S.*)?$/;
+const MTGA_LINE_PATTERN = /^\d+\s+.+\s+\([A-Z0-9]*\)\s+\S+(\s+\S.*)?$/;
 
 /**
  * Parse an MTGA text format deck.

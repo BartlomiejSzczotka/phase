@@ -2,7 +2,7 @@ use std::str::FromStr;
 
 use crate::database::mtgjson::{parse_mtgjson_mana_cost, AtomicCard};
 use crate::game::printed_cards::derive_colors_from_mana_cost;
-use crate::parser::oracle::parse_oracle_text;
+use crate::parser::oracle::{oracle_text_allows_commander, parse_oracle_text};
 use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost, CardPlayMode,
     ChoiceType, ContinuousModification, ControllerRef, CounterTriggerFilter, Duration, Effect,
@@ -521,7 +521,7 @@ pub fn compute_brawl_commander(mtgjson: &super::mtgjson::AtomicCard, face: &Card
     let explicitly_allowed = face
         .oracle_text
         .as_ref()
-        .is_some_and(|text| text.to_ascii_lowercase().contains("can be your commander"));
+        .is_some_and(|text| oracle_text_allows_commander(text, &face.name));
     let type_line_says = (is_legendary && (is_creature || is_planeswalker)) || explicitly_allowed;
 
     mtgjson_says || type_line_says
