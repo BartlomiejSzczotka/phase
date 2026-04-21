@@ -2788,14 +2788,14 @@ fn find_non_self_sacrifice(cost: &AbilityCost) -> Option<&TargetFilter> {
     }
 }
 
-fn find_non_self_discard(cost: &AbilityCost) -> Option<(u32, Option<&TargetFilter>)> {
+fn find_non_self_discard(cost: &AbilityCost) -> Option<(&QuantityExpr, Option<&TargetFilter>)> {
     match cost {
         AbilityCost::Discard {
             count,
             filter,
             self_ref: false,
             ..
-        } => Some((*count, filter.as_ref())),
+        } => Some((count, filter.as_ref())),
         AbilityCost::Composite { costs } => costs.iter().find_map(find_non_self_discard),
         _ => None,
     }
@@ -3222,8 +3222,10 @@ pub fn handle_activate_ability(
         }
 
         if let Some((count, filter)) = find_non_self_discard(cost) {
+            let count =
+                super::quantity::resolve_quantity(state, count, player, source_id).max(0) as usize;
             let eligible = find_eligible_discard_targets(state, player, source_id, filter);
-            if eligible.len() < count as usize {
+            if eligible.len() < count {
                 return Err(EngineError::ActionNotAllowed(
                     "Not enough cards in hand to discard".into(),
                 ));
@@ -3234,7 +3236,7 @@ pub fn handle_activate_ability(
             pending_discard.activation_ability_index = Some(ability_index);
             return Ok(WaitingFor::DiscardForCost {
                 player,
-                count: count as usize,
+                count,
                 cards: eligible,
                 pending_cast: Box::new(pending_discard),
             });
@@ -4735,7 +4737,7 @@ mod tests {
                         },
                         AbilityCost::Tap,
                         AbilityCost::Discard {
-                            count: 1,
+                            count: QuantityExpr::Fixed { value: 1 },
                             filter: None,
                             random: false,
                             self_ref: false,
@@ -6988,7 +6990,7 @@ mod tests {
                     },
                 },
                 AbilityCost::Discard {
-                    count: 1,
+                    count: QuantityExpr::Fixed { value: 1 },
                     filter: None,
                     random: false,
                     self_ref: true,

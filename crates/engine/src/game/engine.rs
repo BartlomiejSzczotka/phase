@@ -790,6 +790,22 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
             &mut events,
         )?,
         (
+            WaitingFor::DiscardForManaAbility {
+                count,
+                cards: legal_cards,
+                pending_mana_ability,
+                ..
+            },
+            GameAction::SelectCards { cards: chosen },
+        ) => engine_casting::handle_discard_for_mana_ability(
+            state,
+            *count,
+            legal_cards,
+            pending_mana_ability,
+            &chosen,
+            &mut events,
+        )?,
+        (
             WaitingFor::ChooseManaColor {
                 choice,
                 pending_mana_ability,

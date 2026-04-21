@@ -542,7 +542,7 @@ pub fn synthesize_cycling(face: &mut CardFace) {
             Keyword::Cycling(cycling_cost) => {
                 // CR 702.29a: "Discard THIS card" — self_ref = true.
                 let discard_self = AbilityCost::Discard {
-                    count: 1,
+                    count: QuantityExpr::Fixed { value: 1 },
                     filter: None,
                     random: false,
                     self_ref: true,
@@ -580,7 +580,7 @@ pub fn synthesize_cycling(face: &mut CardFace) {
                     costs: vec![
                         AbilityCost::Mana { cost: cost.clone() },
                         AbilityCost::Discard {
-                            count: 1,
+                            count: QuantityExpr::Fixed { value: 1 },
                             filter: None,
                             random: false,
                             self_ref: true,

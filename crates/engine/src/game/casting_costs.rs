@@ -999,6 +999,8 @@ fn pay_additional_cost(
             });
         }
         AbilityCost::Discard { count, filter, .. } => {
+            let count = super::quantity::resolve_quantity(state, &count, player, pending.object_id)
+                .max(0) as usize;
             // CR 601.2b: Discard requires interactive card selection — return a WaitingFor.
             let eligible = super::casting::find_eligible_discard_targets(
                 state,
@@ -1007,14 +1009,14 @@ fn pay_additional_cost(
                 filter.as_ref(),
             );
             // CR 601.2b: Defense-in-depth — empty hand means no legal choice.
-            if eligible.len() < count as usize {
+            if eligible.len() < count {
                 return Err(EngineError::ActionNotAllowed(
                     "Not enough cards in hand to discard".to_string(),
                 ));
             }
             return Ok(WaitingFor::DiscardForCost {
                 player,
-                count: count as usize,
+                count,
                 cards: eligible,
                 pending_cast: Box::new(pending),
             });

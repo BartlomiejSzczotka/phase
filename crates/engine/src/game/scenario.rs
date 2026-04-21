@@ -1068,6 +1068,7 @@ impl GameRunner {
             WaitingFor::ReturnToHandForCost { .. } => "ReturnToHandForCost",
             WaitingFor::TapCreaturesForSpellCost { .. } => "TapCreaturesForSpellCost",
             WaitingFor::TapCreaturesForManaAbility { .. } => "TapCreaturesForManaAbility",
+            WaitingFor::DiscardForManaAbility { .. } => "DiscardForManaAbility",
             WaitingFor::ChooseManaColor { .. } => "ChooseManaColor",
             WaitingFor::ExileFromGraveyardForCost { .. } => "ExileFromGraveyardForCost",
             WaitingFor::CollectEvidenceChoice { .. } => "CollectEvidenceChoice",

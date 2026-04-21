@@ -840,6 +840,21 @@ pub fn candidate_actions_broad(state: &GameState) -> Vec<CandidateAction> {
                 )
             })
             .collect(),
+        WaitingFor::DiscardForManaAbility {
+            player,
+            count,
+            cards,
+            ..
+        } => combinations(cards, *count)
+            .into_iter()
+            .map(|combo| {
+                candidate(
+                    GameAction::SelectCards { cards: combo },
+                    TacticalClass::Selection,
+                    Some(*player),
+                )
+            })
+            .collect(),
         // CR 118.3: AI selects permanents to sacrifice as cost
         WaitingFor::SacrificeForCost {
             player,

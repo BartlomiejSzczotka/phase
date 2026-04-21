@@ -554,6 +554,10 @@ pub struct PendingManaAbility {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color_override: Option<ProductionOverride>,
     pub resume: ManaAbilityResume,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chosen_tappers: Vec<ObjectId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chosen_discards: Vec<ObjectId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1207,6 +1211,14 @@ pub enum WaitingFor {
         creatures: Vec<ObjectId>,
         pending_mana_ability: Box<PendingManaAbility>,
     },
+    /// CR 118.3 / CR 605.3b: Player must choose cards to discard to pay a mana ability cost.
+    DiscardForManaAbility {
+        player: PlayerId,
+        count: usize,
+        /// Eligible cards in hand (excludes the mana ability source).
+        cards: Vec<ObjectId>,
+        pending_mana_ability: Box<PendingManaAbility>,
+    },
     /// CR 605.3b: Mana ability with a choice dimension — player must answer
     /// before mana is added to the pool. The prompt shape (`SingleColor` vs
     /// `Combination`) depends on the `ManaProduction` variant. Both shapes
@@ -1534,6 +1546,7 @@ impl WaitingFor {
             | WaitingFor::BlightChoice { player, .. }
             | WaitingFor::TapCreaturesForSpellCost { player, .. }
             | WaitingFor::TapCreaturesForManaAbility { player, .. }
+            | WaitingFor::DiscardForManaAbility { player, .. }
             | WaitingFor::ChooseManaColor { player, .. }
             | WaitingFor::ExileFromGraveyardForCost { player, .. }
             | WaitingFor::CollectEvidenceChoice { player, .. }
@@ -3025,6 +3038,8 @@ mod tests {
                 ability_index: 0,
                 color_override: None,
                 resume: ManaAbilityResume::Priority,
+                chosen_tappers: Vec::new(),
+                chosen_discards: Vec::new(),
             }),
         };
         assert!(!tap_mana.has_pending_cast());

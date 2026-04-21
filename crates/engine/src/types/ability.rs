@@ -2383,7 +2383,8 @@ pub enum AbilityCost {
         amount: QuantityExpr,
     },
     Discard {
-        count: u32,
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
         #[serde(default)]
         filter: Option<TargetFilter>,
         #[serde(default)]
@@ -6610,7 +6611,7 @@ mod tests {
                 amount: QuantityExpr::Fixed { value: 2 },
             },
             AbilityCost::Discard {
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 filter: None,
                 random: false,
                 self_ref: false,
@@ -7035,7 +7036,7 @@ mod tests {
         #[test]
         fn discard() {
             let cost = AbilityCost::Discard {
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 filter: None,
                 random: false,
                 self_ref: false,
