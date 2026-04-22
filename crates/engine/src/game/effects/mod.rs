@@ -1814,7 +1814,7 @@ mod tests {
         Duration, FilterProp, PlayerFilter, PtValue, QuantityExpr, QuantityRef, SpellContext,
         TargetFilter, TargetRef, TypedFilter,
     };
-    use crate::types::game_state::{ExileLink, ExileLinkKind};
+    use crate::types::game_state::{ExileLink, ExileLinkKind, LinkedExileSnapshot};
     use crate::types::identifiers::{CardId, ObjectId, TrackedSetId};
     use crate::types::mana::ManaColor;
     use crate::types::mana::ManaCost;
@@ -2938,6 +2938,151 @@ mod tests {
                 kind: ExileLinkKind::TrackedBySource,
             });
         }
+
+        let mut ability = ResolvedAbility::new(
+            Effect::Token {
+                name: "Illusion".to_string(),
+                power: PtValue::Quantity(QuantityExpr::Ref {
+                    qty: QuantityRef::Aggregate {
+                        function: crate::types::ability::AggregateFunction::Sum,
+                        property: crate::types::ability::ObjectProperty::ManaValue,
+                        filter: TargetFilter::And {
+                            filters: vec![
+                                TargetFilter::ExiledBySource,
+                                TargetFilter::Typed(TypedFilter::default().properties(vec![
+                                    FilterProp::Owned {
+                                        controller: ControllerRef::You,
+                                    },
+                                ])),
+                            ],
+                        },
+                    },
+                }),
+                toughness: PtValue::Quantity(QuantityExpr::Ref {
+                    qty: QuantityRef::Aggregate {
+                        function: crate::types::ability::AggregateFunction::Sum,
+                        property: crate::types::ability::ObjectProperty::ManaValue,
+                        filter: TargetFilter::And {
+                            filters: vec![
+                                TargetFilter::ExiledBySource,
+                                TargetFilter::Typed(TypedFilter::default().properties(vec![
+                                    FilterProp::Owned {
+                                        controller: ControllerRef::You,
+                                    },
+                                ])),
+                            ],
+                        },
+                    },
+                }),
+                types: vec!["Creature".to_string(), "Illusion".to_string()],
+                colors: vec![ManaColor::Blue],
+                keywords: vec![],
+                tapped: false,
+                count: QuantityExpr::Fixed { value: 1 },
+                owner: TargetFilter::Controller,
+                attach_to: None,
+                enters_attacking: false,
+                supertypes: vec![],
+                static_abilities: vec![],
+                enter_with_counters: vec![],
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.player_scope = Some(PlayerFilter::OwnersOfCardsExiledBySource);
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        let mut created: Vec<_> = state
+            .battlefield
+            .iter()
+            .filter_map(|id| state.objects.get(id))
+            .filter(|object| object.is_token)
+            .map(|object| {
+                (
+                    object.owner,
+                    object.controller,
+                    object.power,
+                    object.toughness,
+                )
+            })
+            .collect();
+        created.sort_by_key(|entry| entry.0);
+
+        assert_eq!(
+            created,
+            vec![
+                (PlayerId(0), PlayerId(0), Some(5), Some(5)),
+                (PlayerId(1), PlayerId(1), Some(4), Some(4)),
+            ]
+        );
+    }
+
+    #[test]
+    fn player_scope_owners_of_cards_exiled_by_source_uses_ltb_snapshot() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(100),
+            PlayerId(0),
+            "Skyclave Apparition".to_string(),
+            Zone::Graveyard,
+        );
+        let exiled_a = create_object(
+            &mut state,
+            CardId(101),
+            PlayerId(0),
+            "Exiled 101".to_string(),
+            Zone::Exile,
+        );
+        state.objects.get_mut(&exiled_a).unwrap().mana_cost = ManaCost::generic(2);
+        let exiled_b = create_object(
+            &mut state,
+            CardId(102),
+            PlayerId(0),
+            "Exiled 102".to_string(),
+            Zone::Exile,
+        );
+        state.objects.get_mut(&exiled_b).unwrap().mana_cost = ManaCost::generic(3);
+        let exiled_c = create_object(
+            &mut state,
+            CardId(103),
+            PlayerId(1),
+            "Exiled 103".to_string(),
+            Zone::Exile,
+        );
+        state.objects.get_mut(&exiled_c).unwrap().mana_cost = ManaCost::generic(4);
+        state.current_trigger_event = Some(GameEvent::ZoneChanged {
+            object_id: source,
+            from: Zone::Battlefield,
+            to: Zone::Graveyard,
+            record: Box::new(crate::types::game_state::ZoneChangeRecord {
+                linked_exile_snapshot: vec![
+                    LinkedExileSnapshot {
+                        exiled_id: exiled_a,
+                        owner: PlayerId(0),
+                        mana_value: 2,
+                    },
+                    LinkedExileSnapshot {
+                        exiled_id: exiled_b,
+                        owner: PlayerId(0),
+                        mana_value: 3,
+                    },
+                    LinkedExileSnapshot {
+                        exiled_id: exiled_c,
+                        owner: PlayerId(1),
+                        mana_value: 4,
+                    },
+                ],
+                ..crate::types::game_state::ZoneChangeRecord::test_minimal(
+                    source,
+                    Zone::Battlefield,
+                    Zone::Graveyard,
+                )
+            }),
+        });
 
         let mut ability = ResolvedAbility::new(
             Effect::Token {
