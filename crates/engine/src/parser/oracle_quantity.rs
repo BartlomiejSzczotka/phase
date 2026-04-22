@@ -989,7 +989,9 @@ mod tests {
                     },
             } => {
                 assert!(
-                    filters.iter().any(|filter| matches!(filter, TargetFilter::ExiledBySource)),
+                    filters
+                        .iter()
+                        .any(|filter| matches!(filter, TargetFilter::ExiledBySource)),
                     "expected ExiledBySource filter, got {filters:?}"
                 );
                 assert!(filters.iter().any(|filter| matches!(

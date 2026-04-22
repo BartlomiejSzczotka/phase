@@ -16,11 +16,7 @@ fn players_for_filter(
         .iter()
         .filter(|player| {
             crate::game::players::matches_scope_filter(
-                state,
-                player.id,
-                filter,
-                controller,
-                source_id,
+                state, player.id, filter, controller, source_id,
             )
         })
         .map(|player| player.id)

@@ -983,13 +983,7 @@ pub(crate) fn resolve_player_count(
         .players
         .iter()
         .filter(|p| {
-            crate::game::players::matches_scope_filter(
-                state,
-                p.id,
-                filter,
-                controller,
-                source_id,
-            )
+            crate::game::players::matches_scope_filter(state, p.id, filter, controller, source_id)
         })
         .count() as i32
 }
@@ -1960,7 +1954,11 @@ mod tests {
             Zone::Battlefield,
         );
 
-        for (card_id, owner, mv) in [(31, PlayerId(0), 2u32), (32, PlayerId(0), 3), (33, PlayerId(1), 4)] {
+        for (card_id, owner, mv) in [
+            (31, PlayerId(0), 2u32),
+            (32, PlayerId(0), 3),
+            (33, PlayerId(1), 4),
+        ] {
             let exiled = create_object(
                 &mut state,
                 CardId(card_id),

@@ -2877,7 +2877,11 @@ mod tests {
             Zone::Battlefield,
         );
 
-        for (card_id, owner, mv) in [(101, PlayerId(0), 2u32), (102, PlayerId(0), 3), (103, PlayerId(1), 4)] {
+        for (card_id, owner, mv) in [
+            (101, PlayerId(0), 2u32),
+            (102, PlayerId(0), 3),
+            (103, PlayerId(1), 4),
+        ] {
             let exiled = create_object(
                 &mut state,
                 CardId(card_id),
@@ -2954,7 +2958,14 @@ mod tests {
             .iter()
             .filter_map(|id| state.objects.get(id))
             .filter(|object| object.is_token)
-            .map(|object| (object.owner, object.controller, object.power, object.toughness))
+            .map(|object| {
+                (
+                    object.owner,
+                    object.controller,
+                    object.power,
+                    object.toughness,
+                )
+            })
             .collect();
         created.sort_by_key(|entry| entry.0);
 
