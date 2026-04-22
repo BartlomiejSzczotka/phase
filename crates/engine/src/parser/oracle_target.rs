@@ -20,6 +20,7 @@ use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_nom::quantity as nom_quantity;
 use super::oracle_nom::target as nom_target;
 use super::oracle_quantity::capitalize_first;
+use super::oracle_target_scope;
 use super::oracle_util::{
     merge_or_filters, parse_subtype, strip_possessive, TextPair, SELF_REF_PARSE_ONLY_PHRASES,
     SELF_REF_TYPE_PHRASES,
@@ -1176,6 +1177,24 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
         pos += remaining_offset + "of the chosen type".len();
     }
 
+    let mut exclude_chosen_type = false;
+    let remaining = lower[pos..].trim_start();
+    let remaining_offset = lower[pos..].len() - remaining.len();
+    for suffix in &[
+        "that aren't of the chosen type",
+        "that are not of the chosen type",
+        "not of the chosen type",
+    ] {
+        if tag::<_, _, nom_language::error::VerboseError<&str>>(*suffix)
+            .parse(remaining)
+            .is_ok()
+        {
+            exclude_chosen_type = true;
+            pos += remaining_offset + suffix.len();
+            break;
+        }
+    }
+
     // CR 608.2d: "of their choice" / "of his or her choice" — informational qualifier
     // on opponent-choice effects. The actual choice is handled by the WaitingFor state machine.
     let remaining_choice = lower[pos..].trim_start();
@@ -1224,6 +1243,20 @@ pub fn parse_type_phrase(text: &str) -> (TargetFilter, &str) {
         controller,
         properties,
     });
+    let filter = if exclude_chosen_type {
+        TargetFilter::And {
+            filters: vec![
+                filter,
+                TargetFilter::Not {
+                    filter: Box::new(TargetFilter::Typed(
+                        TypedFilter::default().properties(vec![FilterProp::IsChosenCreatureType]),
+                    )),
+                },
+            ],
+        }
+    } else {
+        filter
+    };
 
     (filter, &text[pos..])
 }
@@ -1548,9 +1581,17 @@ fn parse_controller_suffix(text: &str) -> Option<(ControllerRef, usize)> {
     if let Ok((rest, _)) =
         tag::<_, _, nom_language::error::VerboseError<&str>>("that player controls").parse(trimmed)
     {
-        // "that player controls" → ControllerRef::You, resolved against scope_player
-        // at runtime by resolve_quantity_scoped() for per-player iteration contexts.
-        return Some((ControllerRef::You, leading_ws + trimmed.len() - rest.len()));
+        // CR 109.4 + CR 115.1: "that player controls" is a relative reference
+        // back to a player introduced earlier in the ability (e.g. the attacked
+        // player in a "whenever you attack a player, ... that player controls"
+        // trigger). When the surrounding parser pushed a relative-player scope
+        // (see `oracle_target_scope`), emit `ControllerRef::TargetPlayer` so the
+        // runtime auto-surfaces a companion `TargetFilter::Player` slot via
+        // `effect_references_target_player` (game/ability_utils.rs). Without a
+        // scope, fall back to the legacy `ControllerRef::You` behaviour relied
+        // on by per-player iteration contexts (`resolve_quantity_scoped`).
+        let ctrl = oracle_target_scope::current().unwrap_or(ControllerRef::You);
+        return Some((ctrl, leading_ws + trimmed.len() - rest.len()));
     }
     if let Ok((rest, _)) =
         tag::<_, _, nom_language::error::VerboseError<&str>>("they control").parse(trimmed)

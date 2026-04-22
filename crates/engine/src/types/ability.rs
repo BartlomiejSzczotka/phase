@@ -2086,6 +2086,15 @@ pub enum StaticCondition {
     /// CR 611.2b: True when the source object is tapped.
     /// Used for "for as long as ~ remains tapped" duration conditions.
     SourceIsTapped,
+    /// CR 702.62a + CR 611.2b: True when the source object's current controller
+    /// equals the stored player. General-purpose "while you control this"
+    /// predicate; the runtime-installed Suspend haste static uses
+    /// `Duration::ForAsLongAs { SourceControllerEquals { player } }` so haste
+    /// lapses the moment another player gains control of the suspended
+    /// creature (Threaten, Mind Control, etc.).
+    SourceControllerEquals {
+        player: super::player::PlayerId,
+    },
     /// CR 301.5a: True when at least one Equipment is attached to the source object.
     /// Used for "as long as ~ is equipped" statics (Auriok Steelshaper, etc.).
     SourceIsEquipped,
@@ -2333,6 +2342,15 @@ pub enum CastVariantPaid {
     Sneak,
     /// CR 702.49 variant: Web-slinging cost was paid.
     WebSlinging,
+    /// CR 702.74a: Evoke alternative cast cost was paid from hand. Read by the
+    /// synthesized intervening-if ETB sacrifice trigger.
+    Evoke,
+    /// CR 702.62a: Cast as the suspend "play it without paying its mana cost"
+    /// resolution after the last time counter was removed. Tagged at stack
+    /// resolution; the runtime-installed haste static (creature spells only)
+    /// keys off this marker so a Threaten-style control swap correctly
+    /// terminates haste via `StaticCondition::SourceControllerEquals`.
+    Suspend,
 }
 
 impl From<NinjutsuVariant> for CastVariantPaid {
@@ -2383,7 +2401,8 @@ pub enum AbilityCost {
         amount: QuantityExpr,
     },
     Discard {
-        count: u32,
+        #[serde(default = "default_quantity_one")]
+        count: QuantityExpr,
         #[serde(default)]
         filter: Option<TargetFilter>,
         #[serde(default)]
@@ -3579,6 +3598,11 @@ pub enum Effect {
     MiracleCast {
         cost: super::mana::ManaCost,
     },
+    /// CR 702.35a: Madness trigger resolution — offers the player the chance to
+    /// cast the source card from exile for its madness cost.
+    MadnessCast {
+        cost: super::mana::ManaCost,
+    },
     /// CR 701.24g: Put a card at a specific position in its owner's library.
     /// Unlike ChangeZone { destination: Library } which auto-shuffles (CR 401.3),
     /// this uses move_to_library_position for precise placement without shuffling.
@@ -4093,6 +4117,7 @@ impl Effect {
             | Effect::Discover { .. }
             | Effect::Cascade
             | Effect::MiracleCast { .. }
+            | Effect::MadnessCast { .. }
             | Effect::GiftDelivery { .. }
             | Effect::ExchangeControl { .. }
             | Effect::ChangeTargets { .. }
@@ -4243,6 +4268,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Discover { .. } => "Discover",
         Effect::Cascade => "Cascade",
         Effect::MiracleCast { .. } => "MiracleCast",
+        Effect::MadnessCast { .. } => "MadnessCast",
         Effect::PutAtLibraryPosition { .. } => "PutAtLibraryPosition",
         Effect::PutOnTopOrBottom { .. } => "PutOnTopOrBottom",
         Effect::GiftDelivery { .. } => "GiftDelivery",
@@ -4397,6 +4423,7 @@ pub enum EffectKind {
     Discover,
     Cascade,
     MiracleCast,
+    MadnessCast,
     PutAtLibraryPosition,
     PutOnTopOrBottom,
     GiftDelivery,
@@ -4555,6 +4582,7 @@ impl From<&Effect> for EffectKind {
             Effect::Discover { .. } => EffectKind::Discover,
             Effect::Cascade => EffectKind::Cascade,
             Effect::MiracleCast { .. } => EffectKind::MiracleCast,
+            Effect::MadnessCast { .. } => EffectKind::MadnessCast,
             Effect::PutAtLibraryPosition { .. } => EffectKind::PutAtLibraryPosition,
             Effect::PutOnTopOrBottom { .. } => EffectKind::PutOnTopOrBottom,
             Effect::GiftDelivery { .. } => EffectKind::GiftDelivery,
@@ -4700,6 +4728,14 @@ pub enum ActivationRestriction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         maximum: Option<u32>,
     },
+    /// CR 702.62a: "If you could begin to cast this card by putting it onto the
+    /// stack from your hand" — the activation is legal whenever the underlying
+    /// card type's natural cast timing is legal. For a sorcery / permanent card,
+    /// this is sorcery-speed; for an instant, it's instant-speed. Used by the
+    /// synthesized Suspend hand-activated ability so future "cast-timing-mirroring"
+    /// activations (Foretell, etc.) can reuse this primitive instead of
+    /// special-casing card type at synthesis time.
+    MatchesCardCastTiming,
 }
 
 /// Structured spell-casting restrictions parsed from Oracle text.
@@ -6601,7 +6637,7 @@ mod tests {
                 amount: QuantityExpr::Fixed { value: 2 },
             },
             AbilityCost::Discard {
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 filter: None,
                 random: false,
                 self_ref: false,
@@ -7026,7 +7062,7 @@ mod tests {
         #[test]
         fn discard() {
             let cost = AbilityCost::Discard {
-                count: 1,
+                count: QuantityExpr::Fixed { value: 1 },
                 filter: None,
                 random: false,
                 self_ref: false,

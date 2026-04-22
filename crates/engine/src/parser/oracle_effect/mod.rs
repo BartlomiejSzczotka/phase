@@ -5610,6 +5610,31 @@ fn parse_effect_chain_impl(text: &str, kind: AbilityKind, ctx: &ParseContext) ->
         }
     }
 
+    // CR 701.20a + CR 608.2c: "look at the top card … if it's a [type] …" pure-peek pattern.
+    // A private-Dig (reveal: false, keep_count: None) followed immediately by a def
+    // whose condition is RevealedHasCardType is a conditional peek: the dig is only
+    // there to show the player the card; the sub_ability decides whether to take it.
+    // Mark the Dig as keep_count = 0 so the runtime skips DigChoice interaction and
+    // instead sets last_revealed_ids, letting the condition evaluate correctly.
+    for i in 0..defs.len().saturating_sub(1) {
+        if let Effect::Dig {
+            reveal: false,
+            keep_count: None,
+            filter: TargetFilter::Any,
+            ..
+        } = &*defs[i].effect
+        {
+            if matches!(
+                defs[i + 1].condition,
+                Some(AbilityCondition::RevealedHasCardType { .. })
+            ) {
+                if let Effect::Dig { keep_count, .. } = &mut *defs[i].effect {
+                    *keep_count = Some(0);
+                }
+            }
+        }
+    }
+
     // CR 702.33d + CR 608.2e: Resolve "create [N] of those tokens [instead]"
     // anaphoric subs — the sub-ability parses as `Unimplemented` because the
     // noun "those tokens" refers back to the previous clause's token-creation
@@ -9891,7 +9916,7 @@ mod tests {
             e,
             Effect::Choose {
                 choice_type: ChoiceType::CreatureType,
-                persist: false
+                persist: true
             }
         );
     }
@@ -15254,5 +15279,40 @@ mod tests {
         assert_eq!(trigger.valid_target, Some(TargetFilter::Controller));
         // Inner effect should parse as a draw.
         assert!(matches!(&*effect.effect, Effect::Draw { .. }));
+    }
+
+    #[test]
+    fn kindred_dominance_excludes_chosen_creature_type() {
+        use crate::types::ability::{ChoiceType, TypedFilter};
+
+        let def = parse_effect_chain(
+            "Choose a creature type. Destroy all creatures that aren't of the chosen type.",
+            AbilityKind::Spell,
+        );
+        let Effect::Choose {
+            choice_type,
+            persist,
+        } = &*def.effect
+        else {
+            panic!("expected Choose, got {:?}", def.effect);
+        };
+        assert_eq!(*choice_type, ChoiceType::CreatureType);
+        assert!(*persist);
+
+        let destroy = def.sub_ability.as_ref().expect("destroy continuation");
+        let Effect::DestroyAll { target, .. } = &*destroy.effect else {
+            panic!("expected DestroyAll, got {:?}", destroy.effect);
+        };
+        let expected = TargetFilter::And {
+            filters: vec![
+                TargetFilter::Typed(TypedFilter::creature()),
+                TargetFilter::Not {
+                    filter: Box::new(TargetFilter::Typed(
+                        TypedFilter::default().properties(vec![FilterProp::IsChosenCreatureType]),
+                    )),
+                },
+            ],
+        };
+        assert_eq!(target, &expected);
     }
 }
