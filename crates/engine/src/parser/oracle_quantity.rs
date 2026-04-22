@@ -19,8 +19,8 @@ use super::oracle_nom::quantity as nom_quantity;
 use crate::parser::oracle_effect::counter::normalize_counter_type;
 use crate::parser::oracle_target::parse_type_phrase;
 use crate::types::ability::{
-    AggregateFunction, ControllerRef, CountScope, FilterProp, ObjectProperty, PlayerFilter,
-    QuantityExpr, QuantityRef, TargetFilter, TypedFilter, ZoneRef,
+    AggregateFunction, CountScope, ObjectProperty, PlayerFilter, QuantityExpr, QuantityRef,
+    TargetFilter, ZoneRef,
 };
 use crate::types::mana::ManaColor;
 
@@ -199,45 +199,6 @@ pub(crate) fn capitalize_first(s: &str) -> String {
     }
 }
 
-fn linked_exile_owned_by_controller_filter() -> TargetFilter {
-    TargetFilter::And {
-        filters: vec![
-            TargetFilter::ExiledBySource,
-            TargetFilter::Typed(TypedFilter::default().properties(vec![FilterProp::Owned {
-                controller: ControllerRef::You,
-            }])),
-        ],
-    }
-}
-
-fn parse_linked_exile_mana_value_quantity(text: &str) -> Option<QuantityExpr> {
-    let lower = text.to_lowercase();
-    let matched = alt((
-        value(
-            (),
-            tag::<_, _, VerboseError<&str>>("the mana value of the exiled card"),
-        ),
-        value((), tag("the converted mana cost of the exiled card")),
-        value((), tag("the exiled card's mana value")),
-        value((), tag("the exiled card's converted mana cost")),
-    ))
-    .parse(lower.as_str())
-    .ok()
-    .is_some_and(|(rest, _)| rest.is_empty());
-
-    if !matched {
-        return None;
-    }
-
-    Some(QuantityExpr::Ref {
-        qty: QuantityRef::Aggregate {
-            function: AggregateFunction::Sum,
-            property: ObjectProperty::ManaValue,
-            filter: linked_exile_owned_by_controller_filter(),
-        },
-    })
-}
-
 /// Parse a CDA quantity phrase into a `QuantityExpr`.
 /// Handles patterns like:
 /// - "the number of creatures you control"
@@ -249,10 +210,6 @@ fn parse_linked_exile_mana_value_quantity(text: &str) -> Option<QuantityExpr> {
 /// - "N plus the number of X"
 pub(crate) fn parse_cda_quantity(text: &str) -> Option<QuantityExpr> {
     let text = text.trim().trim_end_matches('.');
-
-    if let Some(qty) = parse_linked_exile_mana_value_quantity(text) {
-        return Some(qty);
-    }
 
     // "twice [inner]" or "three times [inner]" → Multiply { factor, inner }
     if let Ok((rest, factor)) = alt((
@@ -711,7 +668,7 @@ pub(crate) fn parse_for_each_clause(clause: &str) -> Option<QuantityRef> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ability::TypeFilter;
+    use crate::types::ability::{ControllerRef, FilterProp, TypeFilter};
     use crate::types::mana::ManaColor;
 
     #[test]
