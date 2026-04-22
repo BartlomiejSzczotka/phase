@@ -51,7 +51,9 @@ fn players_for_filter(
                 .players
                 .iter()
                 .filter(|player| !player.is_eliminated)
-                .filter(|player| crate::game::speed::effective_speed(state, player.id) == highest_speed)
+                .filter(|player| {
+                    crate::game::speed::effective_speed(state, player.id) == highest_speed
+                })
                 .map(|player| player.id)
                 .collect()
         }
