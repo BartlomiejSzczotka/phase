@@ -1,3 +1,4 @@
+use crate::game::arithmetic::saturating_pt_add;
 use crate::game::devotion::count_devotion;
 use crate::game::filter::{matches_target_filter, FilterContext};
 use crate::game::printed_cards::{apply_copiable_values, intrinsic_copiable_values};
@@ -559,15 +560,19 @@ pub fn evaluate_layers(state: &mut GameState) {
     // CR 613.4c: +1/+1 and -1/-1 counters modify P/T in layer 7c.
     for &id in &bf_ids {
         if let Some(obj) = state.objects.get_mut(&id) {
-            let plus = *obj.counters.get(&CounterType::Plus1Plus1).unwrap_or(&0) as i32;
-            let minus = *obj.counters.get(&CounterType::Minus1Minus1).unwrap_or(&0) as i32;
-            let delta = plus - minus;
+            let plus = crate::game::arithmetic::u32_to_i32_saturating(
+                *obj.counters.get(&CounterType::Plus1Plus1).unwrap_or(&0),
+            );
+            let minus = crate::game::arithmetic::u32_to_i32_saturating(
+                *obj.counters.get(&CounterType::Minus1Minus1).unwrap_or(&0),
+            );
+            let delta = plus.saturating_sub(minus);
             if delta != 0 {
                 if let Some(ref mut p) = obj.power {
-                    *p += delta;
+                    *p = saturating_pt_add(*p, delta);
                 }
                 if let Some(ref mut t) = obj.toughness {
-                    *t += delta;
+                    *t = saturating_pt_add(*t, delta);
                 }
             }
 
@@ -1075,12 +1080,12 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
             }
             ContinuousModification::AddPower { value } => {
                 if let Some(ref mut p) = obj.power {
-                    *p += value;
+                    *p = saturating_pt_add(*p, *value);
                 }
             }
             ContinuousModification::AddToughness { value } => {
                 if let Some(ref mut t) = obj.toughness {
-                    *t += value;
+                    *t = saturating_pt_add(*t, *value);
                 }
             }
             ContinuousModification::SetPower { value } => {
@@ -1349,6 +1354,79 @@ mod tests {
         obj.base_toughness = Some(toughness);
         obj.timestamp = ts;
         id
+    }
+
+    /// CR 613.4c + CR 704.5f: A runaway `+X/+X` chain (e.g. from a `ObjectCount`
+    /// quantity resolving against an extremely large collection) must clamp at
+    /// `i32::MAX` rather than wrapping to negative. If it wrapped, the creature's
+    /// toughness would become `i32::MIN + delta`, state-based actions would see
+    /// toughness ≤ 0, and the creature would die — a silent rules violation.
+    #[test]
+    fn saturating_pt_prevents_overflow_death_cascade() {
+        let mut state = setup();
+        let id = make_creature(&mut state, "Big Guy", 5, 5, PlayerId(0));
+
+        // Stack two huge boosts whose naive sum overflows `i32`.
+        let boost_a = StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![
+                ContinuousModification::AddPower {
+                    value: i32::MAX - 2,
+                },
+                ContinuousModification::AddToughness {
+                    value: i32::MAX - 2,
+                },
+            ]);
+        let boost_b = StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![
+                ContinuousModification::AddPower { value: 100 },
+                ContinuousModification::AddToughness { value: 100 },
+            ]);
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.base_static_definitions.push(boost_a.clone());
+            obj.static_definitions.push(boost_a);
+            obj.base_static_definitions.push(boost_b.clone());
+            obj.static_definitions.push(boost_b);
+        }
+
+        evaluate_layers(&mut state);
+
+        let obj = &state.objects[&id];
+        assert_eq!(
+            obj.power,
+            Some(i32::MAX),
+            "power must saturate at i32::MAX rather than wrapping"
+        );
+        assert_eq!(
+            obj.toughness,
+            Some(i32::MAX),
+            "toughness must saturate at i32::MAX rather than wrapping"
+        );
+        assert!(
+            obj.toughness.unwrap() > 0,
+            "toughness must stay positive so CR 704.5f SBAs don't kill the creature",
+        );
+    }
+
+    /// CR 613.4c: A +1/+1 counter stack that overflows `u32 → i32` conversion
+    /// must saturate; the resulting P/T must remain positive.
+    #[test]
+    fn saturating_counter_conversion_keeps_creature_alive() {
+        let mut state = setup();
+        let id = make_creature(&mut state, "Counter Pile", 1, 1, PlayerId(0));
+        {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.counters.insert(CounterType::Plus1Plus1, u32::MAX);
+        }
+
+        evaluate_layers(&mut state);
+
+        let obj = &state.objects[&id];
+        assert_eq!(obj.power, Some(i32::MAX));
+        assert_eq!(obj.toughness, Some(i32::MAX));
+        assert!(obj.toughness.unwrap() > 0);
     }
 
     #[test]
