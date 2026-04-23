@@ -1219,6 +1219,14 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
                 d.push(("count".into(), fmt_quantity(c)));
             }
         }
+        Effect::RevealFromHand { filter, on_decline } => {
+            if !matches!(filter, TargetFilter::Any) {
+                d.push(("filter".into(), fmt_target(filter)));
+            }
+            if on_decline.is_some() {
+                d.push(("on_decline".into(), "present".into()));
+            }
+        }
         Effect::RevealTop { player, count } => {
             d.push(("player".into(), fmt_target(player)));
             d.push(("count".into(), count.to_string()));

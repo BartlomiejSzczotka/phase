@@ -344,7 +344,10 @@ fn redundancy_delta(
         | Effect::MadnessCast { .. }
         // CR 122.1: LoseAllPlayerCounters is redundant only if no player in scope
         // has any counters. Not worth a dedicated predicate — fall through to None.
-        | Effect::LoseAllPlayerCounters { .. } => None,
+        | Effect::LoseAllPlayerCounters { .. }
+        // CR 701.20a: RevealFromHand prompts a reveal-or-decline choice; its value
+        // depends on the on_decline branch and game state — no simple redundancy signal.
+        | Effect::RevealFromHand { .. } => None,
     }
 }
 

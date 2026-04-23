@@ -3286,6 +3286,22 @@ pub enum Effect {
         #[serde(default)]
         count: Option<QuantityExpr>,
     },
+    /// CR 701.20a: "You may reveal a [FILTER] card from your hand" — optional self-reveal
+    /// from the controller's own hand. Distinct from `RevealHand` (target player, used for
+    /// opponent-facing effects like Thoughtseize). If the controller's hand contains no
+    /// card matching `filter`, or if the controller declines the prompt, `on_decline` runs.
+    /// Used by reveal-lands (Port Town, Gilt-Leaf Palace, and the 10-Temple cycle) where
+    /// the "if you don't" branch taps the source. Composable: `on_decline` is any
+    /// `AbilityDefinition`, so symmetric "if you do, [effect]" variants reuse the same
+    /// primitive simply by swapping accept and decline.
+    RevealFromHand {
+        #[serde(default = "default_target_filter_any")]
+        filter: TargetFilter,
+        /// The ability run when the controller cannot or chooses not to reveal a
+        /// matching card. `None` = decline is a no-op.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on_decline: Option<Box<AbilityDefinition>>,
+    },
     /// CR 701.20: Reveal a specific object (resolved from `target`) to all players.
     /// Distinct from `RevealHand` (zone-wide) and `RevealTop` (library depth-N).
     /// Per CR 701.20b, revealing does not move the card.
@@ -4179,7 +4195,10 @@ impl Effect {
             | Effect::TimeTravel
             | Effect::RuntimeHandled { .. }
             | Effect::Conjure { .. }
-            | Effect::Unimplemented { .. } => None,
+            | Effect::Unimplemented { .. }
+            // CR 701.20a: RevealFromHand implicitly targets the controller's own hand;
+            // it has no discrete `target` field for the generic targeting layer.
+            | Effect::RevealFromHand { .. } => None,
             // CR 701.23a: SearchLibrary has an optional player target for opponent search.
             Effect::SearchLibrary { target_player, .. } => target_player.as_ref(),
         }
@@ -4254,6 +4273,7 @@ pub fn effect_variant_name(effect: &Effect) -> &str {
         Effect::Transform { .. } => "Transform",
         Effect::SearchLibrary { .. } => "SearchLibrary",
         Effect::RevealHand { .. } => "RevealHand",
+        Effect::RevealFromHand { .. } => "RevealFromHand",
         Effect::Reveal { .. } => "Reveal",
         Effect::RevealTop { .. } => "RevealTop",
         Effect::ExileTop { .. } => "ExileTop",
@@ -4568,6 +4588,7 @@ impl From<&Effect> for EffectKind {
             Effect::Transform { .. } => EffectKind::Transform,
             Effect::SearchLibrary { .. } => EffectKind::SearchLibrary,
             Effect::RevealHand { .. } => EffectKind::Reveal,
+            Effect::RevealFromHand { .. } => EffectKind::Reveal,
             Effect::Reveal { .. } => EffectKind::Reveal,
             Effect::RevealTop { .. } => EffectKind::Reveal,
             Effect::ExileTop { .. } => EffectKind::ExileTop,

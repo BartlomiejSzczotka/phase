@@ -1107,6 +1107,12 @@ fn prepare_spell_cast_with_variant_override(
         }
     }
 
+    // CR 117.7 + CR 601.2f: Apply self-spell cost modifications — statics printed on
+    // the spell itself ("This spell costs {N} less to cast ...") with `active_zones`
+    // covering Hand/Stack and `affected = SelfRef`. These cannot be found by the
+    // battlefield scanner below because the card is not on the battlefield.
+    apply_self_spell_cost_modifiers(state, player, object_id, &mut mana_cost);
+
     // CR 601.2f: Apply battlefield-based cost modifications (ReduceCost/RaiseCost statics).
     // This runs after self-cost reduction (CostReduction on the spell itself) and commander tax.
     apply_battlefield_cost_modifiers(state, player, object_id, &mut mana_cost);
@@ -1127,6 +1133,76 @@ fn prepare_spell_cast_with_variant_override(
         casting_variant,
         origin_zone,
     })
+}
+
+/// CR 117.7 + CR 601.2f: Apply self-spell cost modifications — `ReduceCost` / `RaiseCost`
+/// statics printed on the spell being cast, with `affected = SelfRef` and `active_zones`
+/// covering the card's current zone (Hand for normal casting, Stack for the cost-
+/// determination step). Handles cards like Tolarian Terror where the cost reduction is
+/// inherent to the spell and must apply before the spell resolves.
+fn apply_self_spell_cost_modifiers(
+    state: &GameState,
+    caster: PlayerId,
+    spell_id: ObjectId,
+    mana_cost: &mut ManaCost,
+) {
+    let Some(spell_obj) = state.objects.get(&spell_id) else {
+        return;
+    };
+
+    // CR 113.6 + CR 604.1: A static ability only functions in zones listed by
+    // `active_zones`; battlefield-default (empty) statics do not apply here.
+    // We iterate the spell's own static definitions without running the layer
+    // pipeline: layers pre-compute battlefield characteristics, not cast-time
+    // cost deltas on cards in hand.
+    for def in spell_obj.static_definitions.iter_all() {
+        if def.active_zones.is_empty() {
+            continue;
+        }
+        if !def.active_zones.contains(&spell_obj.zone) {
+            continue;
+        }
+        // CR 117.7: Only self-referential cost statics apply here. Any other
+        // `affected` scoping would indicate a battlefield-style static that
+        // should be handled by the battlefield scanner.
+        if !matches!(def.affected, Some(TargetFilter::SelfRef)) {
+            continue;
+        }
+
+        let (amount, dynamic_count, is_raise) = match &def.mode {
+            StaticMode::ReduceCost {
+                amount,
+                dynamic_count,
+                ..
+            } => (amount, dynamic_count, false),
+            StaticMode::RaiseCost {
+                amount,
+                dynamic_count,
+                ..
+            } => (amount, dynamic_count, true),
+            _ => continue,
+        };
+
+        // CR 604.1: Evaluate any trailing condition ("if you control a Wizard").
+        if let Some(ref cond) = def.condition {
+            if !super::layers::evaluate_condition(state, cond, caster, spell_id) {
+                continue;
+            }
+        }
+
+        // CR 601.2f: Resolve the dynamic multiplier (e.g., "for each instant or
+        // sorcery card in your graveyard"). Static amount with no multiplier = 1.
+        let multiplier = if let Some(ref qty_ref) = dynamic_count {
+            let qty_expr = crate::types::ability::QuantityExpr::Ref {
+                qty: qty_ref.clone(),
+            };
+            super::quantity::resolve_quantity(state, &qty_expr, caster, spell_id).max(0) as u32
+        } else {
+            1
+        };
+
+        apply_cost_mod_to_mana(mana_cost, amount, multiplier, is_raise);
+    }
 }
 
 /// CR 601.2f: Apply cost modifications from battlefield permanents with ReduceCost/RaiseCost statics.
@@ -4992,6 +5068,87 @@ mod tests {
             "activation_cost must hold the deferred Sacrifice sub-cost, got {:?}",
             pending.activation_cost
         );
+    }
+
+    /// CR 117.7 + CR 601.2f: A self-spell cost reduction printed on the card itself
+    /// ("This spell costs {1} less to cast for each instant and sorcery card in your
+    /// graveyard.") must fire while the card is in hand. Verifies the parser-emitted
+    /// static (affected = SelfRef, active_zones = [Hand, Stack]) is picked up by the
+    /// casting-time scanner and reduces the spell's generic cost.
+    #[test]
+    fn tolarian_terror_self_cost_reduction_applies_from_hand() {
+        use crate::types::statics::StaticMode;
+
+        let mut state = setup_game_at_main_phase();
+        let obj_id = create_object(
+            &mut state,
+            CardId(990),
+            PlayerId(0),
+            "Tolarian Terror".to_string(),
+            Zone::Hand,
+        );
+        {
+            let obj = state.objects.get_mut(&obj_id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.mana_cost = ManaCost::Cost {
+                shards: vec![ManaCostShard::Blue],
+                generic: 6,
+            };
+            // Self-spell cost reduction as the parser emits it: 1 generic per qualifying
+            // card in the graveyard, affected = SelfRef, active in Hand/Stack.
+            use crate::types::ability::{CountScope, QuantityRef, ZoneRef};
+            let mut def = StaticDefinition::new(StaticMode::ReduceCost {
+                amount: ManaCost::generic(1),
+                spell_filter: None,
+                dynamic_count: Some(QuantityRef::ZoneCardCount {
+                    zone: ZoneRef::Graveyard,
+                    card_types: vec![TypeFilter::Instant, TypeFilter::Sorcery],
+                    scope: CountScope::Controller,
+                }),
+            })
+            .affected(TargetFilter::SelfRef);
+            def.active_zones = vec![Zone::Hand, Zone::Stack];
+            obj.static_definitions.push(def);
+        }
+
+        // Seed three instants/sorceries into the controller's graveyard.
+        for (i, ct) in [CoreType::Instant, CoreType::Sorcery, CoreType::Instant]
+            .into_iter()
+            .enumerate()
+        {
+            let id = create_object(
+                &mut state,
+                CardId(900 + i as u64),
+                PlayerId(0),
+                format!("GY{i}"),
+                Zone::Graveyard,
+            );
+            state
+                .objects
+                .get_mut(&id)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(ct);
+        }
+
+        let player = PlayerId(0);
+        let mut mana_cost = state.objects.get(&obj_id).unwrap().mana_cost.clone();
+        super::super::casting::apply_self_spell_cost_modifiers(
+            &state,
+            player,
+            obj_id,
+            &mut mana_cost,
+        );
+
+        // Printed cost 6 generic; three qualifying cards should reduce by 3 → 3 generic.
+        match mana_cost {
+            ManaCost::Cost { generic, .. } => assert_eq!(
+                generic, 3,
+                "3 qualifying graveyard cards should reduce generic from 6 to 3, got {generic}"
+            ),
+            other => panic!("expected ManaCost::Cost, got {other:?}"),
+        }
     }
 
     /// CR 601.2f: Cost reductions are applied during cost determination (before

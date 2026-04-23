@@ -160,10 +160,20 @@ fn cheap_reject_candidate(state: &GameState, action: &GameAction) -> bool {
         ) => selection_mismatch(chosen, cards, None),
         (
             WaitingFor::RevealChoice {
-                player: _, cards, ..
+                player: _,
+                cards,
+                optional,
+                ..
             },
             GameAction::SelectCards { cards: chosen },
-        ) => selection_mismatch(chosen, cards, Some(1)),
+        ) => {
+            // CR 701.20a: Optional reveals accept an empty selection as "decline".
+            if *optional && chosen.is_empty() {
+                false
+            } else {
+                selection_mismatch(chosen, cards, Some(1))
+            }
+        }
         (
             WaitingFor::SearchChoice {
                 player: _,

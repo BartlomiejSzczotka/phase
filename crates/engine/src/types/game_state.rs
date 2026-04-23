@@ -863,6 +863,13 @@ pub enum WaitingFor {
         cards: Vec<ObjectId>,
         #[serde(default = "super::ability::default_target_filter_any")]
         filter: TargetFilter,
+        /// CR 701.20a: When true, the prompt offers a "decline" option (empty
+        /// `SelectCards` payload). Used by "you may reveal" patterns (reveal-lands
+        /// like Port Town and Gilt-Leaf Palace) where a player can choose to skip
+        /// the reveal. The decline branch is stashed on the effect source and
+        /// resolved via `pending_continuation` when the empty pick arrives.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        optional: bool,
     },
     /// Player is choosing card(s) from a filtered library search.
     SearchChoice {

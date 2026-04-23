@@ -389,9 +389,24 @@ pub(super) fn handle_resolution_choice(
                 player,
                 cards,
                 filter,
+                optional,
             },
             GameAction::SelectCards { cards: chosen },
         ) => {
+            // CR 701.20a: Optional reveal prompts (e.g., reveal-lands like Port Town)
+            // accept an empty selection to signal "I decline to reveal." The source
+            // replacement's decline ability runs via `pending_continuation`, which the
+            // effect's resolver populated with the decline branch before the prompt.
+            if optional && chosen.is_empty() {
+                for &card_id in &cards {
+                    state.revealed_cards.remove(&card_id);
+                }
+                set_priority(state, player);
+                effects::drain_pending_continuation(state, events);
+                return Ok(ResolutionChoiceOutcome::WaitingFor(
+                    state.waiting_for.clone(),
+                ));
+            }
             if chosen.len() != 1 {
                 return Err(EngineError::InvalidAction(format!(
                     "Must select exactly 1 card, got {}",
@@ -422,7 +437,14 @@ pub(super) fn handle_resolution_choice(
             }
 
             set_priority(state, player);
-            if let Some(cont) = state.pending_continuation.as_mut() {
+            // CR 701.20a: For an optional reveal, the stashed continuation is the
+            // decline branch (e.g., Tap SelfRef for reveal-lands). The player picked,
+            // so decline must NOT run — drop the continuation. Non-optional reveals
+            // chain targets into the continuation so the follow-up effect operates
+            // on the revealed card (e.g., Thoughtseize's exile).
+            if optional {
+                state.pending_continuation = None;
+            } else if let Some(cont) = state.pending_continuation.as_mut() {
                 cont.chain.targets = vec![TargetRef::Object(chosen_id)];
             }
             effects::drain_pending_continuation(state, events);
