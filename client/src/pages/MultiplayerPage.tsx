@@ -41,6 +41,7 @@ type PendingAction =
       code: string;
       password?: string;
       format?: GameFormat;
+      isP2P?: boolean;
       /**
        * Full lobby row, populated when the join originated from a lobby list
        * click (not from a typed code). Lets the deck-select view render
@@ -232,6 +233,7 @@ export function MultiplayerPage() {
   }, []);
 
   const resolveGuestFromStore = useMultiplayerStore((s) => s.resolveGuest);
+  const lookupJoinTargetFromStore = useMultiplayerStore((s) => s.lookupJoinTarget);
 
   /**
    * Guest-path P2P resolve loop. Tries `resolveGuest` over the shared
@@ -394,7 +396,7 @@ export function MultiplayerPage() {
       } else {
         const { code, password, context } = action;
 
-        if (context?.is_p2p === true) {
+        if (context?.is_p2p === true || action.isP2P === true) {
           return joinP2PRoom(code, password);
         }
 
@@ -444,28 +446,41 @@ export function MultiplayerPage() {
       format?: GameFormat,
       context?: LobbyGame,
     ) => {
-      // Code-join path (no format supplied by the caller) pre-resolves the
-      // room so the deck-select view filters to format-legal decks from the
-      // start, matching the lobby-row click path. Lobby-row clicks already
-      // carry `format` from the LobbyGame, so they skip this RPC. On
-      // resolve failure we fall through to setting the action without a
-      // format — the user can still try to join; they'll either get the
-      // same error again from `joinP2PRoom`'s resolve, or (in the rare case
-      // the first resolve transiently failed) they'll succeed without
-      // pre-filtering.
+      const trimmedCode = code.trim();
+      const directP2PCode = parseRoomCode(trimmedCode);
+
+      // Raw 5-character room codes are direct PeerJS joins with no server
+      // metadata to query. Preserve the old flow and skip lookup entirely.
+      if (!format && !context && directP2PCode && trimmedCode.length === 5) {
+        setPendingAction({
+          type: "join",
+          code,
+          password,
+          format,
+        });
+        setView("deck-select");
+        return;
+      }
+
+      // Typed-code path (no lobby-row context) uses the read-only
+      // `LookupJoinTarget` RPC so the deck picker can filter by format
+      // without accidentally consuming a seat on Full servers.
       let resolvedFormat = format;
       let resolvedPassword = password;
+      let resolvedIsP2P = context?.is_p2p === true;
       if (!resolvedFormat) {
-        const result = await resolveGuestFromStore(code, resolvedPassword);
+        const result = await lookupJoinTargetFromStore(code, resolvedPassword);
         if (result.ok) {
-          resolvedFormat = result.peerInfo.format_config?.format;
+          resolvedFormat = result.info.format_config?.format;
+          resolvedIsP2P = result.info.is_p2p;
         } else if (result.reason === "password_required") {
           const entered = window.prompt("This room requires a password:");
           if (!entered) return;
           resolvedPassword = entered;
-          const retry = await resolveGuestFromStore(code, resolvedPassword);
+          const retry = await lookupJoinTargetFromStore(code, resolvedPassword);
           if (retry.ok) {
-            resolvedFormat = retry.peerInfo.format_config?.format;
+            resolvedFormat = retry.info.format_config?.format;
+            resolvedIsP2P = retry.info.is_p2p;
           }
         }
       }
@@ -474,12 +489,13 @@ export function MultiplayerPage() {
         code,
         password: resolvedPassword,
         format: resolvedFormat,
+        isP2P: resolvedIsP2P,
         context,
       };
       setPendingAction(action);
       setView("deck-select");
     },
-    [resolveGuestFromStore],
+    [lookupJoinTargetFromStore],
   );
 
   const handleBack = () => {

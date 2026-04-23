@@ -82,6 +82,20 @@ export interface PeerInfo {
   filled_seats: number;
 }
 
+/**
+ * Read-only join-target lookup returned before deck selection. Lets the
+ * client discover format and whether the code targets a brokered P2P room
+ * without consuming a seat.
+ */
+export interface JoinTargetInfo {
+  game_code: string;
+  is_p2p: boolean;
+  format_config?: FormatConfig | null;
+  match_config: MatchConfig;
+  player_count: number;
+  filled_seats: number;
+}
+
 // ── Match / Series ───────────────────────────────────────────────────────
 
 export type MatchType = "Bo1" | "Bo3";
