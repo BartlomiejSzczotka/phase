@@ -617,6 +617,13 @@ pub enum ManaProduction {
         )]
         contribution: ManaContribution,
     },
+    /// CR 106.1 + CR 109.1: Produce one mana of each distinct color among
+    /// permanents matching a filter. "Gold", "multicolor", and "colorless" are
+    /// not colors (CR 105.1), so each of W/U/B/R/G contributes at most once.
+    /// Used by Faeburrow Elder's "{T}: For each color among permanents you
+    /// control, add one mana of that color." Mirrors the structure of
+    /// `QuantityRef::DistinctColorsAmongPermanents`.
+    DistinctColorsAmongPermanents { filter: TargetFilter },
 }
 
 /// CR 607.2a + CR 406.6 + CR 610.3: Which exile-link relation a mana ability reads
@@ -704,6 +711,9 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                         #[serde(default = "default_mana_contribution")]
                         contribution: ManaContribution,
                     },
+                    DistinctColorsAmongPermanents {
+                        filter: TargetFilter,
+                    },
                 }
                 let helper: ManaProductionHelper =
                     serde_json::from_value(value).map_err(serde::de::Error::custom)?;
@@ -764,6 +774,9 @@ impl<'de> serde::Deserialize<'de> for ManaProduction {
                         count,
                         contribution,
                     },
+                    ManaProductionHelper::DistinctColorsAmongPermanents { filter } => {
+                        ManaProduction::DistinctColorsAmongPermanents { filter }
+                    }
                 })
             }
             _ => Err(serde::de::Error::custom(
@@ -1776,6 +1789,13 @@ pub enum QuantityRef {
     /// by War Room's "pay life equal to the number of colors in your
     /// commanders' color identity" activation cost.
     ColorsInCommandersColorIdentity,
+    /// CR 106.1 + CR 109.1: Number of distinct colors among permanents matching
+    /// a filter. "Gold", "multicolor", and "colorless" are not colors (CR 105.1),
+    /// so each of W/U/B/R/G is counted at most once. Used by Faeburrow Elder's
+    /// "+1/+1 for each color among permanents you control" CDA and its companion
+    /// mana ability. Composes with `ObjectCount`-style filter predicates and is
+    /// the dual to `ManaProduction::DistinctColorsAmongPermanents`.
+    DistinctColorsAmongPermanents { filter: TargetFilter },
 }
 
 /// CR 107.1a: Rounding direction for fractional Oracle-text expressions.

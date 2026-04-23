@@ -19,6 +19,7 @@ use crate::types::card_type::CoreType;
 use crate::types::counter::parse_counter_type;
 use crate::types::game_state::GameState;
 use crate::types::identifiers::ObjectId;
+use crate::types::mana::ManaColor;
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
@@ -763,6 +764,26 @@ fn resolve_ref(
         QuantityRef::ColorsInCommandersColorIdentity => usize_to_i32_saturating(
             super::commander::commander_color_identity(state, controller).len(),
         ),
+        // CR 106.1 + CR 109.1: Count distinct colors (W/U/B/R/G) among permanents
+        // matching the filter. "Gold"/"multicolor"/"colorless" are not colors, so
+        // each ManaColor contributes at most once per colored permanent.
+        QuantityRef::DistinctColorsAmongPermanents { filter } => {
+            let zone = filter
+                .extract_in_zone()
+                .unwrap_or(crate::types::zones::Zone::Battlefield);
+            let mut seen: HashSet<ManaColor> = HashSet::new();
+            for &id in crate::game::targeting::zone_object_ids(state, zone).iter() {
+                if !matches_target_filter(state, id, filter, &filter_ctx) {
+                    continue;
+                }
+                if let Some(obj) = state.objects.get(&id) {
+                    for color in &obj.color {
+                        seen.insert(*color);
+                    }
+                }
+            }
+            usize_to_i32_saturating(seen.len())
+        }
         // CR 305.6: Count distinct basic land types among lands the controller controls.
         QuantityRef::BasicLandTypeCount => {
             let basic_subtypes = ["Plains", "Island", "Swamp", "Mountain", "Forest"];

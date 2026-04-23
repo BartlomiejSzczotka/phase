@@ -2715,28 +2715,38 @@ fn lower_clause_ast(ast: ClauseAst, ctx: &ParseContext) -> ParsedEffectClause {
     match ast {
         ClauseAst::Imperative { text } => {
             let mut clause = lower_imperative_clause(&text, ctx);
-            // "put target [type] on top/bottom of library" — the imperative parser
-            // returns PutAtLibraryPosition { target: Any } because it doesn't extract
-            // the target from between "put" and "on top/bottom". Extract it here.
+            // CR 701.24g: "put target [type] on top/bottom of library" — the imperative
+            // parser returns PutAtLibraryPosition { target: Any } because it dispatches
+            // on the positional suffix without extracting the target phrase. Covers:
+            //   - "put target X on top of Y's library"
+            //   - "put target X on the bottom of Y's library"
+            //   - "put target X into Y's library Nth from the top"  (e.g. Teferi, Hero of Dominaria)
             if let Effect::PutAtLibraryPosition { ref mut target, .. } = clause.effect {
                 if *target == TargetFilter::Any {
                     let lower = text.to_lowercase();
-                    // Check if text starts with "put " using nom tag, then use remainder.
-                    if tag::<_, _, VerboseError<&str>>("put ")
-                        .parse(lower.as_str())
-                        .is_ok()
-                    {
-                        let after_put = &lower["put ".len()..];
-                        let boundary = after_put
-                            .find(" on top of")
-                            .or_else(|| after_put.find(" on the bottom of"));
-                        if let Some(end) = boundary {
-                            let target_text = &after_put[..end];
-                            let (filter, _) = parse_target(target_text);
-                            if !matches!(filter, TargetFilter::Any) {
-                                *target = filter;
-                            }
+                    let extracted_target = (|| -> Option<TargetFilter> {
+                        let (after_put, _) = tag::<_, _, VerboseError<&str>>("put ")
+                            .parse(lower.as_str())
+                            .ok()?;
+                        // Boundary terminators, in priority order. Each is a positional
+                        // placement phrase that follows the target noun phrase.
+                        let before = [" on top of", " on the bottom of", " into "]
+                            .iter()
+                            .find_map(|term| {
+                                take_until::<_, _, VerboseError<&str>>(*term)
+                                    .parse(after_put)
+                                    .ok()
+                                    .map(|(_, before)| before)
+                            })?;
+                        let (filter, _) = parse_target(before);
+                        if matches!(filter, TargetFilter::Any) {
+                            None
+                        } else {
+                            Some(filter)
                         }
+                    })();
+                    if let Some(filter) = extracted_target {
+                        *target = filter;
                     }
                 }
             }
@@ -2758,6 +2768,15 @@ fn lower_clause_ast(ast: ClauseAst, ctx: &ParseContext) -> ParsedEffectClause {
 
 #[tracing::instrument(level = "debug")]
 fn lower_imperative_clause(text: &str, ctx: &ParseContext) -> ParsedEffectClause {
+    // CR 106.1 + CR 109.1: "For each color among [X], add one mana of that color"
+    // (Faeburrow Elder). Must run before the generic for-each-prefix strip path,
+    // because "that color" anaphors a per-iteration color rather than the
+    // source's `ChosenAttribute::Color`. Emits a single mana ability producing
+    // one mana per distinct color among matching permanents.
+    if let Some(effect) = super::oracle_effect::mana::try_parse_for_each_color_mana_public(text) {
+        return parsed_clause(effect);
+    }
+
     // "Its controller gains life equal to its power/toughness" — subject must be preserved
     // because the life recipient is not the caster but the targeted permanent's controller.
     if let Some(clause) = try_parse_targeted_controller_gain_life(text) {
@@ -6120,6 +6139,20 @@ fn strip_for_each_prefix(text: &str) -> (Option<QuantityExpr>, String) {
         let rest_lower = &lower[text.len() - rest.len()..];
         if let Some((clause, remainder)) = rest_lower.split_once(", ") {
             if let Some(qty) = parse_for_each_clause(clause) {
+                // CR 106.1: "for each color among [X], add one mana of that color"
+                // must NOT be split into (repeat_for, "add one mana of that color").
+                // The "that color" anaphors the per-iteration color, not the
+                // source's `ChosenAttribute::Color`. Let the full text flow
+                // through to `try_parse_for_each_color_mana_public` which emits
+                // a single `DistinctColorsAmongPermanents` mana ability.
+                if matches!(qty, QuantityRef::DistinctColorsAmongPermanents { .. })
+                    && remainder
+                        .trim_end_matches('.')
+                        .trim()
+                        .eq_ignore_ascii_case("add one mana of that color")
+                {
+                    return (None, text.to_string());
+                }
                 let offset = text.len() - remainder.len();
                 return (Some(QuantityExpr::Ref { qty }), text[offset..].to_string());
             }

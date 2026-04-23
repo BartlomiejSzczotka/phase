@@ -3287,9 +3287,12 @@ fn parse_continuous_subject_filter(subject: &str) -> Option<TargetFilter> {
     let lower = trimmed.to_lowercase();
     let tp = TextPair::new(trimmed, &lower);
 
-    // Strip "Each " prefix — "Each creature you control" is semantically identical to
-    // "Creatures you control" for filter purposes.
-    if let Some(rest_tp) = nom_tag_tp(&tp, "each ") {
+    // Strip "Each " / "All " quantifier prefixes — "Each creature you control" and
+    // "All Sliver creatures" are semantically identical to the bare type phrase for
+    // filter purposes (CR 205.3 / CR 700.1). Without this, "All Sliver creatures"
+    // flows into parse_type_phrase which treats "All Sliver" as a verbatim subtype
+    // string and matches zero real creatures.
+    if let Some(rest_tp) = nom_tag_tp(&tp, "each ").or_else(|| nom_tag_tp(&tp, "all ")) {
         return parse_continuous_subject_filter(rest_tp.original.trim());
     }
 

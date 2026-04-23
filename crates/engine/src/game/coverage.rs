@@ -595,6 +595,9 @@ fn fmt_quantity_ref(qty: &QuantityRef) -> String {
             )
         }
         QuantityRef::BasicLandTypeCount => "basic land types".into(),
+        QuantityRef::DistinctColorsAmongPermanents { filter } => {
+            format!("# of colors among {}", fmt_target(filter))
+        }
         QuantityRef::PreviousEffectAmount => "amount from preceding effect".into(),
         QuantityRef::TrackedSetSize => "cards moved".into(),
         QuantityRef::ExiledFromHandThisResolution => "cards exiled from hand this way".into(),
@@ -752,6 +755,9 @@ fn fmt_mana_production(mp: &ManaProduction) -> String {
         }
         ManaProduction::AnyInCommandersColorIdentity { count, .. } => {
             format!("1 of commander's color identity x{}", fmt_quantity(count))
+        }
+        ManaProduction::DistinctColorsAmongPermanents { filter } => {
+            format!("1 of each color among {}", fmt_target(filter))
         }
     }
 }
@@ -3930,6 +3936,9 @@ fn quantity_ref_feature(qref: &QuantityRef) -> (&'static str, FeatureSupport) {
         QuantityRef::CardsExiledBySource => ("CardsExiledBySource", Handled),
         QuantityRef::ZoneCardCount { .. } => ("ZoneCardCount", Handled),
         QuantityRef::BasicLandTypeCount => ("BasicLandTypeCount", Handled),
+        QuantityRef::DistinctColorsAmongPermanents { .. } => {
+            ("DistinctColorsAmongPermanents", Handled)
+        }
         QuantityRef::PreviousEffectAmount => ("PreviousEffectAmount", Handled),
         QuantityRef::TrackedSetSize => ("TrackedSetSize", Handled),
         QuantityRef::ExiledFromHandThisResolution => ("ExiledFromHandThisResolution", Handled),
