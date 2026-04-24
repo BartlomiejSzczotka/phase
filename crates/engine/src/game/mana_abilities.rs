@@ -3105,10 +3105,11 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// CR 605.1a + CR 118.2a: An activated mana ability's controller is the
-    /// player who activated it, and a `Controller`-scoped damage sub-effect
-    /// must resolve against that activator. Opponent-controlled painlands
-    /// damage the opponent, not the original owner.
+    /// CR 602.2a + CR 605.1a: An activated ability's controller is the
+    /// player who activated it (not the owner of the source permanent).
+    /// A `Controller`-scoped damage sub-effect therefore resolves against
+    /// the activator — opponent-controlled painlands damage the opponent,
+    /// not the original owner.
     #[test]
     fn pain_land_damage_routes_to_activator_not_original_owner() {
         let mut state = GameState::new_two_player(42);
