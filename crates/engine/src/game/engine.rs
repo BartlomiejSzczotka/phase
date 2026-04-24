@@ -446,8 +446,11 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     crate::types::game_state::ManaAbilityResume::Priority,
                     None,
                 )?;
-                // Track land mana taps for undo (UntapLandForMana), matching
-                // the TapLandForMana path so dual lands are undoable too.
+                // CR 605.3b: Track land mana taps for undo (UntapLandForMana),
+                // matching the TapLandForMana path so dual lands are undoable
+                // too. Gating on `mana_ability_is_undoable` ensures painlands
+                // and pay-life sources — whose inline continuation commits
+                // irreversible state — are excluded from the UI-level undo.
                 if is_land && mana_sources::mana_ability_is_undoable(&ability_def) {
                     state
                         .lands_tapped_for_mana
@@ -2616,6 +2619,9 @@ pub(super) fn handle_tap_land_for_mana(
 
     if let Some(ability_def) = ability_to_resolve {
         mana_abilities::resolve_mana_ability(state, object_id, player, &ability_def, events, None)?;
+        // CR 605.3b: Only record for `UntapLandForMana` when the activation is
+        // fully reversible — painlands / pay-life sources commit irreversible
+        // state during inline resolution and must not be eligible for undo.
         if mana_option.undoable {
             state
                 .lands_tapped_for_mana

@@ -219,6 +219,20 @@ fn produce_mana_from_ability(
     }
 }
 
+/// Produce the mana and then resolve any attached sub-ability chain.
+///
+/// CR 605.1a: An activated mana ability "doesn't require a target, could add
+/// mana ... when it resolves, and isn't a loyalty ability." The parser
+/// attaches continuation effects (painland damage, "lose 1 life", etc.) as
+/// `sub_ability`; those continuations are part of the same mana-ability
+/// resolution under CR 605.1a, not independently activatable abilities.
+///
+/// CR 605.3b: Mana abilities "don't go on the stack, ... [they] resolve
+/// immediately after [they are] activated." This function therefore resolves
+/// the sub-ability inline (off-stack). Returns `true` iff the continuation
+/// pushed a `WaitingFor` prompt — e.g., a damage sub-effect requiring
+/// target selection — so callers can decide whether to keep the prompt
+/// or fall back to a resume state.
 fn resolve_mana_ability_effects(
     state: &mut GameState,
     source_id: ObjectId,
@@ -240,6 +254,10 @@ fn resolve_mana_ability_effects(
 
     if let Some(sub_ability) = ability_def.sub_ability.as_deref() {
         let resolved = ability_utils::build_resolved_from_def(sub_ability, source_id, player);
+        // CR 605.3b: Resolve the continuation inline — do not push it onto the
+        // stack. `InvalidAction` is the nearest fitting error variant today;
+        // TODO: introduce a dedicated `ResolutionFailed` variant if/when the
+        // engine grows a richer error hierarchy.
         super::effects::resolve_ability_chain(state, &resolved, events, 1).map_err(|err| {
             EngineError::InvalidAction(format!("Mana ability continuation failed: {err}"))
         })?;

@@ -1,3 +1,21 @@
+//! Mana source analysis for auto-pay and AI candidate generation.
+//!
+//! `ManaSourceOption` describes a single activatable mana path, annotated
+//! with two penalty axes used for prioritization:
+//!
+//! - `harms_controller` — activating this ability can damage or drain its
+//!   controller (pain lands, pay-life mana abilities). This is a CR-derived
+//!   property: a `PayLife` cost is always controller-harming, and a
+//!   continuation-chain effect (`DealDamage`/`LoseLife` targeting
+//!   `Controller`) harms the activator by CR 605.1a + CR 605.3b (the
+//!   continuation resolves inline as part of the activator's mana ability).
+//! - `undoable` — a UX convenience outside the CR: does `UntapLandForMana`
+//!   fully reverse activation? True only when the cost is tap-only and the
+//!   resolution chain contains nothing but `Effect::Mana`. The atomicity of
+//!   CR 605.3b resolution is what justifies this: once any irreversible
+//!   side-effect (damage, sacrifice, life loss) fires, the activation has
+//!   committed permanent game state and cannot be "rewound" from the UI.
+
 use crate::types::ability::{
     AbilityCost, AbilityDefinition, AbilityKind, Effect, ManaProduction, TargetFilter,
 };
@@ -83,12 +101,15 @@ fn cost_has_life_payment(cost: &Option<AbilityCost>) -> bool {
     }
 }
 
+/// CR 605.3b: Resolution is atomic. A chain with any cost beyond `{T}`
+/// commits irreversible state (life loss, sacrifice, discard), so "reversible"
+/// here means strictly tap-only.
 fn cost_is_reversible_tap_only(cost: &Option<AbilityCost>) -> bool {
     match cost {
         Some(AbilityCost::Tap) => true,
-        // A `Composite` cost with zero components is malformed from our parser's
-        // perspective — treat it as non-tap so we don't claim a cost we don't
-        // understand is safely reversible.
+        // A `Composite` cost with zero components is malformed from our
+        // parser's perspective — treat it as non-reversible so we don't
+        // claim a cost we don't understand is safely undoable.
         Some(AbilityCost::Composite { costs }) => {
             !costs.is_empty() && costs.iter().all(|c| matches!(c, AbilityCost::Tap))
         }
@@ -96,6 +117,9 @@ fn cost_is_reversible_tap_only(cost: &Option<AbilityCost>) -> bool {
     }
 }
 
+/// CR 605.3b: A mana ability's continuation effects resolve inline as part
+/// of the same resolution. A `DealDamage` / `LoseLife` effect scoped to
+/// `Controller` therefore hits the activator atomically.
 fn effect_harms_controller(effect: &Effect) -> bool {
     match effect {
         Effect::DealDamage { target, .. } => matches!(target, TargetFilter::Controller),
@@ -106,6 +130,12 @@ fn effect_harms_controller(effect: &Effect) -> bool {
     }
 }
 
+/// Recursive walk over a mana ability's continuation graph.
+///
+/// Note: currently only visits `sub_ability` and `else_ability` branches.
+/// Modal / `repeat_for` branches are out of scope for this helper — if the
+/// parser ever emits them as children of a mana ability, this function must
+/// be extended (and a `debug_assert!` at the call site would help catch it).
 fn chain_harms_controller(ability: &AbilityDefinition) -> bool {
     effect_harms_controller(&ability.effect)
         || ability
@@ -127,10 +157,17 @@ fn chain_is_all_mana(ability: &AbilityDefinition) -> bool {
             .is_none_or(chain_is_all_mana)
 }
 
+/// CR 605.3b: Returns `true` when activating this mana ability commits
+/// irreversible controller-damaging state during resolution — whether from
+/// a `PayLife` cost component or from a damage/life-loss continuation.
 pub(crate) fn mana_ability_harms_controller(ability: &AbilityDefinition) -> bool {
     cost_has_life_payment(&ability.cost) || chain_harms_controller(ability)
 }
 
+/// CR 605.3b: Returns `true` only when the activation can be fully rewound
+/// by `UntapLandForMana` — i.e., cost is pure tap and the resolution chain
+/// is pure mana production. Any side-effect (damage, life loss, sacrifice)
+/// violates atomicity and disqualifies the source from UI-level undo.
 pub(crate) fn mana_ability_is_undoable(ability: &AbilityDefinition) -> bool {
     cost_is_reversible_tap_only(&ability.cost) && chain_is_all_mana(ability)
 }
