@@ -281,6 +281,50 @@ pub fn check_activation_restrictions(
     Ok(())
 }
 
+/// CR 302.6 + CR 602.5a: A creature's activated ability with the tap symbol ({T}) or
+/// untap symbol ({Q}) in its activation cost can't be activated unless the creature has
+/// been under its controller's control continuously since their most recent turn began.
+/// Creatures with haste (CR 702.10c) are exempt.
+///
+/// This is a universal rule applied to every activated ability whose cost contains Tap
+/// or Untap, regardless of Oracle text — it is not an `ActivationRestriction` variant
+/// because it is not derivable from printed text. Delegates the summoning-sickness
+/// determination to the canonical `combat::has_summoning_sickness` helper.
+///
+/// Non-creature permanents with tap costs (e.g., Sensei's Divining Top) are unaffected:
+/// `combat::has_summoning_sickness` returns false for non-creatures, matching the
+/// wording "A creature's activated ability…". Animated permanents that are currently
+/// creatures are correctly subject to the rule because the check reads the current
+/// `GameObject::card_types` after layer evaluation.
+pub(crate) fn check_summoning_sickness_for_cost(
+    state: &crate::types::game_state::GameState,
+    source: &GameObject,
+    cost: &AbilityCost,
+) -> Result<(), EngineError> {
+    if !cost_contains_tap_or_untap(cost) {
+        return Ok(());
+    }
+    if super::combat::has_summoning_sickness(source, state.turn_number) {
+        return Err(EngineError::ActionNotAllowed(
+            "Creature has summoning sickness: activated abilities with {T} or {Q} \
+             can't be activated this turn (CR 302.6)"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Recursively inspects an `AbilityCost` for a `Tap` or `Untap` component, descending
+/// into `Composite` costs. Used exclusively by `check_summoning_sickness_for_cost` to
+/// gate the CR 302.6 check — no other caller should need to enumerate cost components.
+fn cost_contains_tap_or_untap(cost: &AbilityCost) -> bool {
+    match cost {
+        AbilityCost::Tap | AbilityCost::Untap => true,
+        AbilityCost::Composite { costs } => costs.iter().any(cost_contains_tap_or_untap),
+        _ => false,
+    }
+}
+
 /// CR 602.5b: If an activated ability has a restriction on its use (e.g., "Activate only once
 /// each turn"), the restriction continues to apply even if its controller changes.
 pub fn record_ability_activation(

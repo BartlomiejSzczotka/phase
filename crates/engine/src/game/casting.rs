@@ -3273,6 +3273,14 @@ pub fn can_activate_ability_now(
     {
         return false;
     }
+    // CR 302.6 + CR 602.5a: Universal summoning-sickness gate for {T}/{Q} activated
+    // abilities on creatures. Applies to every activated ability regardless of Oracle
+    // text, so it lives as a structural helper rather than an ActivationRestriction.
+    if let Some(ref cost) = ability_def.cost {
+        if restrictions::check_summoning_sickness_for_cost(state, obj, cost).is_err() {
+            return false;
+        }
+    }
     // CR 601.2f: Apply self-referential cost reduction before affordability check.
     apply_cost_reduction(state, &mut ability_def, player, source_id);
     if ability_def
@@ -3382,6 +3390,16 @@ pub fn handle_activate_ability(
         ability_index,
         &ability_def.activation_restrictions,
     )?;
+
+    // CR 302.6 + CR 602.5a: Universal summoning-sickness gate for {T}/{Q} activated
+    // abilities on creatures. Mirrors the check in `can_activate_ability_now` so both
+    // the AI legality gate and the runtime activation path agree.
+    if let Some(ref cost) = ability_def.cost {
+        let obj = state.objects.get(&source_id).ok_or_else(|| {
+            EngineError::InvalidAction("Object not found during summoning-sickness check".into())
+        })?;
+        restrictions::check_summoning_sickness_for_cost(state, obj, cost)?;
+    }
 
     // CR 602.2b: Announce → choose modes → choose targets → pay costs.
     // Modal detection must happen BEFORE cost payment.
@@ -10363,6 +10381,189 @@ mod tests {
             !has_sneak_cast,
             "CastSpellAsSneak should not be offered outside DeclareBlockers"
         );
+    }
+
+    // === CR 302.6 + CR 602.5a: summoning-sickness gate tests ===
+    //
+    // Exercise the universal `check_summoning_sickness_for_cost` helper through
+    // `can_activate_ability_now` — the single gate shared by human runtime
+    // activation and AI legal-action generation.
+    mod summoning_sickness_gate {
+        use super::*;
+        use crate::game::derived::derive_display_state;
+
+        /// Attach a creature with a Tap-cost activated ability on `player`'s battlefield,
+        /// entering on `entered_turn`. Returns the ObjectId.
+        fn add_creature_with_tap_ability(
+            state: &mut GameState,
+            player: PlayerId,
+            entered_turn: u32,
+        ) -> ObjectId {
+            let id = create_object(
+                state,
+                CardId(0x5ACF),
+                player,
+                "Tappy McTap".to_string(),
+                Zone::Battlefield,
+            );
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.entered_battlefield_turn = Some(entered_turn);
+            obj.abilities.push(
+                AbilityDefinition::new(
+                    AbilityKind::Activated,
+                    Effect::Draw {
+                        count: QuantityExpr::Fixed { value: 1 },
+                    },
+                )
+                .cost(AbilityCost::Tap),
+            );
+            id
+        }
+
+        #[test]
+        fn creature_cast_this_turn_cannot_tap() {
+            // Krenko reprints itself — tap-for-creature the same turn it enters is illegal.
+            let mut state = setup_game_at_main_phase();
+            let turn = state.turn_number;
+            let krenko = add_creature_with_tap_ability(&mut state, PlayerId(0), turn);
+            derive_display_state(&mut state);
+            assert!(
+                !can_activate_ability_now(&state, PlayerId(0), krenko, 0),
+                "summoning-sick creature's {{T}} ability must not be activatable (CR 302.6)"
+            );
+        }
+
+        #[test]
+        fn creature_cast_previous_turn_can_tap() {
+            let mut state = setup_game_at_main_phase();
+            // turn_number = 2 in setup; entered on turn 1.
+            let krenko = add_creature_with_tap_ability(&mut state, PlayerId(0), 1);
+            derive_display_state(&mut state);
+            assert!(
+                can_activate_ability_now(&state, PlayerId(0), krenko, 0),
+                "creature under controller's control since prior turn may tap (CR 302.6)"
+            );
+        }
+
+        #[test]
+        fn haste_creature_can_tap_same_turn() {
+            let mut state = setup_game_at_main_phase();
+            let turn = state.turn_number;
+            let krenko = add_creature_with_tap_ability(&mut state, PlayerId(0), turn);
+            {
+                let obj = state.objects.get_mut(&krenko).unwrap();
+                obj.keywords.push(Keyword::Haste);
+            }
+            derive_display_state(&mut state);
+            assert!(
+                can_activate_ability_now(&state, PlayerId(0), krenko, 0),
+                "haste exempts a creature from summoning sickness (CR 702.10c)"
+            );
+        }
+
+        #[test]
+        fn non_creature_artifact_can_tap_same_turn() {
+            // Sensei's Divining Top: artifact with {T} cost, no summoning sickness.
+            let mut state = setup_game_at_main_phase();
+            let turn = state.turn_number;
+            let top = create_object(
+                &mut state,
+                CardId(0x7077),
+                PlayerId(0),
+                "Sensei's Divining Top".to_string(),
+                Zone::Battlefield,
+            );
+            {
+                let obj = state.objects.get_mut(&top).unwrap();
+                obj.card_types.core_types.push(CoreType::Artifact);
+                obj.entered_battlefield_turn = Some(turn);
+                obj.abilities.push(
+                    AbilityDefinition::new(
+                        AbilityKind::Activated,
+                        Effect::Draw {
+                            count: QuantityExpr::Fixed { value: 1 },
+                        },
+                    )
+                    .cost(AbilityCost::Tap),
+                );
+            }
+            derive_display_state(&mut state);
+            assert!(
+                can_activate_ability_now(&state, PlayerId(0), top, 0),
+                "non-creature permanents are not subject to summoning sickness (CR 302.6)"
+            );
+        }
+
+        #[test]
+        fn animated_land_this_turn_cannot_tap() {
+            // Land animated into a creature this turn is subject to summoning sickness.
+            let mut state = setup_game_at_main_phase();
+            let turn = state.turn_number;
+            let land = create_object(
+                &mut state,
+                CardId(0x1A4D),
+                PlayerId(0),
+                "Mutavault-like".to_string(),
+                Zone::Battlefield,
+            );
+            {
+                let obj = state.objects.get_mut(&land).unwrap();
+                obj.card_types.core_types.push(CoreType::Land);
+                // Animation: the permanent is currently a creature too.
+                obj.card_types.core_types.push(CoreType::Creature);
+                obj.entered_battlefield_turn = Some(turn);
+                obj.abilities.push(
+                    AbilityDefinition::new(
+                        AbilityKind::Activated,
+                        Effect::Draw {
+                            count: QuantityExpr::Fixed { value: 1 },
+                        },
+                    )
+                    .cost(AbilityCost::Tap),
+                );
+            }
+            derive_display_state(&mut state);
+            assert!(
+                !can_activate_ability_now(&state, PlayerId(0), land, 0),
+                "currently-a-creature animated land must obey summoning sickness (CR 302.6)"
+            );
+        }
+
+        #[test]
+        fn untap_cost_also_gated() {
+            // CR 107.6 / CR 302.6: {Q} is likewise gated by summoning sickness.
+            let mut state = setup_game_at_main_phase();
+            let turn = state.turn_number;
+            let creature = create_object(
+                &mut state,
+                CardId(0x8A7A),
+                PlayerId(0),
+                "Q-cost Creature".to_string(),
+                Zone::Battlefield,
+            );
+            {
+                let obj = state.objects.get_mut(&creature).unwrap();
+                obj.card_types.core_types.push(CoreType::Creature);
+                obj.entered_battlefield_turn = Some(turn);
+                // Already tapped so Untap cost is payable mechanically.
+                obj.tapped = true;
+                obj.abilities.push(
+                    AbilityDefinition::new(
+                        AbilityKind::Activated,
+                        Effect::Draw {
+                            count: QuantityExpr::Fixed { value: 1 },
+                        },
+                    )
+                    .cost(AbilityCost::Untap),
+                );
+            }
+            derive_display_state(&mut state);
+            assert!(
+                !can_activate_ability_now(&state, PlayerId(0), creature, 0),
+                "creature with {{Q}} cost must obey summoning sickness (CR 107.6 + CR 302.6)"
+            );
+        }
     }
 
     // CR 118.3 + CR 122: remove-counter cost payment — building-block tests.
