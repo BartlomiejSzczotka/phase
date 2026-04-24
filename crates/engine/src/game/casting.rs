@@ -10,7 +10,7 @@ use crate::types::game_state::{
 };
 use crate::types::identifiers::{CardId, ObjectId};
 use crate::types::keywords::{FlashbackCost, Keyword, KeywordKind};
-use crate::types::mana::{ManaCost, ManaSpellGrant, SpellMeta};
+use crate::types::mana::{ManaCost, ManaSpellGrant, PaymentContext, SpellMeta};
 use crate::types::player::PlayerId;
 use crate::types::statics::{
     ActivationExemption, CastFrequency, CastingProhibitionCondition, ProhibitionScope, StaticMode,
@@ -2607,6 +2607,7 @@ pub fn can_pay_cost_after_auto_tap(
     // budget so a cost containing {C/P} shards is only reported payable when
     // either mana or sufficient life (respecting CantLoseLife) is available.
     let max_life = super::life_costs::max_phyrexian_life_payments(&simulated, player);
+    let spell_ctx = spell_meta.as_ref().map(PaymentContext::Spell);
     simulated
         .players
         .iter()
@@ -2615,7 +2616,7 @@ pub fn can_pay_cost_after_auto_tap(
             mana_payment::can_pay_for_spell(
                 &player_data.mana_pool,
                 cost,
-                spell_meta.as_ref(),
+                spell_ctx.as_ref(),
                 any_color,
                 max_life,
             )
@@ -2640,9 +2641,11 @@ fn requires_untapped(cost: &AbilityCost) -> bool {
 
 /// Pay a mana cost by auto-tapping lands and deducting from the player's mana pool.
 ///
-/// Shared building block used by both spell casting (`pay_and_push`) and activated
-/// ability cost payment (`pay_ability_cost`). Delegates to `pay_mana_cost_with_choices`
-/// without explicit Phyrexian choices (auto-decide: prefer mana, fall back to life).
+/// Used by spell casting (`pay_and_push`). Builds a `PaymentContext::Spell` from
+/// the cast object's types so CR 106.6 spell-side restrictions (`allows_spell`)
+/// gate which restricted mana is eligible. For ability activation, use
+/// `pay_ability_mana_cost` instead so restrictions are evaluated against the
+/// source permanent's types via `allows_activation`.
 pub(super) fn pay_mana_cost(
     state: &mut GameState,
     player: PlayerId,
@@ -2653,8 +2656,9 @@ pub(super) fn pay_mana_cost(
     pay_mana_cost_with_choices(state, player, source_id, cost, None, events)
 }
 
-/// CR 107.4f + CR 601.2f: Pay a mana cost, honoring explicit per-shard Phyrexian
-/// choices when provided. `None` preserves the legacy auto-decide behavior.
+/// CR 107.4f + CR 601.2f: Pay a spell's mana cost, honoring explicit per-shard
+/// Phyrexian choices when provided. `None` preserves the legacy auto-decide
+/// behavior (prefer mana, fall back to life).
 pub(super) fn pay_mana_cost_with_choices(
     state: &mut GameState,
     player: PlayerId,
@@ -2668,67 +2672,17 @@ pub(super) fn pay_mana_cost_with_choices(
     }
 
     let spell_meta = build_spell_meta(state, player, source_id);
+    let spell_ctx = spell_meta.as_ref().map(PaymentContext::Spell);
 
-    auto_tap_mana_sources(state, player, cost, events, Some(source_id));
-
-    {
-        let player_data = state
-            .players
-            .iter()
-            .find(|p| p.id == player)
-            .expect("player exists");
-        let any_color = super::static_abilities::player_can_spend_as_any_color(state, player);
-        // CR 107.4f + CR 118.3 + CR 119.8: Life budget for Phyrexian shards —
-        // respects CantLoseLife (budget 0 under lock) and current life total.
-        let max_life = super::life_costs::max_phyrexian_life_payments(state, player);
-        if !mana_payment::can_pay_for_spell(
-            &player_data.mana_pool,
-            cost,
-            spell_meta.as_ref(),
-            any_color,
-            max_life,
-        ) {
-            return Err(EngineError::ActionNotAllowed(
-                "Cannot pay mana cost".to_string(),
-            ));
-        }
-    }
-
-    let any_color = super::static_abilities::player_can_spend_as_any_color(state, player);
-    let hand_demand = mana_payment::compute_hand_color_demand(state, player, source_id);
-    let player_data = state
-        .players
-        .iter_mut()
-        .find(|p| p.id == player)
-        .expect("player exists");
-    let (spent_units, life_payments) = mana_payment::pay_cost_with_demand_and_choices(
-        &mut player_data.mana_pool,
+    let spent_units = auto_tap_and_pay_cost(
+        state,
+        player,
+        source_id,
         cost,
-        Some(&hand_demand),
-        spell_meta.as_ref(),
-        any_color,
+        spell_ctx.as_ref(),
         phyrexian_choices,
-    )
-    .map_err(|_| EngineError::ActionNotAllowed("Mana payment failed".to_string()))?;
-
-    // CR 107.4f + CR 118.3b + CR 119.4 + CR 119.8: Each Phyrexian shard paid
-    // with life routes through the single-authority life-cost helper so the
-    // deduction IS a life-loss event (replacement pipeline + CantLoseLife
-    // short-circuit apply consistently). `can_pay_for_spell` above was gated
-    // on the player's Phyrexian life budget, so reaching an unpayable result
-    // here is an invariant violation — surface it as ActionNotAllowed.
-    for payment in &life_payments {
-        let amount = u32::try_from(payment.amount).unwrap_or(0);
-        match super::life_costs::pay_life_as_cost(state, player, amount, events) {
-            super::life_costs::PayLifeCostResult::Paid { .. } => {}
-            super::life_costs::PayLifeCostResult::InsufficientLife
-            | super::life_costs::PayLifeCostResult::LockedCantLoseLife => {
-                return Err(EngineError::ActionNotAllowed(
-                    "Cannot pay Phyrexian life cost".to_string(),
-                ));
-            }
-        }
-    }
+        events,
+    )?;
 
     // CR 106.6: Apply mana spell grants to the spell being cast.
     apply_mana_spell_grants(state, source_id, &spent_units);
@@ -2747,6 +2701,136 @@ pub(super) fn pay_mana_cost_with_choices(
     }
 
     Ok(())
+}
+
+/// CR 106.6: Pay the mana cost of an activated ability. Unlike `pay_mana_cost`
+/// (which builds a spell context and consults `allows_spell`), this builds a
+/// `PaymentContext::Activation` from the source permanent's core types and
+/// subtypes so restrictions like Flamebraider's "activate abilities of
+/// Elemental sources" and Heart of Ramos's "activate abilities only" are
+/// enforced correctly at the spend gate.
+///
+/// Callers: `pay_ability_cost` for `AbilityCost::Mana` sub-costs. Spell-side
+/// bookkeeping (mana-spent-to-cast, spell grants) is intentionally skipped —
+/// those are cast-only concerns.
+pub(super) fn pay_ability_mana_cost(
+    state: &mut GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    cost: &crate::types::mana::ManaCost,
+    events: &mut Vec<GameEvent>,
+) -> Result<(), EngineError> {
+    if state.layers_dirty {
+        super::layers::evaluate_layers(state);
+    }
+
+    let (source_types, source_subtypes) = activation_source_types(state, source_id);
+    let activation_ctx = PaymentContext::Activation {
+        source_types: &source_types,
+        source_subtypes: &source_subtypes,
+    };
+
+    let _spent_units = auto_tap_and_pay_cost(
+        state,
+        player,
+        source_id,
+        cost,
+        Some(&activation_ctx),
+        None,
+        events,
+    )?;
+
+    Ok(())
+}
+
+/// Shared mana-payment core: auto-taps sources, validates affordability,
+/// executes the spend with the given payment context, and processes any
+/// Phyrexian life payments. Returns the spent units so spell-specific callers
+/// can apply grants / bookkeeping. Single authority for restriction gating.
+fn auto_tap_and_pay_cost(
+    state: &mut GameState,
+    player: PlayerId,
+    source_id: ObjectId,
+    cost: &crate::types::mana::ManaCost,
+    ctx: Option<&PaymentContext<'_>>,
+    phyrexian_choices: Option<&[crate::types::game_state::ShardChoice]>,
+    events: &mut Vec<GameEvent>,
+) -> Result<Vec<crate::types::mana::ManaUnit>, EngineError> {
+    auto_tap_mana_sources(state, player, cost, events, Some(source_id));
+
+    {
+        let player_data = state
+            .players
+            .iter()
+            .find(|p| p.id == player)
+            .expect("player exists");
+        let any_color = super::static_abilities::player_can_spend_as_any_color(state, player);
+        // CR 107.4f + CR 118.3 + CR 119.8: Life budget for Phyrexian shards —
+        // respects CantLoseLife (budget 0 under lock) and current life total.
+        let max_life = super::life_costs::max_phyrexian_life_payments(state, player);
+        if !mana_payment::can_pay_for_spell(&player_data.mana_pool, cost, ctx, any_color, max_life)
+        {
+            return Err(EngineError::ActionNotAllowed(
+                "Cannot pay mana cost".to_string(),
+            ));
+        }
+    }
+
+    let any_color = super::static_abilities::player_can_spend_as_any_color(state, player);
+    let hand_demand = mana_payment::compute_hand_color_demand(state, player, source_id);
+    let player_data = state
+        .players
+        .iter_mut()
+        .find(|p| p.id == player)
+        .expect("player exists");
+    let (spent_units, life_payments) = mana_payment::pay_cost_with_demand_and_choices(
+        &mut player_data.mana_pool,
+        cost,
+        Some(&hand_demand),
+        ctx,
+        any_color,
+        phyrexian_choices,
+    )
+    .map_err(|_| EngineError::ActionNotAllowed("Mana payment failed".to_string()))?;
+
+    // CR 107.4f + CR 118.3b + CR 119.4 + CR 119.8: Each Phyrexian shard paid
+    // with life routes through the single-authority life-cost helper so the
+    // deduction IS a life-loss event (replacement pipeline + CantLoseLife
+    // short-circuit apply consistently).
+    for payment in &life_payments {
+        let amount = u32::try_from(payment.amount).unwrap_or(0);
+        match super::life_costs::pay_life_as_cost(state, player, amount, events) {
+            super::life_costs::PayLifeCostResult::Paid { .. } => {}
+            super::life_costs::PayLifeCostResult::InsufficientLife
+            | super::life_costs::PayLifeCostResult::LockedCantLoseLife => {
+                return Err(EngineError::ActionNotAllowed(
+                    "Cannot pay Phyrexian life cost".to_string(),
+                ));
+            }
+        }
+    }
+
+    Ok(spent_units)
+}
+
+/// CR 106.6: Build (core-types, subtypes) slices for a `PaymentContext::Activation`
+/// from the source permanent. Mirrors `build_spell_meta`'s type extraction so
+/// `allows_activation` and `allows_spell` consult identically-shaped strings.
+fn activation_source_types(state: &GameState, source_id: ObjectId) -> (Vec<String>, Vec<String>) {
+    state
+        .objects
+        .get(&source_id)
+        .map(|obj| {
+            let types = obj
+                .card_types
+                .core_types
+                .iter()
+                .map(|ct| format!("{ct:?}"))
+                .collect();
+            let subtypes = obj.card_types.subtypes.clone();
+            (types, subtypes)
+        })
+        .unwrap_or_default()
 }
 
 /// CR 106.6: When mana with spell grants is spent to cast a spell, apply those
@@ -2808,7 +2892,10 @@ pub fn pay_ability_cost(
             });
         }
         AbilityCost::Mana { cost } => {
-            pay_mana_cost(state, player, source_id, cost, events)?;
+            // CR 106.6: Ability activation — restriction enforcement routes
+            // through `allows_activation` (not `allows_spell`) via the
+            // activation context built from the source permanent's types.
+            pay_ability_mana_cost(state, player, source_id, cost, events)?;
         }
         AbilityCost::Composite { costs } => {
             for sub_cost in costs {
@@ -4159,12 +4246,14 @@ mod tests {
             AbilityKind::Spell,
             Effect::Scry {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
         ));
         obj.abilities.push(AbilityDefinition::new(
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
         ));
 
@@ -4196,6 +4285,7 @@ mod tests {
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
         ));
         obj.abilities.push(AbilityDefinition::new(
@@ -4228,6 +4318,7 @@ mod tests {
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 2 },
+                    target: TargetFilter::Controller,
                 },
             ));
             obj.mana_cost = ManaCost::Cost {
@@ -4434,6 +4525,7 @@ mod tests {
                             name: "X".to_string(),
                         },
                     },
+                    target: TargetFilter::Controller,
                 },
             ));
             obj.mana_cost = ManaCost::Cost {
@@ -4537,6 +4629,7 @@ mod tests {
                             name: "X".to_string(),
                         },
                     },
+                    target: TargetFilter::Controller,
                 },
             ));
             obj.mana_cost = ManaCost::Cost {
@@ -4699,6 +4792,7 @@ mod tests {
                             name: "X".to_string(),
                         },
                     },
+                    target: TargetFilter::Controller,
                 },
             ));
             obj.mana_cost = ManaCost::Cost {
@@ -4752,6 +4846,7 @@ mod tests {
                             name: "X".to_string(),
                         },
                     },
+                    target: TargetFilter::Controller,
                 },
             ));
             obj.mana_cost = ManaCost::Cost {
@@ -4814,6 +4909,7 @@ mod tests {
                             name: "X".to_string(),
                         },
                     },
+                    target: TargetFilter::Controller,
                 },
                 Vec::new(),
                 ObjectId(123),
@@ -4876,6 +4972,7 @@ mod tests {
                                 name: "X".to_string(),
                             },
                         },
+                        target: TargetFilter::Controller,
                     },
                 )
                 .cost(AbilityCost::Composite {
@@ -4967,6 +5064,7 @@ mod tests {
                     AbilityKind::Activated,
                     Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
+                        target: TargetFilter::Controller,
                     },
                 )
                 .cost(AbilityCost::Composite {
@@ -5057,6 +5155,7 @@ mod tests {
                                 name: "X".to_string(),
                             },
                         },
+                        target: TargetFilter::Controller,
                     },
                 )
                 .cost(AbilityCost::Composite {
@@ -5222,6 +5321,7 @@ mod tests {
                             name: "X".to_string(),
                         },
                     },
+                    target: TargetFilter::Controller,
                 },
             ));
             obj.mana_cost = ManaCost::Cost {
@@ -5285,6 +5385,7 @@ mod tests {
                             name: "X".to_string(),
                         },
                     },
+                    target: TargetFilter::Controller,
                 },
             ));
             obj.mana_cost = ManaCost::Cost {
@@ -5336,6 +5437,7 @@ mod tests {
                             name: "X".to_string(),
                         },
                     },
+                    target: TargetFilter::Controller,
                 },
             ));
             obj.mana_cost = ManaCost::Cost {
@@ -5640,6 +5742,7 @@ mod tests {
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 2 },
+                    target: TargetFilter::Controller,
                 },
             ));
             obj.mana_cost = ManaCost::Cost {
@@ -5763,6 +5866,7 @@ mod tests {
                 AbilityKind::Activated,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
             )
             .activation_restrictions(vec![
@@ -5926,6 +6030,7 @@ mod tests {
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
             ));
             spell.mana_cost = ManaCost::Cost {
@@ -5973,6 +6078,7 @@ mod tests {
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
             ));
             spell.mana_cost = ManaCost::Cost {
@@ -6223,6 +6329,7 @@ mod tests {
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
             ));
         }
@@ -6696,6 +6803,7 @@ mod tests {
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
             ));
             // Mode 2: Gain 3 life
@@ -6907,7 +7015,8 @@ mod tests {
                 assert!(matches!(
                     ability.effect,
                     Effect::Draw {
-                        count: QuantityExpr::Fixed { value: 1 }
+                        count: QuantityExpr::Fixed { value: 1 },
+                        ..
                     }
                 ));
                 // Second mode is GainLife as sub_ability
@@ -8335,6 +8444,7 @@ mod tests {
             crate::types::ability::AbilityKind::Spell,
             crate::types::ability::Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: crate::types::ability::TargetFilter::Controller,
             },
         );
         obj.abilities.push(ability.clone());
@@ -8426,6 +8536,7 @@ mod tests {
             crate::types::ability::AbilityKind::Spell,
             crate::types::ability::Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: crate::types::ability::TargetFilter::Controller,
             },
         );
         obj.abilities.push(ability.clone());
@@ -8987,6 +9098,7 @@ mod tests {
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 2 },
+                    target: TargetFilter::Controller,
                 },
             ));
             obj.mana_cost = ManaCost::Cost {
@@ -9077,6 +9189,7 @@ mod tests {
                 AbilityKind::Spell,
                 Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
             ));
         }
@@ -9294,6 +9407,7 @@ mod tests {
                 crate::types::ability::AbilityKind::Activated,
                 crate::types::ability::Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: crate::types::ability::TargetFilter::Controller,
                 },
             )
             .cost(crate::types::ability::AbilityCost::Tap),
@@ -9421,6 +9535,7 @@ mod tests {
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
+                        target: crate::types::ability::TargetFilter::Controller,
                     },
                 )
                 .cost(crate::types::ability::AbilityCost::Tap),
@@ -9539,6 +9654,7 @@ mod tests {
                     crate::types::ability::AbilityKind::Activated,
                     crate::types::ability::Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
+                        target: crate::types::ability::TargetFilter::Controller,
                     },
                 )
                 .cost(crate::types::ability::AbilityCost::Tap),
@@ -9607,6 +9723,7 @@ mod tests {
                 crate::types::ability::AbilityKind::Activated,
                 crate::types::ability::Effect::Draw {
                     count: QuantityExpr::Fixed { value: 1 },
+                    target: crate::types::ability::TargetFilter::Controller,
                 },
             )
             .cost(AbilityCost::PayLife {
@@ -9678,6 +9795,7 @@ mod tests {
             AbilityKind::Spell,
             Effect::Draw {
                 count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
             },
         ));
         obj.mana_cost = ManaCost::Cost { shards, generic };
@@ -10067,10 +10185,11 @@ mod tests {
         let any_color =
             crate::game::static_abilities::player_can_spend_as_any_color(&state, PlayerId(0));
         let max_life = crate::game::life_costs::max_phyrexian_life_payments(&state, PlayerId(0));
+        let spell_ctx = spell_meta.as_ref().map(PaymentContext::Spell);
         let current_shards = crate::game::mana_payment::compute_phyrexian_shards(
             &state.players[0].mana_pool,
             &state.objects.get(&spell).unwrap().mana_cost,
-            spell_meta.as_ref(),
+            spell_ctx.as_ref(),
             any_color,
             max_life,
         );
@@ -10414,6 +10533,7 @@ mod tests {
                     AbilityKind::Activated,
                     Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
+                        target: TargetFilter::Controller,
                     },
                 )
                 .cost(AbilityCost::Tap),
@@ -10483,6 +10603,7 @@ mod tests {
                         AbilityKind::Activated,
                         Effect::Draw {
                             count: QuantityExpr::Fixed { value: 1 },
+                            target: TargetFilter::Controller,
                         },
                     )
                     .cost(AbilityCost::Tap),
@@ -10518,6 +10639,7 @@ mod tests {
                         AbilityKind::Activated,
                         Effect::Draw {
                             count: QuantityExpr::Fixed { value: 1 },
+                            target: TargetFilter::Controller,
                         },
                     )
                     .cost(AbilityCost::Tap),
@@ -10553,6 +10675,7 @@ mod tests {
                         AbilityKind::Activated,
                         Effect::Draw {
                             count: QuantityExpr::Fixed { value: 1 },
+                            target: TargetFilter::Controller,
                         },
                     )
                     .cost(AbilityCost::Untap),

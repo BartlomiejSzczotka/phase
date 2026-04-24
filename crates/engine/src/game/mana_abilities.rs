@@ -1489,17 +1489,18 @@ mod tests {
         }
 
         // Spending for a non-Elemental creature must fail.
-        use crate::types::mana::SpellMeta;
+        use crate::types::mana::{PaymentContext, SpellMeta};
         let goblin_spell = SpellMeta {
             types: vec!["Creature".to_string()],
             subtypes: vec!["Goblin".to_string()],
             keyword_kinds: vec![],
             cast_from_zone: None,
         };
+        let goblin_ctx = PaymentContext::Spell(&goblin_spell);
         let mut pool_clone = pool.clone();
         let first_color = pool_clone.mana[0].color;
         assert!(
-            pool_clone.spend_for(first_color, &goblin_spell).is_none(),
+            pool_clone.spend_for(first_color, &goblin_ctx).is_none(),
             "Flamebraider mana must not be spendable on non-Elemental spells"
         );
 
@@ -1510,11 +1511,39 @@ mod tests {
             keyword_kinds: vec![],
             cast_from_zone: None,
         };
+        let elemental_ctx = PaymentContext::Spell(&elemental_spell);
         assert!(
-            pool_clone
-                .spend_for(first_color, &elemental_spell)
-                .is_some(),
+            pool_clone.spend_for(first_color, &elemental_ctx).is_some(),
             "Flamebraider mana must be spendable on Elemental spells"
+        );
+
+        // CR 106.6: The ability-activation half of the OR. A non-Elemental
+        // source's activation context must reject Elemental-restricted mana;
+        // an Elemental source's activation context must accept it.
+        let non_elemental_types = vec!["Creature".to_string()];
+        let non_elemental_subtypes = vec!["Goblin".to_string()];
+        let non_elemental_activation = PaymentContext::Activation {
+            source_types: &non_elemental_types,
+            source_subtypes: &non_elemental_subtypes,
+        };
+        let mut pool_clone2 = pool.clone();
+        assert!(
+            pool_clone2
+                .spend_for(first_color, &non_elemental_activation)
+                .is_none(),
+            "Flamebraider mana must not pay non-Elemental source's ability cost"
+        );
+
+        let elemental_subtypes = vec!["Elemental".to_string()];
+        let elemental_activation = PaymentContext::Activation {
+            source_types: &non_elemental_types,
+            source_subtypes: &elemental_subtypes,
+        };
+        assert!(
+            pool_clone2
+                .spend_for(first_color, &elemental_activation)
+                .is_some(),
+            "Flamebraider mana must pay an Elemental source's ability cost"
         );
     }
 

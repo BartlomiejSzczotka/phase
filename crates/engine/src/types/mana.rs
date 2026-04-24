@@ -64,6 +64,26 @@ pub struct SpellMeta {
     pub cast_from_zone: Option<crate::types::zones::Zone>,
 }
 
+/// CR 106.6: Context for a mana-payment decision. Distinguishes "paying for a
+/// spell being cast" from "paying for an ability being activated" so the
+/// restriction check can route through `allows_spell` vs `allows_activation`.
+///
+/// Casting-restricted mana (e.g., "creature-spell-only") must reject ability
+/// activations; activation-restricted mana (e.g., "activate abilities only")
+/// must reject spell casts. Using the correct variant per payment site is the
+/// single authority that enforces this bifurcation.
+#[derive(Debug, Clone, Copy)]
+pub enum PaymentContext<'a> {
+    /// Payment for a spell being cast — consult `allows_spell`.
+    Spell(&'a SpellMeta),
+    /// Payment for an activated ability — consult `allows_activation` using
+    /// the source permanent's core types and subtypes.
+    Activation {
+        source_types: &'a [String],
+        source_subtypes: &'a [String],
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ManaRestriction {
     /// "Spend this mana only to cast creature spells" / "only to cast artifact spells".
@@ -157,6 +177,20 @@ impl ManaRestriction {
             // X-cost mana can be used for abilities with {X} in their cost.
             // TODO: Check if the ability has {X} in its cost once that data is available.
             ManaRestriction::OnlyForXCosts => false,
+        }
+    }
+
+    /// CR 106.6: Unified dispatch — use the spell half of a restriction for
+    /// spell payments, the activation half for ability payments. Every
+    /// runtime payment site must flow through this method so the two halves
+    /// stay in lockstep (single authority for restriction enforcement).
+    pub fn allows(&self, ctx: &PaymentContext<'_>) -> bool {
+        match ctx {
+            PaymentContext::Spell(meta) => self.allows_spell(meta),
+            PaymentContext::Activation {
+                source_types,
+                source_subtypes,
+            } => self.allows_activation(source_types, source_subtypes),
         }
     }
 }
@@ -711,12 +745,13 @@ impl ManaPool {
         }
     }
 
-    /// Spend one mana of the given color that is eligible for the spell described by `meta`.
+    /// Spend one mana of the given color that is eligible for the given payment context.
     ///
-    /// Prefers unrestricted mana first, then falls back to restricted mana whose
-    /// restrictions all allow the target spell. Mana with restrictions that don't
-    /// match the spell is never spent.
-    pub fn spend_for(&mut self, color: ManaType, meta: &SpellMeta) -> Option<ManaUnit> {
+    /// CR 106.6: Prefers unrestricted mana first, then falls back to restricted mana
+    /// whose restrictions all allow the payment (spell cast or ability activation,
+    /// per the `PaymentContext` variant). Mana with restrictions that don't match is
+    /// never spent.
+    pub fn spend_for(&mut self, color: ManaType, ctx: &PaymentContext<'_>) -> Option<ManaUnit> {
         // First pass: prefer unrestricted mana of this color
         if let Some(pos) = self
             .mana
@@ -725,11 +760,11 @@ impl ManaPool {
         {
             return Some(self.mana.swap_remove(pos));
         }
-        // Second pass: restricted mana that allows this spell
+        // Second pass: restricted mana that allows this payment context
         if let Some(pos) = self.mana.iter().position(|m| {
             m.color == color
                 && !m.restrictions.is_empty()
-                && m.restrictions.iter().all(|r| r.allows_spell(meta))
+                && m.restrictions.iter().all(|r| r.allows(ctx))
         }) {
             return Some(self.mana.swap_remove(pos));
         }
@@ -942,7 +977,9 @@ mod tests {
             keyword_kinds: vec![],
             cast_from_zone: None,
         };
-        let spent = pool.spend_for(ManaType::Green, &spell).unwrap();
+        let spent = pool
+            .spend_for(ManaType::Green, &PaymentContext::Spell(&spell))
+            .unwrap();
         // Should prefer unrestricted mana first
         assert!(spent.restrictions.is_empty());
         assert_eq!(pool.total(), 1);
@@ -963,7 +1000,9 @@ mod tests {
             keyword_kinds: vec![],
             cast_from_zone: None,
         };
-        assert!(pool.spend_for(ManaType::Green, &elf_spell).is_some());
+        assert!(pool
+            .spend_for(ManaType::Green, &PaymentContext::Spell(&elf_spell))
+            .is_some());
     }
 
     #[test]
@@ -1018,7 +1057,9 @@ mod tests {
             keyword_kinds: vec![],
             cast_from_zone: None,
         };
-        assert!(pool.spend_for(ManaType::Green, &goblin_spell).is_none());
+        assert!(pool
+            .spend_for(ManaType::Green, &PaymentContext::Spell(&goblin_spell))
+            .is_none());
         assert_eq!(pool.total(), 1, "Restricted mana should remain in pool");
     }
 

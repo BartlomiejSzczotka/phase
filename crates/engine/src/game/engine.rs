@@ -1327,10 +1327,13 @@ fn apply_action(state: &mut GameState, action: GameAction) -> Result<ActionResul
                     .find(|p| p.id == player)
                     .map(|p| p.mana_pool.clone())
                     .ok_or_else(|| EngineError::InvalidAction("Player not found".to_string()))?;
+                let spell_ctx = spell_meta
+                    .as_ref()
+                    .map(crate::types::mana::PaymentContext::Spell);
                 let current_shards = mana_payment::compute_phyrexian_shards(
                     &player_pool,
                     &cost,
-                    spell_meta.as_ref(),
+                    spell_ctx.as_ref(),
                     any_color,
                     max_life,
                 );
@@ -3711,6 +3714,7 @@ mod tests {
                 count: QuantityExpr::Fixed {
                     value: num_cards as i32,
                 },
+                target: TargetFilter::Controller,
             },
         )
     }
@@ -7071,6 +7075,7 @@ mod trigger_target_tests {
                     AbilityKind::Database,
                     Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
+                        target: TargetFilter::Controller,
                     },
                 ),
             ],
@@ -7099,6 +7104,7 @@ mod trigger_target_tests {
                     AbilityKind::Database,
                     Effect::Draw {
                         count: QuantityExpr::Fixed { value: 1 },
+                        target: TargetFilter::Controller,
                     },
                 ),
             ],
@@ -7814,6 +7820,7 @@ mod phase_trigger_regression_tests {
                 count: QuantityExpr::Ref {
                     qty: QuantityRef::EventContextAmount,
                 },
+                target: TargetFilter::Controller,
             },
             vec![],
             source_id,
@@ -8170,6 +8177,7 @@ mod phase_trigger_regression_tests {
                         AbilityKind::Database,
                         Effect::Draw {
                             count: QuantityExpr::Fixed { value: 1 },
+                            target: TargetFilter::Controller,
                         },
                     ),
                 ));
@@ -9222,6 +9230,7 @@ mod phase_trigger_regression_tests {
                 crate::types::ability::AbilityKind::Activated,
                 Effect::Draw {
                     count: crate::types::ability::QuantityExpr::Fixed { value: 1 },
+                    target: TargetFilter::Controller,
                 },
             )];
         }
