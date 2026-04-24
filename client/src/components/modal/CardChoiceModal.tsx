@@ -469,6 +469,7 @@ function RevealModal({ data }: { data: RevealChoice["data"] }) {
   const objects = useGameStore((s) => s.gameState?.objects);
   const hoverProps = useInspectHoverProps();
   const [selected, setSelected] = useState<ObjectId | null>(null);
+  const isOptional = data.optional === true;
 
   const handleConfirm = useCallback(() => {
     if (selected !== null) {
@@ -479,13 +480,28 @@ function RevealModal({ data }: { data: RevealChoice["data"] }) {
     }
   }, [dispatch, selected]);
 
+  // CR 701.20a: Optional reveals (reveal-lands like Port Town) offer a
+  // "decline" path — dispatch an empty selection so the engine's RevealChoice
+  // handler runs the source's decline branch (e.g., Tap SelfRef).
+  const handleDecline = useCallback(() => {
+    dispatch({
+      type: "SelectCards",
+      data: { cards: [] },
+    });
+  }, [dispatch]);
+
   if (!objects) return null;
 
   return (
     <ChoiceOverlay
-      title="Opponent's Hand"
-      subtitle="Choose a card"
-      footer={<ConfirmButton onClick={handleConfirm} disabled={selected === null} />}
+      title={isOptional ? "Reveal from Hand" : "Opponent's Hand"}
+      subtitle={isOptional ? "Choose a card to reveal, or decline" : "Choose a card"}
+      footer={
+        <div className="flex gap-2">
+          {isOptional && <ConfirmButton onClick={handleDecline} label="Decline" />}
+          <ConfirmButton onClick={handleConfirm} disabled={selected === null} />
+        </div>
+      }
     >
       <ScrollableCardStrip>
         {data.cards.map((id, index) => {

@@ -158,7 +158,7 @@ describe("WasmAdapter", () => {
   describe("getAiAction", () => {
     it("delegates to worker client", async () => {
       await adapter.initialize();
-      await adapter.getAiAction("Medium");
+      await adapter.getAiAction("Medium", 1);
       expect(mockWorkerClient.getAiAction).toHaveBeenCalledWith("Medium", 1);
     });
   });

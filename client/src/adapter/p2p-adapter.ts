@@ -945,7 +945,7 @@ export class P2PHostAdapter implements EngineAdapter {
     return this.wasm.getLegalActions();
   }
 
-  getAiAction(_difficulty: string): GameAction | null {
+  getAiAction(_difficulty: string, _playerId: number): GameAction | null {
     return null;
   }
 
@@ -1540,7 +1540,7 @@ export class P2PGuestAdapter implements EngineAdapter {
     return this.legalActions;
   }
 
-  getAiAction(_difficulty: string): GameAction | null {
+  getAiAction(_difficulty: string, _playerId: number): GameAction | null {
     return null;
   }
 

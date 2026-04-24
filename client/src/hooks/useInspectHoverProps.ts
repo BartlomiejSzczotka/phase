@@ -31,6 +31,10 @@ export function useInspectHoverProps() {
         : {
             onMouseEnter: () => inspectObject(id),
             onMouseLeave: () => inspectObject(null),
+            // Required for usePreviewDismiss's elementFromPoint poll — without
+            // this attribute the 300ms dismiss loop clears the preview while
+            // the cursor is still over the card (choice modals, zone lists).
+            "data-card-hover": true,
           },
     [isMobile, inspectObject],
   );

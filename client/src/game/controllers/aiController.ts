@@ -228,6 +228,13 @@ export function createAIController(config: AIControllerConfig): AIController {
   function start() {
     active = true;
     debugLog(`AI controller started for players [${[...aiPlayerIds].join(",")}]`, "warn");
+    // Event-driven design: subscribe to WaitingFor changes and let each
+    // seat's turn naturally surface via the store. This means reconnect
+    // is implicit — whichever seat holds priority after a reconnect
+    // triggers `checkAndSchedule`, regardless of how many AI seats the
+    // controller supervises. No per-seat iteration needed; the bug that
+    // previously stalled P3/P4 was caused by `getAiAction` accepting a
+    // default `playerId` elsewhere, not by this loop.
     unsubscribe = useGameStore.subscribe(
       (s) => s.waitingFor,
       () => {

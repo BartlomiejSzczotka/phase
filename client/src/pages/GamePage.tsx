@@ -1348,13 +1348,20 @@ function MulliganDecisionPrompt({
   if (!player || !objects) {
     return (
       <ChoiceModal
-        title={`Mulligan (${mulliganCount} cards)`}
+        title={`London Mulligan (${mulliganCount} taken)`}
         options={[
-          { id: "keep", label: "Keep Hand" },
+          {
+            id: "keep",
+            label: "Keep Hand",
+            description:
+              mulliganCount > 0
+                ? `Put ${mulliganCount} on the bottom`
+                : "No cards to the bottom",
+          },
           {
             id: "mulligan",
             label: "Mulligan",
-            description: `Draw ${7 - mulliganCount - 1} cards`,
+            description: "Shuffle and draw 7 again",
           },
         ]}
         onChoose={onChoose}
@@ -1366,12 +1373,12 @@ function MulliganDecisionPrompt({
   const nextHandSize = 7 - mulliganCount - 1;
   return (
     <MulliganPanel
-      eyebrow={mulliganCount > 0 ? `Mulligan ${mulliganCount}` : "Opening Hand"}
+      eyebrow={mulliganCount > 0 ? `Mulligan ${mulliganCount} · London` : "Opening Hand · London Mulligan"}
       title="Review your opening hand"
       subtitle={
         mulliganCount > 0
-          ? `Choose whether to keep this ${handObjects.length}-card hand or mulligan down to ${nextHandSize}.`
-          : "Take a final look before the game starts."
+          ? `Keep this hand (you'll put ${mulliganCount} on the bottom) or mulligan again for a fresh 7.`
+          : "Keep this hand or mulligan for a fresh 7 (you'll put 1 on the bottom when you keep)."
       }
       footer={
         <AnimatePresence>
