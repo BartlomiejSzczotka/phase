@@ -1225,13 +1225,28 @@ fn apply_continuous_effect(state: &mut GameState, effect: &ActiveContinuousEffec
                     }
                 }
             }
+            // CR 613.1f: Layer 6 ability-granting effects are applied fresh
+            // each layer pass (obj.abilities was reset to base_abilities at the
+            // start of the pass). Within a single pass, a duplicate
+            // GrantAbility — whether from a single static with repeated
+            // modifications (e.g., Ragost parses the "have ..." clause twice)
+            // or from multiple sources granting the same ability — must not
+            // stack. Structural equality dedup keeps the grant idempotent.
             ContinuousModification::GrantAbility { definition } => {
-                obj.abilities.push(*definition.clone());
+                if !obj.abilities.iter().any(|a| a == definition.as_ref()) {
+                    obj.abilities.push(*definition.clone());
+                }
             }
             // CR 604.1: Push granted trigger to trigger_definitions so
             // the trigger's event matching and condition metadata is preserved.
             ContinuousModification::GrantTrigger { trigger } => {
-                obj.trigger_definitions.push(*trigger.clone());
+                if !obj
+                    .trigger_definitions
+                    .iter_all()
+                    .any(|t| t == trigger.as_ref())
+                {
+                    obj.trigger_definitions.push(*trigger.clone());
+                }
             }
             ContinuousModification::AddStaticMode { mode } => {
                 let def = StaticDefinition::new(mode.clone()).affected(TargetFilter::SelfRef);
@@ -4194,6 +4209,136 @@ mod tests {
             count_mana_abilities(bear_obj, ManaColor::Black),
             0,
             "Non-land objects must not receive injected mana abilities"
+        );
+    }
+
+    /// CR 613.1f: Granting the same ability twice in a single layer pass must
+    /// be idempotent. Ragost, Deft Gastronaut parses two identical
+    /// `GrantAbility` modifications for its "Artifacts you control ... have
+    /// '{2}, {T}, Sacrifice: You gain 3 life'" clause; the layer system must
+    /// deduplicate so each artifact ends up with exactly one granted ability.
+    /// The same dedup must also hold across two distinct Ragosts granting the
+    /// same ability to the same artifact.
+    fn ragost_food_ability() -> AbilityDefinition {
+        AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::GainLife {
+                amount: QuantityExpr::Fixed { value: 3 },
+                player: GainLifePlayer::Controller,
+            },
+        )
+        .cost(AbilityCost::Composite {
+            costs: vec![
+                AbilityCost::Tap,
+                AbilityCost::Sacrifice {
+                    target: TargetFilter::SelfRef,
+                    count: 1,
+                },
+            ],
+        })
+    }
+
+    fn make_artifact(state: &mut GameState, name: &str, player: PlayerId) -> ObjectId {
+        let id = create_object(
+            state,
+            CardId(0),
+            player,
+            name.to_string(),
+            Zone::Battlefield,
+        );
+        let ts = state.next_timestamp();
+        let obj = state.objects.get_mut(&id).unwrap();
+        obj.card_types.core_types.push(CoreType::Artifact);
+        obj.base_card_types = obj.card_types.clone();
+        obj.timestamp = ts;
+        id
+    }
+
+    fn count_food_abilities(obj: &crate::game::game_object::GameObject) -> usize {
+        let target = ragost_food_ability();
+        obj.abilities.iter().filter(|a| **a == target).count()
+    }
+
+    fn ragost_static(ability: AbilityDefinition) -> StaticDefinition {
+        StaticDefinition::continuous()
+            .affected(TargetFilter::Typed(
+                TypedFilter::new(TypeFilter::Artifact).controller(ControllerRef::You),
+            ))
+            .modifications(vec![
+                ContinuousModification::GrantAbility {
+                    definition: Box::new(ability.clone()),
+                },
+                ContinuousModification::AddSubtype {
+                    subtype: "Food".to_string(),
+                },
+                // Parser emits the GrantAbility twice (see Ragost card data):
+                // the "have ..." clause round-trips through two handlers.
+                ContinuousModification::GrantAbility {
+                    definition: Box::new(ability),
+                },
+            ])
+    }
+
+    #[test]
+    fn ragost_duplicate_grant_ability_dedups_to_single_ability() {
+        let mut state = setup();
+        let ragost = make_creature(&mut state, "Ragost", 2, 2, PlayerId(0));
+        let artifact1 = make_artifact(&mut state, "Artifact 1", PlayerId(0));
+        let artifact2 = make_artifact(&mut state, "Artifact 2", PlayerId(0));
+        let artifact3 = make_artifact(&mut state, "Artifact 3", PlayerId(0));
+
+        let static_def = ragost_static(ragost_food_ability());
+        state
+            .objects
+            .get_mut(&ragost)
+            .unwrap()
+            .static_definitions
+            .push(static_def);
+
+        state.layers_dirty = true;
+        evaluate_layers(&mut state);
+
+        for id in [artifact1, artifact2, artifact3] {
+            let obj = state.objects.get(&id).unwrap();
+            assert_eq!(
+                count_food_abilities(obj),
+                1,
+                "each artifact must have exactly one granted Food ability"
+            );
+        }
+
+        // Idempotency across layer passes: running layers twice must not stack.
+        state.layers_dirty = true;
+        evaluate_layers(&mut state);
+        for id in [artifact1, artifact2, artifact3] {
+            assert_eq!(count_food_abilities(&state.objects[&id]), 1);
+        }
+    }
+
+    #[test]
+    fn two_ragosts_grant_food_ability_only_once() {
+        let mut state = setup();
+        let ragost_a = make_creature(&mut state, "Ragost A", 2, 2, PlayerId(0));
+        let ragost_b = make_creature(&mut state, "Ragost B", 2, 2, PlayerId(0));
+        let artifact = make_artifact(&mut state, "Artifact", PlayerId(0));
+
+        for host in [ragost_a, ragost_b] {
+            let static_def = ragost_static(ragost_food_ability());
+            state
+                .objects
+                .get_mut(&host)
+                .unwrap()
+                .static_definitions
+                .push(static_def);
+        }
+
+        state.layers_dirty = true;
+        evaluate_layers(&mut state);
+
+        assert_eq!(
+            count_food_abilities(&state.objects[&artifact]),
+            1,
+            "two Ragosts must not stack the granted Food ability",
         );
     }
 }
