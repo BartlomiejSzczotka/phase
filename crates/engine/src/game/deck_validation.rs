@@ -233,7 +233,7 @@ fn evaluate_constructed(
                 illegal_cards.insert(format!("{name} ({})", status_label(status)));
             }
             None => {
-                illegal_cards.insert(format!("{name} (missing legality data)"));
+                illegal_cards.insert(format!("{name} (not legal in {format_label})"));
             }
         }
     }
@@ -356,7 +356,7 @@ fn evaluate_commander(
                 illegal_cards.insert(format!("{name} ({})", status_label(status)));
             }
             None => {
-                illegal_cards.insert(format!("{name} (missing legality data)"));
+                illegal_cards.insert(format!("{name} (not legal in Commander)"));
             }
         }
     }
@@ -516,7 +516,7 @@ fn evaluate_brawl(
                 illegal_cards.insert(format!("{name} ({})", status_label(status)));
             }
             None => {
-                illegal_cards.insert(format!("{name} (missing legality data)"));
+                illegal_cards.insert(format!("{name} (not legal in {format_label})"));
             }
         }
     }
