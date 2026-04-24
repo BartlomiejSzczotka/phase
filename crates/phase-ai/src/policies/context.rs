@@ -55,7 +55,7 @@ impl<'a> PolicyContext<'a> {
         self.context
             .deadline
             .remaining()
-            .map_or(true, |r| r.as_millis() >= floor)
+            .is_none_or(|r| r.as_millis() >= floor)
     }
 
     pub fn source_object(&self) -> Option<&'a GameObject> {

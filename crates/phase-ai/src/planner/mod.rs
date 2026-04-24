@@ -299,7 +299,7 @@ impl<'a> PlannerServices<'a> {
         // the `velocity_score` opponent-turn projection that costs ~1.5s on
         // large multi-player states.
         let mut context = context;
-        context.deadline = deadline.clone();
+        context.deadline = deadline;
         Self {
             ai_player,
             config,
