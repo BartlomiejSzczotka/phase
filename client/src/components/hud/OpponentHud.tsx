@@ -3,6 +3,7 @@ import { motion, useReducedMotion } from "framer-motion";
 
 import type { PlayerId } from "../../adapter/types.ts";
 import { usePerspectivePlayerId } from "../../hooks/usePlayerId.ts";
+import { getSeatColor } from "../../hooks/useSeatColor.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { getOpponentDisplayName, useMultiplayerStore } from "../../stores/multiplayerStore.ts";
 import { usePreferencesStore } from "../../stores/preferencesStore.ts";
@@ -99,6 +100,7 @@ export function OpponentHud({ opponentName, onKickPlayer }: OpponentHudProps) {
     const label = opponentName ?? getOpponentDisplayName(opponentId);
 
     const hudTone = isValidTarget ? "cyan" : isOpponentTurn ? "rose" : "neutral";
+    const opponentSeatColor = getSeatColor(opponentId, gameState?.seat_order);
 
     return (
       <div
@@ -112,6 +114,7 @@ export function OpponentHud({ opponentName, onKickPlayer }: OpponentHudProps) {
           label={label}
           tone={hudTone}
           active={isOpponentTurn}
+          seatColor={opponentSeatColor}
           onClick={isValidTarget ? () => handlePlayerTarget(opponentId) : undefined}
           trailing={opponentSpeed > 0 || opponentCompanion || isOnline || isOpponentPhasedOut ? (
             <>
@@ -199,6 +202,7 @@ interface OpponentTabProps {
 function OpponentTab({ playerId, isFocused, isEliminated, isTeammate: ally, isValidTarget, showMana, onClick, onKick }: OpponentTabProps) {
   const gameState = useGameStore((s) => s.gameState);
   const isTheirTurn = gameState?.active_player === playerId;
+  const seatColor = getSeatColor(playerId, gameState?.seat_order);
   const player = gameState?.players[playerId];
   const isDisconnected = useMultiplayerStore((s) => s.disconnectedPlayers.has(playerId));
   const isOnline = useMultiplayerStore((s) => s.connectionStatus) !== "disconnected";
@@ -265,7 +269,12 @@ function OpponentTab({ playerId, isFocused, isEliminated, isTeammate: ally, isVa
         />
       )}
       <div className="flex min-w-[4.5rem] flex-col items-start leading-none">
-        <span className="mb-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/48">
+        <span className="mb-1 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-white/48">
+          <span
+            aria-hidden
+            className="h-1.5 w-1.5 shrink-0 rounded-full ring-1 ring-black/30"
+            style={{ backgroundColor: seatColor }}
+          />
           {label}
         </span>
         <div className="flex items-center gap-1">

@@ -13,6 +13,9 @@ interface HudPlateProps {
    *  pulsing glow (suppressed under prefers-reduced-motion, but the heavy
    *  ring always applies so the signal is still legible). */
   active?: boolean;
+  /** Per-seat identity color. Rendered as a small dot adjacent to the label
+   *  — orthogonal to `tone` (which encodes game-state: turn, target). */
+  seatColor?: string;
 }
 
 const TONE_CLASSES: Record<HudTone, string> = {
@@ -49,6 +52,7 @@ export function HudPlate({
   children,
   trailing,
   active = false,
+  seatColor,
 }: HudPlateProps) {
   const Component = onClick ? "button" : "div";
   const shouldReduceMotion = useReducedMotion();
@@ -83,7 +87,14 @@ export function HudPlate({
       )}
       <div className="absolute inset-[1px] rounded-[16px] bg-gradient-to-b from-white/8 via-transparent to-black/10" />
       <div className="relative min-w-0">
-        <div className="mb-0.5 flex items-center justify-center">
+        <div className="mb-0.5 flex items-center justify-center gap-1.5">
+          {seatColor && (
+            <span
+              aria-hidden
+              className="h-1.5 w-1.5 shrink-0 rounded-full ring-1 ring-black/30"
+              style={{ backgroundColor: seatColor }}
+            />
+          )}
           <span className="text-[9px] font-semibold uppercase tracking-[0.18em] text-white/68">
             {label}
           </span>

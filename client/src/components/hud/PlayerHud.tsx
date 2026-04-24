@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 
 import { usePerspectivePlayerId } from "../../hooks/usePlayerId.ts";
+import { useSeatColor } from "../../hooks/useSeatColor.ts";
 import { useGameStore } from "../../stores/gameStore.ts";
 import { getPlayerDisplayName } from "../../stores/multiplayerStore.ts";
 import { LifeTotal } from "../controls/LifeTotal.tsx";
@@ -33,6 +34,7 @@ export function PlayerHud() {
   }, [isValidTarget, dispatch, playerId]);
 
   const hudTone = isValidTarget ? "cyan" : isMyTurn ? "emerald" : "neutral";
+  const seatColor = useSeatColor(playerId);
 
   return (
     <div
@@ -47,6 +49,7 @@ export function PlayerHud() {
         label={getPlayerDisplayName(playerId)}
         tone={hudTone}
         active={isMyTurn}
+        seatColor={seatColor}
         onClick={isValidTarget ? handleTargetClick : undefined}
         trailing={
           <>
