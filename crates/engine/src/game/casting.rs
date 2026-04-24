@@ -4008,7 +4008,7 @@ mod tests {
         .cost(AbilityCost::Tap);
         obj.abilities.push(if controller_harm {
             colored.sub_ability(AbilityDefinition::new(
-                AbilityKind::Activated,
+                AbilityKind::Spell,
                 Effect::DealDamage {
                     amount: QuantityExpr::Fixed { value: 1 },
                     target: TargetFilter::Controller,

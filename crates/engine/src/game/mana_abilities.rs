@@ -1298,7 +1298,7 @@ mod tests {
             contribution: ManaContribution::Base,
         })
         .sub_ability(AbilityDefinition::new(
-            AbilityKind::Activated,
+            AbilityKind::Spell,
             Effect::DealDamage {
                 amount: QuantityExpr::Fixed { value: 1 },
                 target: TargetFilter::Controller,
