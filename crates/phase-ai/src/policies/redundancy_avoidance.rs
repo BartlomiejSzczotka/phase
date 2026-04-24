@@ -182,7 +182,7 @@ fn redundancy_delta(
             KIND_DEAL_DAMAGE_ZERO,
             /* delta= */ -3.0,
         ),
-        Effect::Draw { count } => zero_quantity_redundancy(
+        Effect::Draw { count, .. } => zero_quantity_redundancy(
             state,
             source_id,
             ai_player,

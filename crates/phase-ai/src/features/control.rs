@@ -290,7 +290,7 @@ pub(crate) fn is_card_draw_parts(abilities: &[AbilityDefinition]) -> bool {
                 // draw (rare modal corner case); variable / Ref quantities
                 // ("draw X cards") are accepted as net-positive draws since
                 // X is normally ≥ 1 at resolution.
-                Effect::Draw { count } => !matches!(count, QuantityExpr::Fixed { value: 0 }),
+                Effect::Draw { count, .. } => !matches!(count, QuantityExpr::Fixed { value: 0 }),
                 // Impulse-to-exile is tempo, not card advantage — excluded.
                 Effect::Dig { destination, .. } => !matches!(destination, Some(Zone::Exile)),
                 _ => false,
