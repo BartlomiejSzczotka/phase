@@ -2816,7 +2816,10 @@ fn auto_tap_and_pay_cost(
 /// CR 106.6: Build (core-types, subtypes) slices for a `PaymentContext::Activation`
 /// from the source permanent. Mirrors `build_spell_meta`'s type extraction so
 /// `allows_activation` and `allows_spell` consult identically-shaped strings.
-fn activation_source_types(state: &GameState, source_id: ObjectId) -> (Vec<String>, Vec<String>) {
+pub(super) fn activation_source_types(
+    state: &GameState,
+    source_id: ObjectId,
+) -> (Vec<String>, Vec<String>) {
     state
         .objects
         .get(&source_id)

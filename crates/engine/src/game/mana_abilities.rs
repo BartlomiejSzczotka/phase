@@ -7,7 +7,7 @@ use crate::types::game_state::{
     ProductionOverride, WaitingFor,
 };
 use crate::types::identifiers::ObjectId;
-use crate::types::mana::{ManaCost, ManaPool, ManaType};
+use crate::types::mana::{ManaCost, ManaPool, ManaType, PaymentContext};
 use crate::types::player::PlayerId;
 use crate::types::zones::Zone;
 
@@ -741,7 +741,14 @@ where
         // CR 605.3a + CR 601.2h: Top-level mana sub-cost (e.g. hypothetical
         // `{R}: Add {G}{G}`). Composite costs route through the Composite arm.
         Some(AbilityCost::Mana { cost }) => {
-            pay_mana_sub_cost(state, player, cost, chosen_hybrid_payment, events)?;
+            pay_mana_sub_cost(
+                state,
+                source_id,
+                player,
+                cost,
+                chosen_hybrid_payment,
+                events,
+            )?;
         }
         Some(AbilityCost::PayLife { amount }) => {
             // CR 119.4 + CR 903.4: QuantityExpr resolves against the activator's
@@ -891,7 +898,14 @@ where
                     // any hybrid color choices (CR 107.4e); auto-pay the remaining
                     // cost from the activator's pool.
                     AbilityCost::Mana { cost } => {
-                        pay_mana_sub_cost(state, player, cost, chosen_hybrid_payment, events)?;
+                        pay_mana_sub_cost(
+                            state,
+                            source_id,
+                            player,
+                            cost,
+                            chosen_hybrid_payment,
+                            events,
+                        )?;
                     }
                     other => {
                         return Err(EngineError::InvalidAction(format!(
@@ -1008,7 +1022,10 @@ fn enumerate_plans_rec(
 /// auto-pay rules as `pay_cost` except hybrid shards defer to `plan`.
 fn try_pay_with_hybrid_plan(pool: &ManaPool, cost: &ManaCost, plan: &[ManaType]) -> Option<()> {
     let mut sim = pool.clone();
-    debit_cost_with_plan(&mut sim, cost, plan).ok()
+    // Simulation path — `None` context preserves the prior "can pool cover
+    // this at all" semantics. Restriction-aware affordability is checked at
+    // the real payment site via `pay_mana_sub_cost`.
+    debit_cost_with_plan(&mut sim, cost, plan, None).ok()
 }
 
 /// CR 107.4e + CR 601.2h: Debit `cost` from `pool` using `plan` for hybrid
@@ -1024,6 +1041,7 @@ fn debit_cost_with_plan(
     pool: &mut ManaPool,
     cost: &ManaCost,
     plan: &[ManaType],
+    ctx: Option<&PaymentContext<'_>>,
 ) -> Result<(), mana_payment::PaymentError> {
     use crate::types::mana::ManaCostShard;
     let ManaCost::Cost { shards, generic } = cost else {
@@ -1045,7 +1063,10 @@ fn debit_cost_with_plan(
         shards: rewritten_shards,
         generic: *generic,
     };
-    mana_payment::pay_cost(pool, &scratch_cost).map(|_| ())
+    // CR 106.6: Route through the restriction-aware payment path so the
+    // player's context (activation or spell) gates eligible mana units.
+    mana_payment::pay_cost_with_demand_and_choices(pool, &scratch_cost, None, ctx, false, None)
+        .map(|_| ())
 }
 
 /// Map a `ManaType` to the printed-shard variant that requires exactly that
@@ -1069,21 +1090,41 @@ fn mana_type_to_single_shard(color: ManaType) -> crate::types::mana::ManaCostSha
 /// recover cleanly (the pre-activation gate should have prevented this).
 fn pay_mana_sub_cost(
     state: &mut GameState,
+    source_id: ObjectId,
     player: PlayerId,
     cost: &ManaCost,
     hybrid_plan: Option<&[ManaType]>,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EngineError> {
+    // CR 106.6: The mana sub-cost of a mana ability is paid as part of an
+    // ability activation — spend-restrictions must be evaluated through
+    // `allows_activation` (via `PaymentContext::Activation`), not through the
+    // pool's restriction-blind `pay_cost`. Without this, activation-only
+    // mana (e.g. Heart of Ramos) would silently pay through for the {R} half
+    // of a hypothetical "{R}: Add {G}{G}" mana ability.
+    let (source_types, source_subtypes) = super::casting::activation_source_types(state, source_id);
+    let ctx = PaymentContext::Activation {
+        source_types: &source_types,
+        source_subtypes: &source_subtypes,
+    };
     let pool = &mut state.players[player.0 as usize].mana_pool;
     let (spent, _life) = match hybrid_plan {
-        Some(plan) => debit_cost_with_plan(pool, cost, plan)
+        Some(plan) => debit_cost_with_plan(pool, cost, plan, Some(&ctx))
             .map(|_| (Vec::new(), Vec::new()))
             .map_err(|_| {
                 EngineError::ActionNotAllowed(
                     "Mana pool cannot cover mana ability cost".to_string(),
                 )
             })?,
-        None => mana_payment::pay_cost(pool, cost).map_err(|_| {
+        None => mana_payment::pay_cost_with_demand_and_choices(
+            pool,
+            cost,
+            None,
+            Some(&ctx),
+            false,
+            None,
+        )
+        .map_err(|_| {
             EngineError::ActionNotAllowed("Mana pool cannot cover mana ability cost".to_string())
         })?,
     };

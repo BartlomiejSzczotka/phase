@@ -692,6 +692,7 @@ pub fn synthesize_cycling(face: &mut CardFace) {
                         count: QuantityExpr::Fixed { value: 1 },
                         reveal: true,
                         target_player: None,
+                        up_to: false,
                     },
                 )
                 .cost(composite_cost);

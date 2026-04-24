@@ -5,7 +5,7 @@ use crate::types::game_state::{GameState, ShardChoice};
 use crate::types::identifiers::ObjectId;
 use crate::types::mana::{
     ManaCost, ManaCostShard, ManaExpiry, ManaPool, ManaRestriction, ManaSpellGrant, ManaType,
-    ManaUnit, PaymentContext, SpellMeta,
+    ManaUnit, PaymentContext,
 };
 use crate::types::player::PlayerId;
 
@@ -1142,7 +1142,7 @@ fn spend_snow_unit(pool: &mut ManaPool) -> Option<ManaUnit> {
 mod tests {
     use super::*;
     use crate::types::identifiers::ObjectId;
-    use crate::types::mana::ManaRestriction;
+    use crate::types::mana::{ManaRestriction, SpellMeta};
 
     /// The building-block predicate must classify each shape the parser can produce.
     /// Generic + colored + snow + free `X` (pre-concretization sentinel) are all
