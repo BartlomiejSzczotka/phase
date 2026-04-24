@@ -1,4 +1,4 @@
-import type { GameAction, GameEvent, GameState } from "../adapter/types";
+import type { GameAction, GameEvent, GameState, ManaCost } from "../adapter/types";
 import type { SeatMutation, SeatView } from "../multiplayer/seatTypes";
 
 export type P2PMessage =
@@ -11,6 +11,8 @@ export type P2PMessage =
       events: GameEvent[];
       legalActions: GameAction[];
       autoPassRecommended?: boolean;
+      legalActionsByObject?: Record<string, GameAction[]>;
+      spellCosts?: Record<string, ManaCost>;
       playerNames?: Record<number, string>;
     }
   | { type: "action"; senderPlayerId: number; action: GameAction }
@@ -20,6 +22,8 @@ export type P2PMessage =
       events: GameEvent[];
       legalActions: GameAction[];
       autoPassRecommended?: boolean;
+      legalActionsByObject?: Record<string, GameAction[]>;
+      spellCosts?: Record<string, ManaCost>;
     }
   | { type: "action_rejected"; reason: string }
   | { type: "ping"; timestamp: number }
@@ -35,6 +39,8 @@ export type P2PMessage =
       state: GameState;
       legalActions: GameAction[];
       autoPassRecommended: boolean;
+      legalActionsByObject?: Record<string, GameAction[]>;
+      spellCosts?: Record<string, ManaCost>;
     }
   | { type: "reconnect_rejected"; reason: string }
   // Kick / forced removal (host → target).

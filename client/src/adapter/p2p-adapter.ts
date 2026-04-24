@@ -891,6 +891,8 @@ export class P2PHostAdapter implements EngineAdapter {
           events: result.events,
           legalActions: legal.actions,
           autoPassRecommended: legal.autoPassRecommended,
+          legalActionsByObject: legal.legalActionsByObject,
+          spellCosts: legal.spellCosts,
           playerNames: allNames,
         });
       }
@@ -933,6 +935,8 @@ export class P2PHostAdapter implements EngineAdapter {
         events,
         legalActions: legal.actions,
         autoPassRecommended: legal.autoPassRecommended,
+        legalActionsByObject: legal.legalActionsByObject,
+        spellCosts: legal.spellCosts,
       });
     }
   }
@@ -1225,6 +1229,8 @@ export class P2PHostAdapter implements EngineAdapter {
         state: filteredState,
         legalActions: legal.actions,
         autoPassRecommended: legal.autoPassRecommended,
+        legalActionsByObject: legal.legalActionsByObject,
+        spellCosts: legal.spellCosts,
       });
     })();
 
@@ -1588,6 +1594,8 @@ export class P2PGuestAdapter implements EngineAdapter {
         this.legalActions = {
           actions: msg.legalActions,
           autoPassRecommended: msg.autoPassRecommended ?? false,
+          legalActionsByObject: msg.legalActionsByObject,
+          spellCosts: msg.spellCosts,
         };
         this.emit({ type: "playerIdentity", playerId: msg.assignedPlayerId, playerNames: msg.playerNames });
         this.settleGameSetup({ events: msg.events });
@@ -1605,6 +1613,8 @@ export class P2PGuestAdapter implements EngineAdapter {
         this.legalActions = {
           actions: msg.legalActions,
           autoPassRecommended: msg.autoPassRecommended,
+          legalActionsByObject: msg.legalActionsByObject,
+          spellCosts: msg.spellCosts,
         };
         this.emit({ type: "playerIdentity", playerId: msg.assignedPlayerId });
         this.emit({
@@ -1651,6 +1661,8 @@ export class P2PGuestAdapter implements EngineAdapter {
         this.legalActions = {
           actions: msg.legalActions,
           autoPassRecommended: msg.autoPassRecommended ?? false,
+          legalActionsByObject: msg.legalActionsByObject,
+          spellCosts: msg.spellCosts,
         };
         if (this.pendingResolve) {
           this.pendingResolve({ events: msg.events });
