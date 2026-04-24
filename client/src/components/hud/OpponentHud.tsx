@@ -247,6 +247,7 @@ function OpponentTab({ playerId, isFocused, isEliminated, isTeammate: ally, isVa
       type="button"
       onClick={onClick}
       disabled={isEliminated}
+      data-player-hud={String(playerId)}
       data-phased-out={isPhasedOut ? "true" : undefined}
       className={`relative flex items-center gap-3 rounded-[18px] border px-3 py-2 backdrop-blur-xl transition-all duration-200 ${borderClass} ${isEliminated || isPhasedOut ? "opacity-40 grayscale" : ""}`}
     >
