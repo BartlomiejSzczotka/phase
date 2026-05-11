@@ -2460,6 +2460,12 @@ pub(super) struct EventModifiers {
     redirect_zone: Option<Zone>,
 }
 
+#[derive(Debug, Clone, Default)]
+pub(super) struct EnterReplacementModifiers {
+    pub enter_tapped: Option<bool>,
+    pub counters: Vec<(String, u32)>,
+}
+
 impl EventModifiers {
     /// True if this single effect (ignoring sub_ability chain) is purely a
     /// ProposedEvent modifier with no additional resolution work.
@@ -2549,6 +2555,48 @@ fn event_modifiers_for_ability(
         etb_counters: counters,
         redirect_zone: redirect,
     }
+}
+
+/// CR 614.12 + CR 707.9: When an "enters as a copy" choice is made, the copy
+/// effect determines the object's battlefield characteristics before other
+/// self-replacement effects that modify how it enters are considered. The
+/// engine's interactive `CopyTargetChoice` happens after the physical zone move,
+/// so this helper re-runs only the copied object's current self ETB modifiers
+/// (tap state and enter-with-counters) before SBAs/ETB triggers are checked.
+pub(super) fn current_self_enter_replacement_modifiers(
+    state: &GameState,
+    source_id: ObjectId,
+) -> EnterReplacementModifiers {
+    let registry = build_replacement_registry();
+    let event = ProposedEvent::zone_change(source_id, Zone::Battlefield, Zone::Battlefield, None);
+    let mut result = EnterReplacementModifiers::default();
+
+    for rid in find_applicable_replacements(state, &event, &registry)
+        .into_iter()
+        .filter(|rid| rid.source == source_id)
+    {
+        let Some(replacement) = state
+            .objects
+            .get(&rid.source)
+            .and_then(|obj| obj.replacement_definitions.get(rid.index))
+        else {
+            continue;
+        };
+        if replacement_mode_is_optional(&replacement.mode) {
+            continue;
+        }
+
+        let modifiers =
+            event_modifiers_for_ability(replacement.execute.as_deref(), state, source_id, &event);
+        match modifiers.etb_tap_state {
+            EtbTapState::Unspecified => {}
+            EtbTapState::Tapped => result.enter_tapped = Some(true),
+            EtbTapState::Untapped => result.enter_tapped = Some(false),
+        }
+        result.counters.extend(modifiers.etb_counters);
+    }
+
+    result
 }
 
 fn battlefield_entry_current_tapped(event: &ProposedEvent) -> Option<bool> {

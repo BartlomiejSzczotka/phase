@@ -392,6 +392,15 @@ pub(super) fn handle_copy_target_choice(
             )
         });
     let _ = effects::resolve_ability_chain(state, &ability, events, 0);
+    crate::game::layers::evaluate_layers(state);
+    let enter_modifiers =
+        super::replacement::current_self_enter_replacement_modifiers(state, source_id);
+    if let Some(tapped) = enter_modifiers.enter_tapped {
+        if let Some(obj) = state.objects.get_mut(&source_id) {
+            obj.tapped = tapped;
+        }
+    }
+    apply_etb_counters(state, source_id, &enter_modifiers.counters, events);
     state.layers_dirty = true;
     effects::drain_pending_continuation(state, events);
     Ok(WaitingFor::Priority {

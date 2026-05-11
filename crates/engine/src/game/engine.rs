@@ -12300,6 +12300,102 @@ mod phase_trigger_regression_tests {
     }
 
     #[test]
+    fn copy_target_choice_applies_copied_enter_with_counters_replacement_before_sba() {
+        let mut state = GameState::new_two_player(42);
+
+        let ghave = zones::create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(1),
+            "Ghave, Guru of Spores".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&ghave).unwrap();
+            obj.base_power = Some(0);
+            obj.base_toughness = Some(0);
+            obj.power = Some(5);
+            obj.toughness = Some(5);
+            obj.counters
+                .insert(crate::types::counter::CounterType::Plus1Plus1, 5);
+            let enter_with_counters = crate::types::ability::ReplacementDefinition::new(
+                crate::types::replacements::ReplacementEvent::Moved,
+            )
+            .execute(crate::types::ability::AbilityDefinition::new(
+                crate::types::ability::AbilityKind::Spell,
+                Effect::PutCounter {
+                    counter_type: "P1P1".to_string(),
+                    count: crate::types::ability::QuantityExpr::Fixed { value: 5 },
+                    target: TargetFilter::SelfRef,
+                },
+            ))
+            .valid_card(TargetFilter::SelfRef);
+            obj.base_replacement_definitions = Arc::new(vec![enter_with_counters.clone()]);
+            obj.replacement_definitions.push(enter_with_counters);
+        }
+
+        let assassin = zones::create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Callidus Assassin".to_string(),
+            Zone::Battlefield,
+        );
+        {
+            let obj = state.objects.get_mut(&assassin).unwrap();
+            obj.base_power = Some(3);
+            obj.base_toughness = Some(3);
+            obj.power = Some(3);
+            obj.toughness = Some(3);
+            obj.replacement_definitions.push(
+                crate::types::ability::ReplacementDefinition::new(
+                    crate::types::replacements::ReplacementEvent::Moved,
+                )
+                .execute(crate::types::ability::AbilityDefinition::new(
+                    crate::types::ability::AbilityKind::Spell,
+                    Effect::BecomeCopy {
+                        target: TargetFilter::Typed(crate::types::ability::TypedFilter::new(
+                            crate::types::ability::TypeFilter::Creature,
+                        )),
+                        duration: None,
+                        mana_value_limit: None,
+                        additional_modifications: Vec::new(),
+                    },
+                )),
+            );
+        }
+
+        state.waiting_for = WaitingFor::CopyTargetChoice {
+            player: PlayerId(0),
+            source_id: assassin,
+            valid_targets: vec![ghave],
+            max_mana_value: None,
+        };
+
+        apply_as_current(
+            &mut state,
+            GameAction::ChooseTarget {
+                target: Some(TargetRef::Object(ghave)),
+            },
+        )
+        .expect("copy target choice should resolve");
+
+        let copied = state.objects.get(&assassin).unwrap();
+        assert_eq!(copied.zone, Zone::Battlefield);
+        assert_eq!(copied.name, "Ghave, Guru of Spores");
+        assert_eq!(
+            copied
+                .counters
+                .get(&crate::types::counter::CounterType::Plus1Plus1)
+                .copied(),
+            Some(5),
+            "CR 614.12: copied self ETB counters must apply before SBAs"
+        );
+        assert_eq!(copied.power, Some(5));
+        assert_eq!(copied.toughness, Some(5));
+    }
+
+    #[test]
     fn copy_target_choice_rejects_invalid_target() {
         let mut state = GameState::new_two_player(42);
 
