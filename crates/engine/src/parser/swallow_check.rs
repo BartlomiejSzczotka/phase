@@ -24,12 +24,13 @@
 use super::oracle::ParsedAbilities;
 use super::oracle_ir::diagnostic::{CascadeSlot, OracleDiagnostic};
 use crate::types::ability::{
-    AbilityCondition, AbilityDefinition, ContinuousModification, Effect, ModalSelectionConstraint,
-    OpponentMayScope, PlayerFilter, QuantityExpr, ReplacementDefinition, ReplacementMode,
-    StaticDefinition, TargetFilter, TriggerDefinition,
+    AbilityCondition, AbilityDefinition, ContinuousModification, Effect, FilterProp,
+    ModalSelectionConstraint, OpponentMayScope, PlayerFilter, QuantityExpr, ReplacementDefinition,
+    ReplacementMode, StaticDefinition, TargetFilter, TriggerDefinition,
 };
 use crate::types::statics::StaticMode;
 use crate::types::triggers::TriggerMode;
+use crate::types::zones::Zone;
 
 /// Strip parenthesized reminder text. Reminder text is the parser's
 /// responsibility to ignore at the keyword level — keywords themselves are
@@ -543,6 +544,52 @@ fn any_ability_has_exile_parent_rider(parsed: &ParsedAbilities) -> bool {
             t.execute
                 .as_deref()
                 .is_some_and(def_tree_has_exile_parent_rider)
+        })
+}
+
+fn target_filter_has_zone(filter: &TargetFilter, zone: Zone) -> bool {
+    match filter {
+        TargetFilter::Typed(tf) => tf.properties.iter().any(
+            |prop| matches!(prop, FilterProp::InZone { zone: prop_zone } if *prop_zone == zone),
+        ),
+        TargetFilter::Or { filters } | TargetFilter::And { filters } => filters
+            .iter()
+            .any(|filter| target_filter_has_zone(filter, zone)),
+        TargetFilter::Not { filter } => target_filter_has_zone(filter, zone),
+        _ => false,
+    }
+}
+
+fn def_tree_has_graveyard_cast_from_zone(def: &AbilityDefinition) -> bool {
+    if let Effect::CastFromZone { target, .. } = &*def.effect {
+        if target_filter_has_zone(target, Zone::Graveyard) {
+            return true;
+        }
+    }
+    if let Some(ref sub) = def.sub_ability {
+        if def_tree_has_graveyard_cast_from_zone(sub) {
+            return true;
+        }
+    }
+    if let Some(ref else_ab) = def.else_ability {
+        if def_tree_has_graveyard_cast_from_zone(else_ab) {
+            return true;
+        }
+    }
+    def.mode_abilities
+        .iter()
+        .any(def_tree_has_graveyard_cast_from_zone)
+}
+
+fn any_ability_has_graveyard_cast_from_zone(parsed: &ParsedAbilities) -> bool {
+    parsed
+        .abilities
+        .iter()
+        .any(def_tree_has_graveyard_cast_from_zone)
+        || parsed.triggers.iter().any(|t| {
+            t.execute
+                .as_deref()
+                .is_some_and(def_tree_has_graveyard_cast_from_zone)
         })
 }
 
@@ -1146,6 +1193,14 @@ fn detect_condition_if(
     // your graveyard") implicit in the sub_ability's relationship to the
     // parent effect.
     if any_ability_has_exile_parent_rider(parsed) {
+        return;
+    }
+    // CR 614.1a + CR 701.5: The imperative CastFromZone resolver grants
+    // graveyard casts by moving the selected card to exile before casting.
+    // For coverage purposes that represents "If that spell would be put into
+    // your graveyard, exile it instead" riders on Dreadhorde Arcanist-class
+    // triggers, even though it is not a separate ReplacementDefinition.
+    if any_ability_has_graveyard_cast_from_zone(parsed) {
         return;
     }
     if any_ability_has_conditional_mana_spell_grant(parsed) {
@@ -1949,6 +2004,19 @@ mod tests {
         );
 
         assert!(!has_swallowed_detector(&parsed, "Replacement_Instead"));
+    }
+
+    #[test]
+    fn condition_if_accepts_graveyard_cast_exile_rider() {
+        let parsed = parse_named(
+            "Trample\n\
+             Whenever this creature attacks, you may cast target instant or sorcery card with mana value less than or equal to this creature's power from your graveyard without paying its mana cost. \
+             If that spell would be put into your graveyard, exile it instead.",
+            "Dreadhorde Arcanist",
+            &["Creature"],
+        );
+
+        assert!(!has_swallowed_detector(&parsed, "Condition_If"));
     }
 
     #[test]

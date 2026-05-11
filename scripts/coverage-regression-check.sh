@@ -251,8 +251,9 @@ if [[ "$baseline_has_diag" -eq 1 ]]; then
             honesty_names=$(jq -r --arg cat "$cat" '
               [.[] | select(.category == $cat) | .honesty_only[]] | join(", ")
             ' "$tmpdir/honesty.json")
-            adjusted=$((increase - honesty_only))
-            if [[ "$adjusted" -lt 0 ]]; then adjusted=0; fi
+            real_count=$(jq -r --arg cat "$cat" '
+              [.[] | select(.category == $cat) | .real_regress | length] | add // 0
+            ' "$tmpdir/honesty.json")
             if [[ "$honesty_only" -gt 0 ]]; then
                 echo "REGRESSED (coverage honesty): $cat +$honesty_only newly surfaced silent fallback(s) — parse_details unchanged: $honesty_names"
             fi
@@ -260,11 +261,11 @@ if [[ "$baseline_has_diag" -eq 1 ]]; then
             # card can contribute at most 1 diagnostic per category. If the
             # adjusted increase exceeds what new cards explain, it's a real
             # parser regression.
-            if [[ "$adjusted" -gt "$new_cards" ]]; then
-                echo "DIAGNOSTIC REGRESSION: $cat increased from $base_count to $count (+$adjusted real, exceeds new-card allowance of +$new_cards)" >&2
+            if [[ "$real_count" -gt "$new_cards" ]]; then
+                echo "DIAGNOSTIC REGRESSION: $cat increased from $base_count to $count (+$real_count real, exceeds new-card allowance of +$new_cards)" >&2
                 diag_fail=1
-            elif [[ "$adjusted" -gt 0 ]]; then
-                echo "DIAGNOSTIC NOTE: $cat increased from $base_count to $count (+$adjusted real, within new-card allowance of +$new_cards)"
+            elif [[ "$real_count" -gt 0 ]]; then
+                echo "DIAGNOSTIC NOTE: $cat increased from $base_count to $count (+$real_count real, within new-card allowance of +$new_cards)"
             else
                 echo "DIAGNOSTIC NOTE: $cat increased from $base_count to $count (+$increase, all honesty-only — non-fatal)"
             fi
