@@ -590,16 +590,23 @@ pub(super) fn resolve_optional_effect_decision(
     Ok(())
 }
 
-/// Whether a sub-ability condition is a "was the effect performed" gate
-/// (`IfYouDo` / `IfAPlayerDoes`, including a `Not`-wrapped form). Such
-/// conditions cannot be evaluated while the parent effect is suspended for a
-/// player choice — the answer is not yet known — so the sub-ability must be
-/// deferred as a continuation rather than gated eagerly. Predicate helper, not
+/// Whether a sub-ability condition references a "was the effect performed" gate
+/// (`IfYouDo` / `IfAPlayerDoes`), including a `Not`-wrapped form or a composite
+/// `And`/`Or` that contains one. Such conditions cannot be evaluated while the
+/// parent effect is suspended for a player choice — the answer is not yet
+/// known — so the sub-ability must be deferred as a continuation rather than
+/// gated eagerly. A composite like `Or { [IfYouDo, QuantityCheck] }` (Armored
+/// Kincaller) also qualifies: declining the optional effect leaves `IfYouDo`
+/// false, but the sibling disjunct may still be satisfied, so the sub-ability
+/// must be re-evaluated rather than dropped. Predicate helper, not
 /// rule-implementing code.
 fn condition_depends_on_effect_performed(condition: &AbilityCondition) -> bool {
     match condition {
         AbilityCondition::IfYouDo | AbilityCondition::IfAPlayerDoes => true,
         AbilityCondition::Not { condition } => condition_depends_on_effect_performed(condition),
+        AbilityCondition::And { conditions } | AbilityCondition::Or { conditions } => {
+            conditions.iter().any(condition_depends_on_effect_performed)
+        }
         _ => false,
     }
 }
@@ -632,6 +639,20 @@ fn should_resolve_subability_on_optional_decline(ability: &ResolvedAbility) -> b
                     )
                 })
         }
+        // CR 608.2c + CR 608.2d: A composite `And`/`Or` condition that contains
+        // a performed-gate is a valid decline branch — declining the
+        // resolution-time "you may" leaves `IfYouDo` false, but a sibling
+        // clause may still be satisfied.
+        // Armored Kincaller: `GainLife { Or { [IfYouDo, QuantityCheck] } }` —
+        // declining the optional reveal must still gain life when the
+        // "control another Dinosaur" disjunct holds. Descending lets
+        // `resolve_ability_chain`'s top-level condition check re-evaluate the
+        // composite against the post-decline state. A composite with no
+        // performed-gate is not a decline branch (its truth is unchanged by
+        // the decline) and falls through to the `false` arm below.
+        Some(
+            AbilityCondition::And { ref conditions } | AbilityCondition::Or { ref conditions },
+        ) => conditions.iter().any(condition_depends_on_effect_performed),
         // Every other condition shape: declining the optional effect does not
         // select a sub-ability branch. Exhaustive — a new `AbilityCondition`
         // variant must be classified here deliberately, not silently defaulted.
@@ -666,8 +687,6 @@ fn should_resolve_subability_on_optional_decline(ability: &ResolvedAbility) -> b
             | AbilityCondition::CostPaidObjectMatchesFilter { .. }
             | AbilityCondition::SourceIsTapped
             | AbilityCondition::ConditionInstead { .. }
-            | AbilityCondition::And { .. }
-            | AbilityCondition::Or { .. }
             | AbilityCondition::DayNightIsNeither
             | AbilityCondition::DayNightIs { .. }
             | AbilityCondition::NthResolutionThisTurn { .. }
