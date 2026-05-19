@@ -525,7 +525,11 @@ fn sacrificed_object_context_from_events(
     state: &GameState,
     events: &[GameEvent],
 ) -> Option<CostPaidObjectSnapshot> {
-    events.iter().find_map(|event| match event {
+    // CR 608.2k: A `ParentTarget` referent must be "a specific untargeted object"
+    // (singular). When the parent effect sacrificed more than one permanent there
+    // is no single resolvable subject, so yield no snapshot — mirroring the guard
+    // in `moved_object_context_from_events`.
+    let mut sacrificed = events.iter().filter_map(|event| match event {
         GameEvent::PermanentSacrificed { object_id, .. } => state
             .lki_cache
             .get(object_id)
@@ -535,7 +539,9 @@ fn sacrificed_object_context_from_events(
                 lki,
             }),
         _ => None,
-    })
+    });
+    let first = sacrificed.next()?;
+    sacrificed.next().is_none().then_some(first)
 }
 
 fn moved_object_context_from_events(events: &[GameEvent]) -> Option<CostPaidObjectSnapshot> {

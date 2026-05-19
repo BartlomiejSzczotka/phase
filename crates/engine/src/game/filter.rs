@@ -1655,6 +1655,14 @@ fn referenced_targets_for_filter<'a>(
         return vec![];
     };
     match target {
+        // Returns the chosen object targets only. For an *untargeted* `ParentTarget`
+        // referent (e.g. a permanent the parent `Sacrifice` effect chose while
+        // applying — CR 608.2k), there is no `TargetRef` here, and synthesizing a
+        // fake one would lie to aura-enchant and object-list consumers since the
+        // object no longer exists. The resolution route for an untargeted
+        // `ParentTarget` referent is the effect-context LKI snapshot consulted by
+        // `parent_target_shared_quality_values`, not this list — the empty arm is
+        // intentional, not a gap.
         TargetFilter::ParentTarget => ability.targets.iter().collect(),
         TargetFilter::ParentTargetSlot { index } => {
             ability.targets.get(*index).into_iter().collect()
@@ -2803,20 +2811,34 @@ fn parent_target_shared_quality_values(
                 TargetRef::Player(_) => None,
             })
         })
-        .or(source.recipient_id)?;
+        .or(source.recipient_id);
 
-    if let Some(obj) = state.objects.get(&target_id) {
-        return Some(object_shared_quality_values(
-            obj,
-            quality,
-            &state.all_creature_types,
-        ));
-    }
-
-    state
-        .lki_cache
-        .get(&target_id)
-        .map(|lki| lki_shared_quality_values(lki, quality, &state.all_creature_types))
+    // Resolution ladder: live object → target-id LKI → effect-context snapshot.
+    // The first two rungs honor a genuinely chosen target; the snapshot rung is a
+    // strict fallback reached only when both yield nothing — including when
+    // `target_id` is `None` (untargeted parent) or `Some` but stale (missing from
+    // both `state.objects` and `state.lki_cache`).
+    target_id
+        .and_then(|id| state.objects.get(&id))
+        .map(|obj| object_shared_quality_values(obj, quality, &state.all_creature_types))
+        .or_else(|| {
+            target_id
+                .and_then(|id| state.lki_cache.get(&id))
+                .map(|lki| lki_shared_quality_values(lki, quality, &state.all_creature_types))
+        })
+        .or_else(|| {
+            // CR 608.2k + CR 400.7j: `ParentTarget` may refer to a permanent the
+            // parent effect sacrificed (an untargeted object never written into
+            // `ability.targets`). The sacrifice moves it to the graveyard — a
+            // public zone — so later instructions in the same effect still
+            // resolve against it via the effect-context LKI snapshot.
+            source
+                .ability
+                .and_then(|ability| ability.effect_context_object.as_ref())
+                .map(|snapshot| {
+                    lki_shared_quality_values(&snapshot.lki, quality, &state.all_creature_types)
+                })
+        })
 }
 
 fn object_shares_quality_with_reference_filter(
@@ -6646,5 +6668,132 @@ mod tests {
                 "Non-changeling Bear must NOT match Subtype({other})",
             );
         }
+    }
+
+    /// Building-block test for the `ParentTarget` effect-context snapshot rung
+    /// in `parent_target_shared_quality_values` (CR 608.2k / CR 400.7j): a
+    /// `SharesQuality { reference: ParentTarget }` filter must resolve against
+    /// the resolving ability's `effect_context_object` LKI snapshot when the
+    /// parent effect's referent was an untargeted object never written into
+    /// `ability.targets` (e.g. a permanent sacrificed by a parent `Sacrifice`).
+    ///
+    /// Three sub-cases pin both the `None`-`target_id` and stale-`Some`-
+    /// `target_id` paths through the `.or_else` resolution ladder.
+    #[test]
+    fn parent_target_shares_quality_resolves_via_effect_context_snapshot() {
+        use crate::types::ability::{CostPaidObjectSnapshot, SharedQuality, SharedQualityRelation};
+        use crate::types::game_state::LKISnapshot;
+        use std::collections::HashMap;
+
+        let creature_lki = LKISnapshot {
+            name: "Test Creature".to_string(),
+            power: Some(2),
+            toughness: Some(2),
+            mana_value: 2,
+            controller: PlayerId(0),
+            owner: PlayerId(0),
+            card_types: vec![CoreType::Creature],
+            subtypes: vec![],
+            supertypes: vec![],
+            keywords: vec![],
+            colors: vec![],
+            counters: HashMap::new(),
+        };
+        let land_lki = LKISnapshot {
+            name: "Test Land".to_string(),
+            power: None,
+            toughness: None,
+            mana_value: 0,
+            controller: PlayerId(0),
+            owner: PlayerId(0),
+            card_types: vec![CoreType::Land],
+            subtypes: vec![],
+            supertypes: vec![],
+            keywords: vec![],
+            colors: vec![],
+            counters: HashMap::new(),
+        };
+
+        let filter =
+            TargetFilter::Typed(
+                TypedFilter::card().properties(vec![FilterProp::SharesQuality {
+                    quality: SharedQuality::CardType,
+                    reference: Some(Box::new(TargetFilter::ParentTarget)),
+                    relation: SharedQualityRelation::Shares,
+                }]),
+            );
+
+        // Battlefield candidate: a Creature that shares the `Creature` card type.
+        let mut state = setup();
+        let candidate = add_creature(&mut state, PlayerId(0), "Candidate Creature");
+        let source = candidate; // source object only needs to exist.
+                                // A `gone` id: never present in `state.objects` and never inserted into
+                                // `state.lki_cache` — a stale target id.
+        let gone_id = ObjectId(99_999);
+
+        // Sub-case 1: `targets` empty + snapshot's card type matches the candidate.
+        let mut ability = ResolvedAbility::new(
+            Effect::Unimplemented {
+                name: String::new(),
+                description: None,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.effect_context_object = Some(CostPaidObjectSnapshot {
+            object_id: gone_id,
+            lki: creature_lki.clone(),
+        });
+        assert!(
+            super::matches_target_filter(
+                &state,
+                candidate,
+                &filter,
+                &FilterContext::from_ability(&ability),
+            ),
+            "snapshot Creature shares the Creature card type — must match"
+        );
+
+        // Sub-case 2: `targets` empty + snapshot is a Land — no shared card type.
+        ability.effect_context_object = Some(CostPaidObjectSnapshot {
+            object_id: gone_id,
+            lki: land_lki.clone(),
+        });
+        assert!(
+            !super::matches_target_filter(
+                &state,
+                candidate,
+                &filter,
+                &FilterContext::from_ability(&ability),
+            ),
+            "snapshot Land shares no card type with the Creature candidate"
+        );
+
+        // Sub-case 3: stale `Some` `target_id` + matching snapshot. The
+        // `TargetRef::Object` id resolves to neither a live object nor an
+        // `lki_cache` entry, so the snapshot rung must still win.
+        let mut stale = ResolvedAbility::new(
+            Effect::Unimplemented {
+                name: String::new(),
+                description: None,
+            },
+            vec![TargetRef::Object(gone_id)],
+            source,
+            PlayerId(0),
+        );
+        stale.effect_context_object = Some(CostPaidObjectSnapshot {
+            object_id: gone_id,
+            lki: creature_lki.clone(),
+        });
+        assert!(
+            super::matches_target_filter(
+                &state,
+                candidate,
+                &filter,
+                &FilterContext::from_ability(&stale),
+            ),
+            "stale target id must fall through to the effect-context snapshot rung"
+        );
     }
 }
