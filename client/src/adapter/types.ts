@@ -43,7 +43,7 @@ export type GameFormat =
   | "TwoHeadedGiant"
   | "Limited";
 
-export type FormatGroup = "Constructed" | "Commander" | "Multiplayer";
+export type FormatGroup = "Constructed" | "Commander" | "Multiplayer" | "Limited";
 
 export interface FormatConfig {
   format: GameFormat;
