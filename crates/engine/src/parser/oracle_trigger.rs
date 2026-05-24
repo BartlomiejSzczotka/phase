@@ -4227,7 +4227,15 @@ fn add_another_prop(filter: TargetFilter) -> TargetFilter {
         TargetFilter::Or { filters } => TargetFilter::Or {
             filters: filters.into_iter().map(add_another_prop).collect(),
         },
-        _ => TargetFilter::Typed(TypedFilter::default().properties(vec![FilterProp::Another])),
+        TargetFilter::And { filters } => TargetFilter::And {
+            filters: filters.into_iter().map(add_another_prop).collect(),
+        },
+        other => TargetFilter::And {
+            filters: vec![
+                other,
+                TargetFilter::Typed(TypedFilter::default().properties(vec![FilterProp::Another])),
+            ],
+        },
     }
 }
 
@@ -6806,64 +6814,79 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
     // CR 601.2: "Whenever you cast a/an [type] spell [post-spell modifier]" — extract
     // the spell filter. Handles pre-spell type qualifier, post-spell modifier
     // (e.g. "with {X} in its mana cost", CR 107.3 + CR 202.1), or both.
-    for prefix in ["you cast an ", "you cast a "] {
-        if let Some(after) = strip_after(lower, prefix) {
-            let mut def = make_base();
-            def.mode = TriggerMode::SpellCast;
-            // "you" = trigger's controller
-            def.valid_target = Some(TargetFilter::Controller);
+    // CR 603.4: "another" prefix adds FilterProp::Another to exclude the source.
+    if let Some((_, is_another, after)) = scan_preceded(lower, |i| {
+        alt((
+            value(true, tag::<_, _, OracleError<'_>>("you cast another ")),
+            value(false, tag("you cast an ")),
+            value(false, tag("you cast a ")),
+        ))
+        .parse(i)
+    }) {
+        let mut def = make_base();
+        def.mode = TriggerMode::SpellCast;
+        // "you" = trigger's controller
+        def.valid_target = Some(TargetFilter::Controller);
 
-            // Truncate at ", " so any effect clause doesn't leak into the type parser.
-            let payload = nom_primitives::split_once_on(after, ", ")
-                .map(|(_, (before, _))| before)
-                .unwrap_or(after)
-                .trim();
+        // Truncate at ", " so any effect clause doesn't leak into the type parser.
+        let payload = nom_primitives::split_once_on(after, ", ")
+            .map(|(_, (before, _))| before)
+            .unwrap_or(after)
+            .trim();
 
-            // CR 601.2a: pre-extract the "from <zone>" cast-origin tail BEFORE
-            // running the type-phrase parser. `parse_type_phrase`'s
-            // `parse_zone_suffix` would otherwise attach the zone as a
-            // `FilterProp::InZone` on `valid_card` — semantically wrong for
-            // SpellCast triggers because the spell object's zone at
-            // fire-time is `Stack`, not its cast origin. Pulling the tail
-            // first keeps `valid_card` clean and routes the constraint
-            // through the matcher's typed `spell_cast_origin` gate.
-            let (payload, cast_origin) = match nom_primitives::split_once_on(payload, " from ") {
-                Ok((_, (before, after))) => {
-                    // Re-prepend the "from " literal so the tail
-                    // combinator's leading-tag matcher sees its expected
-                    // shape.
-                    let tail = format!("from {after}");
-                    let constraint =
-                        parse_origin_constraint_tail(tail.as_str(), parse_cast_origin_zone)
-                            .map(|(_, c)| c)
-                            .unwrap_or(OriginConstraint::Any);
-                    (before, constraint)
-                }
-                Err(_) => (payload, OriginConstraint::Any),
-            };
-            def.spell_cast_origin = cast_origin;
-
-            // First, try the post-spell-modifier-aware decomposition for shapes
-            // that include "with {X} in its mana cost" etc.
-            if let Some(filter) = parse_spell_qualifier_payload(payload) {
-                def.valid_card = Some(filter);
-                return Some((TriggerMode::SpellCast, def));
+        // CR 601.2a: pre-extract the "from <zone>" cast-origin tail BEFORE
+        // running the type-phrase parser. `parse_type_phrase`'s
+        // `parse_zone_suffix` would otherwise attach the zone as a
+        // `FilterProp::InZone` on `valid_card` — semantically wrong for
+        // SpellCast triggers because the spell object's zone at
+        // fire-time is `Stack`, not its cast origin. Pulling the tail
+        // first keeps `valid_card` clean and routes the constraint
+        // through the matcher's typed `spell_cast_origin` gate.
+        let (payload, cast_origin) = match nom_primitives::split_once_on(payload, " from ") {
+            Ok((_, (before, after))) => {
+                // Re-prepend the "from " literal so the tail
+                // combinator's leading-tag matcher sees its expected
+                // shape.
+                let tail = format!("from {after}");
+                let constraint =
+                    parse_origin_constraint_tail(tail.as_str(), parse_cast_origin_zone)
+                        .map(|(_, c)| c)
+                        .unwrap_or(OriginConstraint::Any);
+                (before, constraint)
             }
+            Err(_) => (payload, OriginConstraint::Any),
+        };
+        def.spell_cast_origin = cast_origin;
 
-            // Fall back to the classic type-phrase parser for bare type filters.
-            // TypeFilter::Card alone means "spell" with no type restriction — skip it.
-            let (filter, _rest) = parse_type_phrase(payload);
-            let is_meaningful = match &filter {
-                TargetFilter::Typed(tf) => tf.has_meaningful_type_constraint(),
-                // Or-filters are always meaningful (e.g. "instant or sorcery spell")
-                TargetFilter::Or { .. } => true,
-                _ => false,
+        // First, try the post-spell-modifier-aware decomposition for shapes
+        // that include "with {X} in its mana cost" etc.
+        if let Some(filter) = parse_spell_qualifier_payload(payload) {
+            let filter = if is_another {
+                add_another_prop(filter)
+            } else {
+                filter
             };
-            if is_meaningful {
-                def.valid_card = Some(filter);
-            }
+            def.valid_card = Some(filter);
             return Some((TriggerMode::SpellCast, def));
         }
+
+        // Fall back to the classic type-phrase parser for bare type filters.
+        let (filter, _rest) = parse_type_phrase(payload);
+        let filter = if is_another {
+            add_another_prop(filter)
+        } else {
+            filter
+        };
+        let is_meaningful = match &filter {
+            TargetFilter::Typed(tf) => tf.has_meaningful_type_constraint(),
+            // Or-filters are always meaningful (e.g. "instant or sorcery spell")
+            TargetFilter::Or { .. } => true,
+            _ => false,
+        };
+        if is_meaningful {
+            def.valid_card = Some(filter);
+        }
+        return Some((TriggerMode::SpellCast, def));
     }
 
     // "an opponent casts a [quality] spell" / "a player casts a spell from a graveyard"
@@ -11662,6 +11685,49 @@ mod tests {
                 .contains(&TypeFilter::Non(Box::new(TypeFilter::Creature))),
             "expected Non(Creature) in {:?}",
             tf.type_filters
+        );
+    }
+
+    /// CR 603.4: "Whenever you cast another Vampire spell" — the "another"
+    /// prefix must produce `FilterProp::Another` on `valid_card` so the trigger
+    /// does not fire on the source spell itself (Edgar Markov).
+    #[test]
+    fn trigger_you_cast_another_vampire_spell() {
+        let def = parse_trigger_line(
+            "Whenever you cast another Vampire spell, if ~ is in the command zone or on the battlefield, create a 1/1 black Vampire creature token.",
+            "Edgar Markov",
+        );
+        assert_eq!(def.mode, TriggerMode::SpellCast);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+        let Some(TargetFilter::Typed(tf)) = &def.valid_card else {
+            panic!("expected Typed valid_card, got {:?}", def.valid_card);
+        };
+        assert!(
+            tf.properties.contains(&FilterProp::Another),
+            "expected Another in {:?}",
+            tf.properties
+        );
+        assert!(
+            tf.type_filters
+                .iter()
+                .any(|t| matches!(t, TypeFilter::Subtype(s) if s == "Vampire")),
+            "expected Subtype(Vampire) in {:?}",
+            tf.type_filters
+        );
+    }
+
+    #[test]
+    fn trigger_you_cast_another_spell_keeps_another_filter() {
+        let def = parse_trigger_line("Whenever you cast another spell, draw a card.", "Test");
+        assert_eq!(def.mode, TriggerMode::SpellCast);
+        assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+        let Some(TargetFilter::Typed(tf)) = &def.valid_card else {
+            panic!("expected Typed valid_card, got {:?}", def.valid_card);
+        };
+        assert!(
+            tf.properties.contains(&FilterProp::Another),
+            "expected Another in {:?}",
+            tf.properties
         );
     }
 
