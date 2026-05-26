@@ -22,6 +22,23 @@ use serde::{Deserialize, Serialize};
 /// both the old and new variants coexist, then bump and remove the old.
 pub const PROTOCOL_VERSION: u32 = 7;
 
+/// Minimum protocol version the server will accept at the hello handshake.
+/// Clients on `MIN_SUPPORTED_PROTOCOL..=PROTOCOL_VERSION` are admitted to the
+/// lobby; older clients are rejected. The window is "current and previous" by
+/// policy — each bump deprecates exactly one version behind, so a release-vs-
+/// preview deployment can coexist in the same lobby server during the rollout.
+///
+/// Derived from `PROTOCOL_VERSION` so a bump automatically rolls the floor.
+/// Use `saturating_sub` so the constant is well-defined when `PROTOCOL_VERSION`
+/// is 0 (range collapses to `0..=0`, no underflow).
+///
+/// Note: admission to the lobby does not guarantee that every game wire
+/// operation is bidirectionally compatible across versions. Per-game cross-
+/// version filtering is a follow-up; until it lands, browsing succeeds but a
+/// v6 client clicking "join" on a v7-hosted game will fail at the seat-message
+/// boundary with an opaque deserialize error.
+pub const MIN_SUPPORTED_PROTOCOL: u32 = PROTOCOL_VERSION.saturating_sub(1);
+
 /// Git short-hash of the build. Emitted by `build.rs`; falls back to `"dev"`
 /// when git isn't available (containers, source tarballs).
 pub fn build_commit() -> &'static str {
