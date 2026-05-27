@@ -17842,12 +17842,12 @@ fn extract_effect_verb(effect: &Effect) -> Option<&'static str> {
 mod tests {
     use super::*;
     use crate::types::ability::{
-        AbilityCondition, CardTypeSetSource, CastVariantPaid, ChoiceType, CombatRelation,
-        CombatRelationSubject, Comparator, ContinuousModification, ControllerRef,
+        AbilityCondition, AggregateFunction, CardTypeSetSource, CastVariantPaid, ChoiceType,
+        CombatRelation, CombatRelationSubject, Comparator, ContinuousModification, ControllerRef,
         CopyRetargetPermission, CountScope, DoublePTMode, Duration, FilterProp, GainLifePlayer,
-        LibraryPosition, LinkedExileScope, ManaContribution, ManaProduction, ObjectScope,
-        PaymentCost, PermissionGrantee, QuantityExpr, QuantityRef, SearchSelectionConstraint,
-        TypeFilter, ZoneRef,
+        LibraryPosition, LinkedExileScope, ManaContribution, ManaProduction, ObjectProperty,
+        ObjectScope, PaymentCost, PermissionGrantee, PtStat, PtValueScope, QuantityExpr,
+        QuantityRef, SearchSelectionConstraint, TypeFilter, TypedFilter, ZoneRef,
     };
     use crate::types::card_type::{CoreType, Supertype};
     use crate::types::keywords::Keyword;
@@ -30193,6 +30193,71 @@ mod tests {
             "secondary clause must lower to Effect::Discard, got {:?}",
             sub.effect
         );
+    }
+
+    #[test]
+    fn crackling_doom_sacrifice_preserves_greatest_power_filter() {
+        let def = parse_effect_chain(
+            "Crackling Doom deals 2 damage to each opponent. Each opponent sacrifices a creature with the greatest power among creatures that player controls.",
+            AbilityKind::Spell,
+        );
+        let sacrifice = def
+            .sub_ability
+            .as_ref()
+            .expect("damage clause should chain to opponent sacrifice");
+        assert_eq!(sacrifice.player_scope, Some(PlayerFilter::Opponent));
+        let Effect::Sacrifice { target, count, .. } = &*sacrifice.effect else {
+            panic!("expected sacrifice clause, got {:?}", sacrifice.effect);
+        };
+        assert_eq!(count, &QuantityExpr::Fixed { value: 1 });
+        let TargetFilter::Typed(TypedFilter {
+            type_filters,
+            controller,
+            properties,
+        }) = target
+        else {
+            panic!("expected typed creature filter, got {target:?}");
+        };
+        assert!(type_filters.contains(&TypeFilter::Creature));
+        assert_eq!(controller, &Some(ControllerRef::You));
+        let superlative = properties
+            .iter()
+            .find_map(|prop| match prop {
+                FilterProp::PtComparison {
+                    stat,
+                    scope,
+                    comparator,
+                    value,
+                } => Some((stat, scope, comparator, value)),
+                _ => None,
+            })
+            .expect("sacrifice filter should carry greatest-power property");
+        assert_eq!(*superlative.0, PtStat::Power);
+        assert_eq!(*superlative.1, PtValueScope::Current);
+        assert_eq!(*superlative.2, Comparator::EQ);
+        let QuantityExpr::Ref {
+            qty:
+                QuantityRef::Aggregate {
+                    function,
+                    property,
+                    filter,
+                },
+        } = superlative.3
+        else {
+            panic!("expected aggregate quantity, got {:?}", superlative.3);
+        };
+        assert_eq!(*function, AggregateFunction::Max);
+        assert_eq!(*property, ObjectProperty::Power);
+        let TargetFilter::Typed(TypedFilter {
+            type_filters,
+            controller,
+            ..
+        }) = filter
+        else {
+            panic!("expected typed aggregate filter, got {filter:?}");
+        };
+        assert!(type_filters.contains(&TypeFilter::Creature));
+        assert_eq!(controller, &Some(ControllerRef::ScopedPlayer));
     }
 
     /// CR 113.10 + CR 702.16j: "you gain protection from everything" — the

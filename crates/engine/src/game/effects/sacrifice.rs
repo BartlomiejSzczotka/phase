@@ -318,8 +318,12 @@ mod tests {
     use super::*;
     use crate::game::effects::resolve_ability_chain;
     use crate::game::zones::create_object;
-    use crate::types::ability::{AbilityKind, Effect, QuantityRef, TargetFilter};
+    use crate::types::ability::{
+        AbilityKind, AggregateFunction, Comparator, ControllerRef, Effect, FilterProp,
+        ObjectProperty, PtStat, PtValueScope, QuantityRef, TargetFilter, TypedFilter,
+    };
     use crate::types::actions::GameAction;
+    use crate::types::card_type::CoreType;
     use crate::types::identifiers::{CardId, ObjectId};
     use crate::types::player::PlayerId;
 
@@ -1510,5 +1514,75 @@ mod tests {
             state_p2.battlefield.contains(&p1_mv5a) && state_p2.battlefield.contains(&p1_mv5b),
             "P1's permanents are untouched when P2 is the sacrificing opponent"
         );
+    }
+
+    #[test]
+    fn sacrifice_greatest_power_offers_only_tied_highest_power_creatures() {
+        let mut state = GameState::new_two_player(42);
+        let place = |state: &mut GameState, controller: PlayerId, power: i32| {
+            let id = create_object(
+                state,
+                CardId(state.next_object_id),
+                controller,
+                format!("P{} Power {power}", controller.0),
+                Zone::Battlefield,
+            );
+            let obj = state.objects.get_mut(&id).expect("object exists");
+            obj.card_types.core_types.push(CoreType::Creature);
+            obj.power = Some(power);
+            id
+        };
+
+        let caster_creature = place(&mut state, PlayerId(0), 9);
+        let lower = place(&mut state, PlayerId(1), 2);
+        let tied_a = place(&mut state, PlayerId(1), 5);
+        let tied_b = place(&mut state, PlayerId(1), 5);
+
+        let eligible_set =
+            TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::ScopedPlayer));
+        let greatest_power = FilterProp::PtComparison {
+            stat: PtStat::Power,
+            scope: PtValueScope::Current,
+            comparator: Comparator::EQ,
+            value: QuantityExpr::Ref {
+                qty: QuantityRef::Aggregate {
+                    function: AggregateFunction::Max,
+                    property: ObjectProperty::Power,
+                    filter: eligible_set,
+                },
+            },
+        };
+        let target = TargetFilter::Typed(
+            TypedFilter::creature()
+                .controller(ControllerRef::You)
+                .properties(vec![greatest_power]),
+        );
+        let ability = ResolvedAbility::new(
+            Effect::Sacrifice {
+                target,
+                count: QuantityExpr::Fixed { value: 1 },
+                min_count: 0,
+            },
+            vec![],
+            ObjectId(500),
+            PlayerId(1),
+        );
+        let mut events = Vec::new();
+
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        match &state.waiting_for {
+            WaitingFor::EffectZoneChoice { player, cards, .. } => {
+                assert_eq!(*player, PlayerId(1));
+                let mut got = cards.clone();
+                got.sort_by_key(|id| id.0);
+                let mut want = vec![tied_a, tied_b];
+                want.sort_by_key(|id| id.0);
+                assert_eq!(got, want);
+                assert!(!cards.contains(&lower));
+                assert!(!cards.contains(&caster_creature));
+            }
+            other => panic!("expected EffectZoneChoice, got {other:?}"),
+        }
     }
 }
