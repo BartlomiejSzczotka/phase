@@ -15411,6 +15411,54 @@ mod tests {
         );
     }
 
+    /// Issue #2405: Broken Bond — optional hand→battlefield land put must not
+    /// consume the land-drop counter (CR 305.4).
+    #[test]
+    fn issue_2405_broken_bond_land_put_does_not_consume_land_drop() {
+        let def = crate::parser::oracle_effect::parse_effect_chain(
+            "Destroy target artifact or enchantment. You may put a land card from your hand onto the battlefield.",
+            AbilityKind::Spell,
+        );
+        let sub = def.sub_ability.as_ref().expect("land put sub");
+
+        let mut state = GameState::new_two_player(42);
+        state.lands_played_this_turn = 1;
+        state.players[0].lands_played_this_turn = 1;
+        let _played_land = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Forest".to_string(),
+            Zone::Battlefield,
+        );
+        let hand_land = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Island".to_string(),
+            Zone::Hand,
+        );
+        for id in [_played_land, hand_land] {
+            let obj = state.objects.get_mut(&id).unwrap();
+            obj.card_types.core_types = vec![CoreType::Land];
+        }
+        let mut ability =
+            crate::game::ability_utils::build_resolved_from_def(sub, ObjectId(999), PlayerId(0));
+        ability.optional = false;
+        ability.context.optional_effect_performed = true;
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+        assert_eq!(
+            state.lands_played_this_turn, 1,
+            "effect-driven land put must not consume land drop"
+        );
+        assert!(
+            state.battlefield.contains(&hand_land),
+            "land must reach battlefield, waiting_for={:?}",
+            state.waiting_for
+        );
+    }
+
     /// Issue #2403: Sin, Spira's Punishment — random exile must publish a
     /// tracked set so the chained `CopyTokenOf` creates a tapped copy.
     #[test]

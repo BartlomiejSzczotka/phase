@@ -5974,6 +5974,10 @@ pub enum Effect {
         /// CR 701.20a vs CR 701.16a: True = cards are revealed (public), false = looked at (private).
         #[serde(default)]
         reveal: bool,
+        /// CR 614.1 / CR 110.5b: Kept cards routed to the battlefield enter
+        /// tapped when true (Planar Genesis — "onto the battlefield tapped").
+        #[serde(default)]
+        enter_tapped: bool,
     },
     GainControl {
         #[serde(default = "default_target_filter_any")]
