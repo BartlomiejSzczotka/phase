@@ -1470,8 +1470,9 @@ pub(crate) struct ModalHeaderAst {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize)]
 pub(crate) struct ActivatedConstraintAst {
     pub(crate) restrictions: Vec<ActivationRestriction>,
+    /// CR 602.2a: Who may begin to activate this ability.
+    pub(crate) activator_filter: Option<PlayerFilter>,
     /// CR 602.2: "Any player may activate this ability." — annotation recognized
-    /// during parsing. Runtime enforcement is a future item; currently stripped
-    /// so the sentence does not produce an `Unimplemented` fallback.
+    /// during parsing. Lowered to `activator_filter = All` on `AbilityDefinition`.
     pub(crate) any_player_may_activate: bool,
 }

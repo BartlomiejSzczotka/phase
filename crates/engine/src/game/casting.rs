@@ -3,7 +3,7 @@ use crate::types::ability::{
     AbilityKind, AdditionalCost, CardPlayMode, CastTimingPermission, CastingPermission, ChoiceType,
     ContinuousModification, CostObjectCount, CostPaidObjectSnapshot, CounterCostSelection,
     Duration, Effect, FilterProp, GameRestriction, ModalSelectionCondition, ObjectScope,
-    PlayerScope, ProhibitedActivity, QuantityExpr, QuantityRef, ResolvedAbility,
+    PlayerFilter, PlayerScope, ProhibitedActivity, QuantityExpr, QuantityRef, ResolvedAbility,
     RestrictionPlayerScope, StaticDefinition, TargetFilter, TargetRef,
 };
 use crate::types::actions::AlternativeCastDecision;
@@ -11317,6 +11317,25 @@ fn can_pay_ability_cost_now(
     )
 }
 
+/// CR 602.2a: Whether `player` may begin to activate an activated ability on
+/// a permanent controlled by `source_controller`.
+fn player_may_begin_activating(
+    state: &GameState,
+    player: PlayerId,
+    source_controller: PlayerId,
+    activator_filter: Option<&PlayerFilter>,
+) -> bool {
+    match activator_filter {
+        None | Some(PlayerFilter::Controller) => player == source_controller,
+        Some(PlayerFilter::All) => true,
+        Some(PlayerFilter::Opponent) => {
+            super::players::is_opponent(state, source_controller, player)
+        }
+        // Activator permission is only modeled for controller / all / opponent today.
+        Some(_) => player == source_controller,
+    }
+}
+
 pub fn can_activate_ability_now(
     state: &GameState,
     player: PlayerId,
@@ -11326,13 +11345,18 @@ pub fn can_activate_ability_now(
     let Some(obj) = state.objects.get(&source_id) else {
         return false;
     };
-    if obj.controller != player {
-        return false;
-    }
     let Some(mut ability_def) = activation_ability_definition(state, source_id, ability_index)
     else {
         return false;
     };
+    if !player_may_begin_activating(
+        state,
+        player,
+        obj.controller,
+        ability_def.activator_filter.as_ref(),
+    ) {
+        return false;
+    }
 
     // CR 702.61a + CR 702.61b: While a spell with split second is on the stack,
     // players can't activate abilities that aren't mana abilities.
@@ -11561,16 +11585,21 @@ pub fn handle_activate_ability(
         .get(&source_id)
         .ok_or_else(|| EngineError::InvalidAction("Object not found".to_string()))?;
 
-    // CR 602.2: Only an object's controller can activate its activated ability.
-    if obj.controller != player {
-        return Err(EngineError::NotYourPriority);
-    }
+    // CR 602.2a: Only players permitted by `activator_filter` may begin activation.
     let Some(mut ability_def) = activation_ability_definition(state, source_id, ability_index)
     else {
         return Err(EngineError::InvalidAction(
             "Invalid ability index".to_string(),
         ));
     };
+    if !player_may_begin_activating(
+        state,
+        player,
+        obj.controller,
+        ability_def.activator_filter.as_ref(),
+    ) {
+        return Err(EngineError::NotYourPriority);
+    }
     // CR 602.1: Check activation zone — default to battlefield.
     let required_zone = ability_def.activation_zone.unwrap_or(Zone::Battlefield);
     if obj.zone != required_zone {

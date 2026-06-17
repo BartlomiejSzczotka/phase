@@ -11540,6 +11540,10 @@ pub struct AbilityDefinition {
     /// single authority for sorcery-speed timing. The legacy `sorcery_speed`
     /// JSON field is migrated into this `Vec` by the hand-written `Deserialize`.
     pub activation_restrictions: Vec<ActivationRestriction>,
+    /// CR 602.2a: Who may begin to activate this ability. `None` = only the
+    /// permanent's controller. `Some(All)` = any player. `Some(Opponent)` =
+    /// only opponents of the permanent's controller.
+    pub activator_filter: Option<PlayerFilter>,
     /// CR 602.1: Zone from which this ability can be activated.
     /// `None` = battlefield (default). `Some(Zone::Hand)` for Channel, Cycling, etc.
     pub activation_zone: Option<Zone>,
@@ -11660,6 +11664,8 @@ struct AbilityDefinitionRepr<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     activation_restrictions: &'a Vec<ActivationRestriction>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    activator_filter: &'a Option<PlayerFilter>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     activation_zone: &'a Option<Zone>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ability_tag: &'a Option<AbilityTag>,
@@ -11722,6 +11728,7 @@ impl Serialize for AbilityDefinition {
             description,
             target_prompt,
             activation_restrictions,
+            activator_filter,
             activation_zone,
             ability_tag,
             condition,
@@ -11759,6 +11766,7 @@ impl Serialize for AbilityDefinition {
             description,
             target_prompt,
             activation_restrictions,
+            activator_filter,
             activation_zone,
             ability_tag,
             condition,
@@ -11839,6 +11847,8 @@ struct AbilityDefinitionDe {
     #[serde(default)]
     activation_restrictions: Vec<ActivationRestriction>,
     #[serde(default)]
+    activator_filter: Option<PlayerFilter>,
+    #[serde(default)]
     activation_zone: Option<Zone>,
     #[serde(default)]
     ability_tag: Option<AbilityTag>,
@@ -11910,6 +11920,7 @@ impl<'de> Deserialize<'de> for AbilityDefinition {
             description: de.description,
             target_prompt: de.target_prompt,
             activation_restrictions,
+            activator_filter: de.activator_filter,
             activation_zone: de.activation_zone,
             ability_tag: de.ability_tag,
             condition: de.condition,
@@ -12044,6 +12055,7 @@ impl AbilityDefinition {
             description: None,
             target_prompt: None,
             activation_restrictions: Vec::new(),
+            activator_filter: None,
             activation_zone: None,
             ability_tag: None,
             condition: None,
