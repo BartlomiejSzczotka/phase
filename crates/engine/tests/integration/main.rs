@@ -48,6 +48,7 @@ mod cr_annotations;
 mod craft_tithing_blade_transform;
 mod crossway_troublemakers_attacking_keywords;
 mod cultivate_split_destination;
+mod cumber_stone_opponent_debuff;
 mod cybership_combat_damage_manifest;
 mod dalkovan_encampment_attack_trigger;
 mod daretti_emblem_simultaneous_death;
